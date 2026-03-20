@@ -44,9 +44,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     console.log("[session] refreshSessions called");
     try {
       const list = await listSessions();
-      // Only show web client sessions — filter out Telegram, CLI, etc.
-      const webSessions = list.filter((s) => s.id.startsWith("web-"));
-      console.log("[session] refreshSessions got", list.length, "total,", webSessions.length, "web sessions");
+      // Only show web client sessions with messages, most recent first, limit 20
+      const webSessions = list
+        .filter((s) => s.id.startsWith("web-") && (s.message_count ?? 0) > 0)
+        .sort((a, b) => {
+          // Extract timestamp from id: web-{timestamp}-{random}
+          const tsA = parseInt(a.id.split("-")[1] || "0", 10);
+          const tsB = parseInt(b.id.split("-")[1] || "0", 10);
+          return tsB - tsA; // newest first
+        })
+        .slice(0, 20);
+      console.log("[session] refreshSessions got", list.length, "total,", webSessions.length, "shown");
       setSessions(webSessions);
     } catch (e) {
       console.warn("[session] refreshSessions failed:", e);
