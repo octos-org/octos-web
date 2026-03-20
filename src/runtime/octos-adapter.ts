@@ -58,6 +58,17 @@ export function createOctosAdapter(
         throw new Error(errText || `HTTP ${resp.status}`);
       }
 
+      // Handle queued response — message was accepted but a previous
+      // request's SSE stream is still active. Show acknowledgment.
+      const contentType = resp.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        const json = await resp.json();
+        if (json.status === "queued") {
+          yield { content: [{ type: "text" as const, text: "⏳ Message queued — waiting for previous request to complete..." }] };
+          return;
+        }
+      }
+
       const reader = resp.body!.getReader();
       const decoder = new TextDecoder();
       let text = "";
