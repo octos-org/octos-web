@@ -23,13 +23,17 @@ function extractText(
 export function createOctosAdapter(
   getSessionId: () => string,
   onMessageComplete?: () => void,
+  getPendingMedia?: () => string[],
 ): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal }) {
+      console.log("[adapter] run() called, messages:", messages.length, "history:", messages.map(m => ({ role: m.role, text: extractText(m).slice(0, 50) })));
       const token = getToken();
       const sessionId = getSessionId();
+      console.log("[adapter] sessionId:", sessionId);
       const lastMsg = messages[messages.length - 1];
       const userText = extractText(lastMsg);
+      console.log("[adapter] userText:", userText.slice(0, 100));
 
       // Streaming POST — each request gets its own isolated event stream
       const resp = await fetch(`${API_BASE}/api/chat`, {
@@ -42,12 +46,15 @@ export function createOctosAdapter(
           message: userText,
           session_id: sessionId,
           stream: true,
+          media: getPendingMedia?.() ?? [],
         }),
         signal: abortSignal,
       });
 
+      console.log("[adapter] fetch response:", resp.status, resp.headers.get("content-type"));
       if (!resp.ok) {
         const errText = await resp.text();
+        console.error("[adapter] fetch error:", resp.status, errText);
         throw new Error(errText || `HTTP ${resp.status}`);
       }
 
@@ -81,6 +88,7 @@ export function createOctosAdapter(
               continue;
             }
 
+            console.log("[adapter] SSE event:", event.type, "replace" in event ? (event as { text?: string }).text?.slice(0, 80) : "");
             switch (event.type) {
               case "token":
                 text += event.text;
@@ -109,6 +117,14 @@ export function createOctosAdapter(
                 break;
               }
 
+              case "tool_progress":
+                window.dispatchEvent(
+                  new CustomEvent("crew:tool_progress", {
+                    detail: { tool: event.tool, message: event.message },
+                  }),
+                );
+                break;
+
               case "thinking":
                 window.dispatchEvent(
                   new CustomEvent("crew:thinking", {
@@ -132,9 +148,10 @@ export function createOctosAdapter(
                 break;
 
               case "done":
-                // Prefer streamed tokens (includes all LLM iterations).
-                // Only use done.content as fallback when nothing was streamed.
-                if (!text && event.content) {
+                // The done event carries the authoritative final content.
+                // Always use it when non-empty — it replaces any streamed tool
+                // progress markers that may linger from the streaming phase.
+                if (event.content) {
                   text = event.content;
                   yield buildResult(text, toolCalls);
                 }
@@ -155,6 +172,23 @@ export function createOctosAdapter(
         reader.releaseLock();
       }
 
+      // Strip residual tool progress lines from final text.
+      // Tool progress (⚙ `tool`..., ✓ `tool`, ✗ `tool`) is transient — it should
+      // be replaced by the final LLM response, but race conditions with the stream
+      // forwarder can leave stale progress lines in the text.
+      if (text) {
+        const lines = text.split("\n");
+        const cleaned = lines.filter(
+          (line) => !/^[✓✗⚙📄]\s*`/.test(line.trim())
+        );
+        if (cleaned.length < lines.length) {
+          text = cleaned.join("\n").trim();
+          yield buildResult(text, toolCalls);
+        }
+      }
+
+      console.log("[adapter] stream ended, final text:", text.slice(0, 100));
+
       // Clear thinking state
       window.dispatchEvent(
         new CustomEvent("crew:thinking", {
@@ -162,6 +196,7 @@ export function createOctosAdapter(
         }),
       );
 
+      console.log("[adapter] calling onMessageComplete");
       onMessageComplete?.();
     },
   };
