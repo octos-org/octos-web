@@ -47,15 +47,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       // Only show web client sessions with messages, most recent first, limit 20
       const webSessions = list
         .filter((s) => s.id.startsWith("web-") && (s.message_count ?? 0) > 0)
-        .sort((a, b) => {
-          // Extract timestamp from id: web-{timestamp}-{random}
-          const tsA = parseInt(a.id.split("-")[1] || "0", 10);
-          const tsB = parseInt(b.id.split("-")[1] || "0", 10);
-          return tsB - tsA; // newest first
-        })
-        .slice(0, 20);
+        .slice(-20); // API returns oldest first, take last 20 = most recent
       console.log("[session] refreshSessions got", list.length, "total,", webSessions.length, "shown");
-      setSessions(webSessions);
+      setSessions(webSessions.reverse()); // newest first in sidebar
     } catch (e) {
       console.warn("[session] refreshSessions failed:", e);
     }
