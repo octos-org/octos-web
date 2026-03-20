@@ -33,15 +33,23 @@ function generateSessionId(): string {
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
-  const [currentSessionId, setCurrentSessionId] = useState(generateSessionId);
+  const [currentSessionId, setCurrentSessionId] = useState(() => {
+    const id = generateSessionId();
+    console.log("[session] initial sessionId:", id);
+    return id;
+  });
   const [initialMessages, setInitialMessages] = useState<MessageInfo[]>([]);
 
   const refreshSessions = useCallback(async () => {
+    console.log("[session] refreshSessions called");
     try {
       const list = await listSessions();
-      setSessions(list);
-    } catch {
-      // silently fail — server may not be ready
+      // Only show web client sessions — filter out Telegram, CLI, etc.
+      const webSessions = list.filter((s) => s.id.startsWith("web-"));
+      console.log("[session] refreshSessions got", list.length, "total,", webSessions.length, "web sessions");
+      setSessions(webSessions);
+    } catch (e) {
+      console.warn("[session] refreshSessions failed:", e);
     }
   }, []);
 
