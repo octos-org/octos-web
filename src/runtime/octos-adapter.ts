@@ -6,6 +6,19 @@ import { getToken } from "@/api/client";
 import { API_BASE } from "@/lib/constants";
 import type { SseEvent } from "@/api/types";
 
+/** Strip <think>...</think> blocks from streaming text.
+ *  Handles unclosed <think> (still streaming) by hiding from that point. */
+function stripThink(text: string): string {
+  // Remove complete <think>...</think> blocks
+  let result = text.replace(/<think>[\s\S]*?<\/think>\s*/g, "");
+  // Hide unclosed <think> (still streaming)
+  const openIdx = result.lastIndexOf("<think>");
+  if (openIdx !== -1 && result.indexOf("</think>", openIdx) === -1) {
+    result = result.slice(0, openIdx);
+  }
+  return result.trim();
+}
+
 /** Extract text from message content parts. */
 function extractText(
   msg: { content: readonly { type: string; text?: string }[] } | undefined,
@@ -64,7 +77,34 @@ export function createOctosAdapter(
       if (contentType.includes("application/json")) {
         const json = await resp.json();
         if (json.status === "queued") {
-          yield { content: [{ type: "text" as const, text: "⏳ Message queued — waiting for previous request to complete..." }] };
+          yield { content: [{ type: "text" as const, text: "⏳ Processing..." }] };
+          // Poll for response — the queued message will be processed after current request completes
+          for (let poll = 0; poll < 180; poll++) {
+            await new Promise((r) => setTimeout(r, 5000));
+            try {
+              const pollResp = await fetch(
+                `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/messages?limit=3`,
+                { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+              );
+              if (pollResp.ok) {
+                const pollMsgs = (await pollResp.json()) as {
+                  role: string;
+                  content: string;
+                }[];
+                // Check if there's a new assistant response after our queued message
+                const lastAssistant = [...pollMsgs]
+                  .reverse()
+                  .find((m) => m.role === "assistant" && m.content.length > 20);
+                if (lastAssistant) {
+                  yield buildResult(lastAssistant.content, new Map());
+                  onMessageComplete?.();
+                  return;
+                }
+              }
+            } catch {
+              // keep polling
+            }
+          }
           return;
         }
       }
@@ -77,6 +117,7 @@ export function createOctosAdapter(
         { toolCallId: string; toolName: string; status: string }
       >();
       let buffer = "";
+      const fileLinks: string[] = [];
 
       try {
         while (true) {
@@ -103,13 +144,13 @@ export function createOctosAdapter(
             switch (event.type) {
               case "token":
                 text += event.text;
-                yield buildResult(text, toolCalls);
+                yield buildResult(stripThink(text), toolCalls);
                 break;
 
               case "replace":
                 // Full-text replacement (streamed edits from gateway)
                 text = event.text;
-                yield buildResult(text, toolCalls);
+                yield buildResult(stripThink(text), toolCalls);
                 break;
 
               case "tool_start":
@@ -158,14 +199,40 @@ export function createOctosAdapter(
                 );
                 break;
 
+              case "file": {
+                // File produced by pipeline — collect for appending after done
+                const fileEvent = event as { path?: string; filename?: string; caption?: string };
+                if (fileEvent.path && fileEvent.filename) {
+                  const fileUrl = `${API_BASE}/api/files/${encodeURIComponent(fileEvent.path)}`;
+                  const caption = fileEvent.caption ? ` — ${fileEvent.caption}` : "";
+                  fileLinks.push(`\n\n📄 [${fileEvent.filename}](${fileUrl})${caption}`);
+                }
+                break;
+              }
+
               case "done":
                 // The done event carries the authoritative final content.
-                // Always use it when non-empty — it replaces any streamed tool
-                // progress markers that may linger from the streaming phase.
                 if (event.content) {
-                  text = event.content;
-                  yield buildResult(text, toolCalls);
+                  text = stripThink(event.content);
                 }
+                // Append any file download links collected during streaming
+                if (fileLinks.length > 0) {
+                  text += fileLinks.join("");
+                }
+                // Dispatch message metadata (model, tokens, duration)
+                if (event.model || event.tokens_in || event.tokens_out) {
+                  window.dispatchEvent(
+                    new CustomEvent("crew:message_meta", {
+                      detail: {
+                        model: event.model || "",
+                        tokens_in: event.tokens_in || 0,
+                        tokens_out: event.tokens_out || 0,
+                        duration_s: event.duration_s || 0,
+                      },
+                    }),
+                  );
+                }
+                yield buildResult(text, toolCalls);
                 break;
 
               case "error":
@@ -199,6 +266,45 @@ export function createOctosAdapter(
       }
 
       console.log("[adapter] stream ended, final text:", text.slice(0, 100));
+
+      // If stream ended without content (connection dropped during long pipeline),
+      // poll the session messages API to recover the response.
+      if (!text || text.length < 10) {
+        console.log("[adapter] stream ended with no content, polling session for response...");
+        for (let poll = 0; poll < 180; poll++) {
+          await new Promise((r) => setTimeout(r, 5000));
+          try {
+            const pollResp = await fetch(
+              `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/messages?limit=3`,
+              { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+            );
+            if (pollResp.ok) {
+              const pollMsgs = (await pollResp.json()) as {
+                role: string;
+                content: string;
+              }[];
+              // Find the latest assistant message
+              const lastAssistant = [...pollMsgs]
+                .reverse()
+                .find((m) => m.role === "assistant" && m.content.length > 20);
+              if (lastAssistant) {
+                console.log(
+                  "[adapter] recovered response via polling:",
+                  lastAssistant.content.slice(0, 100),
+                );
+                text = lastAssistant.content;
+                if (fileLinks.length > 0) {
+                  text += fileLinks.join("");
+                }
+                yield buildResult(text, toolCalls);
+                break;
+              }
+            }
+          } catch {
+            // polling failed, keep trying
+          }
+        }
+      }
 
       // Clear thinking state
       window.dispatchEvent(

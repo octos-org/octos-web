@@ -6,13 +6,15 @@ import {
   useComposerRuntime,
   useThread,
   useComposer,
+  useMessage,
 } from "@assistant-ui/react";
 import { SendHorizontal, Square, Paperclip, X, FileIcon, Mic, Video, Camera, StopCircle } from "lucide-react";
-import { useCallback, useState, useRef, useEffect } from "react";
+import { useCallback, useState, useRef, useEffect, useMemo } from "react";
 import { useSession } from "@/runtime/session-context";
 import { uploadFiles } from "@/api/chat";
 import { pendingMediaRef } from "@/runtime/runtime-provider";
 import { RichMarkdown } from "./markdown-renderer";
+import { MessageMeta } from "./message-meta";
 
 const MemoizedRichMarkdown = ({ className }: { className?: string }) => (
   <RichMarkdown className={className} />
@@ -53,10 +55,20 @@ export function Thread() {
 }
 
 function UserMessage() {
+  const message = useMessage();
+  const time = useMemo(() => {
+    const d = message.createdAt ? new Date(message.createdAt) : new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }, [message.createdAt]);
+
   return (
     <MessagePrimitive.Root className="flex justify-end px-4 py-2">
-      <div data-testid="user-message" className="max-w-[80%] rounded-2xl rounded-br-sm bg-user-bubble px-4 py-2 text-sm text-text">
-        <MessagePrimitive.Content />
+      <div className="flex flex-col items-end">
+        <div data-testid="user-message" className="max-w-[80%] rounded-2xl rounded-br-sm bg-user-bubble px-4 py-2 text-sm text-text">
+          <MessagePrimitive.Content />
+        </div>
+        <div className="mt-1 text-[10px] text-muted/60 select-none">{time}</div>
       </div>
     </MessagePrimitive.Root>
   );
@@ -72,6 +84,7 @@ function AssistantMessage() {
     <MessagePrimitive.Root className="flex px-4 py-2">
       <div data-testid="assistant-message" className="max-w-[80%] rounded-2xl rounded-bl-sm bg-surface-light px-4 py-3 text-sm text-text transition-all duration-300 ease-out">
         <MessagePrimitive.Content components={assistantContentComponents} />
+        <MessageMeta />
       </div>
     </MessagePrimitive.Root>
   );

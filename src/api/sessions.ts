@@ -7,7 +7,7 @@ export async function listSessions(): Promise<SessionInfo[]> {
 
 export async function getMessages(
   sessionId: string,
-  limit = 100,
+  limit = 500,
   offset = 0,
 ): Promise<MessageInfo[]> {
   return request(
@@ -16,9 +16,16 @@ export async function getMessages(
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
-  await request(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+  const { getToken } = await import("./client");
+  const { API_BASE } = await import("@/lib/constants");
+  const token = getToken();
+  const resp = await fetch(`${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}`, {
     method: "DELETE",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
+  if (!resp.ok) {
+    throw new Error(`Delete failed: HTTP ${resp.status}`);
+  }
 }
 
 export async function getStatus() {

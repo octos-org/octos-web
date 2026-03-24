@@ -1,13 +1,15 @@
 import type { ReactNode } from "react";
 import { useAuth } from "@/auth/auth-context";
 import { useOctosStatus } from "@/hooks/use-octos-status";
+import { useTheme } from "@/hooks/use-theme";
 import { CostBar } from "@/components/cost-bar";
 import { SessionList } from "@/components/session-list";
-import { LogOut, MessageSquare } from "lucide-react";
+import { LogOut, MessageSquare, Sun, Moon } from "lucide-react";
 
 export function ChatLayout({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth();
   const status = useOctosStatus();
+  const { theme, toggleTheme } = useTheme();
 
   return (
     <div className="flex h-screen bg-surface-dark">
@@ -16,7 +18,14 @@ export function ChatLayout({ children }: { children: ReactNode }) {
         {/* Header */}
         <div className="flex items-center gap-2 border-b border-border px-4 py-3">
           <MessageSquare size={20} className="text-accent" />
-          <span className="font-semibold text-white">octos</span>
+          <span className="font-semibold text-text-strong">octos</span>
+          <button
+            onClick={toggleTheme}
+            className="ml-auto rounded-lg p-1.5 text-muted hover:bg-surface-light hover:text-accent transition"
+            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          >
+            {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
         </div>
 
         {/* Session list */}
@@ -31,7 +40,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
           )}
           {user && (
             <div className="flex items-center justify-between">
-              <span className="truncate text-sm text-zinc-300">
+              <span className="truncate text-sm text-text">
                 {user.email}
               </span>
               <button
@@ -46,9 +55,9 @@ export function ChatLayout({ children }: { children: ReactNode }) {
       </aside>
 
       {/* Main */}
-      <main className="flex flex-1 flex-col">
+      <main className="flex flex-1 min-w-0 flex-col min-h-0">
         <CostBar model={status?.model} provider={status?.provider} />
-        <div className="flex-1 overflow-hidden">{children}</div>
+        <div className="flex-1 min-h-0 overflow-hidden">{children}</div>
       </main>
     </div>
   );

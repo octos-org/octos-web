@@ -1,5 +1,7 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
+/* ── Dark theme (default) ───────────────────────────── */
 @theme {
   --color-surface: #0f172a;
   --color-surface-light: #1e293b;
@@ -8,12 +10,29 @@
   --color-accent-dim: #0ea5e9;
   --color-border: #334155;
   --color-muted: #94a3b8;
+  --color-text: #e2e8f0;
+  --color-text-strong: #f1f5f9;
+  --color-user-bubble: rgba(56, 189, 248, 0.15);
+}
+
+/* ── Light theme overrides ──────────────────────────── */
+[data-theme="light"] {
+  --color-surface: #f8fafc;
+  --color-surface-light: #ffffff;
+  --color-surface-dark: #e2e8f0;
+  --color-accent: #0284c7;
+  --color-accent-dim: #0369a1;
+  --color-border: #cbd5e1;
+  --color-muted: #64748b;
+  --color-text: #1e293b;
+  --color-text-strong: #0f172a;
+  --color-user-bubble: rgba(2, 132, 199, 0.1);
 }
 
 body {
   margin: 0;
   background: var(--color-surface-dark);
-  color: #e2e8f0;
+  color: var(--color-text);
   font-family:
     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
@@ -25,7 +44,7 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #475569;
+  background: var(--color-border);
   border-radius: 3px;
 }
 
@@ -43,4 +62,61 @@ body {
 
 [data-message-role="assistant"] .prose > *:last-child {
   animation: fadeSlideIn 0.2s ease-out;
+}
+
+/* Prose overrides for chat bubbles */
+.prose {
+  line-height: 1.6;
+}
+.prose pre {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  font-size: 0.8rem;
+}
+.prose code:not(pre code) {
+  background: var(--color-border);
+  padding: 0.15em 0.35em;
+  border-radius: 0.25rem;
+  font-size: 0.85em;
+}
+.prose a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.prose a:hover {
+  color: var(--color-accent-dim);
+}
+.prose blockquote {
+  border-left-color: var(--color-accent);
+  color: var(--color-muted);
+}
+.prose table {
+  font-size: 0.85em;
+}
+.prose th {
+  color: var(--color-text-strong);
+}
+.prose hr {
+  border-color: var(--color-border);
+}
+.prose h1, .prose h2, .prose h3 {
+  color: var(--color-text-strong);
+}
+.prose ul, .prose ol {
+  padding-left: 1.25em;
+}
+.prose li::marker {
+  color: var(--color-muted);
+}
+
+/* Light mode prose adjustments */
+[data-theme="light"] .prose-invert {
+  --tw-prose-body: var(--color-text);
+  --tw-prose-headings: var(--color-text-strong);
+  --tw-prose-links: var(--color-accent);
+  --tw-prose-code: var(--color-text);
+  --tw-prose-pre-bg: var(--color-surface);
+  color: var(--color-text);
 }

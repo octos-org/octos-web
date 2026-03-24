@@ -31,6 +31,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
       return;
     }
+    // If user already set (token login), skip server validation
+    if (user) {
+      setLoading(false);
+      return;
+    }
     authApi
       .me()
       .then((resp) => {
@@ -57,7 +62,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loginWithToken = useCallback((t: string) => {
     setToken(t, true);
     setTokenState(t);
-    // Will validate on next useEffect cycle
+    setUser({ email: "admin", role: "admin" } as AuthUser);
   }, []);
 
   const logout = useCallback(async () => {

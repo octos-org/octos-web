@@ -3,6 +3,7 @@
 export interface ChatRequest {
   message: string;
   session_id?: string;
+  media?: string[];
 }
 
 export interface ChatResponse {
@@ -57,6 +58,7 @@ export type SseEvent =
   | { type: "replace"; text: string }
   | { type: "tool_start"; tool: string }
   | { type: "tool_end"; tool: string; success: boolean }
+  | { type: "tool_progress"; tool: string; message: string }
   | { type: "stream_end" }
   | {
       type: "cost_update";
@@ -66,11 +68,14 @@ export type SseEvent =
     }
   | { type: "thinking"; iteration: number }
   | { type: "response"; iteration: number }
+  | { type: "file"; path: string; filename: string; caption: string }
   | {
       type: "done";
       content: string;
-      input_tokens: number;
-      output_tokens: number;
+      model?: string;
+      tokens_in?: number;
+      tokens_out?: number;
+      duration_s?: number;
     }
   | { type: "error"; message: string }
   | { type: "other" };

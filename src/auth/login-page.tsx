@@ -77,7 +77,7 @@ export function LoginPage() {
         </div>
 
         {error && (
-          <div className="mb-4 rounded-lg bg-red-900/30 p-3 text-sm text-red-400">
+          <div data-testid="login-error" className="mb-4 rounded-lg bg-red-900/30 p-3 text-sm text-red-400">
             {error}
           </div>
         )}
@@ -136,6 +136,7 @@ export function LoginPage() {
         ) : (
           <div className="space-y-4">
             <input
+              data-testid="token-input"
               type="password"
               placeholder="Admin auth token"
               value={adminToken}
@@ -144,6 +145,7 @@ export function LoginPage() {
               className="w-full rounded-lg border border-border bg-surface-light px-4 py-3 text-white placeholder-muted outline-none focus:border-accent"
             />
             <button
+              data-testid="login-button"
               onClick={handleTokenLogin}
               disabled={!adminToken.trim()}
               className="w-full rounded-lg bg-accent py-3 font-medium text-surface-dark transition hover:bg-accent-dim disabled:opacity-50"

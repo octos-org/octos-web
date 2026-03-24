@@ -18,7 +18,7 @@ export function ThinkingIndicator() {
   if (!state) return null;
 
   return (
-    <div className="flex items-center gap-2 px-4 py-2 text-sm text-muted">
+    <div data-testid="thinking-indicator" className="flex items-center gap-2 px-4 py-2 text-sm text-muted">
       <span className="flex gap-0.5">
         <span className="animate-bounce" style={{ animationDelay: "0ms" }}>
           .
