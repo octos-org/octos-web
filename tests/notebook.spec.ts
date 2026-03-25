@@ -48,7 +48,7 @@ test.describe("MoFa Notebook", () => {
     await page.waitForURL("**/notebooks/*", { timeout: 5_000 });
 
     // Should see the notebook title and tabs
-    await expect(page.locator("text=Test Notebook")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Test Notebook" }).first()).toBeVisible();
     await expect(page.getByRole("main").getByRole("button", { name: "Sources", exact: true })).toBeVisible();
     await expect(page.getByRole("main").getByRole("button", { name: "Chat", exact: true })).toBeVisible();
     await expect(page.getByRole("main").getByRole("button", { name: "Notes", exact: true })).toBeVisible();
@@ -77,13 +77,13 @@ test.describe("MoFa Notebook", () => {
     // Click Studio tab
     await page.getByRole("main").getByRole("button", { name: "Studio", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Studio" })).toBeVisible();
-    await expect(page.locator("text=Slides")).toBeVisible();
-    await expect(page.locator("text=Quiz")).toBeVisible();
-    await expect(page.locator("text=Flashcards")).toBeVisible();
-    await expect(page.locator("text=Mind Map")).toBeVisible();
+    await expect(page.locator("text=Generate PPT courseware")).toBeVisible();
+    await expect(page.locator("text=Generate test questions")).toBeVisible();
+    await expect(page.locator("text=Generate study cards")).toBeVisible();
+    await expect(page.locator("text=Visualize key concepts")).toBeVisible();
 
     // Click Chat tab (in the main area header)
-    await page.getByRole("main").getByRole("button", { name: "Chat" }).click();
+    await page.getByRole("main").getByRole("button", { name: "Chat", exact: true }).click();
     await expect(page.locator("text=Chat with your sources")).toBeVisible();
   });
 
@@ -119,8 +119,8 @@ test.describe("MoFa Notebook", () => {
     }
 
     // Both should appear
-    await expect(page.locator("text=Physics 101")).toBeVisible();
-    await expect(page.locator("text=Chemistry Lab")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Physics 101" }).first()).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Chemistry Lab" }).first()).toBeVisible();
   });
 
   test("switch between Notebooks and Chat mode", async ({ page }) => {

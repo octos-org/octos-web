@@ -5,7 +5,7 @@
 import { useState } from "react";
 import { Loader2, Wand2, Search, Download, Plus, RotateCcw } from "lucide-react";
 import { NotebookMarkdown } from "./notebook-markdown";
-import { addSource } from "../api/sources";
+import { addSourceText, addSourceUrl } from "../api/sources";
 
 type Mode = "fast" | "deep";
 
@@ -109,7 +109,7 @@ function FastResearch({ notebookId, chatApi }: Props) {
   };
 
   const importAsSource = async (idx: number, result: SearchResult) => {
-    await addSource(notebookId, { type: "url", filename: result.title || result.url });
+    await addSourceUrl(notebookId, result.url);
     setImported((prev) => new Set(prev).add(idx));
   };
 
@@ -197,7 +197,7 @@ function DeepResearch({ notebookId, chatApi }: Props) {
 
   const importAsSource = async () => {
     if (!report) return;
-    await addSource(notebookId, { type: "text", filename: `Research: ${topic}`, content: report });
+    await addSourceText(notebookId, { text: report, filename: `Research: ${topic}` });
     setImported(true);
   };
 
