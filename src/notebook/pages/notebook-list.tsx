@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, BookOpen, Trash2, Search, FileText, Clock } from "lucide-react";
+import { Plus, BookOpen, Trash2, Search, FileText, Clock, Layout } from "lucide-react";
 import { listNotebooks, createNotebook, deleteNotebook } from "../api/notebooks";
 import type { Notebook } from "../api/types";
 
@@ -104,6 +104,12 @@ export function NotebookListPage() {
         </div>
       )}
 
+      {/* Templates (Issue #41) */}
+      <TemplateSection onUseTemplate={async (title) => {
+        const nb = await createNotebook(title);
+        navigate(`/notebooks/${nb.id}`);
+      }} />
+
       {/* Notebook grid */}
       <div className="flex-1 overflow-y-auto px-6 pb-6">
         {filtered.length === 0 ? (
@@ -169,6 +175,55 @@ export function NotebookListPage() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ─── Templates (Issue #41) ──────────────────────────────────
+
+const TEMPLATES = [
+  { title: "Physics 101 Template", description: "Introductory physics course notes with mechanics, thermodynamics, and optics sections.", sourceCount: 12 },
+  { title: "Literature Review Template", description: "Structured template for academic literature reviews with summary, analysis, and synthesis.", sourceCount: 8 },
+  { title: "Lab Report Template", description: "Standard lab report format with hypothesis, methodology, results, and conclusion.", sourceCount: 5 },
+  { title: "History Timeline Template", description: "Chronological study template with key events, figures, and thematic connections.", sourceCount: 15 },
+];
+
+function TemplateSection({ onUseTemplate }: { onUseTemplate: (title: string) => void }) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="px-6 pb-4">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="mb-2 flex items-center gap-2 text-sm font-medium text-muted hover:text-text transition"
+      >
+        <Layout size={14} />
+        Templates
+        <span className="text-xs">({TEMPLATES.length})</span>
+      </button>
+      {expanded && (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {TEMPLATES.map((t) => (
+            <div key={t.title} className="rounded-xl border border-border bg-surface p-4 transition hover:border-accent/50">
+              <div className="mb-2 flex h-12 items-center justify-center rounded-lg bg-accent/10">
+                <Layout size={20} className="text-accent/50" />
+              </div>
+              <h4 className="mb-1 text-sm font-medium text-text-strong">{t.title}</h4>
+              <p className="mb-2 text-xs text-muted line-clamp-2">{t.description}</p>
+              <div className="mb-3 text-xs text-muted">
+                <FileText size={12} className="mr-1 inline" />
+                {t.sourceCount} sources
+              </div>
+              <button
+                onClick={() => onUseTemplate(t.title)}
+                className="w-full rounded-lg border border-accent/30 px-3 py-1.5 text-sm text-accent hover:bg-accent/10 transition"
+              >
+                Use Template
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
