@@ -68,7 +68,7 @@ test.describe("MoFa Notebook", () => {
     // Click Sources tab
     await page.locator("button", { hasText: "Sources" }).click();
     await expect(page.locator("text=No sources yet")).toBeVisible();
-    await expect(page.locator("text=Add Source")).toBeVisible();
+    await expect(page.locator("text=Upload File")).toBeVisible();
 
     // Click Notes tab
     await page.locator("button", { hasText: "Notes" }).click();
