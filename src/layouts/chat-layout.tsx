@@ -1,15 +1,20 @@
 import type { ReactNode } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/auth/auth-context";
 import { useOctosStatus } from "@/hooks/use-octos-status";
 import { useTheme } from "@/hooks/use-theme";
 import { CostBar } from "@/components/cost-bar";
 import { SessionList } from "@/components/session-list";
-import { LogOut, MessageSquare, Sun, Moon } from "lucide-react";
+import { LogOut, MessageSquare, BookOpen, Sun, Moon } from "lucide-react";
 
 export function ChatLayout({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth();
   const status = useOctosStatus();
   const { theme, toggleTheme } = useTheme();
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  const isNotebookRoute = location.pathname.startsWith("/notebooks");
 
   return (
     <div className="flex h-screen bg-surface-dark">
@@ -17,8 +22,8 @@ export function ChatLayout({ children }: { children: ReactNode }) {
       <aside className="flex w-64 flex-col border-r border-border bg-surface">
         {/* Header */}
         <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-          <MessageSquare size={20} className="text-accent" />
-          <span className="font-semibold text-text-strong">octos</span>
+          <BookOpen size={20} className="text-accent" />
+          <span className="font-semibold text-text-strong">MoFa</span>
           <button
             onClick={toggleTheme}
             className="ml-auto rounded-lg p-1.5 text-muted hover:bg-surface-light hover:text-accent transition"
@@ -28,8 +33,35 @@ export function ChatLayout({ children }: { children: ReactNode }) {
           </button>
         </div>
 
-        {/* Session list */}
-        <SessionList />
+        {/* Nav tabs */}
+        <div className="flex border-b border-border">
+          <button
+            onClick={() => navigate("/notebooks")}
+            className={`flex flex-1 items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition ${
+              isNotebookRoute
+                ? "border-b-2 border-accent text-accent"
+                : "text-muted hover:text-text"
+            }`}
+          >
+            <BookOpen size={14} />
+            Notebooks
+          </button>
+          <button
+            onClick={() => navigate("/")}
+            className={`flex flex-1 items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition ${
+              !isNotebookRoute
+                ? "border-b-2 border-accent text-accent"
+                : "text-muted hover:text-text"
+            }`}
+          >
+            <MessageSquare size={14} />
+            Chat
+          </button>
+        </div>
+
+        {/* Session list (only in chat mode) */}
+        {!isNotebookRoute && <SessionList />}
+        {isNotebookRoute && <div className="flex-1" />}
 
         {/* Footer */}
         <div className="border-t border-border p-3">
@@ -56,7 +88,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
 
       {/* Main */}
       <main className="flex flex-1 min-w-0 flex-col min-h-0">
-        <CostBar model={status?.model} provider={status?.provider} />
+        {!isNotebookRoute && <CostBar model={status?.model} provider={status?.provider} />}
         <div className="flex-1 min-h-0 overflow-hidden">{children}</div>
       </main>
     </div>
