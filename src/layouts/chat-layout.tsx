@@ -27,7 +27,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
           <button
             onClick={toggleTheme}
             className="ml-auto rounded-lg p-1.5 text-muted hover:bg-surface-light hover:text-accent transition"
-            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            title={theme === "dark" ? "切换亮色" : "切换暗色"}
           >
             {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
           </button>
@@ -44,7 +44,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
             }`}
           >
             <BookOpen size={14} />
-            Notebooks
+            笔记本
           </button>
           <button
             onClick={() => navigate("/")}
@@ -55,7 +55,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
             }`}
           >
             <MessageSquare size={14} />
-            Chat
+            对话
           </button>
         </div>
 

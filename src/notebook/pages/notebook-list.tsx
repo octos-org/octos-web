@@ -45,15 +45,15 @@ export function NotebookListPage() {
       {/* Header */}
       <div className="flex items-center justify-between border-b border-border px-6 py-4">
         <div>
-          <h1 className="text-xl font-semibold text-text-strong">MoFa Notebook</h1>
-          <p className="text-sm text-muted">Upload sources, chat with AI, generate courseware</p>
+          <h1 className="text-xl font-semibold text-text-strong">MoFa 笔记本</h1>
+          <p className="text-sm text-muted">上传资料，与 AI 对话，一键生成课件</p>
         </div>
         <button
           onClick={() => setCreating(true)}
           className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent/90 transition"
         >
           <Plus size={16} />
-          New Notebook
+          新建笔记本
         </button>
       </div>
 
@@ -63,7 +63,7 @@ export function NotebookListPage() {
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
           <input
             type="text"
-            placeholder="Search notebooks..."
+            placeholder="搜索笔记本..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full rounded-lg border border-border bg-surface py-2 pl-10 pr-4 text-sm text-text placeholder:text-muted focus:border-accent focus:outline-none"
@@ -77,7 +77,7 @@ export function NotebookListPage() {
           <input
             autoFocus
             type="text"
-            placeholder="Notebook title..."
+            placeholder="笔记本标题..."
             value={newTitle}
             onChange={(e) => setNewTitle(e.target.value)}
             onKeyDown={(e) => {
@@ -91,14 +91,14 @@ export function NotebookListPage() {
               onClick={() => setCreating(false)}
               className="rounded px-3 py-1 text-sm text-muted hover:text-text"
             >
-              Cancel
+              取消
             </button>
             <button
               onClick={handleCreate}
               disabled={!newTitle.trim()}
               className="rounded bg-accent px-3 py-1 text-sm text-white hover:bg-accent/90 disabled:opacity-50"
             >
-              Create
+              创建
             </button>
           </div>
         </div>
@@ -117,13 +117,13 @@ export function NotebookListPage() {
             <BookOpen size={48} className="mb-4 opacity-30" />
             <p className="text-lg">
               {notebooks.length === 0
-                ? "No notebooks yet"
-                : "No matching notebooks"}
+                ? "暂无笔记本"
+                : "未找到匹配的笔记本"}
             </p>
             <p className="text-sm">
               {notebooks.length === 0
-                ? "Create your first notebook to get started"
-                : "Try a different search term"}
+                ? "创建你的第一个笔记本"
+                : "试试其他搜索词"}
             </p>
           </div>
         ) : (
@@ -155,7 +155,7 @@ export function NotebookListPage() {
                 <div className="flex items-center gap-3 text-xs text-muted">
                   <span className="flex items-center gap-1">
                     <FileText size={12} />
-                    {nb.source_count} sources
+                    {nb.source_count} 个来源
                   </span>
                   <span className="flex items-center gap-1">
                     <Clock size={12} />
@@ -182,10 +182,10 @@ export function NotebookListPage() {
 // ─── Templates (Issue #41) ──────────────────────────────────
 
 const TEMPLATES = [
-  { title: "Physics 101 Template", description: "Introductory physics course notes with mechanics, thermodynamics, and optics sections.", sourceCount: 12 },
-  { title: "Literature Review Template", description: "Structured template for academic literature reviews with summary, analysis, and synthesis.", sourceCount: 8 },
-  { title: "Lab Report Template", description: "Standard lab report format with hypothesis, methodology, results, and conclusion.", sourceCount: 5 },
-  { title: "History Timeline Template", description: "Chronological study template with key events, figures, and thematic connections.", sourceCount: 15 },
+  { title: "物理入门模板", description: "涵盖力学、热力学和光学的物理入门课程笔记模板。", sourceCount: 12 },
+  { title: "文献综述模板", description: "包含摘要、分析和综合部分的学术文献综述结构化模板。", sourceCount: 8 },
+  { title: "实验报告模板", description: "包含假设、方法、结果和结论的标准实验报告格式。", sourceCount: 5 },
+  { title: "历史时间线模板", description: "按时间线组织的学习模板，包含关键事件、人物和主题联系。", sourceCount: 15 },
 ];
 
 function TemplateSection({ onUseTemplate }: { onUseTemplate: (title: string) => void }) {
@@ -198,7 +198,7 @@ function TemplateSection({ onUseTemplate }: { onUseTemplate: (title: string) => 
         className="mb-2 flex items-center gap-2 text-sm font-medium text-muted hover:text-text transition"
       >
         <Layout size={14} />
-        Templates
+        模板
         <span className="text-xs">({TEMPLATES.length})</span>
       </button>
       {expanded && (
@@ -212,13 +212,13 @@ function TemplateSection({ onUseTemplate }: { onUseTemplate: (title: string) => 
               <p className="mb-2 text-xs text-muted line-clamp-2">{t.description}</p>
               <div className="mb-3 text-xs text-muted">
                 <FileText size={12} className="mr-1 inline" />
-                {t.sourceCount} sources
+                {t.sourceCount} 个来源
               </div>
               <button
                 onClick={() => onUseTemplate(t.title)}
                 className="w-full rounded-lg border border-accent/30 px-3 py-1.5 text-sm text-accent hover:bg-accent/10 transition"
               >
-                Use Template
+                使用模板
               </button>
             </div>
           ))}

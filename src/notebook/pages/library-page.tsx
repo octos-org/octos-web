@@ -65,8 +65,8 @@ export function LibraryPage() {
       {/* Header */}
       <div className="flex items-center justify-between border-b border-border px-6 py-4">
         <div>
-          <h1 className="text-xl font-semibold text-text-strong">Library</h1>
-          <p className="text-sm text-muted">Browse books, track usage, and create notebooks</p>
+          <h1 className="text-xl font-semibold text-text-strong">图书馆</h1>
+          <p className="text-sm text-muted">浏览书籍、追踪使用、创建笔记本</p>
         </div>
         <div className="flex gap-1">
           <button
@@ -76,7 +76,7 @@ export function LibraryPage() {
             }`}
           >
             <BookOpen size={16} />
-            Bookshelf
+            书架
           </button>
           <button
             onClick={() => setTab("stats")}
@@ -85,7 +85,7 @@ export function LibraryPage() {
             }`}
           >
             <BarChart3 size={16} />
-            Stats
+            统计
           </button>
         </div>
       </div>
@@ -127,13 +127,13 @@ function BookshelfView() {
       {showFilters && (
         <div className="w-56 shrink-0 border-r border-border p-4 overflow-y-auto">
           <div className="mb-4 flex items-center justify-between">
-            <h3 className="text-sm font-medium text-text-strong">Filters</h3>
+            <h3 className="text-sm font-medium text-text-strong">筛选</h3>
             <button onClick={() => setShowFilters(false)} className="text-muted hover:text-text"><X size={14} /></button>
           </div>
 
           {/* Subject */}
           <div className="mb-4">
-            <label className="mb-2 block text-xs font-medium text-muted">Subject</label>
+            <label className="mb-2 block text-xs font-medium text-muted">学科</label>
             <div className="space-y-1">
               {SUBJECTS.map((s) => (
                 <button
@@ -151,7 +151,7 @@ function BookshelfView() {
 
           {/* Grade Level */}
           <div>
-            <label className="mb-2 block text-xs font-medium text-muted">Grade Level</label>
+            <label className="mb-2 block text-xs font-medium text-muted">年级</label>
             <div className="space-y-1">
               {GRADE_LEVELS.map((g) => (
                 <button
@@ -182,7 +182,7 @@ function BookshelfView() {
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
             <input
               type="text"
-              placeholder="Search by title, author, or ISBN..."
+              placeholder="按标题、作者或 ISBN 搜索..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="w-full rounded-lg border border-border bg-surface py-2 pl-10 pr-4 text-sm text-text placeholder:text-muted focus:border-accent focus:outline-none"
@@ -213,8 +213,8 @@ function BookshelfView() {
           {filtered.length === 0 ? (
             <div className="flex h-64 flex-col items-center justify-center text-muted">
               <BookOpen size={48} className="mb-4 opacity-30" />
-              <p className="text-lg">No books found</p>
-              <p className="text-sm">Try adjusting your filters or search</p>
+              <p className="text-lg">未找到书籍</p>
+              <p className="text-sm">尝试调整筛选条件</p>
             </div>
           ) : (
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
@@ -235,7 +235,7 @@ function BookshelfView() {
                   <p className="mb-1 text-xs text-muted">{book.classification}</p>
                   <div className="flex items-center justify-between text-xs text-muted">
                     <span>{book.subject}</span>
-                    <span>{book.noteCount} notes</span>
+                    <span>{book.noteCount} 条笔记</span>
                   </div>
                 </div>
               ))}
@@ -260,7 +260,7 @@ function StatsView() {
 
   return (
     <div className="overflow-y-auto p-6">
-      <h2 className="mb-6 text-lg font-semibold text-text-strong">Usage Statistics</h2>
+      <h2 className="mb-6 text-lg font-semibold text-text-strong">使用统计</h2>
 
       {/* Summary cards */}
       <div className="mb-8 grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -280,7 +280,7 @@ function StatsView() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         {/* Activity this week */}
         <div className="rounded-xl border border-border bg-surface p-4">
-          <h3 className="mb-4 text-sm font-semibold text-text-strong">Activity This Week</h3>
+          <h3 className="mb-4 text-sm font-semibold text-text-strong">本周活跃度</h3>
           <div className="flex h-40 items-end gap-2">
             {WEEKLY_ACTIVITY.map((d) => (
               <div key={d.day} className="flex flex-1 flex-col items-center gap-1">
@@ -297,7 +297,7 @@ function StatsView() {
 
         {/* Popular books */}
         <div className="rounded-xl border border-border bg-surface p-4">
-          <h3 className="mb-4 text-sm font-semibold text-text-strong">Popular Books</h3>
+          <h3 className="mb-4 text-sm font-semibold text-text-strong">热门书籍</h3>
           <div className="space-y-3">
             {popularBooks.map((book, i) => (
               <div key={book.id} className="flex items-center gap-3">
@@ -308,7 +308,7 @@ function StatsView() {
                   <p className="truncate text-sm text-text-strong">{book.title}</p>
                   <p className="text-xs text-muted">{book.author}</p>
                 </div>
-                <span className="text-xs text-muted">{book.noteCount} notes</span>
+                <span className="text-xs text-muted">{book.noteCount} 条笔记</span>
               </div>
             ))}
           </div>

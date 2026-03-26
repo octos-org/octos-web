@@ -63,7 +63,7 @@ export function ResearchUI({ notebookId, chatApi }: Props) {
             mode === "fast" ? "border-accent bg-accent/15 text-accent" : "border-border text-text hover:border-accent/50"
           }`}
         >
-          Fast Search
+          快速搜索
         </button>
         <button
           onClick={() => setMode("deep")}
@@ -71,7 +71,7 @@ export function ResearchUI({ notebookId, chatApi }: Props) {
             mode === "deep" ? "border-accent bg-accent/15 text-accent" : "border-border text-text hover:border-accent/50"
           }`}
         >
-          Deep Research
+          深度研究
         </button>
       </div>
 
@@ -120,7 +120,7 @@ function FastResearch({ notebookId, chatApi }: Props) {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") search(); }}
-          placeholder="Search for..."
+          placeholder="搜索..."
           className="flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:border-accent focus:outline-none"
         />
         <button onClick={search} disabled={!query.trim() || loading} className="rounded-lg bg-accent px-3 py-2 text-white disabled:opacity-50">
@@ -149,7 +149,7 @@ function FastResearch({ notebookId, chatApi }: Props) {
                       : "border-border text-text hover:border-accent/50"
                   }`}
                 >
-                  {imported.has(i) ? "Imported" : <><Plus size={12} /> Import</>}
+                  {imported.has(i) ? "已导入" : <><Plus size={12} /> 导入</>}
                 </button>
               </div>
             </div>
@@ -202,10 +202,10 @@ function DeepResearch({ notebookId, chatApi }: Props) {
   };
 
   const phases: { key: DeepPhase; label: string }[] = [
-    { key: "planning", label: "Planning" },
-    { key: "searching", label: "Searching" },
-    { key: "analyzing", label: "Analyzing" },
-    { key: "report", label: "Report" },
+    { key: "planning", label: "规划中" },
+    { key: "searching", label: "搜索中" },
+    { key: "analyzing", label: "分析中" },
+    { key: "report", label: "报告" },
   ];
 
   if (phase === "idle") {
@@ -215,11 +215,11 @@ function DeepResearch({ notebookId, chatApi }: Props) {
           value={topic}
           onChange={(e) => setTopic(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") start(); }}
-          placeholder="Enter research topic..."
+          placeholder="输入研究主题..."
           className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:border-accent focus:outline-none"
         />
         <button onClick={start} disabled={!topic.trim()} className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm text-white disabled:opacity-50">
-          <Wand2 size={14} /> Start Research
+          <Wand2 size={14} /> 开始研究
         </button>
       </div>
     );
@@ -264,7 +264,7 @@ function DeepResearch({ notebookId, chatApi }: Props) {
         <>
           <div className="flex items-center justify-between">
             <button onClick={() => { setPhase("idle"); setReport(null); }} className="flex items-center gap-1 text-xs text-muted hover:text-accent">
-              <RotateCcw size={12} /> New Research
+              <RotateCcw size={12} /> 新研究
             </button>
             {/* #38: import as source */}
             <button
@@ -274,7 +274,7 @@ function DeepResearch({ notebookId, chatApi }: Props) {
                 imported ? "border-green-500/30 text-green-400" : "border-border text-text hover:border-accent/50"
               }`}
             >
-              {imported ? "Imported" : <><Download size={14} /> Import as Source</>}
+              {imported ? "已导入" : <><Download size={14} /> 导入为来源</>}
             </button>
           </div>
           <div className="rounded-lg border border-border bg-surface p-4">

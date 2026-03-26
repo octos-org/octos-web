@@ -63,7 +63,7 @@ export function InfographicUI({ notebookId, chatApi }: Props) {
     return (
       <div className="p-4 space-y-5">
         <div>
-          <label className="mb-2 block text-xs font-medium text-muted">Style</label>
+          <label className="mb-2 block text-xs font-medium text-muted">风格</label>
           <div className="grid grid-cols-2 gap-2">
             {INFOGRAPHIC_STYLES.map((s) => (
               <button
@@ -79,7 +79,7 @@ export function InfographicUI({ notebookId, chatApi }: Props) {
           </div>
         </div>
         <button onClick={generate} className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm text-white hover:bg-accent/90">
-          <Wand2 size={14} /> Generate Infographic
+          <Wand2 size={14} /> 生成信息图
         </button>
       </div>
     );
@@ -100,7 +100,7 @@ export function InfographicUI({ notebookId, chatApi }: Props) {
     <div className="p-4 space-y-4">
       <div className="flex justify-between">
         <button onClick={() => { setRawResult(null); setSections([]); }} className="flex items-center gap-1 text-xs text-muted hover:text-accent">
-          <RotateCcw size={12} /> New
+          <RotateCcw size={12} /> 新建
         </button>
       </div>
 

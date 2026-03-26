@@ -154,7 +154,7 @@ function ShareDialog({ notebookId, onClose, onToast }: { notebookId: string; onC
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
       <div className="w-full max-w-md rounded-xl border border-border bg-surface-light p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-text-strong">Share Notebook</h2>
+          <h2 className="text-lg font-semibold text-text-strong">分享笔记本</h2>
           <button onClick={onClose} className="rounded p-1 text-muted hover:text-text"><X size={18} /></button>
         </div>
 
@@ -162,7 +162,7 @@ function ShareDialog({ notebookId, onClose, onToast }: { notebookId: string; onC
         <div className="mb-4 flex gap-2">
           <input
             type="email"
-            placeholder="Email address..."
+            placeholder="邮箱地址..."
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleShare()}
@@ -188,7 +188,7 @@ function ShareDialog({ notebookId, onClose, onToast }: { notebookId: string; onC
         {/* Current shares */}
         <div className="mb-4 max-h-48 space-y-2 overflow-y-auto">
           {shares.length === 0 ? (
-            <p className="py-4 text-center text-sm text-muted">No shares yet</p>
+            <p className="py-4 text-center text-sm text-muted">暂无分享</p>
           ) : (
             shares.map((s, i) => (
               <div key={i} className="flex items-center justify-between rounded-lg border border-border bg-surface px-3 py-2">
@@ -196,7 +196,7 @@ function ShareDialog({ notebookId, onClose, onToast }: { notebookId: string; onC
                   <span className="text-sm text-text">{s.email}</span>
                   <span className="ml-2 rounded bg-accent/10 px-1.5 py-0.5 text-xs text-accent">{s.role}</span>
                 </div>
-                <button onClick={() => handleRevoke(i)} className="text-xs text-red-400 hover:text-red-300">Revoke</button>
+                <button onClick={() => handleRevoke(i)} className="text-xs text-red-400 hover:text-red-300">撤销</button>
               </div>
             ))
           )}
@@ -208,7 +208,7 @@ function ShareDialog({ notebookId, onClose, onToast }: { notebookId: string; onC
           className="flex w-full items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-muted hover:border-accent/50 hover:text-text transition"
         >
           <Copy size={14} />
-          Copy shareable link
+          复制分享链接
         </button>
       </div>
     </div>
@@ -247,13 +247,13 @@ function ScheduleDialog({ notebookId, onClose, onToast }: { notebookId: string; 
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
       <div className="w-full max-w-md rounded-xl border border-border bg-surface-light p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-text-strong">Schedule Push</h2>
+          <h2 className="text-lg font-semibold text-text-strong">定时推送</h2>
           <button onClick={onClose} className="rounded p-1 text-muted hover:text-text"><X size={18} /></button>
         </div>
 
         {/* Frequency */}
         <div className="mb-3">
-          <label className="mb-1 block text-xs font-medium text-muted">Frequency</label>
+          <label className="mb-1 block text-xs font-medium text-muted">频率</label>
           <div className="flex gap-2">
             {(["daily", "weekly"] as const).map((f) => (
               <button
@@ -271,7 +271,7 @@ function ScheduleDialog({ notebookId, onClose, onToast }: { notebookId: string; 
 
         {/* Time */}
         <div className="mb-3">
-          <label className="mb-1 block text-xs font-medium text-muted">Time</label>
+          <label className="mb-1 block text-xs font-medium text-muted">时间</label>
           <input
             type="time"
             value={time}
@@ -282,11 +282,11 @@ function ScheduleDialog({ notebookId, onClose, onToast }: { notebookId: string; 
 
         {/* Content type */}
         <div className="mb-4">
-          <label className="mb-1 block text-xs font-medium text-muted">Content Type</label>
+          <label className="mb-1 block text-xs font-medium text-muted">内容类型</label>
           <div className="flex gap-2">
             {([
-              { key: "flashcard_review" as const, label: "Flashcard Review" },
-              { key: "daily_summary" as const, label: "Daily Summary" },
+              { key: "flashcard_review" as const, label: "闪卡复习" },
+              { key: "daily_summary" as const, label: "每日摘要" },
             ]).map((ct) => (
               <button
                 key={ct.key}
@@ -305,20 +305,20 @@ function ScheduleDialog({ notebookId, onClose, onToast }: { notebookId: string; 
           onClick={handleSave}
           className="mb-4 w-full rounded-lg bg-accent px-4 py-2 text-sm text-white hover:bg-accent/90"
         >
-          Save Schedule
+          保存计划
         </button>
 
         {/* Active schedules */}
         <div className="max-h-40 space-y-2 overflow-y-auto">
           {schedules.length === 0 ? (
-            <p className="py-2 text-center text-sm text-muted">No active schedules</p>
+            <p className="py-2 text-center text-sm text-muted">暂无计划</p>
           ) : (
             schedules.map((s) => (
               <div key={s.id} className="flex items-center justify-between rounded-lg border border-border bg-surface px-3 py-2">
                 <div className="text-sm text-text">
-                  <span className="capitalize">{s.frequency}</span> at {s.time} — {s.contentType === "flashcard_review" ? "Flashcard Review" : "Daily Summary"}
+                  <span className="capitalize">{s.frequency}</span> at {s.time} — {s.contentType === "flashcard_review" ? "闪卡复习" : "每日摘要"}
                 </div>
-                <button onClick={() => handleDelete(s.id)} className="text-xs text-red-400 hover:text-red-300">Delete</button>
+                <button onClick={() => handleDelete(s.id)} className="text-xs text-red-400 hover:text-red-300">删除</button>
               </div>
             ))
           )}
@@ -350,10 +350,10 @@ export function NotebookDetailPage() {
   if (!notebook) return null;
 
   const tabs: { key: Tab; label: string; icon: React.ReactNode }[] = [
-    { key: "sources", label: "Sources", icon: <FileText size={16} /> },
-    { key: "chat", label: "Chat", icon: <MessageSquare size={16} /> },
-    { key: "notes", label: "Notes", icon: <StickyNote size={16} /> },
-    { key: "studio", label: "Studio", icon: <Wand2 size={16} /> },
+    { key: "sources", label: "来源", icon: <FileText size={16} /> },
+    { key: "chat", label: "对话", icon: <MessageSquare size={16} /> },
+    { key: "notes", label: "笔记", icon: <StickyNote size={16} /> },
+    { key: "studio", label: "工坊", icon: <Wand2 size={16} /> },
   ];
 
   const handleCitationClick = (sourceIndex: number) => {
@@ -406,7 +406,7 @@ export function NotebookDetailPage() {
             className="flex items-center gap-1.5 rounded-lg bg-accent/10 px-3 py-1.5 text-sm text-accent hover:bg-accent/20 transition"
           >
             <Share2 size={14} />
-            Share
+            分享
           </button>
         </div>
       </div>
@@ -552,15 +552,15 @@ function SourcesPanel({
       <div className="mb-4 flex gap-2">
         <button onClick={() => { setAdding("file"); setTimeout(() => fileRef.current?.click(), 100); }}
           className="flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text hover:border-accent/50 transition">
-          <Upload size={14} /> Upload File
+          <Upload size={14} /> 上传文件
         </button>
         <button onClick={() => setAdding("url")}
           className="flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text hover:border-accent/50 transition">
-          <Link size={14} /> Add URL
+          <Link size={14} /> 添加链接
         </button>
         <button onClick={() => setAdding("text")}
           className="flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text hover:border-accent/50 transition">
-          <Type size={14} /> Paste Text
+          <Type size={14} /> 粘贴文本
         </button>
         <input ref={fileRef} type="file" multiple accept=".pdf,.docx,.pptx,.txt,.md,.png,.jpg,.jpeg" className="hidden" onChange={handleFileUpload} />
       </div>
@@ -571,7 +571,7 @@ function SourcesPanel({
           <input autoFocus value={urlInput} onChange={(e) => setUrlInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") handleUrlAdd(); if (e.key === "Escape") setAdding(null); }}
             placeholder="https://..." className="flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:border-accent focus:outline-none" />
-          <button onClick={handleUrlAdd} className="rounded-lg bg-accent px-3 py-2 text-sm text-white">Add</button>
+          <button onClick={handleUrlAdd} className="rounded-lg bg-accent px-3 py-2 text-sm text-white">添加</button>
           <button onClick={() => setAdding(null)} className="rounded-lg px-2 text-muted hover:text-text"><X size={16} /></button>
         </div>
       )}
@@ -580,12 +580,12 @@ function SourcesPanel({
       {adding === "text" && (
         <div className="mb-4 space-y-2">
           <input autoFocus value={textTitle} onChange={(e) => setTextTitle(e.target.value)}
-            placeholder="Title (optional)" className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:border-accent focus:outline-none" />
+            placeholder="标题（可选）" className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:border-accent focus:outline-none" />
           <textarea value={textInput} onChange={(e) => setTextInput(e.target.value)} rows={4}
-            placeholder="Paste text content..." className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:border-accent focus:outline-none resize-none" />
+            placeholder="粘贴文本内容..." className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:border-accent focus:outline-none resize-none" />
           <div className="flex gap-2 justify-end">
-            <button onClick={() => setAdding(null)} className="text-sm text-muted hover:text-text">Cancel</button>
-            <button onClick={handleTextAdd} className="rounded-lg bg-accent px-3 py-1.5 text-sm text-white">Add</button>
+            <button onClick={() => setAdding(null)} className="text-sm text-muted hover:text-text">取消</button>
+            <button onClick={handleTextAdd} className="rounded-lg bg-accent px-3 py-1.5 text-sm text-white">添加</button>
           </div>
         </div>
       )}
@@ -594,8 +594,8 @@ function SourcesPanel({
       {sources.length > 0 && (
         <div className="mb-2 flex items-center gap-3 text-xs text-muted">
           <span>{selectedSources.size}/{sources.length} selected</span>
-          <button onClick={selectAll} className="text-accent hover:underline">Select All</button>
-          <button onClick={deselectAll} className="text-accent hover:underline">Deselect All</button>
+          <button onClick={selectAll} className="text-accent hover:underline">全选</button>
+          <button onClick={deselectAll} className="text-accent hover:underline">取消全选</button>
         </div>
       )}
 
@@ -604,8 +604,8 @@ function SourcesPanel({
         {sources.length === 0 ? (
           <div className="flex h-48 flex-col items-center justify-center text-muted">
             <Upload size={36} className="mb-3 opacity-30" />
-            <p>No sources yet</p>
-            <p className="text-xs">Upload PDFs, paste URLs, or add text</p>
+            <p>暂无来源</p>
+            <p className="text-xs">上传 PDF、粘贴链接或添加文本</p>
           </div>
         ) : (
           sources.map((s, i) => (
@@ -642,11 +642,11 @@ function SourcesPanel({
 // ─── Chat Panel (Issues #15, #16, #17, #19) ─────────────────
 
 const SUGGESTED_QUESTIONS = [
-  "Summarize the key points from the sources",
-  "What are the main topics discussed?",
-  "Create a study guide based on the sources",
-  "What are the most important takeaways?",
-  "Compare and contrast the main ideas",
+  "总结资料中的要点",
+  "主要讨论了哪些话题？",
+  "根据资料生成学习指南",
+  "最重要的收获是什么？",
+  "比较和对比主要观点",
 ];
 
 function ChatPanel({
@@ -695,7 +695,7 @@ function ChatPanel({
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-          placeholder="Ask about your sources..."
+          placeholder="问问你的资料..."
           className="flex-1 rounded-xl border border-border bg-surface-light px-4 py-2.5 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
         />
         <button onClick={() => handleSend()} disabled={!input.trim() || loading}
@@ -714,8 +714,8 @@ function ChatPanel({
           <div className="mb-3 flex h-16 w-16 items-center justify-center rounded-2xl bg-accent/10">
             <MessageSquare size={28} className="text-accent" />
           </div>
-          <p className="text-lg font-medium text-text-strong">Chat with your sources</p>
-          <p className="mb-6 text-sm">Ask questions about the documents in this notebook</p>
+          <p className="text-lg font-medium text-text-strong">与你的资料对话</p>
+          <p className="mb-6 text-sm">针对笔记本中的文档提问</p>
           <div className="flex flex-wrap justify-center gap-2 max-w-xl">
             {SUGGESTED_QUESTIONS.map((q) => (
               <button
@@ -757,7 +757,7 @@ function ChatPanel({
                     title="Save to Notes"
                   >
                     <BookmarkPlus size={13} />
-                    <span>Save</span>
+                    <span>保存</span>
                   </button>
                 </div>
               )}
@@ -769,7 +769,7 @@ function ChatPanel({
             <div className="rounded-2xl rounded-bl-md border border-border/50 bg-surface-light px-4 py-3 text-sm text-muted shadow-sm">
               <div className="flex items-center gap-2">
                 <Loader2 size={14} className="animate-spin" />
-                Thinking...
+                思考中...
               </div>
             </div>
           </div>
@@ -906,8 +906,8 @@ function NotesPanel({ notebookId }: { notebookId: string }) {
             </button>
           </div>
           <div className="flex gap-2">
-            <button onClick={() => setEditingId(null)} className="text-sm text-muted hover:text-text">Cancel</button>
-            <button onClick={() => handleUpdate(editingId)} className="rounded-lg bg-accent px-3 py-1 text-sm text-white">Save</button>
+            <button onClick={() => setEditingId(null)} className="text-sm text-muted hover:text-text">取消</button>
+            <button onClick={() => handleUpdate(editingId)} className="rounded-lg bg-accent px-3 py-1 text-sm text-white">保存</button>
           </div>
         </div>
         <div className="flex flex-1 min-h-0 gap-3">
@@ -916,7 +916,7 @@ function NotesPanel({ notebookId }: { notebookId: string }) {
               value={editContent}
               onChange={(e) => setEditContent(e.target.value)}
               className="flex-1 rounded-lg border border-border bg-surface p-3 text-sm text-text font-mono focus:border-accent focus:outline-none resize-none"
-              placeholder="Write markdown..."
+              placeholder="编写 Markdown..."
             />
           )}
           {(editMode === "preview" || editMode === "split") && (
@@ -932,7 +932,7 @@ function NotesPanel({ notebookId }: { notebookId: string }) {
   return (
     <div className="flex h-full flex-col p-4">
       <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-sm font-medium text-text-strong">{notes.length} Notes</h2>
+        <h2 className="text-sm font-medium text-text-strong">{notes.length} 条笔记</h2>
         <div className="flex items-center gap-2">
           {/* Issue #22: Export All Notes */}
           {notes.length > 0 && (
@@ -940,7 +940,7 @@ function NotesPanel({ notebookId }: { notebookId: string }) {
               onClick={exportAllNotes}
               className="flex items-center gap-1 rounded-lg px-3 py-1.5 text-sm text-muted hover:text-text transition"
             >
-              <Download size={14} /> Export All
+              <Download size={14} /> 导出全部
             </button>
           )}
           {/* Issue #21: multi-select toggle */}
@@ -950,11 +950,11 @@ function NotesPanel({ notebookId }: { notebookId: string }) {
               multiSelect ? "bg-accent/15 text-accent" : "text-muted hover:text-text"
             }`}
           >
-            <CheckSquare size={14} /> Select
+            <CheckSquare size={14} /> 多选
           </button>
           <button onClick={() => setCreating(true)}
             className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-sm text-white hover:bg-accent/90 transition">
-            <Plus size={14} /> New Note
+            <Plus size={14} /> 新建笔记
           </button>
         </div>
       </div>
@@ -968,7 +968,7 @@ function NotesPanel({ notebookId }: { notebookId: string }) {
             className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm text-white hover:bg-accent/90 disabled:opacity-50 transition"
           >
             {synthesizing ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
-            AI Summarize ({selectedNoteIds.size} notes)
+            AI 总结 ({selectedNoteIds.size} 条笔记)
           </button>
         </div>
       )}
@@ -976,10 +976,10 @@ function NotesPanel({ notebookId }: { notebookId: string }) {
       {creating && (
         <div className="mb-4 rounded-lg border border-accent/30 bg-surface-light p-3">
           <textarea autoFocus rows={3} value={newContent} onChange={(e) => setNewContent(e.target.value)}
-            placeholder="Write a note..." className="w-full rounded border border-border bg-surface px-3 py-2 text-sm text-text focus:border-accent focus:outline-none resize-none" />
+            placeholder="写一条笔记..." className="w-full rounded border border-border bg-surface px-3 py-2 text-sm text-text focus:border-accent focus:outline-none resize-none" />
           <div className="mt-2 flex gap-2 justify-end">
-            <button onClick={() => setCreating(false)} className="text-sm text-muted">Cancel</button>
-            <button onClick={handleCreate} className="rounded bg-accent px-3 py-1 text-sm text-white">Save</button>
+            <button onClick={() => setCreating(false)} className="text-sm text-muted">取消</button>
+            <button onClick={handleCreate} className="rounded bg-accent px-3 py-1 text-sm text-white">保存</button>
           </div>
         </div>
       )}
@@ -988,8 +988,8 @@ function NotesPanel({ notebookId }: { notebookId: string }) {
         {notes.length === 0 && !creating ? (
           <div className="flex h-48 flex-col items-center justify-center text-muted">
             <StickyNote size={36} className="mb-3 opacity-30" />
-            <p>No notes yet</p>
-            <p className="text-xs">Create notes or save chat replies</p>
+            <p>暂无笔记</p>
+            <p className="text-xs">创建笔记或保存对话回复</p>
           </div>
         ) : (
           notes.map((n) => (
@@ -1062,15 +1062,15 @@ function StudioPanel({ notebookId }: { notebookId: string }) {
   const [active, setActive] = useState<StudioOutputType | null>(null);
 
   const outputs: { key: StudioOutputType; label: string; emoji: string; desc: string }[] = [
-    { key: "slides", label: "Slides", emoji: "\uD83D\uDCCA", desc: "Generate PPT courseware" },
-    { key: "quiz", label: "Quiz", emoji: "\u2753", desc: "Generate test questions" },
-    { key: "flashcards", label: "Flashcards", emoji: "\uD83C\uDCCF", desc: "Generate study cards" },
-    { key: "mindmap", label: "Mind Map", emoji: "\uD83E\uDDE0", desc: "Visualize key concepts" },
-    { key: "audio", label: "Audio", emoji: "\uD83C\uDF99\uFE0F", desc: "Generate podcast overview" },
-    { key: "infographic", label: "Infographic", emoji: "\uD83D\uDCC8", desc: "Generate visual summary" },
-    { key: "comic", label: "Comic", emoji: "\uD83D\uDCAC", desc: "Explain with comics" },
-    { key: "report", label: "Report", emoji: "\uD83D\uDCC4", desc: "Generate Word/Excel report" },
-    { key: "research", label: "Research", emoji: "\uD83D\uDD2C", desc: "Deep research from web" },
+    { key: "slides", label: "幻灯片", emoji: "\uD83D\uDCCA", desc: "生成 PPT 课件" },
+    { key: "quiz", label: "测验", emoji: "\u2753", desc: "生成测试题" },
+    { key: "flashcards", label: "闪卡", emoji: "\uD83C\uDCCF", desc: "生成学习卡片" },
+    { key: "mindmap", label: "思维导图", emoji: "\uD83E\uDDE0", desc: "可视化核心概念" },
+    { key: "audio", label: "音频", emoji: "\uD83C\uDF99\uFE0F", desc: "生成播客概览" },
+    { key: "infographic", label: "信息图", emoji: "\uD83D\uDCC8", desc: "生成视觉摘要" },
+    { key: "comic", label: "漫画", emoji: "\uD83D\uDCAC", desc: "用漫画讲解" },
+    { key: "report", label: "报告", emoji: "\uD83D\uDCC4", desc: "生成 Word/Excel 报告" },
+    { key: "research", label: "研究", emoji: "\uD83D\uDD2C", desc: "深度网络研究" },
   ];
 
   if (active) {
@@ -1113,8 +1113,8 @@ function StudioPanel({ notebookId }: { notebookId: string }) {
 
   return (
     <div className="flex-1 overflow-y-auto p-6">
-      <h2 className="mb-4 text-lg font-semibold text-text-strong">Studio</h2>
-      <p className="mb-6 text-sm text-muted">Generate courseware and study materials from your sources</p>
+      <h2 className="mb-4 text-lg font-semibold text-text-strong">工坊</h2>
+      <p className="mb-6 text-sm text-muted">基于你的资料生成课件和学习材料</p>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
         {outputs.map((o) => (
           <button
@@ -1175,12 +1175,12 @@ function ShareToChatSection({ notebookId }: { notebookId: string }) {
     <div className="mt-8 rounded-xl border border-border bg-surface p-4">
       <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-text-strong">
         <MessageCircle size={16} />
-        Share to Chat
+        推送到聊天
       </h3>
 
       {/* Channel selector */}
       <div className="mb-3">
-        <label className="mb-1 block text-xs text-muted">Channel</label>
+        <label className="mb-1 block text-xs text-muted">渠道</label>
         <div className="flex gap-2">
           {IM_CHANNELS.map((ch) => (
             <button
@@ -1201,7 +1201,7 @@ function ShareToChatSection({ notebookId }: { notebookId: string }) {
 
       {/* Content selector */}
       <div className="mb-3">
-        <label className="mb-1 block text-xs text-muted">Content to share</label>
+        <label className="mb-1 block text-xs text-muted">分享内容</label>
         <div className="flex gap-2">
           {SHARE_CONTENT_TYPES.map((ct) => (
             <button
@@ -1227,7 +1227,7 @@ function ShareToChatSection({ notebookId }: { notebookId: string }) {
         className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm text-white hover:bg-accent/90 disabled:opacity-50 transition"
       >
         <Send size={14} />
-        Send
+        发送
       </button>
 
       {sent && (

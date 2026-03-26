@@ -121,7 +121,7 @@ export function PodcastUI({ notebookId, chatApi }: Props) {
     return (
       <div className="p-4 space-y-5">
         <div>
-          <label className="mb-2 block text-xs font-medium text-muted">Format</label>
+          <label className="mb-2 block text-xs font-medium text-muted">格式</label>
           <div className="flex gap-2">
             {PODCAST_FORMATS.map((f) => (
               <button
@@ -137,7 +137,7 @@ export function PodcastUI({ notebookId, chatApi }: Props) {
           </div>
         </div>
         <button onClick={generate} className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm text-white hover:bg-accent/90">
-          <Wand2 size={14} /> Generate Podcast Script
+          <Wand2 size={14} /> 生成播客脚本
         </button>
       </div>
     );
@@ -159,7 +159,7 @@ export function PodcastUI({ notebookId, chatApi }: Props) {
     <div className="p-4 space-y-4">
       <div className="flex justify-between">
         <button onClick={() => { setRawResult(null); setSections([]); setAllLines([]); }} className="flex items-center gap-1 text-xs text-muted hover:text-accent">
-          <RotateCcw size={12} /> New
+          <RotateCcw size={12} /> 新建
         </button>
       </div>
 
@@ -189,7 +189,7 @@ export function PodcastUI({ notebookId, chatApi }: Props) {
 
         {/* Speed selector */}
         <div className="flex items-center gap-2">
-          <span className="text-xs text-muted">Speed:</span>
+          <span className="text-xs text-muted">速度：</span>
           {[0.5, 1, 1.5, 2].map((s) => (
             <button
               key={s}
@@ -226,7 +226,7 @@ export function PodcastUI({ notebookId, chatApi }: Props) {
           </div>
         )}
 
-        <p className="text-[10px] text-muted italic">Mock player — TTS not connected yet</p>
+        <p className="text-[10px] text-muted italic">模拟播放器 — TTS 尚未接入</p>
       </div>
 
       {/* Script display (#32) */}

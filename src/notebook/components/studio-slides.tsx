@@ -98,7 +98,7 @@ export function SlidesUI({ notebookId, chatApi }: Props) {
     return (
       <div className="p-4 space-y-5">
         <div>
-          <label className="mb-2 block text-xs font-medium text-muted">Style</label>
+          <label className="mb-2 block text-xs font-medium text-muted">风格</label>
           <div className="grid grid-cols-3 gap-2">
             {STYLES.map((s) => (
               <button
@@ -114,7 +114,7 @@ export function SlidesUI({ notebookId, chatApi }: Props) {
           </div>
         </div>
         <div>
-          <label className="mb-2 block text-xs font-medium text-muted">Page Count</label>
+          <label className="mb-2 block text-xs font-medium text-muted">页数</label>
           <div className="flex gap-2">
             {PAGE_COUNTS.map((n) => (
               <button
@@ -133,7 +133,7 @@ export function SlidesUI({ notebookId, chatApi }: Props) {
           onClick={generate}
           className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm text-white hover:bg-accent/90 transition"
         >
-          <Wand2 size={14} /> Generate Slides
+          <Wand2 size={14} /> 生成幻灯片
         </button>
       </div>
     );
@@ -143,7 +143,7 @@ export function SlidesUI({ notebookId, chatApi }: Props) {
     return (
       <div className="flex flex-col items-center justify-center p-12">
         <Loader2 size={24} className="animate-spin text-accent mb-3" />
-        <p className="text-sm text-muted">Generating {pageCount}-page {style} slide deck...</p>
+        <p className="text-sm text-muted">生成中... {pageCount} 页 {style} 风格幻灯片</p>
       </div>
     );
   }
@@ -156,14 +156,14 @@ export function SlidesUI({ notebookId, chatApi }: Props) {
             onClick={() => { setRawResult(null); setSlides([]); }}
             className="flex items-center gap-1 text-xs text-muted hover:text-accent"
           >
-            <RotateCcw size={12} /> New
+            <RotateCcw size={12} /> 新建
           </button>
         </div>
         <button
           onClick={() => alert("PPTX download is a mock — backend TBD")}
           className="flex items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-sm text-text hover:border-accent/50 transition"
         >
-          <Download size={14} /> Download PPTX
+          <Download size={14} /> 下载 PPTX
         </button>
       </div>
 
@@ -188,7 +188,7 @@ export function SlidesUI({ notebookId, chatApi }: Props) {
                   <textarea
                     value={editFeedback}
                     onChange={(e) => setEditFeedback(e.target.value)}
-                    placeholder="Describe how to improve this slide..."
+                    placeholder="描述如何改进这一页..."
                     rows={2}
                     className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:border-accent focus:outline-none resize-none"
                   />
@@ -198,7 +198,7 @@ export function SlidesUI({ notebookId, chatApi }: Props) {
                     className="flex items-center gap-2 rounded-lg bg-accent px-3 py-1.5 text-sm text-white disabled:opacity-50"
                   >
                     {regeneratingIdx === i ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
-                    Regenerate this slide
+                    重新生成此页
                   </button>
                 </div>
               )}
