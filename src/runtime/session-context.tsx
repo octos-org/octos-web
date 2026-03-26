@@ -52,26 +52,19 @@ function sessionTimestamp(s: SessionInfo): number {
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
-  const [currentSessionId, setCurrentSessionId] = useState(() => {
-    const id = generateSessionId();
-    console.log("[session] initial sessionId:", id);
-    return id;
-  });
+  const [currentSessionId, setCurrentSessionId] = useState(generateSessionId);
   const [initialMessages, setInitialMessages] = useState<MessageInfo[]>([]);
 
   const refreshSessions = useCallback(async () => {
-    console.log("[session] refreshSessions called");
     try {
       const list = await listSessions();
-      // Only show web client sessions with messages, sorted newest first
       const webSessions = list
         .filter((s) => s.id.startsWith("web-") && (s.message_count ?? 0) > 0)
         .sort((a, b) => sessionTimestamp(b) - sessionTimestamp(a))
         .slice(0, 20);
-      console.log("[session] refreshSessions got", list.length, "total,", webSessions.length, "shown");
       setSessions(webSessions);
-    } catch (e) {
-      console.warn("[session] refreshSessions failed:", e);
+    } catch {
+      // ignore
     }
   }, []);
 

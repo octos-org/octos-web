@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useMemo, useRef } from "react";
+import { type ReactNode, useCallback, useMemo } from "react";
 import {
   AssistantRuntimeProvider,
   useLocalRuntime,
@@ -30,13 +30,11 @@ function RuntimeInner({
   sessionId: string;
   historyMessages: MessageInfo[];
 }) {
-  console.log("[runtime] RuntimeInner render, sessionId:", sessionId, "historyMessages:", historyMessages.length);
   const { refreshSessions } = useSession();
 
   const getSessionId = useCallback(() => sessionId, [sessionId]);
 
   const adapter = useMemo(() => {
-    console.log("[runtime] creating NEW adapter for session:", sessionId);
     const getPendingMedia = () => {
       const media = [...pendingMediaRef.current];
       pendingMediaRef.current = [];
@@ -53,7 +51,6 @@ function RuntimeInner({
   const runtime = useLocalRuntime(adapter, {
     initialMessages: initialMessages.length > 0 ? initialMessages : undefined,
   });
-  console.log("[runtime] useLocalRuntime returned, adapter identity stable:", true);
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -64,7 +61,6 @@ function RuntimeInner({
 
 function RuntimeWithSession({ children }: { children: ReactNode }) {
   const { currentSessionId, initialMessages } = useSession();
-  console.log("[runtime] RuntimeWithSession render, currentSessionId:", currentSessionId);
 
   // key={currentSessionId} forces a full remount when switching sessions,
   // which resets the thread messages and creates a fresh runtime.

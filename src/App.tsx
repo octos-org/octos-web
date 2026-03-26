@@ -32,11 +32,11 @@ export function App() {
                 <OctosRuntimeProvider>
                   <ChatLayout>
                     <div className="flex h-full flex-col min-h-0">
-                      <ThinkingIndicator />
-                      <ToolProgressIndicator />
                       <div className="flex-1 min-h-0 overflow-hidden">
                         <Thread />
                       </div>
+                      <ThinkingIndicator />
+                      <ToolProgressIndicator />
                     </div>
                   </ChatLayout>
                   {/* Register tool UIs */}

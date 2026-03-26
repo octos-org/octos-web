@@ -13,8 +13,8 @@ export function ToolProgressIndicator() {
     }
     function onThinking(e: Event) {
       const detail = (e as CustomEvent).detail;
-      // Clear progress when thinking stops (stream done)
-      if (!detail.thinking && detail.iteration === 0) {
+      // Clear progress when thinking stops (response received or stream done)
+      if (!detail.thinking) {
         setProgress(null);
       }
     }
@@ -28,11 +28,14 @@ export function ToolProgressIndicator() {
 
   if (!progress) return null;
 
+  // Strip [info]/[debug]/[warn] prefixes from tool progress messages
+  const cleanMessage = progress.message.replace(/^\[(info|debug|warn|error)\]\s*/i, "");
+
   return (
     <div data-testid="tool-progress" className="flex items-center gap-2 px-4 py-1 text-xs text-muted">
       <Loader2 size={12} className="animate-spin text-accent" />
       <span className="text-zinc-400">{progress.tool}:</span>
-      <span>{progress.message}</span>
+      <span>{cleanMessage}</span>
     </div>
   );
 }
