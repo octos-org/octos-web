@@ -50,7 +50,7 @@ export function LoginPage() {
   return (
     <div className="flex h-screen items-center justify-center bg-surface-dark">
       <div className="w-full max-w-sm rounded-xl bg-surface p-8">
-        <h1 className="mb-6 text-2xl font-bold text-white">octos</h1>
+        <h1 className="mb-6 text-2xl font-bold text-white">MoFa</h1>
 
         {/* Mode tabs */}
         <div className="mb-6 flex gap-2">
@@ -62,7 +62,7 @@ export function LoginPage() {
                 : "bg-surface-light text-muted hover:text-white"
             }`}
           >
-            Email OTP
+            邮箱验证
           </button>
           <button
             onClick={() => setMode("token")}
@@ -72,7 +72,7 @@ export function LoginPage() {
                 : "bg-surface-light text-muted hover:text-white"
             }`}
           >
-            Auth Token
+            令牌登录
           </button>
         </div>
 
@@ -87,7 +87,7 @@ export function LoginPage() {
             <div className="space-y-4">
               <input
                 type="email"
-                placeholder="Email address"
+                placeholder="邮箱地址"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleSendCode()}
@@ -98,17 +98,17 @@ export function LoginPage() {
                 disabled={!email || sending}
                 className="w-full rounded-lg bg-accent py-3 font-medium text-surface-dark transition hover:bg-accent-dim disabled:opacity-50"
               >
-                {sending ? "Sending..." : "Send Code"}
+                {sending ? "发送中..." : "发送验证码"}
               </button>
             </div>
           ) : (
             <div className="space-y-4">
               <p className="text-sm text-muted">
-                Code sent to <span className="text-white">{email}</span>
+                验证码已发送到 <span className="text-white">{email}</span>
               </p>
               <input
                 type="text"
-                placeholder="6-digit code"
+                placeholder="6 位验证码"
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleVerify()}
@@ -120,7 +120,7 @@ export function LoginPage() {
                 disabled={code.length < 6 || sending}
                 className="w-full rounded-lg bg-accent py-3 font-medium text-surface-dark transition hover:bg-accent-dim disabled:opacity-50"
               >
-                {sending ? "Verifying..." : "Verify"}
+                {sending ? "验证中..." : "验证"}
               </button>
               <button
                 onClick={() => {
@@ -129,7 +129,7 @@ export function LoginPage() {
                 }}
                 className="w-full text-sm text-muted hover:text-white"
               >
-                Back
+                返回
               </button>
             </div>
           )
@@ -138,7 +138,7 @@ export function LoginPage() {
             <input
               data-testid="token-input"
               type="password"
-              placeholder="Admin auth token"
+              placeholder="管理员令牌"
               value={adminToken}
               onChange={(e) => setAdminToken(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleTokenLogin()}
@@ -150,7 +150,7 @@ export function LoginPage() {
               disabled={!adminToken.trim()}
               className="w-full rounded-lg bg-accent py-3 font-medium text-surface-dark transition hover:bg-accent-dim disabled:opacity-50"
             >
-              Login
+              登录
             </button>
           </div>
         )}

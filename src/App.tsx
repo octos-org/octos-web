@@ -7,6 +7,9 @@ import { ChatLayout } from "./layouts/chat-layout";
 import { Thread } from "./components/thread";
 import { ThinkingIndicator } from "./components/thinking-indicator";
 import { ToolProgressIndicator } from "./components/tool-progress-indicator";
+import { NotebookListPage } from "./notebook/pages/notebook-list";
+import { NotebookDetailPage } from "./notebook/pages/notebook-detail";
+import { LibraryPage } from "./notebook/pages/library-page";
 import {
   ShellToolUI,
   ReadFileToolUI,
@@ -26,6 +29,32 @@ export function App() {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route element={<AuthGuard />}>
+            {/* Notebook routes */}
+            <Route
+              path="/notebooks"
+              element={
+                <ChatLayout>
+                  <NotebookListPage />
+                </ChatLayout>
+              }
+            />
+            <Route
+              path="/library"
+              element={
+                <ChatLayout>
+                  <LibraryPage />
+                </ChatLayout>
+              }
+            />
+            <Route
+              path="/notebooks/:id"
+              element={
+                <ChatLayout>
+                  <NotebookDetailPage />
+                </ChatLayout>
+              }
+            />
+            {/* Chat route (default) */}
             <Route
               path="/*"
               element={

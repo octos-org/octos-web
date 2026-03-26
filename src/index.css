@@ -1,32 +1,32 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
-/* ── Dark theme (default) ───────────────────────────── */
+/* ── Dark theme (default) — warm purple ─────────────── */
 @theme {
-  --color-surface: #0f172a;
-  --color-surface-light: #1e293b;
-  --color-surface-dark: #020617;
-  --color-accent: #38bdf8;
-  --color-accent-dim: #0ea5e9;
-  --color-border: #334155;
-  --color-muted: #94a3b8;
-  --color-text: #e2e8f0;
-  --color-text-strong: #f1f5f9;
-  --color-user-bubble: rgba(56, 189, 248, 0.15);
+  --color-surface: #1a1625;
+  --color-surface-light: #252036;
+  --color-surface-dark: #110e1a;
+  --color-accent: #a78bfa;
+  --color-accent-dim: #8b5cf6;
+  --color-border: #2d2640;
+  --color-muted: #9f95b0;
+  --color-text: #e8e4f0;
+  --color-text-strong: #f5f3ff;
+  --color-user-bubble: rgba(167, 139, 250, 0.15);
 }
 
-/* ── Light theme overrides ──────────────────────────── */
+/* ── Light theme overrides — soft purple ────────────── */
 [data-theme="light"] {
-  --color-surface: #f8fafc;
+  --color-surface: #faf8ff;
   --color-surface-light: #ffffff;
-  --color-surface-dark: #e2e8f0;
-  --color-accent: #0284c7;
-  --color-accent-dim: #0369a1;
-  --color-border: #cbd5e1;
-  --color-muted: #64748b;
-  --color-text: #1e293b;
-  --color-text-strong: #0f172a;
-  --color-user-bubble: rgba(2, 132, 199, 0.1);
+  --color-surface-dark: #ede9fe;
+  --color-accent: #7c3aed;
+  --color-accent-dim: #6d28d9;
+  --color-border: #ddd6fe;
+  --color-muted: #6b6080;
+  --color-text: #1e1533;
+  --color-text-strong: #0f0a1a;
+  --color-user-bubble: rgba(124, 58, 237, 0.08);
 }
 
 body {
