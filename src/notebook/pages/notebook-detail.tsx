@@ -26,20 +26,38 @@ type Tab = "sources" | "chat" | "notes" | "studio";
 
 async function chatApi(notebookId: string, message: string, extra?: Record<string, unknown>): Promise<string> {
   const token = localStorage.getItem("octos_session_token") || localStorage.getItem("octos_auth_token");
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
   // Try notebook-specific RAG chat first, fall back to generic chat
   let resp = await fetch(`/api/notebooks/${notebookId}/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    method: "POST", headers,
     body: JSON.stringify({ message, ...extra }),
   });
   if (!resp.ok) {
-    // Fallback to generic chat if notebook chat API not available
     resp = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      method: "POST", headers,
       body: JSON.stringify({ message, session_id: `notebook-${notebookId}`, ...extra }),
     });
   }
+
+  // Handle both SSE stream and plain JSON responses
+  const ct = resp.headers.get("content-type") || "";
+  if (ct.includes("text/event-stream") || ct.includes("text/plain")) {
+    // Parse SSE: collect all "data: {...}" lines
+    const text = await resp.text();
+    let result = "";
+    for (const line of text.split("\n")) {
+      if (!line.startsWith("data: ")) continue;
+      try {
+        const evt = JSON.parse(line.slice(6));
+        if (evt.type === "text" || evt.type === "token") result += evt.content || evt.text || "";
+        else if (evt.type === "done") result = evt.content || result;
+      } catch { /* skip unparseable lines */ }
+    }
+    return result || "No response";
+  }
+
   const data = await resp.json();
   return data.content || "No response";
 }
