@@ -15,6 +15,8 @@ import { uploadFiles } from "@/api/chat";
 import { pendingMediaRef } from "@/runtime/runtime-provider";
 import { RichMarkdown } from "./markdown-renderer";
 import { MessageMeta } from "./message-meta";
+import { ThinkingIndicator } from "./thinking-indicator";
+import { ToolProgressIndicator } from "./tool-progress-indicator";
 
 const MemoizedRichMarkdown = ({ className }: { className?: string }) => (
   <RichMarkdown className={className} />
@@ -84,6 +86,8 @@ function AssistantMessage() {
     <MessagePrimitive.Root className="flex px-4 py-2">
       <div data-testid="assistant-message" className="max-w-[80%] rounded-2xl rounded-bl-sm bg-surface-light px-4 py-3 text-sm text-text transition-all duration-300 ease-out">
         <MessagePrimitive.Content components={assistantContentComponents} />
+        <ThinkingIndicator />
+        <ToolProgressIndicator />
         <MessageMeta />
       </div>
     </MessagePrimitive.Root>
@@ -365,10 +369,9 @@ function Composer() {
   const handleSend = useCallback(async () => {
     if (sendingRef.current) return; // prevent double-send
     if (isEmpty && pendingFiles.length === 0) return;
-    sendingRef.current = true;
     const input = composerRuntime.getState().text.trim();
 
-    // Handle slash commands client-side
+    // Handle slash commands client-side (before setting sendingRef)
     if (input === "/new") {
       composerRuntime.setText("");
       createSession();
@@ -391,6 +394,8 @@ function Composer() {
       return;
     }
 
+    sendingRef.current = true;
+
     // Upload files first if any
     if (pendingFiles.length > 0) {
       setUploading(true);
@@ -401,6 +406,7 @@ function Composer() {
         setCmdFeedback(`Upload failed: ${e instanceof Error ? e.message : "unknown error"}`);
         setTimeout(() => setCmdFeedback(null), 4000);
         setUploading(false);
+        sendingRef.current = false;
         return;
       }
       // Clean up previews

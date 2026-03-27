@@ -4,19 +4,29 @@ import {
   useState,
   useEffect,
   useCallback,
+  useRef,
   type ReactNode,
 } from "react";
 import { listSessions, getMessages, deleteSession as apiDeleteSession } from "@/api/sessions";
 import type { SessionInfo, MessageInfo } from "@/api/types";
 
+/** Session with a display title derived from the first user message. */
+export interface SessionWithTitle extends SessionInfo {
+  title?: string;
+  /** True if this session was created locally and not yet in the API. */
+  _local?: boolean;
+}
+
 interface SessionContextValue {
-  sessions: SessionInfo[];
+  sessions: SessionWithTitle[];
   currentSessionId: string;
   initialMessages: MessageInfo[];
   switchSession: (id: string) => void;
   createSession: () => void;
   removeSession: (id: string) => Promise<void>;
   refreshSessions: () => Promise<void>;
+  /** Mark the current session as active (has sent at least one message). */
+  markSessionActive: (firstMessage?: string) => void;
 }
 
 const SessionContext = createContext<SessionContextValue | null>(null);
@@ -51,9 +61,10 @@ function sessionTimestamp(s: SessionInfo): number {
 }
 
 export function SessionProvider({ children }: { children: ReactNode }) {
-  const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [sessions, setSessions] = useState<SessionWithTitle[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState(generateSessionId);
   const [initialMessages, setInitialMessages] = useState<MessageInfo[]>([]);
+  const titleCache = useRef<Record<string, string>>({});
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -62,7 +73,35 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         .filter((s) => s.id.startsWith("web-") && (s.message_count ?? 0) > 0)
         .sort((a, b) => sessionTimestamp(b) - sessionTimestamp(a))
         .slice(0, 20);
-      setSessions(webSessions);
+
+      // Fetch titles for sessions we haven't seen
+      const needTitle = webSessions.filter((s) => !titleCache.current[s.id]);
+      await Promise.all(
+        needTitle.slice(0, 10).map(async (s) => {
+          try {
+            const msgs = await getMessages(s.id, 3);
+            const firstUser = msgs.find((m) => m.role === "user");
+            if (firstUser) {
+              titleCache.current[s.id] = firstUser.content.slice(0, 50).trim();
+            }
+          } catch {
+            // ignore
+          }
+        }),
+      );
+
+      setSessions((prev) => {
+        const fromApi = webSessions.map((s) => ({
+          ...s,
+          title: titleCache.current[s.id],
+        }));
+        // Preserve any locally-tracked sessions that aren't in the API yet
+        const apiIds = new Set(fromApi.map((s) => s.id));
+        const localOnly = prev.filter(
+          (s) => s._local && !apiIds.has(s.id),
+        );
+        return [...localOnly, ...fromApi];
+      });
     } catch {
       // ignore
     }
@@ -72,12 +111,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     refreshSessions();
   }, [refreshSessions]);
 
+  const switchRequestRef = useRef(0);
   const switchSession = useCallback(async (id: string) => {
-    // Load history for existing sessions
+    // Guard against race: only the latest switch request wins
+    const requestId = ++switchRequestRef.current;
     try {
       const messages = await getMessages(id);
+      if (switchRequestRef.current !== requestId) return; // stale
       setInitialMessages(messages);
     } catch {
+      if (switchRequestRef.current !== requestId) return;
       setInitialMessages([]);
     }
     setCurrentSessionId(id);
@@ -87,6 +130,21 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setInitialMessages([]);
     setCurrentSessionId(generateSessionId());
   }, []);
+
+  const markSessionActive = useCallback(
+    (firstMessage?: string) => {
+      setSessions((prev) => {
+        if (prev.some((s) => s.id === currentSessionId)) return prev;
+        const title = firstMessage?.slice(0, 50).trim();
+        if (title) titleCache.current[currentSessionId] = title;
+        return [
+          { id: currentSessionId, message_count: 1, title, _local: true },
+          ...prev,
+        ];
+      });
+    },
+    [currentSessionId],
+  );
 
   const removeSession = useCallback(async (id: string) => {
     try {
@@ -111,6 +169,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         createSession,
         removeSession,
         refreshSessions,
+        markSessionActive,
       }}
     >
       {children}

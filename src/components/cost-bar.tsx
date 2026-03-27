@@ -33,7 +33,7 @@ export function CostBar({
   }, []);
 
   const parts: string[] = [];
-  if (model) parts.push(model);
+  if (model && model !== "none") parts.push(model);
   if (cost.inputTokens || cost.outputTokens) {
     parts.push(
       `${cost.inputTokens.toLocaleString()} in / ${cost.outputTokens.toLocaleString()} out`,

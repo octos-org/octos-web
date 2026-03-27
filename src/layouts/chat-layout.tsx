@@ -33,9 +33,9 @@ export function ChatLayout({ children }: { children: ReactNode }) {
 
         {/* Footer */}
         <div className="border-t border-border p-3">
-          {status && (
+          {status && status.model && status.model !== "none" && (
             <div className="mb-2 text-xs text-muted">
-              {status.provider}/{status.model}
+              {status.provider !== "none" ? `${status.provider}/` : ""}{status.model}
             </div>
           )}
           {user && (

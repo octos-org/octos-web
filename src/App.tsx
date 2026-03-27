@@ -5,8 +5,6 @@ import { LoginPage } from "./auth/login-page";
 import { OctosRuntimeProvider } from "./runtime/runtime-provider";
 import { ChatLayout } from "./layouts/chat-layout";
 import { Thread } from "./components/thread";
-import { ThinkingIndicator } from "./components/thinking-indicator";
-import { ToolProgressIndicator } from "./components/tool-progress-indicator";
 import {
   ShellToolUI,
   ReadFileToolUI,
@@ -35,8 +33,6 @@ export function App() {
                       <div className="flex-1 min-h-0 overflow-hidden">
                         <Thread />
                       </div>
-                      <ThinkingIndicator />
-                      <ToolProgressIndicator />
                     </div>
                   </ChatLayout>
                   {/* Register tool UIs */}

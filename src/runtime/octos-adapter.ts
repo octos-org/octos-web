@@ -4,33 +4,25 @@ import type {
 } from "@assistant-ui/react";
 import { getToken } from "@/api/client";
 import { API_BASE } from "@/lib/constants";
-import type { SseEvent } from "@/api/types";
+import * as StreamManager from "./stream-manager";
 
-/** Strip tool progress lines (⚙ `tool`..., ✓ `tool`, ✗ `tool`, 📄 ...) and
- *  status composer lines (Processing / via provider / Ns) from text. */
+/** Strip tool progress lines and status composer lines from text. */
 function stripToolProgress(text: string): string {
   const lines = text.split("\n");
   const cleaned = lines.filter((line) => {
     const t = line.trim();
-    // Tool status markers: ⚙ `tool`..., ✓ `tool`, ✗ `tool`, 📄 `file`
-    if (/^[✓✗⚙📄]\s*`/.test(t)) return false;
-    // Status composer: "Processing" (alone on a line)
+    if (/^[✓✗⚙📄]\s*`/u.test(t)) return false;
     if (t === "Processing") return false;
-    // Status composer: "via provider (model)"
     if (/^via\s+\S+\s+\(/.test(t)) return false;
-    // Status composer: bare duration like "3s", "12s"
     if (/^\d+s$/.test(t)) return false;
     return true;
   });
   return cleaned.join("\n").trim();
 }
 
-/** Strip <think>...</think> blocks from streaming text.
- *  Handles unclosed <think> (still streaming) by hiding from that point. */
+/** Strip <think>...</think> blocks from streaming text. */
 function stripThink(text: string): string {
-  // Remove complete <think>...</think> blocks
   let result = text.replace(/<think>[\s\S]*?<\/think>\s*/g, "");
-  // Hide unclosed <think> (still streaming)
   const openIdx = result.lastIndexOf("<think>");
   if (openIdx !== -1 && result.indexOf("</think>", openIdx) === -1) {
     result = result.slice(0, openIdx);
@@ -56,103 +48,68 @@ export function createOctosAdapter(
   getSessionId: () => string,
   onMessageComplete?: () => void,
   getPendingMedia?: () => string[],
+  onMessageSent?: (firstMessage: string) => void,
 ): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal }) {
-      const token = getToken();
       const sessionId = getSessionId();
       const lastMsg = messages[messages.length - 1];
       const userText = extractText(lastMsg);
 
-      // Streaming POST — each request gets its own isolated event stream
-      const resp = await fetch(`${API_BASE}/api/chat`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({
-          message: userText,
-          session_id: sessionId,
-          stream: true,
-          media: getPendingMedia?.() ?? [],
-        }),
-        signal: abortSignal,
-      });
+      // Mark session as active in the sidebar immediately
+      onMessageSent?.(userText);
 
-      if (!resp.ok) {
-        const errText = await resp.text();
-        throw new Error(errText || `HTTP ${resp.status}`);
-      }
+      // Start the stream via StreamManager (survives React unmount)
+      StreamManager.startStream(
+        sessionId,
+        userText,
+        getPendingMedia?.() ?? [],
+      );
 
-      // Handle queued response — message was accepted but a previous
-      // request's SSE stream is still active. Show acknowledgment.
-      const contentType = resp.headers.get("content-type") || "";
-      if (contentType.includes("application/json")) {
-        const json = await resp.json();
-        if (json.status === "queued") {
-          yield { content: [{ type: "text" as const, text: "⏳ Processing..." }] };
-          // Poll for response — the queued message will be processed after current request completes
-          for (let poll = 0; poll < 180; poll++) {
-            await new Promise((r) => setTimeout(r, 5000));
-            try {
-              const pollResp = await fetch(
-                `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/messages?limit=3`,
-                { headers: token ? { Authorization: `Bearer ${token}` } : {} },
-              );
-              if (pollResp.ok) {
-                const pollMsgs = (await pollResp.json()) as {
-                  role: string;
-                  content: string;
-                }[];
-                // Check if there's a new assistant response after our queued message
-                const lastAssistant = [...pollMsgs]
-                  .reverse()
-                  .find((m) => m.role === "assistant" && m.content.length > 20);
-                if (lastAssistant) {
-                  yield buildResult(lastAssistant.content, new Map());
-                  onMessageComplete?.();
-                  return;
-                }
-              }
-            } catch {
-              // keep polling
-            }
-          }
-          return;
-        }
-      }
-
-      const reader = resp.body!.getReader();
-      const decoder = new TextDecoder();
+      // Subscribe to events and yield results.
+      // If the component unmounts (abortSignal fires), the subscription
+      // stops but the stream continues in background.
       let text = "";
       const toolCalls = new Map<
         string,
         { toolCallId: string; toolName: string; status: string }
       >();
-      let buffer = "";
       const fileLinks: string[] = [];
+      let done = false;
+
+      // Create a queue for events from the subscriber
+      const queue: StreamManager.StreamEvent[] = [];
+      let resolve: (() => void) | null = null;
+
+      const unsub = StreamManager.subscribe(sessionId, (event) => {
+        queue.push(event);
+        if (resolve) {
+          resolve();
+          resolve = null;
+        }
+      });
+
+      if (!unsub) {
+        // No stream found — shouldn't happen
+        return;
+      }
 
       try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
+        while (!done) {
+          // Wait for events or abort
+          if (queue.length === 0) {
+            await new Promise<void>((r) => {
+              resolve = r;
+              // Also resolve on abort so we can exit cleanly
+              abortSignal.addEventListener("abort", () => r(), { once: true });
+            });
+          }
 
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop()!; // keep incomplete line
+          if (abortSignal.aborted) break;
 
-          for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            const data = line.slice(6).trim();
-            if (!data || data === "[DONE]") continue;
-
-            let event: SseEvent;
-            try {
-              event = JSON.parse(data);
-            } catch {
-              continue;
-            }
+          // Process all queued events
+          while (queue.length > 0) {
+            const { raw: event } = queue.shift()!;
 
             switch (event.type) {
               case "token":
@@ -161,7 +118,6 @@ export function createOctosAdapter(
                 break;
 
               case "replace":
-                // Full-text replacement (streamed edits from gateway)
                 text = event.text;
                 yield buildResult(stripToolProgress(stripThink(text)), toolCalls);
                 break;
@@ -185,7 +141,7 @@ export function createOctosAdapter(
               case "tool_progress":
                 window.dispatchEvent(
                   new CustomEvent("crew:tool_progress", {
-                    detail: { tool: event.tool, message: event.message },
+                    detail: { tool: event.tool, message: event.message, sessionId },
                   }),
                 );
                 break;
@@ -193,7 +149,7 @@ export function createOctosAdapter(
               case "thinking":
                 window.dispatchEvent(
                   new CustomEvent("crew:thinking", {
-                    detail: { thinking: true, iteration: event.iteration },
+                    detail: { thinking: true, iteration: event.iteration, sessionId },
                   }),
                 );
                 break;
@@ -201,22 +157,23 @@ export function createOctosAdapter(
               case "response":
                 window.dispatchEvent(
                   new CustomEvent("crew:thinking", {
-                    detail: { thinking: false, iteration: event.iteration },
+                    detail: { thinking: false, iteration: event.iteration, sessionId },
                   }),
                 );
                 break;
 
               case "cost_update":
                 window.dispatchEvent(
-                  new CustomEvent("crew:cost", { detail: event }),
+                  new CustomEvent("crew:cost", { detail: { ...event, sessionId } }),
                 );
                 break;
 
               case "file": {
-                // File produced by pipeline — collect for appending after done
                 const fileEvent = event as { path?: string; filename?: string; caption?: string };
                 if (fileEvent.path && fileEvent.filename) {
-                  const fileUrl = `${API_BASE}/api/files/${encodeURIComponent(fileEvent.path)}`;
+                  const tok = getToken();
+                  const tokenParam = tok ? `?token=${encodeURIComponent(tok)}` : "";
+                  const fileUrl = `${API_BASE}/api/files/${encodeURIComponent(fileEvent.path)}${tokenParam}`;
                   const caption = fileEvent.caption ? ` — ${fileEvent.caption}` : "";
                   fileLinks.push(`\n\n📄 [${fileEvent.filename}](${fileUrl})${caption}`);
                 }
@@ -224,15 +181,12 @@ export function createOctosAdapter(
               }
 
               case "done":
-                // The done event carries the authoritative final content.
                 if (event.content) {
                   text = stripToolProgress(stripThink(event.content));
                 }
-                // Append any file download links collected during streaming
                 if (fileLinks.length > 0) {
                   text += fileLinks.join("");
                 }
-                // Dispatch message metadata (model, tokens, duration)
                 if (event.model || event.tokens_in || event.tokens_out) {
                   window.dispatchEvent(
                     new CustomEvent("crew:message_meta", {
@@ -246,6 +200,7 @@ export function createOctosAdapter(
                   );
                 }
                 yield buildResult(text, toolCalls);
+                done = true;
                 break;
 
               case "error":
@@ -254,13 +209,17 @@ export function createOctosAdapter(
                 );
 
               case "stream_end":
-                // Stream will close naturally via the done event
                 break;
             }
           }
+
+          // Check if stream ended without done event
+          if (!done && !StreamManager.isActive(sessionId) && queue.length === 0) {
+            break;
+          }
         }
       } finally {
-        reader.releaseLock();
+        unsub();
       }
 
       // Strip residual tool progress lines from final text.
@@ -272,10 +231,11 @@ export function createOctosAdapter(
         }
       }
 
-      // If stream ended without content (connection dropped during long pipeline),
-      // poll the session messages API to recover the response.
+      // If stream ended without content, poll for response
       if (!text || text.length < 10) {
+        const token = getToken();
         for (let poll = 0; poll < 180; poll++) {
+          if (abortSignal.aborted) break;
           await new Promise((r) => setTimeout(r, 5000));
           try {
             const pollResp = await fetch(
@@ -287,7 +247,6 @@ export function createOctosAdapter(
                 role: string;
                 content: string;
               }[];
-              // Find the latest assistant message
               const lastAssistant = [...pollMsgs]
                 .reverse()
                 .find((m) => m.role === "assistant" && m.content.length > 20);
@@ -301,7 +260,7 @@ export function createOctosAdapter(
               }
             }
           } catch {
-            // polling failed, keep trying
+            // keep polling
           }
         }
       }
@@ -309,7 +268,7 @@ export function createOctosAdapter(
       // Clear thinking state
       window.dispatchEvent(
         new CustomEvent("crew:thinking", {
-          detail: { thinking: false, iteration: 0 },
+          detail: { thinking: false, iteration: 0, sessionId },
         }),
       );
 

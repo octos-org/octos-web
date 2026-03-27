@@ -1,12 +1,17 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "./auth-context";
 import * as authApi from "@/api/auth";
 
 export function LoginPage() {
   const { login, loginWithToken } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  // Validate redirect target — only allow same-origin paths to prevent open redirect
+  const rawRedirect = searchParams.get("redirect");
+  const redirectTo = rawRedirect?.startsWith("/") && !rawRedirect.startsWith("//") ? rawRedirect : null;
 
+  const isValidEmail = (e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
   const [mode, setMode] = useState<"otp" | "token">("otp");
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
@@ -33,6 +38,10 @@ export function LoginPage() {
     setSending(true);
     try {
       await login(email, code);
+      if (redirectTo) {
+        window.location.href = redirectTo;
+        return;
+      }
       navigate("/", { replace: true });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Verification failed");
@@ -44,13 +53,17 @@ export function LoginPage() {
   function handleTokenLogin() {
     if (!adminToken.trim()) return;
     loginWithToken(adminToken.trim());
+    if (redirectTo) {
+      window.location.href = redirectTo;
+      return;
+    }
     navigate("/", { replace: true });
   }
 
   return (
     <div className="flex h-screen items-center justify-center bg-surface-dark">
       <div className="w-full max-w-sm rounded-xl bg-surface p-8">
-        <h1 className="mb-6 text-2xl font-bold text-white">octos</h1>
+        <h1 className="mb-6 text-2xl font-bold text-text-strong">octos</h1>
 
         {/* Mode tabs */}
         <div className="mb-6 flex gap-2">
@@ -59,7 +72,7 @@ export function LoginPage() {
             className={`flex-1 rounded-lg py-2 text-sm font-medium transition ${
               mode === "otp"
                 ? "bg-accent text-surface-dark"
-                : "bg-surface-light text-muted hover:text-white"
+                : "bg-surface-light text-muted hover:text-text-strong"
             }`}
           >
             Email OTP
@@ -69,7 +82,7 @@ export function LoginPage() {
             className={`flex-1 rounded-lg py-2 text-sm font-medium transition ${
               mode === "token"
                 ? "bg-accent text-surface-dark"
-                : "bg-surface-light text-muted hover:text-white"
+                : "bg-surface-light text-muted hover:text-text-strong"
             }`}
           >
             Auth Token
@@ -90,12 +103,12 @@ export function LoginPage() {
                 placeholder="Email address"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSendCode()}
-                className="w-full rounded-lg border border-border bg-surface-light px-4 py-3 text-white placeholder-muted outline-none focus:border-accent"
+                onKeyDown={(e) => e.key === "Enter" && isValidEmail(email) && handleSendCode()}
+                className="w-full rounded-lg border border-border bg-surface-light px-4 py-3 text-text placeholder-muted outline-none focus:border-accent"
               />
               <button
                 onClick={handleSendCode}
-                disabled={!email || sending}
+                disabled={!isValidEmail(email) || sending}
                 className="w-full rounded-lg bg-accent py-3 font-medium text-surface-dark transition hover:bg-accent-dim disabled:opacity-50"
               >
                 {sending ? "Sending..." : "Send Code"}
@@ -104,7 +117,7 @@ export function LoginPage() {
           ) : (
             <div className="space-y-4">
               <p className="text-sm text-muted">
-                Code sent to <span className="text-white">{email}</span>
+                Code sent to <span className="text-text-strong">{email}</span>
               </p>
               <input
                 type="text"
@@ -113,7 +126,7 @@ export function LoginPage() {
                 onChange={(e) => setCode(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleVerify()}
                 maxLength={6}
-                className="w-full rounded-lg border border-border bg-surface-light px-4 py-3 text-center text-2xl tracking-widest text-white placeholder-muted outline-none focus:border-accent"
+                className="w-full rounded-lg border border-border bg-surface-light px-4 py-3 text-center text-2xl tracking-widest text-text placeholder-muted outline-none focus:border-accent"
               />
               <button
                 onClick={handleVerify}
@@ -127,7 +140,7 @@ export function LoginPage() {
                   setStep("email");
                   setCode("");
                 }}
-                className="w-full text-sm text-muted hover:text-white"
+                className="w-full text-sm text-muted hover:text-text-strong"
               >
                 Back
               </button>
@@ -142,7 +155,7 @@ export function LoginPage() {
               value={adminToken}
               onChange={(e) => setAdminToken(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleTokenLogin()}
-              className="w-full rounded-lg border border-border bg-surface-light px-4 py-3 text-white placeholder-muted outline-none focus:border-accent"
+              className="w-full rounded-lg border border-border bg-surface-light px-4 py-3 text-text placeholder-muted outline-none focus:border-accent"
             />
             <button
               data-testid="login-button"

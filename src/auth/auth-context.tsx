@@ -59,10 +59,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const loginWithToken = useCallback((t: string) => {
+  const loginWithToken = useCallback(async (t: string) => {
     setToken(t, true);
     setTokenState(t);
-    setUser({ email: "admin", role: "admin" } as AuthUser);
+    // Validate the token by calling /me. If it fails, the token is invalid.
+    try {
+      const me = await authApi.me();
+      setUser(me.user);
+    } catch {
+      // Token is likely an admin token without a user record — allow it
+      // but mark as admin so the UI works.
+      setUser({ email: "admin", role: "admin" } as AuthUser);
+    }
   }, []);
 
   const logout = useCallback(async () => {

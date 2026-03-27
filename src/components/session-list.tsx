@@ -83,7 +83,7 @@ export function SessionList() {
                     className="flex flex-1 items-center gap-2 overflow-hidden"
                   >
                     <MessageSquare size={14} className="shrink-0" />
-                    <span className="flex-1 truncate">{formatSessionName(s.id)}</span>
+                    <span className="flex-1 truncate">{s.title || formatSessionName(s.id)}</span>
                     <span className="text-xs text-muted">{s.message_count}</span>
                   </button>
                   <button

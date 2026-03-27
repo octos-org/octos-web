@@ -9,6 +9,11 @@ interface MessageMetaData {
   timestamp: string;
 }
 
+function formatTokens(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+  return n.toString();
+}
+
 function formatDate(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
@@ -24,16 +29,14 @@ export function MessageMeta() {
     return formatDate(d);
   }, [message.createdAt]);
 
-  // Only the last assistant message listens for metadata events
+  // Listen for metadata on the last assistant message.
+  // Once meta is captured, keep it even if this is no longer the last message.
   const isLast =
     thread.messages.length > 0 &&
     thread.messages[thread.messages.length - 1].id === message.id;
 
   useEffect(() => {
-    if (!isLast) {
-      setMeta(null);
-      return;
-    }
+    if (!isLast) return;
 
     function handleMeta(e: Event) {
       const detail = (e as CustomEvent).detail as Omit<MessageMetaData, "timestamp">;
@@ -48,8 +51,8 @@ export function MessageMeta() {
   const parts: string[] = [];
   if (meta) {
     if (meta.model) parts.push(meta.model);
-    if (meta.tokens_in) parts.push(`${meta.tokens_in.toLocaleString()} in`);
-    if (meta.tokens_out) parts.push(`${meta.tokens_out.toLocaleString()} out`);
+    if (meta.tokens_in) parts.push(`${formatTokens(meta.tokens_in)} in`);
+    if (meta.tokens_out) parts.push(`${formatTokens(meta.tokens_out)} out`);
     if (meta.duration_s) parts.push(`${meta.duration_s}s`);
     if (meta.timestamp) parts.push(meta.timestamp);
   }
