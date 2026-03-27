@@ -14,7 +14,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
   return (
     <div className="flex h-screen bg-surface-dark">
       {/* Sidebar */}
-      <aside className="flex w-64 flex-col border-r border-border bg-surface">
+      <aside className="sidebar-scope flex w-64 flex-col border-r border-border bg-sidebar">
         {/* Header */}
         <div className="flex items-center gap-2 border-b border-border px-4 py-3">
           <MessageSquare size={20} className="text-accent" />

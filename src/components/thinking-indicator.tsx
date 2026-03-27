@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
+import { useSession } from "@/runtime/session-context";
 
 export function ThinkingIndicator() {
+  const { currentSessionId } = useSession();
   const [state, setState] = useState<{
     thinking: boolean;
     iteration: number;
@@ -9,11 +11,12 @@ export function ThinkingIndicator() {
   useEffect(() => {
     function handler(e: Event) {
       const detail = (e as CustomEvent).detail;
+      if (detail.sessionId && detail.sessionId !== currentSessionId) return;
       setState(detail.thinking ? detail : null);
     }
     window.addEventListener("crew:thinking", handler);
     return () => window.removeEventListener("crew:thinking", handler);
-  }, []);
+  }, [currentSessionId]);
 
   if (!state) return null;
 

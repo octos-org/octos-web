@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
 import { useThread, useMessage } from "@assistant-ui/react";
+import { useSession } from "@/runtime/session-context";
 
 interface MessageMetaData {
   model: string;
@@ -20,6 +21,7 @@ function formatDate(d: Date): string {
 }
 
 export function MessageMeta() {
+  const { currentSessionId } = useSession();
   const [meta, setMeta] = useState<MessageMetaData | null>(null);
   const thread = useThread();
   const message = useMessage();
@@ -39,14 +41,15 @@ export function MessageMeta() {
     if (!isLast) return;
 
     function handleMeta(e: Event) {
-      const detail = (e as CustomEvent).detail as Omit<MessageMetaData, "timestamp">;
+      const detail = (e as CustomEvent).detail as Omit<MessageMetaData, "timestamp"> & { sessionId?: string };
+      if (detail.sessionId && detail.sessionId !== currentSessionId) return;
       if (detail.model || detail.tokens_in || detail.tokens_out) {
         setMeta({ ...detail, timestamp: formatDate(new Date()) });
       }
     }
     window.addEventListener("crew:message_meta", handleMeta);
     return () => window.removeEventListener("crew:message_meta", handleMeta);
-  }, [isLast]);
+  }, [isLast, currentSessionId]);
 
   const parts: string[] = [];
   if (meta) {

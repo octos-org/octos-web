@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
+import { useSession } from "@/runtime/session-context";
 
 export function ToolProgressIndicator() {
+  const { currentSessionId } = useSession();
   const [progress, setProgress] = useState<{
     tool: string;
     message: string;
@@ -9,10 +11,13 @@ export function ToolProgressIndicator() {
 
   useEffect(() => {
     function onProgress(e: Event) {
-      setProgress((e as CustomEvent).detail);
+      const detail = (e as CustomEvent).detail;
+      if (detail.sessionId && detail.sessionId !== currentSessionId) return;
+      setProgress(detail);
     }
     function onThinking(e: Event) {
       const detail = (e as CustomEvent).detail;
+      if (detail.sessionId && detail.sessionId !== currentSessionId) return;
       // Clear progress when thinking stops (response received or stream done)
       if (!detail.thinking) {
         setProgress(null);
@@ -24,7 +29,7 @@ export function ToolProgressIndicator() {
       window.removeEventListener("crew:tool_progress", onProgress);
       window.removeEventListener("crew:thinking", onThinking);
     };
-  }, []);
+  }, [currentSessionId]);
 
   if (!progress) return null;
 

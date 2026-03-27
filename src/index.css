@@ -1,32 +1,61 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
-/* ── Dark theme (default) ───────────────────────────── */
+/* ── Dark theme (default) ─ Deep ocean palette ─────── */
 @theme {
-  --color-surface: #0f172a;
-  --color-surface-light: #1e293b;
-  --color-surface-dark: #020617;
-  --color-accent: #38bdf8;
-  --color-accent-dim: #0ea5e9;
-  --color-border: #334155;
-  --color-muted: #94a3b8;
-  --color-text: #e2e8f0;
-  --color-text-strong: #f1f5f9;
-  --color-user-bubble: rgba(56, 189, 248, 0.15);
+  --color-surface: #0a2548;
+  --color-surface-light: #0f2d55;
+  --color-surface-dark: #081E3F;
+  --color-accent: #FF5F1F;
+  --color-accent-dim: #E85B26;
+  --color-border: #1a3a6a;
+  --color-muted: #8ba3c4;
+  --color-text: #d0ddef;
+  --color-text-strong: #f0f4f8;
+  --color-user-bubble: rgba(255, 95, 31, 0.12);
+  --color-link: #00B4EF;
+  --color-heading: #00B4EF;
+  --color-heading-accent: #F9D53F;
+  --color-code-inline: #FF8C56;
+  --color-code-block-bg: #061533;
+  --color-code-header-bg: #0a1d40;
+  --color-code-text: #c8d8ec;
+  --color-blockquote-border: #E85B26;
+  --color-sidebar: #061533;
+  --color-highlight: #F9D53F;
 }
 
 /* ── Light theme overrides ──────────────────────────── */
 [data-theme="light"] {
-  --color-surface: #f8fafc;
-  --color-surface-light: #ffffff;
-  --color-surface-dark: #e2e8f0;
-  --color-accent: #0284c7;
-  --color-accent-dim: #0369a1;
-  --color-border: #cbd5e1;
-  --color-muted: #64748b;
-  --color-text: #1e293b;
-  --color-text-strong: #0f172a;
-  --color-user-bubble: rgba(2, 132, 199, 0.1);
+  --color-surface: #FFFFFF;
+  --color-surface-light: #EDF2F7;
+  --color-surface-dark: #F5F9FC;
+  --color-accent: #FF5F1F;
+  --color-accent-dim: #E85B26;
+  --color-border: #B8CCE0;
+  --color-muted: #5A7A9C;
+  --color-text: #1a3050;
+  --color-text-strong: #0a1a30;
+  --color-user-bubble: rgba(255, 95, 31, 0.08);
+  --color-link: #00B4EF;
+  --color-heading: #0090CC;
+  --color-heading-accent: #B8860B;
+  --color-code-inline: #E85B26;
+  --color-code-block-bg: #0D3B7C;
+  --color-code-header-bg: #0f4590;
+  --color-code-text: #d0ddef;
+  --color-blockquote-border: #E85B26;
+  --color-sidebar: #0D3B7C;
+  --color-highlight: #F9D53F;
+}
+
+/* ── Sidebar scoping: always dark bg → always light text ── */
+[data-theme="light"] .sidebar-scope {
+  --color-text: #c8d8ec;
+  --color-text-strong: #f0f4f8;
+  --color-muted: #7b9ac0;
+  --color-surface-light: #0f4590;
+  --color-border: #1a4888;
 }
 
 body {
@@ -69,27 +98,29 @@ body {
   line-height: 1.6;
 }
 .prose pre {
-  background: var(--color-surface);
+  background: var(--color-code-block-bg);
   border: 1px solid var(--color-border);
   border-radius: 0.5rem;
   font-size: 0.8rem;
+  color: var(--color-code-text);
 }
 .prose code:not(pre code) {
-  background: var(--color-border);
+  background: color-mix(in srgb, var(--color-code-inline) 15%, transparent);
+  color: var(--color-code-inline);
   padding: 0.15em 0.35em;
   border-radius: 0.25rem;
   font-size: 0.85em;
 }
 .prose a {
-  color: var(--color-accent);
+  color: var(--color-link);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 .prose a:hover {
-  color: var(--color-accent-dim);
+  color: var(--color-accent);
 }
 .prose blockquote {
-  border-left-color: var(--color-accent);
+  border-left-color: var(--color-blockquote-border);
   color: var(--color-muted);
 }
 .prose table {
@@ -101,8 +132,13 @@ body {
 .prose hr {
   border-color: var(--color-border);
 }
-.prose h1, .prose h2, .prose h3 {
-  color: var(--color-text-strong);
+.prose h1 {
+  color: var(--color-heading-accent);
+  border-bottom: 2px solid var(--color-accent-dim);
+  padding-bottom: 0.25em;
+}
+.prose h2, .prose h3 {
+  color: var(--color-heading);
 }
 .prose ul, .prose ol {
   padding-left: 1.25em;
@@ -115,8 +151,8 @@ body {
 [data-theme="light"] .prose-invert {
   --tw-prose-body: var(--color-text);
   --tw-prose-headings: var(--color-text-strong);
-  --tw-prose-links: var(--color-accent);
-  --tw-prose-code: var(--color-text);
-  --tw-prose-pre-bg: var(--color-surface);
+  --tw-prose-links: var(--color-link);
+  --tw-prose-code: var(--color-code-inline);
+  --tw-prose-pre-bg: var(--color-code-block-bg);
   color: var(--color-text);
 }

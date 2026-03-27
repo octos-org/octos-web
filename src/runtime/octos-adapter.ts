@@ -195,6 +195,7 @@ export function createOctosAdapter(
                         tokens_in: event.tokens_in || 0,
                         tokens_out: event.tokens_out || 0,
                         duration_s: event.duration_s || 0,
+                        sessionId,
                       },
                     }),
                   );

@@ -26,8 +26,8 @@ function MermaidBlock({ content }: { content: string }) {
       .then(({ svg }) => setSvg(svg))
       .catch(() => {});
   }, [content]);
-  if (!svg) return <pre className="my-2 rounded-lg bg-zinc-900 p-3 text-xs whitespace-pre-wrap">{content}</pre>;
-  return <div className="my-2 overflow-x-auto rounded-lg bg-zinc-900 p-3" dangerouslySetInnerHTML={{ __html: svg }} />;
+  if (!svg) return <pre className="my-2 rounded-lg bg-code-block-bg p-3 text-xs text-code-text whitespace-pre-wrap">{content}</pre>;
+  return <div className="my-2 overflow-x-auto rounded-lg bg-code-block-bg p-3" dangerouslySetInnerHTML={{ __html: svg }} />;
 }
 
 function CodeBlock({ children, className }: { children?: ReactNode; className?: string }) {
@@ -41,7 +41,7 @@ function CodeBlock({ children, className }: { children?: ReactNode; className?: 
   return (
     <div className="group relative my-2">
       {lang && (
-        <div className="flex items-center justify-between rounded-t-lg bg-zinc-800 px-3 py-1 text-[10px] text-zinc-400">
+        <div className="flex items-center justify-between rounded-t-lg bg-code-header-bg px-3 py-1 text-[10px] text-code-text/60">
           <span>{lang}</span>
           <button
             onClick={() => {
@@ -49,13 +49,13 @@ function CodeBlock({ children, className }: { children?: ReactNode; className?: 
               setCopied(true);
               setTimeout(() => setCopied(false), 2000);
             }}
-            className="opacity-0 group-hover:opacity-100 transition text-zinc-400 hover:text-white"
+            className="opacity-0 group-hover:opacity-100 transition text-code-text/60 hover:text-white"
           >
             {copied ? "Copied!" : "Copy"}
           </button>
         </div>
       )}
-      <pre className={`overflow-x-auto ${lang ? "rounded-b-lg" : "rounded-lg"} bg-zinc-900 p-3 text-xs leading-relaxed`}>
+      <pre className={`overflow-x-auto ${lang ? "rounded-b-lg" : "rounded-lg"} bg-code-block-bg p-3 text-xs leading-relaxed text-code-text`}>
         <code ref={codeRef} className={className}>{children}</code>
       </pre>
     </div>
@@ -101,13 +101,13 @@ const mdComponents: Record<string, any> = {
     if (/\.(mp4|webm|mov)$/i.test(href))
       return <MediaPlayer src={href} type="video" title={typeof children === "string" ? children : "video"} />;
     if (/\.(pdf|pptx|docx|xlsx|zip|tar|gz)$/i.test(href))
-      return <a href={href} download className="inline-flex items-center gap-1 rounded-md bg-surface-light px-2 py-1 text-xs text-accent hover:bg-accent/20"><Download size={12} />{children}</a>;
-    return <a href={href} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">{children}</a>;
+      return <a href={href} download className="inline-flex items-center gap-1 rounded-md bg-surface-light px-2 py-1 text-xs text-link hover:bg-accent/20 hover:text-accent"><Download size={12} />{children}</a>;
+    return <a href={href} target="_blank" rel="noopener noreferrer" className="text-link hover:text-accent hover:underline">{children}</a>;
   },
   pre: ({ children }: any) => <>{children}</>,
   code: ({ children, className: cn, inline }: any) => {
     if (inline || (!cn && typeof children === "string" && !children.includes("\n"))) {
-      return <code className="rounded bg-surface px-1.5 py-0.5 text-xs text-accent">{children}</code>;
+      return <code className="rounded bg-code-inline/15 px-1.5 py-0.5 text-xs text-code-inline">{children}</code>;
     }
     return <CodeBlock className={cn}>{children}</CodeBlock>;
   },
@@ -120,12 +120,12 @@ const mdComponents: Record<string, any> = {
   ul: ({ children }: any) => <ul className="mb-3 list-disc pl-5 space-y-1">{children}</ul>,
   ol: ({ children }: any) => <ol className="mb-3 list-decimal pl-5 space-y-1">{children}</ol>,
   li: ({ children }: any) => <li className="leading-relaxed">{children}</li>,
-  h1: ({ children }: any) => <h1 className="mb-3 mt-5 text-xl font-bold text-text-strong">{children}</h1>,
-  h2: ({ children }: any) => <h2 className="mb-2 mt-4 text-lg font-bold text-text-strong">{children}</h2>,
-  h3: ({ children }: any) => <h3 className="mb-2 mt-3 text-base font-semibold text-text-strong">{children}</h3>,
+  h1: ({ children }: any) => <h1 className="mb-3 mt-5 text-xl font-bold text-heading-accent border-b-2 border-accent-dim pb-1">{children}</h1>,
+  h2: ({ children }: any) => <h2 className="mb-2 mt-4 text-lg font-bold text-heading">{children}</h2>,
+  h3: ({ children }: any) => <h3 className="mb-2 mt-3 text-base font-semibold text-heading">{children}</h3>,
   h4: ({ children }: any) => <h4 className="mb-1 mt-2 text-sm font-semibold text-text-strong">{children}</h4>,
   blockquote: ({ children }: any) => (
-    <blockquote className="my-3 border-l-3 border-accent pl-4 text-muted italic">{children}</blockquote>
+    <blockquote className="my-3 border-l-3 border-blockquote-border pl-4 text-muted italic">{children}</blockquote>
   ),
   hr: () => <hr className="my-4 border-border" />,
   strong: ({ children }: any) => <strong className="font-semibold text-text-strong">{children}</strong>,
