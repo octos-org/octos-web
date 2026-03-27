@@ -10,6 +10,23 @@ import {
 import { listSessions, getMessages, deleteSession as apiDeleteSession } from "@/api/sessions";
 import type { SessionInfo, MessageInfo } from "@/api/types";
 
+/** Extract a short title from message content, handling JSON content parts. */
+function extractTitle(content: string): string {
+  let text = content;
+  try {
+    const parsed = JSON.parse(content);
+    if (Array.isArray(parsed)) {
+      const textPart = parsed.find(
+        (p: { type?: string; text?: string }) => p.type === "text" && p.text,
+      );
+      if (textPart) text = textPart.text;
+    }
+  } catch {
+    // plain text
+  }
+  return text.slice(0, 50).trim() || "";
+}
+
 /** Session with a display title derived from the first user message. */
 export interface SessionWithTitle extends SessionInfo {
   title?: string;
@@ -79,10 +96,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       await Promise.all(
         needTitle.slice(0, 10).map(async (s) => {
           try {
-            const msgs = await getMessages(s.id, 3);
-            const firstUser = msgs.find((m) => m.role === "user");
+            const msgs = await getMessages(s.id, 10);
+            const firstUser = msgs.find((m) => m.role === "user" && m.content?.trim());
             if (firstUser) {
-              titleCache.current[s.id] = firstUser.content.slice(0, 50).trim();
+              titleCache.current[s.id] = extractTitle(firstUser.content);
             }
           } catch {
             // ignore
@@ -133,10 +150,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const markSessionActive = useCallback(
     (firstMessage?: string) => {
+      const title = firstMessage ? extractTitle(firstMessage) : undefined;
+      if (title) titleCache.current[currentSessionId] = title;
       setSessions((prev) => {
-        if (prev.some((s) => s.id === currentSessionId)) return prev;
-        const title = firstMessage?.slice(0, 50).trim();
-        if (title) titleCache.current[currentSessionId] = title;
+        const existing = prev.find((s) => s.id === currentSessionId);
+        if (existing) {
+          // Update title if it was missing
+          if (!existing.title && title) {
+            return prev.map((s) =>
+              s.id === currentSessionId ? { ...s, title } : s,
+            );
+          }
+          return prev;
+        }
         return [
           { id: currentSessionId, message_count: 1, title, _local: true },
           ...prev,

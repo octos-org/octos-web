@@ -231,8 +231,8 @@ export function createOctosAdapter(
         }
       }
 
-      // If stream ended without content, poll for response
-      if (!text || text.length < 10) {
+      // If stream ended without any content at all, poll for response
+      if (!text) {
         const token = getToken();
         for (let poll = 0; poll < 180; poll++) {
           if (abortSignal.aborted) break;

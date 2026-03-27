@@ -1,12 +1,36 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useSession } from "@/runtime/session-context";
-import { Plus, MessageSquare, Trash2, Check, X } from "lucide-react";
+import * as StreamManager from "@/runtime/stream-manager";
+import { Plus, MessageSquare, Trash2, Check, X, Loader2 } from "lucide-react";
 
 export function SessionList() {
   const { sessions, currentSessionId, switchSession, createSession, removeSession } =
     useSession();
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [streamingSessions, setStreamingSessions] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    // Poll StreamManager.isActive() to stay in sync across all SessionRuntime instances
+    const sync = () => {
+      setStreamingSessions((prev) => {
+        const next = new Set<string>();
+        for (const s of sessions) {
+          if (StreamManager.isActive(s.id)) next.add(s.id);
+        }
+        if (next.size === prev.size && [...next].every((id) => prev.has(id))) return prev;
+        return next;
+      });
+    };
+    sync();
+    const onStreamChange = () => sync();
+    window.addEventListener("crew:stream_state", onStreamChange);
+    const interval = setInterval(sync, 1000);
+    return () => {
+      window.removeEventListener("crew:stream_state", onStreamChange);
+      clearInterval(interval);
+    };
+  }, [sessions]);
 
   const handleDelete = useCallback(async (id: string) => {
     setDeletingId(id);
@@ -82,7 +106,11 @@ export function SessionList() {
                     onClick={() => switchSession(s.id)}
                     className="flex flex-1 items-center gap-2 overflow-hidden"
                   >
-                    <MessageSquare size={14} className="shrink-0" />
+                    {streamingSessions.has(s.id) ? (
+                      <Loader2 size={14} className="shrink-0 animate-spin text-accent" />
+                    ) : (
+                      <MessageSquare size={14} className="shrink-0" />
+                    )}
                     <span className="flex-1 truncate">{s.title || formatSessionName(s.id)}</span>
                     <span className="text-xs text-muted">{s.message_count}</span>
                   </button>

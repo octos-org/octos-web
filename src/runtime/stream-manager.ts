@@ -60,6 +60,11 @@ export function startStream(
     text: "",
   };
   streams.set(sessionId, stream);
+  window.dispatchEvent(
+    new CustomEvent("crew:stream_state", {
+      detail: { sessionId, active: true },
+    }),
+  );
 
   const token = getToken();
 
@@ -148,6 +153,16 @@ export function startStream(
       // fetch aborted or network error
     } finally {
       stream.active = false;
+      window.dispatchEvent(
+        new CustomEvent("crew:stream_state", {
+          detail: { sessionId, active: false },
+        }),
+      );
+      // Clean up event buffer after completion to prevent memory leak.
+      // Keep only the final text, drop individual events.
+      setTimeout(() => {
+        stream.events = [];
+      }, 5000);
     }
   })();
 }
