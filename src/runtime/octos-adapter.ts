@@ -60,11 +60,17 @@ export function createOctosAdapter(
       onMessageSent?.(userText);
 
       // Start the stream via StreamManager (survives React unmount)
-      StreamManager.startStream(
+      const streamStatus = StreamManager.startStream(
         sessionId,
         userText,
         getPendingMedia?.() ?? [],
       );
+
+      // If message was queued (another stream active), wait for the new stream
+      // to start before subscribing — prevents replaying the old stream's events.
+      if (streamStatus === "queued") {
+        await StreamManager.waitForNewStream(sessionId);
+      }
 
       // Subscribe to events and yield results.
       // If the component unmounts (abortSignal fires), the subscription
@@ -81,7 +87,11 @@ export function createOctosAdapter(
       const queue: StreamManager.StreamEvent[] = [];
       let resolve: (() => void) | null = null;
 
-      const unsub = StreamManager.subscribe(sessionId, (event) => {
+      // For queued messages, don't replay old events — only listen to the fresh stream.
+      const subscribeFn = streamStatus === "queued"
+        ? StreamManager.subscribeNew
+        : StreamManager.subscribe;
+      const unsub = subscribeFn(sessionId, (event) => {
         queue.push(event);
         if (resolve) {
           resolve();

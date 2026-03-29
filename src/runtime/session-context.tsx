@@ -46,7 +46,7 @@ interface SessionContextValue {
   markSessionActive: (firstMessage?: string) => void;
 }
 
-const SessionContext = createContext<SessionContextValue | null>(null);
+export const SessionContext = createContext<SessionContextValue | null>(null);
 
 export function useSession() {
   const ctx = useContext(SessionContext);

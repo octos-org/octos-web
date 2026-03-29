@@ -26,8 +26,8 @@ function MermaidBlock({ content }: { content: string }) {
       .then(({ svg }) => setSvg(svg))
       .catch(() => {});
   }, [content]);
-  if (!svg) return <pre className="my-2 rounded-lg bg-code-block-bg p-3 text-xs text-code-text whitespace-pre-wrap">{content}</pre>;
-  return <div className="my-2 overflow-x-auto rounded-lg bg-code-block-bg p-3" dangerouslySetInnerHTML={{ __html: svg }} />;
+  if (!svg) return <pre className="my-3 rounded-2xl bg-code-block-bg p-4 text-xs text-code-text whitespace-pre-wrap">{content}</pre>;
+  return <div className="my-3 overflow-x-auto rounded-2xl bg-code-block-bg p-4" dangerouslySetInnerHTML={{ __html: svg }} />;
 }
 
 function CodeBlock({ children, className }: { children?: ReactNode; className?: string }) {
@@ -39,23 +39,23 @@ function CodeBlock({ children, className }: { children?: ReactNode; className?: 
   if (lang === "mermaid") return <MermaidBlock content={codeText} />;
 
   return (
-    <div className="group relative my-2">
+    <div className="group relative my-3">
       {lang && (
-        <div className="flex items-center justify-between rounded-t-lg bg-code-header-bg px-3 py-1 text-[10px] text-code-text/60">
-          <span>{lang}</span>
+        <div className="flex items-center justify-between rounded-t-2xl bg-code-header-bg px-4 py-1.5 text-[10px] text-code-text/50">
+          <span className="font-medium uppercase tracking-wider">{lang}</span>
           <button
             onClick={() => {
               navigator.clipboard.writeText(codeRef.current?.textContent || codeText);
               setCopied(true);
               setTimeout(() => setCopied(false), 2000);
             }}
-            className="opacity-0 group-hover:opacity-100 transition text-code-text/60 hover:text-white"
+            className="rounded-lg px-2 py-0.5 opacity-0 group-hover:opacity-100 text-code-text/50 hover:text-white hover:bg-white/10"
           >
             {copied ? "Copied!" : "Copy"}
           </button>
         </div>
       )}
-      <pre className={`overflow-x-auto ${lang ? "rounded-b-lg" : "rounded-lg"} bg-code-block-bg p-3 text-xs leading-relaxed text-code-text`}>
+      <pre className={`overflow-x-auto ${lang ? "rounded-b-2xl" : "rounded-2xl"} bg-code-block-bg p-4 text-xs leading-relaxed text-code-text`}>
         <code ref={codeRef} className={className}>{children}</code>
       </pre>
     </div>
@@ -112,10 +112,10 @@ const mdComponents: Record<string, any> = {
     return <CodeBlock className={cn}>{children}</CodeBlock>;
   },
   table: ({ children }: any) => (
-    <div className="my-2 overflow-x-auto rounded-lg border border-border"><table className="min-w-full text-xs">{children}</table></div>
+    <div className="my-3 overflow-x-auto rounded-2xl bg-surface-container"><table className="min-w-full text-xs">{children}</table></div>
   ),
-  th: ({ children }: any) => <th className="border-b border-border bg-surface-light px-3 py-1.5 text-left font-medium text-text-strong">{children}</th>,
-  td: ({ children }: any) => <td className="border-b border-border/50 px-3 py-1.5">{children}</td>,
+  th: ({ children }: any) => <th className="border-b border-outline bg-surface-elevated px-4 py-2 text-left font-medium text-text-strong">{children}</th>,
+  td: ({ children }: any) => <td className="border-b border-border px-4 py-2">{children}</td>,
   p: ({ children }: any) => <p className="mb-3 last:mb-0 leading-relaxed">{children}</p>,
   ul: ({ children }: any) => <ul className="mb-3 list-disc pl-5 space-y-1">{children}</ul>,
   ol: ({ children }: any) => <ol className="mb-3 list-decimal pl-5 space-y-1">{children}</ol>,

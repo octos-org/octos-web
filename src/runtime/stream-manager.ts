@@ -32,6 +32,8 @@ interface ManagedStream {
   abort: AbortController;
   /** Final accumulated text from token/replace events. */
   text: string;
+  /** Queued messages waiting for this stream to finish. */
+  _queued?: { message: string; media: string[] }[];
 }
 
 const streams = new Map<string, ManagedStream>();
@@ -44,10 +46,16 @@ export function startStream(
   sessionId: string,
   message: string,
   media: string[],
-): void {
-  // If there's already an active stream for this session, don't start another
+): "started" | "queued" {
+  // If there's already an active stream for this session, queue this message
+  // and start a new stream when the current one finishes.
   const existing = streams.get(sessionId);
-  if (existing?.active) return;
+  if (existing?.active) {
+    // Store the queued message — it will be sent when the current stream ends
+    if (!existing._queued) existing._queued = [];
+    existing._queued.push({ message, media });
+    return "queued";
+  }
 
   const abort = new AbortController();
   const stream: ManagedStream = {
@@ -163,8 +171,52 @@ export function startStream(
       setTimeout(() => {
         stream.events = [];
       }, 5000);
+
+      // Process queued messages — start a new stream for the next one
+      const queued = stream._queued;
+      if (queued && queued.length > 0) {
+        const next = queued.shift()!;
+        stream._queued = queued.length > 0 ? queued : undefined;
+        // Small delay to let the adapter's done handler finish
+        setTimeout(() => startStream(sessionId, next.message, next.media), 100);
+      }
     }
   })();
+
+  return "started";
+}
+
+/**
+ * Wait for a NEW stream to start for a session (after a queued message).
+ * Resolves when the stream is created and active.
+ */
+export function waitForNewStream(sessionId: string): Promise<void> {
+  return new Promise((resolve) => {
+    const check = () => {
+      const stream = streams.get(sessionId);
+      if (stream?.active && stream.events.length === 0) {
+        // Fresh stream just started
+        resolve();
+      } else {
+        setTimeout(check, 50);
+      }
+    };
+    // Listen for stream_state event
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.sessionId === sessionId && detail?.active) {
+        window.removeEventListener("crew:stream_state", handler);
+        // Small delay to let the stream object be set up
+        setTimeout(resolve, 50);
+      }
+    };
+    window.addEventListener("crew:stream_state", handler);
+    // Timeout: if no new stream in 60s, resolve anyway to prevent hanging
+    setTimeout(() => {
+      window.removeEventListener("crew:stream_state", handler);
+      resolve();
+    }, 60000);
+  });
 }
 
 /**
@@ -190,6 +242,25 @@ export function subscribe(
   }
 
   // Subscribe for future events
+  stream.subscribers.add(callback);
+
+  return () => {
+    stream.subscribers.delete(callback);
+  };
+}
+
+/**
+ * Subscribe to a session's stream WITHOUT replaying past events.
+ * Used for queued messages that need to wait for a fresh stream.
+ */
+export function subscribeNew(
+  sessionId: string,
+  callback: StreamSubscriber,
+): (() => void) | null {
+  const stream = streams.get(sessionId);
+  if (!stream) return null;
+
+  // No replay — only future events
   stream.subscribers.add(callback);
 
   return () => {

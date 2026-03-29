@@ -15,7 +15,9 @@ export default defineConfig({
     proxy: {
       "/api": {
         target: "http://localhost:9326",
-        rewrite: (path: string) => path.replace(/^\/api/, ""),
+        headers: {
+          "X-Profile-Id": "dspfac",
+        },
       },
     },
   },

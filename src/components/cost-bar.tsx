@@ -46,10 +46,10 @@ export function CostBar({
   if (parts.length === 0 && !provider) return null;
 
   return (
-    <div data-testid="cost-bar" className="flex items-center gap-3 border-b border-border bg-surface px-4 py-2 text-xs text-muted">
+    <div data-testid="cost-bar" className="flex items-center gap-4 bg-surface-dark px-5 py-2.5 text-xs text-muted/70">
       {parts.map((p, i) => (
         <span key={i}>
-          {i > 0 && <span className="mr-3 text-border">|</span>}
+          {i > 0 && <span className="mr-4 text-muted/20">&middot;</span>}
           {p}
         </span>
       ))}

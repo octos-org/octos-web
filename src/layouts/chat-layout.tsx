@@ -4,7 +4,7 @@ import { useOctosStatus } from "@/hooks/use-octos-status";
 import { useTheme } from "@/hooks/use-theme";
 import { CostBar } from "@/components/cost-bar";
 import { SessionList } from "@/components/session-list";
-import { LogOut, MessageSquare, Sun, Moon } from "lucide-react";
+import { LogOut, Sun, Moon } from "lucide-react";
 
 export function ChatLayout({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth();
@@ -14,14 +14,13 @@ export function ChatLayout({ children }: { children: ReactNode }) {
   return (
     <div className="flex h-screen bg-surface-dark">
       {/* Sidebar */}
-      <aside className="sidebar-scope flex w-64 flex-col border-r border-border bg-sidebar">
+      <aside className="sidebar-scope flex w-72 flex-col bg-sidebar">
         {/* Header */}
-        <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-          <MessageSquare size={20} className="text-accent" />
-          <span className="font-semibold text-text-strong">octos</span>
+        <div className="flex items-center gap-3 px-5 py-5">
+          <span className="text-lg font-semibold tracking-tight text-text-strong">octos</span>
           <button
             onClick={toggleTheme}
-            className="ml-auto rounded-lg p-1.5 text-muted hover:bg-surface-light hover:text-accent transition"
+            className="ml-auto rounded-xl p-2 text-muted hover:bg-surface-container hover:text-text-strong"
             title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
           >
             {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
@@ -32,9 +31,9 @@ export function ChatLayout({ children }: { children: ReactNode }) {
         <SessionList />
 
         {/* Footer */}
-        <div className="border-t border-border p-3">
+        <div className="px-5 py-4">
           {status && status.model && status.model !== "none" && (
-            <div className="mb-2 text-xs text-muted">
+            <div className="mb-2 text-[11px] text-muted/70">
               {status.provider !== "none" ? `${status.provider}/` : ""}{status.model}
             </div>
           )}
@@ -45,7 +44,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
               </span>
               <button
                 onClick={logout}
-                className="rounded p-1 text-muted hover:bg-surface-light hover:text-white"
+                className="rounded-lg p-1.5 text-muted hover:bg-surface-container hover:text-text-strong"
               >
                 <LogOut size={14} />
               </button>

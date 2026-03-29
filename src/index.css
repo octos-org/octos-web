@@ -1,18 +1,34 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
-/* ── Dark theme (default) ─ Deep ocean palette ─────── */
+/* ── Dark theme (default) ─ Deep ocean + Material You ── */
 @theme {
-  --color-surface: #0a2548;
-  --color-surface-light: #0f2d55;
+  /* Surfaces — layered tonal system (Material 3) */
+  --color-surface: #0c2444;
+  --color-surface-light: #112d54;
   --color-surface-dark: #081E3F;
+  --color-surface-container: #0e2a50;
+  --color-surface-elevated: #13325c;
+
+  /* Accent */
   --color-accent: #FF5F1F;
   --color-accent-dim: #E85B26;
-  --color-border: #1a3a6a;
+  --color-accent-container: rgba(255, 95, 31, 0.12);
+
+  /* Borders & dividers */
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-outline: rgba(255, 255, 255, 0.12);
+
+  /* Text */
   --color-muted: #8ba3c4;
   --color-text: #d0ddef;
   --color-text-strong: #f0f4f8;
-  --color-user-bubble: rgba(255, 95, 31, 0.12);
+
+  /* Chat bubbles */
+  --color-user-bubble: rgba(255, 95, 31, 0.10);
+  --color-assistant-bubble: #112d54;
+
+  /* Semantic */
   --color-link: #00B4EF;
   --color-heading: #00B4EF;
   --color-heading-accent: #F9D53F;
@@ -25,18 +41,28 @@
   --color-highlight: #F9D53F;
 }
 
-/* ── Light theme overrides ──────────────────────────── */
+/* ── Light theme ────────────────────────────────────── */
 [data-theme="light"] {
   --color-surface: #FFFFFF;
-  --color-surface-light: #EDF2F7;
-  --color-surface-dark: #F5F9FC;
+  --color-surface-light: #F3F6FA;
+  --color-surface-dark: #EEF2F7;
+  --color-surface-container: #F7F9FC;
+  --color-surface-elevated: #FFFFFF;
+
   --color-accent: #FF5F1F;
   --color-accent-dim: #E85B26;
-  --color-border: #B8CCE0;
+  --color-accent-container: rgba(255, 95, 31, 0.08);
+
+  --color-border: rgba(0, 0, 0, 0.06);
+  --color-outline: rgba(0, 0, 0, 0.10);
+
   --color-muted: #5A7A9C;
   --color-text: #1a3050;
   --color-text-strong: #0a1a30;
-  --color-user-bubble: rgba(255, 95, 31, 0.08);
+
+  --color-user-bubble: rgba(255, 95, 31, 0.07);
+  --color-assistant-bubble: #F3F6FA;
+
   --color-link: #00B4EF;
   --color-heading: #0090CC;
   --color-heading-accent: #B8860B;
@@ -49,23 +75,30 @@
   --color-highlight: #F9D53F;
 }
 
-/* ── Sidebar scoping: always dark bg → always light text ── */
+/* ── Sidebar: always dark bg → always light text ────── */
 [data-theme="light"] .sidebar-scope {
   --color-text: #c8d8ec;
   --color-text-strong: #f0f4f8;
   --color-muted: #7b9ac0;
   --color-surface-light: #0f4590;
-  --color-border: #1a4888;
+  --color-surface-container: #0a3570;
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-outline: rgba(255, 255, 255, 0.12);
+  --color-accent-container: rgba(255, 95, 31, 0.15);
+  --color-assistant-bubble: #0f4590;
 }
 
+/* ── Base ───────────────────────────────────────────── */
 body {
   margin: 0;
   background: var(--color-surface-dark);
   color: var(--color-text);
-  font-family:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
+/* ── Scrollbar ──────────────────────────────────────── */
 ::-webkit-scrollbar {
   width: 6px;
 }
@@ -73,58 +106,71 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--color-border);
+  background: var(--color-outline);
   border-radius: 3px;
 }
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-muted);
+}
 
-/* Smooth fade-in for streamed assistant message content */
+/* ── Material 3 elevation via shadow ────────────────── */
+.elevation-0 { box-shadow: none; }
+.elevation-1 { box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.08); }
+.elevation-2 { box-shadow: 0 3px 6px rgba(0,0,0,0.12), 0 2px 4px rgba(0,0,0,0.08); }
+.elevation-3 { box-shadow: 0 6px 12px rgba(0,0,0,0.15), 0 3px 6px rgba(0,0,0,0.10); }
+
+/* ── Animations ─────────────────────────────────────── */
 @keyframes fadeSlideIn {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 [data-message-role="assistant"] .prose > *:last-child {
-  animation: fadeSlideIn 0.2s ease-out;
+  animation: fadeSlideIn 0.25s ease-out;
 }
 
-/* Prose overrides for chat bubbles */
+/* ── Prose / Markdown ───────────────────────────────── */
 .prose {
-  line-height: 1.6;
+  line-height: 1.7;
+  letter-spacing: 0.01em;
 }
 .prose pre {
   background: var(--color-code-block-bg);
-  border: 1px solid var(--color-border);
-  border-radius: 0.5rem;
+  border: none;
+  border-radius: 12px;
   font-size: 0.8rem;
   color: var(--color-code-text);
 }
 .prose code:not(pre code) {
-  background: color-mix(in srgb, var(--color-code-inline) 15%, transparent);
+  background: color-mix(in srgb, var(--color-code-inline) 12%, transparent);
   color: var(--color-code-inline);
-  padding: 0.15em 0.35em;
-  border-radius: 0.25rem;
+  padding: 0.15em 0.4em;
+  border-radius: 6px;
   font-size: 0.85em;
 }
 .prose a {
   color: var(--color-link);
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.2s, color 0.2s;
 }
 .prose a:hover {
   color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
 }
 .prose blockquote {
   border-left-color: var(--color-blockquote-border);
   color: var(--color-muted);
+  border-radius: 0 8px 8px 0;
+  background: color-mix(in srgb, var(--color-blockquote-border) 6%, transparent);
+  padding: 0.75em 1em;
 }
 .prose table {
   font-size: 0.85em;
+  border-collapse: separate;
+  border-spacing: 0;
+  border-radius: 12px;
+  overflow: hidden;
 }
 .prose th {
   color: var(--color-text-strong);
@@ -135,19 +181,22 @@ body {
 .prose h1 {
   color: var(--color-heading-accent);
   border-bottom: 2px solid var(--color-accent-dim);
-  padding-bottom: 0.25em;
+  padding-bottom: 0.3em;
 }
 .prose h2, .prose h3 {
   color: var(--color-heading);
 }
 .prose ul, .prose ol {
-  padding-left: 1.25em;
+  padding-left: 1.5em;
 }
 .prose li::marker {
   color: var(--color-muted);
 }
+.prose li {
+  padding-left: 0.25em;
+}
 
-/* Light mode prose adjustments */
+/* ── Light mode prose ───────────────────────────────── */
 [data-theme="light"] .prose-invert {
   --tw-prose-body: var(--color-text);
   --tw-prose-headings: var(--color-text-strong);
@@ -155,4 +204,15 @@ body {
   --tw-prose-code: var(--color-code-inline);
   --tw-prose-pre-bg: var(--color-code-block-bg);
   color: var(--color-text);
+}
+
+/* ── Smooth transitions on interactive elements ─────── */
+button, a, input, textarea {
+  transition: all 0.2s cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* ── Selection ──────────────────────────────────────── */
+::selection {
+  background: var(--color-accent-container);
+  color: var(--color-text-strong);
 }
