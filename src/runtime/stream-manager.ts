@@ -81,10 +81,9 @@ export function startStream(
   // Run fetch in background — NOT tied to any React component
   (async () => {
     try {
-      const searchHeaders: Record<string, string> = {};
-      if (settings.searchEngine !== "default") {
-        searchHeaders["X-Search-Engine"] = settings.searchEngine;
-      }
+      const searchHeaders: Record<string, string> = {
+        "X-Search-Engine": settings.searchEngine,
+      };
       if (settings.serperApiKey) {
         searchHeaders["X-Serper-Api-Key"] = settings.serperApiKey;
       }

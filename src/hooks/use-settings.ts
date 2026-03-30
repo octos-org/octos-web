@@ -3,13 +3,13 @@ import { useState, useEffect, useCallback } from "react";
 const STORAGE_KEY = "octos-settings";
 
 export interface OctosSettings {
-  searchEngine: "default" | "serper" | "duckduckgo";
+  searchEngine: "serper" | "duckduckgo";
   serperApiKey: string;
   crawl4aiUrl: string;
 }
 
 const defaults: OctosSettings = {
-  searchEngine: "default",
+  searchEngine: "serper",
   serperApiKey: "",
   crawl4aiUrl: "",
 };
@@ -17,7 +17,12 @@ const defaults: OctosSettings = {
 function load(): OctosSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return { ...defaults, ...JSON.parse(raw) };
+    if (raw) {
+      const parsed = { ...defaults, ...JSON.parse(raw) };
+      // Migrate removed "default" engine to "serper"
+      if (parsed.searchEngine === "default") parsed.searchEngine = "serper";
+      return parsed;
+    }
   } catch { /* ignore */ }
   return { ...defaults };
 }

@@ -30,9 +30,7 @@ export async function request<T>(
     headers["Authorization"] = `Bearer ${token}`;
   }
   // Pass search engine config to backend
-  if (settings.searchEngine !== "default") {
-    headers["X-Search-Engine"] = settings.searchEngine;
-  }
+  headers["X-Search-Engine"] = settings.searchEngine;
   if (settings.serperApiKey) {
     headers["X-Serper-Api-Key"] = settings.serperApiKey;
   }

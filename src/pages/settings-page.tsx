@@ -93,19 +93,14 @@ export function SettingsPage() {
               {(
                 [
                   {
-                    value: "default",
-                    label: "Default (Backend)",
-                    desc: "Use the server's built-in CDP browser search",
-                  },
-                  {
                     value: "serper",
-                    label: "Serper.dev",
-                    desc: "Fast Google Search API — no CAPTCHAs, $0.30-1/1K queries",
+                    label: "Serper.dev (Google)",
+                    desc: "Fast Google Search API — no CAPTCHAs, $0.30-1/1K queries, 2,500 free",
                   },
                   {
                     value: "duckduckgo",
                     label: "DuckDuckGo",
-                    desc: "Free, no API key needed — may be rate-limited",
+                    desc: "Free fallback, no API key needed — may be rate-limited",
                   },
                 ] as const
               ).map((opt) => (
