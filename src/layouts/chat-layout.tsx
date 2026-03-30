@@ -4,12 +4,14 @@ import { useOctosStatus } from "@/hooks/use-octos-status";
 import { useTheme } from "@/hooks/use-theme";
 import { CostBar } from "@/components/cost-bar";
 import { SessionList } from "@/components/session-list";
-import { LogOut, Sun, Moon } from "lucide-react";
+import { LogOut, Sun, Moon, Settings } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
 export function ChatLayout({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth();
   const status = useOctosStatus();
   const { theme, toggleTheme } = useTheme();
+  const navigate = useNavigate();
 
   return (
     <div className="flex h-screen bg-surface-dark">
@@ -18,13 +20,22 @@ export function ChatLayout({ children }: { children: ReactNode }) {
         {/* Header */}
         <div className="flex items-center gap-3 px-5 py-5">
           <span className="text-lg font-semibold tracking-tight text-text-strong">octos</span>
-          <button
-            onClick={toggleTheme}
-            className="ml-auto rounded-xl p-2 text-muted hover:bg-surface-container hover:text-text-strong"
-            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-          >
-            {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
-          </button>
+          <div className="ml-auto flex items-center gap-1">
+            <button
+              onClick={() => navigate("/settings")}
+              className="rounded-xl p-2 text-muted hover:bg-surface-container hover:text-text-strong"
+              title="Settings"
+            >
+              <Settings size={16} />
+            </button>
+            <button
+              onClick={toggleTheme}
+              className="rounded-xl p-2 text-muted hover:bg-surface-container hover:text-text-strong"
+              title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            >
+              {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+            </button>
+          </div>
         </div>
 
         {/* Session list */}

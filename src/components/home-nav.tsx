@@ -1,6 +1,6 @@
 import { useAuth } from "@/auth/auth-context";
 import { useTheme } from "@/hooks/use-theme";
-import { LogOut, Sun, Moon, MessageSquare, Plus } from "lucide-react";
+import { LogOut, Sun, Moon, MessageSquare, Plus, Settings } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 export function HomeNav({ onNewProject }: { onNewProject: () => void }) {
@@ -27,6 +27,13 @@ export function HomeNav({ onNewProject }: { onNewProject: () => void }) {
       >
         <MessageSquare size={16} />
         Chat
+      </button>
+      <button
+        onClick={() => navigate("/settings")}
+        className="rounded-xl p-2.5 text-muted hover:bg-surface-container hover:text-text-strong"
+        title="Settings"
+      >
+        <Settings size={18} />
       </button>
       <button
         onClick={toggleTheme}

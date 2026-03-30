@@ -7,6 +7,7 @@
 
 import { getToken } from "@/api/client";
 import { API_BASE } from "@/lib/constants";
+import { getSettings } from "@/hooks/use-settings";
 import type { SseEvent } from "@/api/types";
 
 /** A single SSE event with its parsed data. */
@@ -75,15 +76,28 @@ export function startStream(
   );
 
   const token = getToken();
+  const settings = getSettings();
 
   // Run fetch in background — NOT tied to any React component
   (async () => {
     try {
+      const searchHeaders: Record<string, string> = {};
+      if (settings.searchEngine !== "default") {
+        searchHeaders["X-Search-Engine"] = settings.searchEngine;
+      }
+      if (settings.serperApiKey) {
+        searchHeaders["X-Serper-Api-Key"] = settings.serperApiKey;
+      }
+      if (settings.crawl4aiUrl) {
+        searchHeaders["X-Crawl4ai-Url"] = settings.crawl4aiUrl;
+      }
+
       const resp = await fetch(`${API_BASE}/api/chat`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...searchHeaders,
         },
         body: JSON.stringify({
           message,

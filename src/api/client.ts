@@ -1,4 +1,5 @@
 import { API_BASE, TOKEN_KEY, ADMIN_TOKEN_KEY } from "@/lib/constants";
+import { getSettings } from "@/hooks/use-settings";
 
 export function getToken(): string | null {
   return (
@@ -20,12 +21,23 @@ export async function request<T>(
   options: RequestInit = {},
 ): Promise<T> {
   const token = getToken();
+  const settings = getSettings();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(options.headers as Record<string, string>),
   };
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
+  }
+  // Pass search engine config to backend
+  if (settings.searchEngine !== "default") {
+    headers["X-Search-Engine"] = settings.searchEngine;
+  }
+  if (settings.serperApiKey) {
+    headers["X-Serper-Api-Key"] = settings.serperApiKey;
+  }
+  if (settings.crawl4aiUrl) {
+    headers["X-Crawl4ai-Url"] = settings.crawl4aiUrl;
   }
 
   const resp = await fetch(`${API_BASE}${path}`, {
