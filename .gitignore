@@ -29,3 +29,5 @@ crawl-*/
 research/
 *.md
 !README.md
+!book/**/*.md
+book/build/
