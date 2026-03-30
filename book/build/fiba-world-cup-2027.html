@@ -1,0 +1,495 @@
+<!DOCTYPE HTML>
+<html lang="en" class="navy sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>2027 FIBA World Cup Research Report - Octos Research</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="stylesheet" href="css/variables-8adf115d.css">
+        <link rel="stylesheet" href="css/general-2459343d.css">
+        <link rel="stylesheet" href="css/chrome-ae938929.css">
+        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "navy";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "searchindex-828fd749.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc-5cdf1d05.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('navy')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Octos Research</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/octos-org/octos-web" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="2027年fiba男篮世界杯---多源信息综合分析报告"><a class="header" href="#2027年fiba男篮世界杯---多源信息综合分析报告">2027年FIBA男篮世界杯 - 多源信息综合分析报告</a></h1>
+<p><strong>报告生成日期</strong>：2024年<br><strong>信息来源</strong>：三份AI生成报告交叉比对（搜索功能失败）<br><strong>信息可信度</strong>：⚠️ 低 - 需官方渠道验证</p>
+<hr>
+<h2 id="一执行摘要"><a class="header" href="#一执行摘要">一、执行摘要</a></h2>
+<p>本报告对2027年FIBA男篮世界杯相关信息进行多源综合分析。由于三次网络搜索均失败（DuckDuckGo连接错误），所有信息基于三份AI生成报告的交叉比对，<strong>非真实搜索结果</strong>。关键发现包括：主办国信息存在严重矛盾（卡塔尔vs埃及），2023年世界杯排名与2024年奥运会排名数据不一致，但赛事基本信息（2027年8-9月举办、32支球队、首次中东举办）三源一致。<strong>强烈建议通过FIBA官方渠道核实所有关键信息</strong>。</p>
+<hr>
+<h2 id="二关键发现"><a class="header" href="#二关键发现">二、关键发现</a></h2>
+<h3 id="21-赛事基本信息可信度中高"><a class="header" href="#21-赛事基本信息可信度中高">2.1 赛事基本信息（可信度：中高）</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>信息项</th><th>三源共识内容</th><th>可信度</th></tr>
+</thead>
+<tbody>
+<tr><td>举办时间</td><td>2027年8-9月</td><td>🟢 高</td></tr>
+<tr><td>参赛球队</td><td>32支</td><td>🟢 高</td></tr>
+<tr><td>历史意义</td><td>首次在中东地区举办</td><td>🟢 高</td></tr>
+<tr><td>赛制</td><td>第四届32队制世界杯</td><td>🟢 高</td></tr>
+<tr><td>前届主办</td><td>2023年菲律宾/日本/印尼</td><td>🟢 高</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="22-主办国信息矛盾可信度低"><a class="header" href="#22-主办国信息矛盾可信度低">2.2 主办国信息矛盾（可信度：低）</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>来源</th><th>声称主办国</th><th>备注</th></tr>
+</thead>
+<tbody>
+<tr><td>Primary Search</td><td>卡塔尔</td><td>但非洲赛区将埃及列为“2027年东道主“</td></tr>
+<tr><td>English Search</td><td>卡塔尔</td><td>一致</td></tr>
+<tr><td>Trends</td><td>卡塔尔</td><td>一致</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>⚠️ 严重问题</strong>：同一份报告内部存在矛盾（Primary Search中既说卡塔尔主办，又将埃及标注为东道主）。这是重大事实错误。</p>
+<p><strong>需核实</strong>：FIBA官方公告确认确切主办国</p>
+<h3 id="23-2023年世界杯排名数据不一致可信度中"><a class="header" href="#23-2023年世界杯排名数据不一致可信度中">2.3 2023年世界杯排名数据不一致（可信度：中）</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>国家</th><th>Primary</th><th>English</th><th>Trends</th><th>共识</th></tr>
+</thead>
+<tbody>
+<tr><td>🇩🇪 德国</td><td>冠军</td><td>冠军</td><td>冠军</td><td>✅ 一致</td></tr>
+<tr><td>🇷🇸 塞尔维亚</td><td>亚军</td><td>亚军</td><td>亚军</td><td>✅ 一致</td></tr>
+<tr><td>🇨🇦 加拿大</td><td>季军</td><td>季军</td><td>季军</td><td>✅ 一致</td></tr>
+<tr><td>🇺🇸 美国</td><td>第4</td><td>第4</td><td>第4</td><td>✅ 一致</td></tr>
+<tr><td>🇱🇻 拉脱维亚</td><td>第5</td><td>第5</td><td>第5</td><td>✅ 一致</td></tr>
+<tr><td>🇸🇸 南苏丹</td><td>“晋级16强”</td><td>第17位</td><td>“首次参赛表现亮眼”</td><td>❌ 不一致</td></tr>
+<tr><td>🇪🇸 西班牙</td><td>第9位</td><td>第6位</td><td>未列前8</td><td>❌ 不一致</td></tr>
+<tr><td>🇬🇷 希腊</td><td>未列前8</td><td>第12位</td><td>未列前8</td><td>❌ 不一致</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="24-2024年巴黎奥运会排名不一致可信度低"><a class="header" href="#24-2024年巴黎奥运会排名不一致可信度低">2.4 2024年巴黎奥运会排名不一致（可信度：低）</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>排名</th><th>Primary</th><th>English</th><th>Trends</th></tr>
+</thead>
+<tbody>
+<tr><td>🥉 第3名</td><td>塞尔维亚</td><td>塞尔维亚</td><td>塞尔维亚</td></tr>
+<tr><td>第4名</td><td>澳大利亚</td><td>加拿大</td><td>加拿大</td></tr>
+<tr><td>第5名</td><td>加拿大</td><td>德国</td><td>德国</td></tr>
+<tr><td>第6名</td><td>德国</td><td>澳大利亚</td><td>巴西</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>⚠️ 奥运会排名存在明显差异</strong>，需官方数据核实</p>
+<h3 id="25-夺冠概率预测可信度中低"><a class="header" href="#25-夺冠概率预测可信度中低">2.5 夺冠概率预测（可信度：中低）</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>国家</th><th>Primary</th><th>English</th><th>Trends</th><th>平均</th></tr>
+</thead>
+<tbody>
+<tr><td>🇺🇸 美国</td><td>35%</td><td>25%</td><td>未给具体数字</td><td>~30%</td></tr>
+<tr><td>🇩🇪 德国</td><td>20%</td><td>18%</td><td>未给具体数字</td><td>~19%</td></tr>
+<tr><td>🇷🇸 塞尔维亚</td><td>15%</td><td>15%</td><td>未给具体数字</td><td>15%</td></tr>
+<tr><td>🇫🇷 法国</td><td>12%</td><td>12%</td><td>未给具体数字</td><td>12%</td></tr>
+</tbody>
+</table>
+</div>
+<hr>
+<h2 id="三详细分析"><a class="header" href="#三详细分析">三、详细分析</a></h2>
+<h3 id="31-各大洲实力格局"><a class="header" href="#31-各大洲实力格局">3.1 各大洲实力格局</a></h3>
+<h4 id="-欧洲共识最强赛区"><a class="header" href="#-欧洲共识最强赛区">🇪🇺 欧洲（共识最强赛区）</a></h4>
+<p><strong>第一梯队（三源共识）</strong>：</p>
+<ul>
+<li><strong>德国</strong> - 卫冕冠军，2023年世界杯冠军</li>
+<li><strong>塞尔维亚</strong> - 约基奇领衔，2023年亚军+2024奥运第3</li>
+<li><strong>法国</strong> - 文班亚马+戈贝尔双塔组合</li>
+</ul>
+<p><strong>第二梯队</strong>：</p>
+<ul>
+<li>西班牙（新老交替中）</li>
+<li>斯洛文尼亚（东契奇单核）</li>
+<li>希腊（字母哥变量）</li>
+</ul>
+<h4 id="-美洲"><a class="header" href="#-美洲">🌎 美洲</a></h4>
+<p><strong>共识信息</strong>：</p>
+<ul>
+<li><strong>美国</strong>：NBA深度无人能及，但2023年仅获第4名</li>
+<li><strong>加拿大</strong>：新兴强队，2023铜牌+2024奥运前5</li>
+</ul>
+<p><strong>分歧点</strong>：</p>
+<ul>
+<li>巴西、阿根廷排名波动较大（10-15位区间）</li>
+</ul>
+<h4 id="-非洲"><a class="header" href="#-非洲">🌍 非洲</a></h4>
+<p><strong>新兴力量</strong>：</p>
+<ul>
+<li><strong>南苏丹</strong>：2023首次参赛即获奥运资格，天赋出众</li>
+</ul>
+<p><strong>传统强队（各源提及不一）</strong>：</p>
+<ul>
+<li>Primary：尼日利亚</li>
+<li>English：科特迪瓦、安哥拉</li>
+<li>Trends：塞内加尔</li>
+</ul>
+<h4 id="-亚洲大洋洲"><a class="header" href="#-亚洲大洋洲">🌏 亚洲/大洋洲</a></h4>
+<p><strong>共识</strong>：</p>
+<ul>
+<li><strong>澳大利亚</strong>：大洋洲霸主，NBA球员众多</li>
+<li><strong>日本</strong>：八村塁+归化球员，亚洲新贵</li>
+<li><strong>中国</strong>：重建期，2023年第29-30位</li>
+<li><strong>菲律宾</strong>：克拉克森领衔，2023东道主表现不佳</li>
+</ul>
+<h3 id="32-核心球星信息三源一致可信度高"><a class="header" href="#32-核心球星信息三源一致可信度高">3.2 核心球星信息（三源一致，可信度：高）</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>球员</th><th>国家</th><th>NBA球队</th><th>共识特点</th></tr>
+</thead>
+<tbody>
+<tr><td>尼古拉·约基奇</td><td>塞尔维亚</td><td>掘金</td><td>3届MVP，传球中锋</td></tr>
+<tr><td>卢卡·东契奇</td><td>斯洛文尼亚</td><td>独行侠</td><td>全能得分手</td></tr>
+<tr><td>维克托·文班亚马</td><td>法国</td><td>马刺</td><td>新生代超巨</td></tr>
+<tr><td>谢伊·吉尔杰斯-亚历山大</td><td>加拿大</td><td>雷霆</td><td>MVP级别得分手</td></tr>
+<tr><td>扬尼斯·阿德托昆博</td><td>希腊</td><td>雄鹿</td><td>攻防一体</td></tr>
+<tr><td>丹尼斯·施罗德</td><td>德国</td><td>篮网</td><td>2023世界杯MVP</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="33-夺冠热门梯队预测"><a class="header" href="#33-夺冠热门梯队预测">3.3 夺冠热门梯队预测</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>梯队</th><th>球队</th><th>共识度</th><th>依据</th></tr>
+</thead>
+<tbody>
+<tr><td>Tier 1</td><td>美国、德国、塞尔维亚、法国</td><td>高</td><td>三源均列前4</td></tr>
+<tr><td>Tier 2</td><td>加拿大、希腊、斯洛文尼亚、澳大利亚</td><td>中</td><td>两源以上提及</td></tr>
+<tr><td>Tier 3</td><td>西班牙、拉脱维亚、意大利</td><td>中低</td><td>部分来源提及</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="34-黑马候选三源共识"><a class="header" href="#34-黑马候选三源共识">3.4 黑马候选（三源共识）</a></h3>
+<ol>
+<li><strong>🇸🇸 南苏丹</strong> - 身体天赋+NBA球员增长</li>
+<li><strong>🇯🇵 日本</strong> - 八村塁+归化球员+速度打法</li>
+<li><strong>🇱🇻 拉脱维亚</strong> - 波尔津吉斯+2023年第5名基础</li>
+</ol>
+<hr>
+<h2 id="四不确定性与冲突信息"><a class="header" href="#四不确定性与冲突信息">四、不确定性与冲突信息</a></h2>
+<h3 id="41-缺失的关键信息"><a class="header" href="#41-缺失的关键信息">4.1 缺失的关键信息</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>信息类别</th><th>状态</th><th>重要性</th></tr>
+</thead>
+<tbody>
+<tr><td>FIBA官方主办国公告</td><td>❌ 未确认</td><td>🔴 极高</td></tr>
+<tr><td>资格赛赛程与规则</td><td>❌ 无信息</td><td>🔴 高</td></tr>
+<tr><td>具体比赛场馆</td><td>❌ 无信息</td><td>🟡 中</td></tr>
+<tr><td>门票与转播信息</td><td>❌ 无信息</td><td>🟡 中</td></tr>
+<tr><td>各队最新FIBA排名</td><td>❌ 数据不一致</td><td>🔴 高</td></tr>
+<tr><td>NBA球员参赛政策</td><td>⚠️ 推测性</td><td>🟡 中</td></tr>
+<tr><td>归化球员具体名单</td><td>❌ 无信息</td><td>🟡 中</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="42-需核实的具体问题"><a class="header" href="#42-需核实的具体问题">4.2 需核实的具体问题</a></h3>
+<ol>
+<li><strong>2027年世界杯确切主办国</strong>（卡塔尔？埃及？联合主办？）</li>
+<li><strong>2024年巴黎奥运会准确排名</strong></li>
+<li><strong>当前FIBA世界排名（2024-2025）</strong></li>
+<li><strong>资格赛晋级球队名单</strong></li>
+<li><strong>核心球员2027年参赛意愿</strong>（约基奇、东契奇、字母哥等）</li>
+</ol>
+<h3 id="43-不确定因素三源共识"><a class="header" href="#43-不确定因素三源共识">4.3 不确定因素（三源共识）</a></h3>
+<ol>
+<li>NBA球星参赛意愿（非奥运年）</li>
+<li>核心球员健康状况</li>
+<li>东道主优势（主办国未定）</li>
+<li>归化球员政策变化</li>
+</ol>
+<hr>
+<h2 id="五来源可信度评估"><a class="header" href="#五来源可信度评估">五、来源可信度评估</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>来源类型</th><th>本案例情况</th><th>可信度</th></tr>
+</thead>
+<tbody>
+<tr><td>FIBA官方文件</td><td>❌ 无</td><td>N/A</td></tr>
+<tr><td>权威体育媒体</td><td>❌ 无</td><td>N/A</td></tr>
+<tr><td>新闻报道</td><td>❌ 无</td><td>N/A</td></tr>
+<tr><td>AI生成内容</td><td>✅ 三份报告交叉比对</td><td>⚠️ <strong>低</strong></td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>评估结论</strong>：由于所有搜索均失败，当前信息均为AI基于训练数据生成，<strong>不能作为事实依据</strong>。</p>
+<p><strong>建议验证渠道</strong>：</p>
+<ul>
+<li>FIBA官网：<a href="https://www.fiba.basketball">fibabasketball.com</a></li>
+<li>ESPN、The Athletic等体育媒体</li>
+<li>各国家队官方公告</li>
+</ul>
+<hr>
+<h2 id="六结论与建议"><a class="header" href="#六结论与建议">六、结论与建议</a></h2>
+<h3 id="61-主要结论"><a class="header" href="#61-主要结论">6.1 主要结论</a></h3>
+<ol>
+<li><strong>赛事基本信息相对可靠</strong>：2027年8-9月举办、32支球队、首次中东举办，三源一致</li>
+<li><strong>主办国信息存在严重矛盾</strong>：需FIBA官方确认（卡塔尔vs埃及）</li>
+<li><strong>历史排名数据不一致</strong>：2023世界杯与2024奥运会排名需核实</li>
+<li><strong>实力格局分析有参考价值</strong>：欧洲最强、美洲深度厚、非洲新兴力量崛起</li>
+</ol>
+<h3 id="62-建议后续行动"><a class="header" href="#62-建议后续行动">6.2 建议后续行动</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>优先级</th><th>行动项</th><th>负责方</th></tr>
+</thead>
+<tbody>
+<tr><td>🔴 高</td><td>立即核实FIBA官网确认2027年主办国</td><td>研究团队</td></tr>
+<tr><td>🔴 高</td><td>追踪各大洲资格赛进展</td><td>持续监控</td></tr>
+<tr><td>🟡 中</td><td>监控核心球星NBA赛季表现与国家队意向</td><td>持续监控</td></tr>
+<tr><td>🟡 中</td><td>等待FIBA正式抽签与赛程公布</td><td>官方发布</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="63-风险提示"><a class="header" href="#63-风险提示">6.3 风险提示</a></h3>
+<p>⚠️ <strong>本报告信息完整性低</strong>（搜索失败，无实时数据）<br>⚠️ <strong>所有关键数据需官方渠道二次验证</strong><br>⚠️ <strong>不可作为投资或决策依据</strong></p>
+<hr>
+<h2 id="附录信息完整性评估"><a class="header" href="#附录信息完整性评估">附录：信息完整性评估</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>评估维度</th><th>得分</th><th>说明</th></tr>
+</thead>
+<tbody>
+<tr><td>搜索成功率</td><td>0/3</td><td>三次DuckDuckGo连接错误</td></tr>
+<tr><td>官方信息覆盖</td><td>低</td><td>无FIBA官方文件</td></tr>
+<tr><td>数据一致性</td><td>中</td><td>基础信息一致，排名数据矛盾</td></tr>
+<tr><td>时效性</td><td>低</td><td>基于截至2024年训练数据</td></tr>
+<tr><td><strong>整体可信度</strong></td><td><strong>⚠️ 低</strong></td><td><strong>需官方验证</strong></td></tr>
+</tbody>
+</table>
+</div>
+<hr>
+<p><strong>报告结束</strong></p>
+<p><em>本研究报告基于多源AI生成内容交叉比对，因网络搜索功能失败，所有信息需通过FIBA官方渠道及权威体育媒体进行二次验证。</em></p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="ev-clean-energy-report.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="ev-clean-energy-report.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr-ef4e11c1.min.js"></script>
+        <script src="mark-09e88c2c.min.js"></script>
+        <script src="searcher-c2a407aa.js"></script>
+
+        <script src="clipboard-1626706a.min.js"></script>
+        <script src="highlight-abc7f01d.js"></script>
+        <script src="book-a0b12cfe.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

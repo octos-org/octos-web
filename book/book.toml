@@ -1,0 +1,14 @@
+[book]
+title = "Octos Research"
+authors = ["Octos"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "build"
+
+[output.html]
+site-url = "/octos-web/book/"
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/octos-org/octos-web"

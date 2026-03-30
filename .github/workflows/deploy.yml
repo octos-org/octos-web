@@ -27,6 +27,14 @@ jobs:
       - run: npm run build
         env:
           BASE_URL: /octos-web/
+      # SPA fallback for GitHub Pages client-side routing
+      - run: cp dist/index.html dist/404.html
+      # Build mdBook
+      - uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: latest
+      - run: mdbook build book
+      - run: mv book/build dist/book
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
