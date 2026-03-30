@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, Edit3, Check } from "lucide-react";
+import { ArrowLeft, Edit3 } from "lucide-react";
 import { useStudio } from "../context/studio-context";
 import { useTheme } from "@/hooks/use-theme";
 import { Sun, Moon } from "lucide-react";

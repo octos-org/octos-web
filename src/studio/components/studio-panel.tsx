@@ -82,42 +82,39 @@ export function StudioPanel() {
       StreamManager.startStream(genSessionId, prompt, []);
 
       // Subscribe to capture file events and completion
-      const outputId = `out-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      StreamManager.subscribe(genSessionId, (events) => {
-        for (const evt of events) {
-          if (evt.type === "file") {
-            const token = getToken();
-            const fileUrl = `${API_BASE}/files/${encodeURIComponent(evt.path)}?token=${encodeURIComponent(token || "")}`;
-            // Find the output by generation session and update it
-            const outputs = project.outputs;
-            const target = outputs.find((o) => o.generationSessionId === genSessionId);
-            if (target) {
-              updateOutput(target.id, {
-                fileUrl,
-                filePath: evt.path,
-                filename: evt.filename,
-              });
-            }
+      StreamManager.subscribe(genSessionId, (streamEvt) => {
+        const evt = streamEvt.raw as any;
+        if (evt.type === "file") {
+          const token = getToken();
+          const fileUrl = `${API_BASE}/files/${encodeURIComponent(evt.path)}?token=${encodeURIComponent(token || "")}`;
+          const outputs = project.outputs;
+          const target = outputs.find((o) => o.generationSessionId === genSessionId);
+          if (target) {
+            updateOutput(target.id, {
+              fileUrl,
+              filePath: evt.path,
+              filename: evt.filename,
+            });
           }
-          if (evt.type === "done") {
-            const outputs = project.outputs;
-            const target = outputs.find((o) => o.generationSessionId === genSessionId);
-            if (target) {
-              updateOutput(target.id, {
-                status: "complete",
-                preview: typeof evt.content === "string" ? evt.content.slice(0, 200) : undefined,
-              });
-            }
+        }
+        if (evt.type === "done") {
+          const outputs = project.outputs;
+          const target = outputs.find((o) => o.generationSessionId === genSessionId);
+          if (target) {
+            updateOutput(target.id, {
+              status: "complete",
+              preview: typeof evt.content === "string" ? evt.content.slice(0, 200) : undefined,
+            });
           }
-          if (evt.type === "error") {
-            const outputs = project.outputs;
-            const target = outputs.find((o) => o.generationSessionId === genSessionId);
-            if (target) {
-              updateOutput(target.id, {
-                status: "error",
-                error: evt.message || "Generation failed",
-              });
-            }
+        }
+        if (evt.type === "error") {
+          const outputs = project.outputs;
+          const target = outputs.find((o) => o.generationSessionId === genSessionId);
+          if (target) {
+            updateOutput(target.id, {
+              status: "error",
+              error: evt.message || "Generation failed",
+            });
           }
         }
       });

@@ -1,5 +1,5 @@
 import { useParams, useNavigate } from "react-router-dom";
-import { useEffect, useMemo } from "react";
+import { useEffect } from "react";
 import { StudioProvider } from "@/studio/context/studio-context";
 import { StudioLayout } from "@/studio/layouts/studio-layout";
 import { getProject, createProject } from "@/studio/store";

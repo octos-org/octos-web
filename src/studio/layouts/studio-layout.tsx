@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { PanelLeft, PanelRight, MessageSquare, Layers } from "lucide-react";
+import { MessageSquare, Layers } from "lucide-react";
 import { ProjectHeader } from "../components/project-header";
 import { SourcePanel } from "../components/source-panel";
 import { StudioPanel } from "../components/studio-panel";

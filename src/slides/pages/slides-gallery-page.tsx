@@ -5,7 +5,7 @@ import { useSlidesProjects, searchSlidesProjects } from "../store";
 import { TEMPLATES, TEMPLATE_COLORS } from "../constants";
 
 export function SlidesGalleryPage() {
-  const { projects, create, remove } = useSlidesProjects();
+  const { projects, create } = useSlidesProjects();
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<string>("all");

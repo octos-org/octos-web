@@ -1,13 +1,10 @@
 import { useState, useRef, useCallback } from "react";
 import { useStudio } from "../context/studio-context";
 import {
-  Plus,
   FileText,
   Globe,
   Type,
   Upload,
-  Check,
-  X,
   Trash2,
   CheckSquare,
   Square,
@@ -33,7 +30,7 @@ export function SourcePanel() {
     async (files: FileList) => {
       setUploading(true);
       try {
-        const paths = await uploadFiles(files);
+        const paths = await uploadFiles(Array.from(files));
         for (let i = 0; i < files.length; i++) {
           addSource({
             type: "upload",
