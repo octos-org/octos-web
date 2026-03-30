@@ -1,8 +1,13 @@
 import { Navigate, Outlet } from "react-router-dom";
 import { useAuth } from "./auth-context";
 
+const isStaticDeploy = import.meta.env.BASE_URL !== "/";
+
 export function AuthGuard() {
   const { token, loading } = useAuth();
+
+  // Skip auth on static deployments (e.g. GitHub Pages)
+  if (isStaticDeploy) return <Outlet />;
 
   if (loading) {
     return (
