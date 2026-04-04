@@ -24,7 +24,7 @@ export function SessionList() {
     sync();
     const onStreamChange = () => sync();
     window.addEventListener("crew:stream_state", onStreamChange);
-    const interval = setInterval(sync, 1000);
+    const interval = setInterval(sync, 3000);
     return () => {
       window.removeEventListener("crew:stream_state", onStreamChange);
       clearInterval(interval);

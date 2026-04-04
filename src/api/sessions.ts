@@ -11,21 +11,22 @@ export async function getMessages(
   offset = 0,
 ): Promise<MessageInfo[]> {
   return request(
-    `/api/sessions/${encodeURIComponent(sessionId)}/messages?limit=${limit}&offset=${offset}`,
+    `/api/sessions/${encodeURIComponent(sessionId)}/messages?limit=${limit}&offset=${offset}&source=full`,
   );
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
-  const { getToken } = await import("./client");
-  const { API_BASE } = await import("@/lib/constants");
-  const token = getToken();
-  const resp = await fetch(`${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}`, {
+  await request(`/api/sessions/${encodeURIComponent(sessionId)}`, {
     method: "DELETE",
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
-  if (!resp.ok) {
-    throw new Error(`Delete failed: HTTP ${resp.status}`);
-  }
+}
+
+export async function getSessionStatus(
+  sessionId: string,
+): Promise<{ active: boolean; has_deferred_files: boolean }> {
+  return request(
+    `/api/sessions/${encodeURIComponent(sessionId)}/status`,
+  );
 }
 
 export async function getStatus() {

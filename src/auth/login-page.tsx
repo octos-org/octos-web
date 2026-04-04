@@ -38,11 +38,7 @@ export function LoginPage() {
     setSending(true);
     try {
       await login(email, code);
-      if (redirectTo) {
-        window.location.href = redirectTo;
-        return;
-      }
-      navigate("/", { replace: true });
+      navigate(redirectTo || "/", { replace: true });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Verification failed");
     } finally {
@@ -50,14 +46,15 @@ export function LoginPage() {
     }
   }
 
-  function handleTokenLogin() {
+  async function handleTokenLogin() {
     if (!adminToken.trim()) return;
-    loginWithToken(adminToken.trim());
-    if (redirectTo) {
-      window.location.href = redirectTo;
-      return;
+    setError("");
+    try {
+      await loginWithToken(adminToken.trim());
+      navigate(redirectTo || "/", { replace: true });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Invalid token");
     }
-    navigate("/", { replace: true });
   }
 
   return (

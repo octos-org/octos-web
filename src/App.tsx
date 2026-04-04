@@ -4,23 +4,12 @@ import { AuthGuard } from "./auth/auth-guard";
 import { LoginPage } from "./auth/login-page";
 import { OctosRuntimeProvider } from "./runtime/runtime-provider";
 import { ChatLayout } from "./layouts/chat-layout";
-import { Thread } from "./components/thread";
+import { ChatThread } from "./components/chat-thread";
 import { HomePage } from "./pages/home-page";
 import { SettingsPage } from "./pages/settings-page";
 import { StudioPage } from "./pages/studio-page";
 import { SlidesGalleryPage } from "./slides/pages/slides-gallery-page";
 import { SlidesEditorPage } from "./slides/pages/slides-editor-page";
-import {
-  ShellToolUI,
-  ReadFileToolUI,
-  WriteFileToolUI,
-  EditFileToolUI,
-  WebSearchToolUI,
-  WebFetchToolUI,
-  GrepToolUI,
-  GlobToolUI,
-  GenericToolUI,
-} from "./tools";
 
 function ChatPage() {
   return (
@@ -28,19 +17,10 @@ function ChatPage() {
       <ChatLayout>
         <div className="flex h-full flex-col min-h-0">
           <div className="flex-1 min-h-0 overflow-hidden">
-            <Thread />
+            <ChatThread />
           </div>
         </div>
       </ChatLayout>
-      <ShellToolUI />
-      <ReadFileToolUI />
-      <WriteFileToolUI />
-      <EditFileToolUI />
-      <WebSearchToolUI />
-      <WebFetchToolUI />
-      <GrepToolUI />
-      <GlobToolUI />
-      <GenericToolUI />
     </OctosRuntimeProvider>
   );
 }

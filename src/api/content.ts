@@ -66,20 +66,6 @@ export function thumbnailUrl(id: string): string {
   return `${API_BASE}/api/my/content/${id}/thumbnail`;
 }
 
-export function bodyUrl(id: string): string {
-  return `${API_BASE}/api/my/content/${id}/body`;
-}
-
-/** Fetch raw file content as text (for markdown viewer). */
-export async function fetchContentBody(id: string): Promise<string> {
-  const token = getToken();
-  const resp = await fetch(`${API_BASE}/api/my/content/${id}/body`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-  return resp.text();
-}
-
 /** Secure download with auth header. */
 export async function downloadContent(entry: ContentEntry): Promise<void> {
   const token = getToken();

@@ -1,13 +1,13 @@
 import { Navigate, Outlet } from "react-router-dom";
 import { useAuth } from "./auth-context";
 
-const isStaticDeploy = import.meta.env.BASE_URL !== "/";
+const skipAuth = import.meta.env.VITE_SKIP_AUTH === "true";
 
 export function AuthGuard() {
   const { token, loading } = useAuth();
 
-  // Skip auth on static deployments (e.g. GitHub Pages)
-  if (isStaticDeploy) return <Outlet />;
+  // Only skip auth when explicitly configured via VITE_SKIP_AUTH=true
+  if (skipAuth) return <Outlet />;
 
   if (loading) {
     return (

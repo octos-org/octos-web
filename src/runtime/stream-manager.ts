@@ -170,8 +170,15 @@ export function startStream(
       } finally {
         reader.releaseLock();
       }
-    } catch {
-      // fetch aborted or network error
+    } catch (err) {
+      // fetch aborted or network error — notify subscribers
+      if (err instanceof Error && err.name !== "AbortError") {
+        console.warn("[stream-manager] stream error:", err.message);
+        const errorEvent: StreamEvent = {
+          raw: { type: "error", message: err.message },
+        };
+        for (const cb of stream.subscribers) cb(errorEvent);
+      }
     } finally {
       stream.active = false;
       window.dispatchEvent(
@@ -205,30 +212,43 @@ export function startStream(
  */
 export function waitForNewStream(sessionId: string): Promise<void> {
   return new Promise((resolve) => {
+    let resolved = false;
+    let checkTimerId: ReturnType<typeof setTimeout> | undefined;
+
+    const cleanup = () => {
+      if (resolved) return;
+      resolved = true;
+      if (checkTimerId !== undefined) clearTimeout(checkTimerId);
+      window.removeEventListener("crew:stream_state", handler);
+      resolve();
+    };
+
     const check = () => {
+      if (resolved) return;
       const stream = streams.get(sessionId);
       if (stream?.active && stream.events.length === 0) {
         // Fresh stream just started
-        resolve();
+        cleanup();
       } else {
-        setTimeout(check, 50);
+        checkTimerId = setTimeout(check, 50);
       }
     };
+
     // Listen for stream_state event
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail;
       if (detail?.sessionId === sessionId && detail?.active) {
-        window.removeEventListener("crew:stream_state", handler);
         // Small delay to let the stream object be set up
-        setTimeout(resolve, 50);
+        setTimeout(cleanup, 50);
       }
     };
     window.addEventListener("crew:stream_state", handler);
+
+    // Start the polling check
+    checkTimerId = setTimeout(check, 50);
+
     // Timeout: if no new stream in 60s, resolve anyway to prevent hanging
-    setTimeout(() => {
-      window.removeEventListener("crew:stream_state", handler);
-      resolve();
-    }, 60000);
+    setTimeout(cleanup, 60000);
   });
 }
 

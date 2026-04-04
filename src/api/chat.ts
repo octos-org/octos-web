@@ -1,4 +1,4 @@
-import { getToken } from "./client";
+import { getToken, clearToken } from "./client";
 import { API_BASE } from "@/lib/constants";
 import type { ChatResponse } from "./types";
 import { request } from "./client";
@@ -33,6 +33,13 @@ export async function uploadFiles(files: File[]): Promise<string[]> {
   });
 
   if (!resp.ok) {
+    // Mirror the auto-logout behavior from request() on auth failure
+    if (resp.status === 401 || resp.status === 403) {
+      clearToken();
+      if (!window.location.pathname.endsWith("/login")) {
+        window.location.href = "/login?redirect=" + encodeURIComponent(window.location.pathname);
+      }
+    }
     const text = await resp.text();
     throw new Error(text || `Upload failed: HTTP ${resp.status}`);
   }

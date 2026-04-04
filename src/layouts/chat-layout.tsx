@@ -145,9 +145,8 @@ export function ChatLayout({ children }: { children: ReactNode }) {
         </main>
 
         {/* Content side panel with resize handle */}
-        {mediaPanelOpen && (
+        {mediaPanelOpen && !isMaximized && (
           <>
-            {/* Resize handle */}
             <div
               onMouseDown={onMouseDown}
               className="w-1 cursor-col-resize bg-transparent hover:bg-accent/30 transition-colors"
@@ -168,7 +167,20 @@ export function ChatLayout({ children }: { children: ReactNode }) {
         )}
       </div>
 
-      {/* Content viewer overlays */}
+      {/* Maximized content panel — covers entire window including sidebar */}
+      {mediaPanelOpen && isMaximized && (
+        <div className="fixed inset-0 z-40 bg-sidebar">
+          <ContentBrowser
+            open={mediaPanelOpen}
+            onClose={() => { setMediaPanelOpen(false); toggleMaximize(); }}
+            isMaximized={isMaximized}
+            onToggleMaximize={toggleMaximize}
+            onOpenViewer={openViewer}
+          />
+        </div>
+      )}
+
+      {/* Content viewer overlays (image album, video) */}
       <ContentViewerOverlay
         state={viewerState}
         onClose={closeViewer}

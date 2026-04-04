@@ -11,9 +11,9 @@
   --color-surface-elevated: #13325c;
 
   /* Accent */
-  --color-accent: #FF5F1F;
-  --color-accent-dim: #E85B26;
-  --color-accent-container: rgba(255, 95, 31, 0.12);
+  --color-accent: #3B82F6;
+  --color-accent-dim: #2563EB;
+  --color-accent-container: rgba(59, 130, 246, 0.12);
 
   /* Borders & dividers */
   --color-border: rgba(255, 255, 255, 0.08);
@@ -49,9 +49,9 @@
   --color-surface-container: #F7F9FC;
   --color-surface-elevated: #FFFFFF;
 
-  --color-accent: #FF5F1F;
-  --color-accent-dim: #E85B26;
-  --color-accent-container: rgba(255, 95, 31, 0.08);
+  --color-accent: #3B82F6;
+  --color-accent-dim: #2563EB;
+  --color-accent-container: rgba(59, 130, 246, 0.08);
 
   --color-border: rgba(0, 0, 0, 0.06);
   --color-outline: rgba(0, 0, 0, 0.10);
@@ -84,7 +84,7 @@
   --color-surface-container: #0a3570;
   --color-border: rgba(255, 255, 255, 0.08);
   --color-outline: rgba(255, 255, 255, 0.12);
-  --color-accent-container: rgba(255, 95, 31, 0.15);
+  --color-accent-container: rgba(59, 130, 246, 0.15);
   --color-assistant-bubble: #0f4590;
 }
 

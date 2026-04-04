@@ -62,14 +62,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loginWithToken = useCallback(async (t: string) => {
     setToken(t, true);
     setTokenState(t);
-    // Validate the token by calling /me. If it fails, the token is invalid.
+    // Validate the token by calling /me.
     try {
       const me = await authApi.me();
       setUser(me.user);
-    } catch {
-      // Token is likely an admin token without a user record — allow it
-      // but mark as admin so the UI works.
-      setUser({ email: "admin", role: "admin" } as AuthUser);
+    } catch (err) {
+      // Any error (auth rejection, network error, etc.) — reject the login attempt
+      clearToken();
+      setTokenState(null);
+      setUser(null);
+      const msg = err instanceof Error ? err.message : "Token validation failed";
+      throw new Error(msg);
     }
   }, []);
 

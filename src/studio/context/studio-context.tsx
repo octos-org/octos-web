@@ -10,7 +10,7 @@ interface StudioContextValue {
   removeSource: (sourceId: string) => void;
   toggleSource: (sourceId: string) => void;
   selectAllSources: (selected: boolean) => void;
-  addOutput: (output: Omit<StudioOutput, "id" | "createdAt">) => void;
+  addOutput: (output: Omit<StudioOutput, "id" | "createdAt">) => string | undefined;
   updateOutput: (outputId: string, update: Partial<StudioOutput>) => void;
   selectedSources: StudioSource[];
 }

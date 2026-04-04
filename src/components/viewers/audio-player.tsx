@@ -68,7 +68,7 @@ export function AudioPlayer({ entry, onClose }: AudioPlayerProps) {
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-border bg-sidebar px-4 py-2.5">
+    <div className="border-t border-border bg-surface-container px-3 py-2.5">
       <audio ref={audioRef} src={audioUrl(entry)} preload="metadata" />
 
       <div className="flex items-center gap-3">

@@ -5,7 +5,7 @@
 import { chromium } from "playwright";
 
 const BASE = "http://localhost:5174";
-const AUTH_TOKEN = "crew2026";
+const AUTH_TOKEN = process.env.AUTH_TOKEN || "crew2026";
 
 async function main() {
   const browser = await chromium.launch({ headless: true });

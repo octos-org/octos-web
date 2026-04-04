@@ -29,14 +29,10 @@ export async function request<T>(
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
   }
-  // Pass search engine config to backend
+  // Pass search engine preference (not sensitive)
   headers["X-Search-Engine"] = settings.searchEngine;
-  if (settings.serperApiKey) {
-    headers["X-Serper-Api-Key"] = settings.serperApiKey;
-  }
-  if (settings.crawl4aiUrl) {
-    headers["X-Crawl4ai-Url"] = settings.crawl4aiUrl;
-  }
+  // Sensitive keys (serperApiKey, crawl4aiUrl) are stored server-side
+  // via profile config — not sent per-request in headers.
 
   const resp = await fetch(`${API_BASE}${path}`, {
     ...options,
@@ -44,6 +40,14 @@ export async function request<T>(
   });
 
   if (!resp.ok) {
+    // Auto-logout on auth failure (expired/invalid token)
+    if (resp.status === 401 || resp.status === 403) {
+      clearToken();
+      // Redirect to login unless already there
+      if (!window.location.pathname.endsWith("/login")) {
+        window.location.href = "/login?redirect=" + encodeURIComponent(window.location.pathname);
+      }
+    }
     const text = await resp.text();
     throw new Error(text || `HTTP ${resp.status}`);
   }

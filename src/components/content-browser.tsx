@@ -13,6 +13,7 @@ import {
 } from "@/components/content-filter-bar";
 import { ContentList } from "@/components/content-list";
 import { ContentGrid, ContentCoverFlow } from "@/components/content-grid";
+import { AudioPlayer } from "@/components/viewers/audio-player";
 
 interface ContentBrowserProps {
   open: boolean;
@@ -37,6 +38,7 @@ export function ContentBrowser({
     return (localStorage.getItem("octos_view_mode") as ViewMode) || "list";
   });
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [audioEntry, setAudioEntry] = useState<ContentEntry | null>(null);
 
   useContentLoader(filters);
   const { entries, total, loading, error } = useContent();
@@ -55,17 +57,14 @@ export function ContentBrowser({
     });
   }, []);
 
-  const handleDelete = useCallback(
-    async (id: string) => {
-      await removeContent([id]);
-      setSelected((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-    },
-    [],
-  );
+  const handleDelete = useCallback(async (id: string) => {
+    await removeContent([id]);
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
 
   const handleBulkDelete = useCallback(async () => {
     const ids = Array.from(selected);
@@ -81,6 +80,11 @@ export function ContentBrowser({
 
   const handleOpen = useCallback(
     (entry: ContentEntry) => {
+      // Audio plays inline in this panel
+      if (entry.category === "audio") {
+        setAudioEntry(entry);
+        return;
+      }
       onOpenViewer(entry, entries);
     },
     [entries, onOpenViewer],
@@ -166,6 +170,11 @@ export function ContentBrowser({
           />
         )}
       </div>
+
+      {/* Inline audio player (inside this panel) */}
+      {audioEntry && (
+        <AudioPlayer entry={audioEntry} onClose={() => setAudioEntry(null)} />
+      )}
 
       {/* Bulk action bar */}
       {selected.size > 0 && (

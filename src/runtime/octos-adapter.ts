@@ -76,11 +76,13 @@ export function createOctosAdapter(
       // If the component unmounts (abortSignal fires), the subscription
       // stops but the stream continues in background.
       let text = "";
+      let toolCallCounter = 0;
       const toolCalls = new Map<
         string,
         { toolCallId: string; toolName: string; status: string }
       >();
-      const fileLinks: string[] = [];
+      /** Maps tool name to the most recent toolCall key (for tool_end matching). */
+      const activeToolByName = new Map<string, string>();
       let done = false;
 
       // Create a queue for events from the subscriber
@@ -132,17 +134,21 @@ export function createOctosAdapter(
                 yield buildResult(stripToolProgress(stripThink(text)), toolCalls);
                 break;
 
-              case "tool_start":
-                toolCalls.set(event.tool, {
+              case "tool_start": {
+                const key = `tc_${++toolCallCounter}`;
+                toolCalls.set(key, {
                   toolCallId: `tc_${event.tool}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
                   toolName: event.tool,
                   status: "running",
                 });
+                activeToolByName.set(event.tool, key);
                 yield buildResult(text, toolCalls);
                 break;
+              }
 
               case "tool_end": {
-                const tc = toolCalls.get(event.tool);
+                const key = activeToolByName.get(event.tool);
+                const tc = key ? toolCalls.get(key) : undefined;
                 if (tc) tc.status = event.success ? "complete" : "error";
                 yield buildResult(text, toolCalls);
                 break;
@@ -181,11 +187,14 @@ export function createOctosAdapter(
               case "file": {
                 const fileEvent = event as { path?: string; filename?: string; caption?: string };
                 if (fileEvent.path && fileEvent.filename) {
-                  const tok = getToken();
-                  const tokenParam = tok ? `?token=${encodeURIComponent(tok)}` : "";
-                  const fileUrl = `${API_BASE}/api/files/${encodeURIComponent(fileEvent.path)}${tokenParam}`;
+                  const fileUrl = `${API_BASE}/api/files/${encodeURIComponent(fileEvent.path)}`;
                   const caption = fileEvent.caption ? ` — ${fileEvent.caption}` : "";
-                  fileLinks.push(`\n\n📄 [${fileEvent.filename}](${fileUrl})${caption}`);
+                  // Dispatch DOM event so UI can append file link even after stream ends
+                  window.dispatchEvent(
+                    new CustomEvent("crew:file", {
+                      detail: { fileUrl, filename: fileEvent.filename, caption, sessionId },
+                    }),
+                  );
                 }
                 break;
               }
@@ -193,9 +202,6 @@ export function createOctosAdapter(
               case "done":
                 if (event.content) {
                   text = stripToolProgress(stripThink(event.content));
-                }
-                if (fileLinks.length > 0) {
-                  text += fileLinks.join("");
                 }
                 if (event.model || event.tokens_in || event.tokens_out) {
                   window.dispatchEvent(
@@ -214,10 +220,13 @@ export function createOctosAdapter(
                 done = true;
                 break;
 
-              case "error":
-                throw new Error(
-                  (event as { message?: string }).message || "Agent error",
-                );
+              case "error": {
+                const errMsg = (event as { message?: string }).message || "Agent error";
+                text = `⚠️ Error: ${errMsg}`;
+                yield buildResult(text, toolCalls);
+                done = true;
+                break;
+              }
 
               case "stream_end":
                 break;
@@ -244,14 +253,14 @@ export function createOctosAdapter(
 
       // If stream ended without any content at all, poll for response
       if (!text) {
-        const token = getToken();
         for (let poll = 0; poll < 180; poll++) {
           if (abortSignal.aborted) break;
           await new Promise((r) => setTimeout(r, 5000));
           try {
+            const freshToken = getToken();
             const pollResp = await fetch(
               `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/messages?limit=3`,
-              { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+              { headers: freshToken ? { Authorization: `Bearer ${freshToken}` } : {} },
             );
             if (pollResp.ok) {
               const pollMsgs = (await pollResp.json()) as {
@@ -263,9 +272,6 @@ export function createOctosAdapter(
                 .find((m) => m.role === "assistant" && m.content.length > 20);
               if (lastAssistant) {
                 text = lastAssistant.content;
-                if (fileLinks.length > 0) {
-                  text += fileLinks.join("");
-                }
                 yield buildResult(text, toolCalls);
                 break;
               }

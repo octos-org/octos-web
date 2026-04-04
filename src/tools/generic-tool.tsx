@@ -23,7 +23,7 @@ export const GenericToolUI = makeAssistantToolUI<
           className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-surface-light"
         >
           <Wrench size={14} className="shrink-0 text-muted" />
-          <span className="font-medium text-zinc-300">{toolName}</span>
+          <span className="font-medium text-text">{toolName}</span>
           {status.type === "running" && (
             <Loader2 size={14} className="animate-spin text-accent" />
           )}
@@ -40,12 +40,12 @@ export const GenericToolUI = makeAssistantToolUI<
         {expanded && (
           <div className="border-t border-border px-3 py-2">
             {args && Object.keys(args).length > 0 && (
-              <pre className="mb-2 text-xs text-zinc-400">
+              <pre className="mb-2 text-xs text-muted">
                 {JSON.stringify(args, null, 2)}
               </pre>
             )}
             {result != null && (
-              <pre className="max-h-48 overflow-auto text-xs text-zinc-500">
+              <pre className="max-h-48 overflow-auto text-xs text-muted/70">
                 {typeof result === "string"
                   ? result
                   : JSON.stringify(result, null, 2)}

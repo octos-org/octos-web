@@ -26,7 +26,7 @@ export const ShellToolUI = makeAssistantToolUI<
           className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-surface-light"
         >
           <Terminal size={14} className="shrink-0 text-green-400" />
-          <code className="flex-1 truncate text-zinc-300">{command}</code>
+          <code className="flex-1 truncate text-text">{command}</code>
           {status.type === "running" && (
             <Loader2 size={14} className="animate-spin text-accent" />
           )}
@@ -43,7 +43,7 @@ export const ShellToolUI = makeAssistantToolUI<
           )}
         </button>
         {expanded && output && (
-          <pre className="max-h-64 overflow-auto border-t border-border px-3 py-2 font-mono text-xs text-zinc-400">
+          <pre className="max-h-64 overflow-auto border-t border-border px-3 py-2 font-mono text-xs text-muted">
             {output}
           </pre>
         )}

@@ -68,54 +68,46 @@ export function StudioPanel() {
       const genSessionId = `studio-gen-${project.id}-${Date.now()}`;
       const title = `${activeTile.label} — ${new Date().toLocaleTimeString()}`;
 
-      addOutput({
+      const outputId = addOutput({
         type: activeTile.type,
         title,
         status: "generating",
         generationSessionId: genSessionId,
         options,
       });
+      if (!outputId) return;
 
       const prompt = buildGenerationPrompt(activeTile, options, selectedSources);
 
       // Start the SSE stream for this generation
       StreamManager.startStream(genSessionId, prompt, []);
 
-      // Subscribe to capture file events and completion
-      StreamManager.subscribe(genSessionId, (streamEvt) => {
+      // Subscribe to capture file events and completion.
+      // Use the captured outputId directly to avoid stale closure over project.outputs.
+      const unsubscribe = StreamManager.subscribe(genSessionId, (streamEvt) => {
         const evt = streamEvt.raw as any;
         if (evt.type === "file") {
           const token = getToken();
           const fileUrl = `${API_BASE}/files/${encodeURIComponent(evt.path)}?token=${encodeURIComponent(token || "")}`;
-          const outputs = project.outputs;
-          const target = outputs.find((o) => o.generationSessionId === genSessionId);
-          if (target) {
-            updateOutput(target.id, {
-              fileUrl,
-              filePath: evt.path,
-              filename: evt.filename,
-            });
-          }
+          updateOutput(outputId, {
+            fileUrl,
+            filePath: evt.path,
+            filename: evt.filename,
+          });
         }
         if (evt.type === "done") {
-          const outputs = project.outputs;
-          const target = outputs.find((o) => o.generationSessionId === genSessionId);
-          if (target) {
-            updateOutput(target.id, {
-              status: "complete",
-              preview: typeof evt.content === "string" ? evt.content.slice(0, 200) : undefined,
-            });
-          }
+          updateOutput(outputId, {
+            status: "complete",
+            preview: typeof evt.content === "string" ? evt.content.slice(0, 200) : undefined,
+          });
+          unsubscribe?.();
         }
         if (evt.type === "error") {
-          const outputs = project.outputs;
-          const target = outputs.find((o) => o.generationSessionId === genSessionId);
-          if (target) {
-            updateOutput(target.id, {
-              status: "error",
-              error: evt.message || "Generation failed",
-            });
-          }
+          updateOutput(outputId, {
+            status: "error",
+            error: evt.message || "Generation failed",
+          });
+          unsubscribe?.();
         }
       });
 
@@ -137,7 +129,7 @@ export function StudioPanel() {
               key={tile.type}
               config={tile}
               onClick={() => setActiveTile(tile)}
-              disabled={selectedSources.length === 0 && tile.available}
+              disabled={selectedSources.length === 0}
             />
           ))}
         </div>

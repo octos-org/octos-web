@@ -13,7 +13,25 @@ function loadProjects(): SlidesProject[] {
 }
 
 function saveProjects(projects: SlidesProject[]): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(projects));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(projects));
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "QuotaExceededError") {
+      // Evict oldest projects and retry
+      if (projects.length > 1) {
+        const sorted = [...projects].sort((a, b) => b.updatedAt - a.updatedAt);
+        const trimmed = sorted.slice(0, Math.max(1, Math.floor(sorted.length / 2)));
+        console.warn(`[slides] localStorage quota exceeded, evicting ${projects.length - trimmed.length} old projects`);
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
+        } catch {
+          console.error("[slides] localStorage quota exceeded even after eviction");
+        }
+      } else {
+        console.error("[slides] localStorage quota exceeded, unable to save");
+      }
+    }
+  }
 }
 
 export function generateSlidesId(): string {

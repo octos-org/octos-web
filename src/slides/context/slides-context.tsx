@@ -1,4 +1,4 @@
-import { createContext, useContext, useCallback, type ReactNode } from "react";
+import { createContext, useContext, useCallback, useRef, type ReactNode } from "react";
 import type { SlidesProject, Slide } from "../types";
 import { useSlidesProject, updateSlidesProject } from "../store";
 
@@ -27,56 +27,64 @@ export function SlidesProvider({
 }) {
   const { project, save, reload } = useSlidesProject(projectId);
 
+  // Keep a ref to the latest project so callbacks never close over stale state
+  const projectRef = useRef(project);
+  projectRef.current = project;
+
   const updateSlide = useCallback(
     (index: number, update: Partial<Slide>) => {
-      if (!project) return;
-      const slides = project.slides.map((s) =>
+      const p = projectRef.current;
+      if (!p) return;
+      const slides = p.slides.map((s) =>
         s.index === index ? { ...s, ...update } : s,
       );
-      updateSlidesProject(project.id, { slides });
+      updateSlidesProject(p.id, { slides });
       reload();
     },
-    [project, reload],
+    [reload],
   );
 
   const addSlide = useCallback(
     (slide: Omit<Slide, "index">, at?: number) => {
-      if (!project) return;
-      const pos = at ?? project.slides.length;
+      const p = projectRef.current;
+      if (!p) return;
+      const pos = at ?? p.slides.length;
       const newSlide: Slide = { ...slide, index: pos };
-      const slides = [...project.slides];
+      const slides = [...p.slides];
       slides.splice(pos, 0, newSlide);
       // Re-index all slides
       const reindexed = slides.map((s, i) => ({ ...s, index: i }));
-      updateSlidesProject(project.id, { slides: reindexed });
+      updateSlidesProject(p.id, { slides: reindexed });
       reload();
     },
-    [project, reload],
+    [reload],
   );
 
   const removeSlide = useCallback(
     (index: number) => {
-      if (!project) return;
-      const slides = project.slides
+      const p = projectRef.current;
+      if (!p) return;
+      const slides = p.slides
         .filter((s) => s.index !== index)
         .map((s, i) => ({ ...s, index: i }));
-      updateSlidesProject(project.id, { slides });
+      updateSlidesProject(p.id, { slides });
       reload();
     },
-    [project, reload],
+    [reload],
   );
 
   const moveSlide = useCallback(
     (from: number, to: number) => {
-      if (!project) return;
-      const slides = [...project.slides];
+      const p = projectRef.current;
+      if (!p) return;
+      const slides = [...p.slides];
       const [moved] = slides.splice(from, 1);
       slides.splice(to, 0, moved);
       const reindexed = slides.map((s, i) => ({ ...s, index: i }));
-      updateSlidesProject(project.id, { slides: reindexed });
+      updateSlidesProject(p.id, { slides: reindexed });
       reload();
     },
-    [project, reload],
+    [reload],
   );
 
   return (

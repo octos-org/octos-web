@@ -1,6 +1,6 @@
 import { type Page, expect } from "@playwright/test";
 
-const AUTH_TOKEN = process.env.AUTH_TOKEN || "crew2026";
+const AUTH_TOKEN = process.env.AUTH_TOKEN || "e2e-test-2026";
 
 // ── Selectors (data-testid based) ──────────────────────────────
 
@@ -28,12 +28,20 @@ export { SEL };
 // ── Login ──────────────────────────────────────────────────────
 
 export async function login(page: Page) {
-  const base = "http://localhost:5174";
-  await page.goto(`${base}/login`, { waitUntil: "networkidle" });
-  await page.locator("button", { hasText: "Auth Token" }).click();
-  await page.locator(SEL.loginTokenInput).fill(AUTH_TOKEN);
-  await page.locator(SEL.loginButton).click();
-  await page.waitForURL("**/", { timeout: 15_000 });
+  // Inject test token directly into localStorage (bypasses login UI)
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.evaluate((token) => {
+    localStorage.setItem("octos_session_token", token);
+    localStorage.setItem("octos_auth_token", token);
+  }, AUTH_TOKEN);
+  await page.reload({ waitUntil: "networkidle" });
+
+  // Should land on chat directly with valid token
+  const onChat = await page.locator(SEL.chatInput).isVisible({ timeout: 10_000 }).catch(() => false);
+  if (onChat) return;
+
+  // If redirected to login, navigate to chat directly (token is in localStorage)
+  await page.goto("/chat", { waitUntil: "networkidle" });
   await page.waitForSelector(SEL.chatInput, { timeout: 10_000 });
 }
 

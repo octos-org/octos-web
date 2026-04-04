@@ -1,11 +1,7 @@
-import { useMemo, useCallback } from "react";
-import {
-  AssistantRuntimeProvider,
-  useLocalRuntime,
-} from "@assistant-ui/react";
-import { createOctosAdapter } from "@/runtime/octos-adapter";
-import { Thread } from "@/components/thread";
+import { useMemo, useEffect } from "react";
+import { ChatThread } from "@/components/chat-thread";
 import { SessionContext } from "@/runtime/session-context";
+import * as MessageStore from "@/store/message-store";
 
 interface Props {
   sessionId: string;
@@ -13,23 +9,17 @@ interface Props {
 }
 
 export function SlidesChat({ sessionId, projectTitle }: Props) {
-  const getSessionId = useCallback(() => sessionId, [sessionId]);
-  const noop = useCallback(async () => {}, []);
-  const noopSync = useCallback(() => {}, []);
-  const getPendingMedia = useCallback(() => [] as string[], []);
-
-  const adapter = useMemo(
-    () => createOctosAdapter(getSessionId, noop, getPendingMedia, noopSync),
-    [getSessionId, noop, getPendingMedia, noopSync],
-  );
-
-  const runtime = useLocalRuntime(adapter);
+  // Load history for this session
+  useEffect(() => {
+    MessageStore.loadHistory(sessionId);
+  }, [sessionId]);
 
   const sessionValue = useMemo(
     () => ({
       sessions: [],
       currentSessionId: sessionId,
       initialMessages: [] as never[],
+      activeTaskOnServer: false,
       switchSession: () => {},
       createSession: () => {},
       removeSession: async () => {},
@@ -41,18 +31,16 @@ export function SlidesChat({ sessionId, projectTitle }: Props) {
 
   return (
     <SessionContext.Provider value={sessionValue}>
-      <AssistantRuntimeProvider runtime={runtime}>
-        <div className="flex flex-col h-full">
-          <div className="px-3 py-2 border-b border-border">
-            <p className="text-xs text-muted truncate">
-              {projectTitle || "Slides Agent"}
-            </p>
-          </div>
-          <div className="flex-1 min-h-0 overflow-hidden">
-            <Thread />
-          </div>
+      <div className="flex flex-col h-full">
+        <div className="px-3 py-2 border-b border-border">
+          <p className="text-xs text-muted truncate">
+            {projectTitle || "Slides Agent"}
+          </p>
         </div>
-      </AssistantRuntimeProvider>
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <ChatThread />
+        </div>
+      </div>
     </SessionContext.Provider>
   );
 }

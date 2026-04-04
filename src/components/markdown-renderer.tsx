@@ -1,5 +1,4 @@
 import { Component, memo, useEffect, useRef, useState, type ReactNode, type ErrorInfo } from "react";
-import { useMessagePartText } from "@assistant-ui/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -8,6 +7,7 @@ import "katex/dist/katex.min.css";
 import { Download } from "lucide-react";
 import { MediaPlayer } from "./media-player";
 import mermaid from "mermaid";
+import DOMPurify from "dompurify";
 
 mermaid.initialize({
   startOnLoad: false,
@@ -23,11 +23,16 @@ function MermaidBlock({ content }: { content: string }) {
   useEffect(() => {
     const id = `mermaid-${++mermaidCounter}`;
     mermaid.render(id, content.trim())
-      .then(({ svg }) => setSvg(svg))
+      .then(({ svg }) => {
+        setSvg(svg);
+        // Clean up the temporary DOM element mermaid creates for rendering
+        const el = document.getElementById(id);
+        if (el) el.remove();
+      })
       .catch(() => {});
   }, [content]);
   if (!svg) return <pre className="my-3 rounded-2xl bg-code-block-bg p-4 text-xs text-code-text whitespace-pre-wrap">{content}</pre>;
-  return <div className="my-3 overflow-x-auto rounded-2xl bg-code-block-bg p-4" dangerouslySetInnerHTML={{ __html: svg }} />;
+  return <div className="my-3 overflow-x-auto rounded-2xl bg-code-block-bg p-4" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } }) }} />;
 }
 
 function CodeBlock({ children, className }: { children?: ReactNode; className?: string }) {
@@ -151,13 +156,24 @@ const MemoizedMarkdown = memo(function MemoizedMarkdown({ text, className }: { t
   );
 });
 
-export function RichMarkdown({ className }: { className?: string }) {
-  const part = useMessagePartText();
-  const text = part?.text ?? "";
-
+/** Standalone markdown renderer — no assistant-ui dependency. */
+export function MarkdownContent({ text, className }: { text: string; className?: string }) {
   return (
     <MarkdownErrorBoundary fallback={text}>
       <MemoizedMarkdown text={text} className={className} />
+    </MarkdownErrorBoundary>
+  );
+}
+
+/**
+ * @deprecated Use MarkdownContent instead. Kept for backward compatibility
+ * with any code that still imports RichMarkdown.
+ */
+export function RichMarkdown({ className, text }: { className?: string; text?: string }) {
+  const content = text ?? "";
+  return (
+    <MarkdownErrorBoundary fallback={content}>
+      <MemoizedMarkdown text={content} className={className} />
     </MarkdownErrorBoundary>
   );
 }

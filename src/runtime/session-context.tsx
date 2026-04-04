@@ -7,7 +7,7 @@ import {
   useRef,
   type ReactNode,
 } from "react";
-import { listSessions, getMessages, deleteSession as apiDeleteSession } from "@/api/sessions";
+import { listSessions, getMessages, getSessionStatus, deleteSession as apiDeleteSession } from "@/api/sessions";
 import type { SessionInfo, MessageInfo } from "@/api/types";
 
 /** Extract a short title from message content, handling JSON content parts. */
@@ -38,6 +38,8 @@ interface SessionContextValue {
   sessions: SessionWithTitle[];
   currentSessionId: string;
   initialMessages: MessageInfo[];
+  /** True if the current session has a task running on the server. */
+  activeTaskOnServer: boolean;
   switchSession: (id: string) => void;
   createSession: () => void;
   removeSession: (id: string) => Promise<void>;
@@ -79,9 +81,35 @@ function sessionTimestamp(s: SessionInfo): number {
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [sessions, setSessions] = useState<SessionWithTitle[]>([]);
-  const [currentSessionId, setCurrentSessionId] = useState(generateSessionId);
+  const [currentSessionId, setCurrentSessionId] = useState(() => {
+    // Restore last session on refresh, or generate a new one
+    const saved = localStorage.getItem("octos_current_session");
+    return saved || generateSessionId();
+  });
   const [initialMessages, setInitialMessages] = useState<MessageInfo[]>([]);
+  const [activeTaskOnServer, setActiveTaskOnServer] = useState(false);
   const titleCache = useRef<Record<string, string>>({});
+
+  // Persist current session ID for refresh recovery
+  useEffect(() => {
+    localStorage.setItem("octos_current_session", currentSessionId);
+  }, [currentSessionId]);
+
+  // Load history for restored session on mount
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current) return;
+    restoredRef.current = true;
+    const saved = localStorage.getItem("octos_current_session");
+    if (saved && saved.startsWith("web-")) {
+      getMessages(saved).then((msgs) => {
+        if (msgs.length > 0) setInitialMessages(msgs);
+      }).catch(() => {});
+      getSessionStatus(saved).then((status) => {
+        setActiveTaskOnServer(status.active);
+      }).catch(() => {});
+    }
+  }, []);
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -133,12 +161,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     // Guard against race: only the latest switch request wins
     const requestId = ++switchRequestRef.current;
     try {
-      const messages = await getMessages(id);
+      const [messages, status] = await Promise.all([
+        getMessages(id),
+        getSessionStatus(id).catch(() => ({ active: false, has_deferred_files: false })),
+      ]);
       if (switchRequestRef.current !== requestId) return; // stale
       setInitialMessages(messages);
+      setActiveTaskOnServer(status.active);
     } catch {
       if (switchRequestRef.current !== requestId) return;
       setInitialMessages([]);
+      setActiveTaskOnServer(false);
     }
     setCurrentSessionId(id);
   }, []);
@@ -191,6 +224,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         sessions,
         currentSessionId,
         initialMessages,
+        activeTaskOnServer,
         switchSession,
         createSession,
         removeSession,
