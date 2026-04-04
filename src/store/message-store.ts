@@ -184,6 +184,7 @@ export function loadHistory(sessionId: string): Promise<void> {
   const promise = (async () => {
     try {
       const apiMessages = await fetchMessages(sessionId);
+      console.log(`[message-store] loadHistory(${sessionId}): got ${apiMessages.length} messages, roles:`, apiMessages.map(m => m.role));
       // Only populate if the store is still empty for this session
       // (streaming may have started while we were loading)
       if (!messagesBySession.has(sessionId) || messagesBySession.get(sessionId)!.length === 0) {
