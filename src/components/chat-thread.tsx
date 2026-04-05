@@ -27,7 +27,7 @@ import {
   Download,
 } from "lucide-react";
 import { useSession } from "@/runtime/session-context";
-import { useMessages, type Message, type MessageFile } from "@/store/message-store";
+import { useMessages, clearMessages, type Message, type MessageFile } from "@/store/message-store";
 import { uploadFiles } from "@/api/chat";
 import { sendMessage as bridgeSend } from "@/runtime/sse-bridge";
 import * as StreamManager from "@/runtime/stream-manager";
@@ -899,7 +899,14 @@ function Composer() {
       createSession();
       return;
     }
-    if (input === "/clear" || input === "/delete") {
+    if (input === "/clear") {
+      setText("");
+      // Clear messages locally and create fresh session
+      clearMessages(currentSessionId);
+      createSession();
+      return;
+    }
+    if (input === "/delete") {
       setText("");
       removeSession(currentSessionId);
       return;

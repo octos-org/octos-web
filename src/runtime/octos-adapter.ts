@@ -187,7 +187,11 @@ export function createOctosAdapter(
               case "file": {
                 const fileEvent = event as { path?: string; filename?: string; caption?: string };
                 if (fileEvent.path && fileEvent.filename) {
-                  const fileUrl = `${API_BASE}/api/files/${encodeURIComponent(fileEvent.path)}`;
+                  // Include token in URL for file downloads — browser GET requests
+                  // don't send Authorization headers for markdown link clicks
+                  const tok = getToken();
+                  const tokenParam = tok ? `?_token=${encodeURIComponent(tok)}` : "";
+                  const fileUrl = `${API_BASE}/api/files/${encodeURIComponent(fileEvent.path)}${tokenParam}`;
                   const caption = fileEvent.caption ? ` — ${fileEvent.caption}` : "";
                   // Dispatch DOM event so UI can append file link even after stream ends
                   window.dispatchEvent(
