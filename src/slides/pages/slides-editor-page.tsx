@@ -20,9 +20,11 @@ function SlidesEditorContent() {
 
   const handlePresent = useCallback(() => {
     if (project) {
-      navigate(`/slides/${project.id}/present`);
+      navigate(`/slides/${project.id}/present`, {
+        state: { index: currentIndex },
+      });
     }
-  }, [project, navigate]);
+  }, [currentIndex, navigate, project]);
 
   // Esc key → back to gallery
   useEffect(() => {
