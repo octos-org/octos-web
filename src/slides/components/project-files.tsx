@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -23,6 +23,7 @@ import {
 
 interface ProjectFilesProps {
   slug: string;
+  sessionId: string;
   onOpenFile: (entry: ContentEntry, allEntries: ContentEntry[]) => void;
 }
 
@@ -51,9 +52,14 @@ function fileIcon(file: SlidesFileEntry) {
   return File;
 }
 
-export function ProjectFiles({ slug, onOpenFile }: ProjectFilesProps) {
+export function ProjectFiles({ slug, sessionId, onOpenFile }: ProjectFilesProps) {
   const [files, setFiles] = useState<SlidesFileEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  const triggerRefresh = useCallback(() => {
+    setRefreshTick((value) => value + 1);
+  }, []);
 
   useEffect(() => {
     let stopped = false;
@@ -71,17 +77,57 @@ export function ProjectFiles({ slug, onOpenFile }: ProjectFilesProps) {
           setError(err instanceof Error ? err.message : "Failed to load files");
         }
       } finally {
-        if (!stopped) pollTimer = setTimeout(load, 10000);
+        if (!stopped) pollTimer = setTimeout(load, 2500);
       }
     }
 
-    load();
+    void load();
 
     return () => {
       stopped = true;
       if (pollTimer) clearTimeout(pollTimer);
     };
-  }, [slug]);
+  }, [refreshTick, slug]);
+
+  useEffect(() => {
+    function matchesSession(detail: unknown): boolean {
+      return (
+        !!detail &&
+        typeof detail === "object" &&
+        "sessionId" in detail &&
+        detail.sessionId === sessionId
+      );
+    }
+
+    function handleEvent(event: Event) {
+      const detail =
+        event instanceof CustomEvent ? (event.detail as unknown) : undefined;
+      if (!matchesSession(detail)) return;
+      triggerRefresh();
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") {
+        triggerRefresh();
+      }
+    }
+
+    window.addEventListener("focus", triggerRefresh);
+    window.addEventListener("crew:file", handleEvent);
+    window.addEventListener("crew:bg_tasks", handleEvent);
+    window.addEventListener("crew:task_status", handleEvent);
+    window.addEventListener("crew:tool_progress", handleEvent);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", triggerRefresh);
+      window.removeEventListener("crew:file", handleEvent);
+      window.removeEventListener("crew:bg_tasks", handleEvent);
+      window.removeEventListener("crew:task_status", handleEvent);
+      window.removeEventListener("crew:tool_progress", handleEvent);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [sessionId, triggerRefresh]);
 
   const entries = useMemo(
     () => files.map((file) => slidesFileToContentEntry(file)),

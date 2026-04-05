@@ -5,6 +5,7 @@ interface ResizablePanelOptions {
   maxWidth?: number;
   defaultWidth?: number;
   storageKey?: string;
+  side?: "left" | "right";
 }
 
 export function useResizablePanel({
@@ -12,6 +13,7 @@ export function useResizablePanel({
   maxWidth = 900,
   defaultWidth = 360,
   storageKey = "octos_panel_width",
+  side = "right",
 }: ResizablePanelOptions = {}) {
   const [width, setWidth] = useState(() => {
     if (storageKey) {
@@ -45,8 +47,10 @@ export function useResizablePanel({
 
       const onMouseMove = (ev: MouseEvent) => {
         if (!isDragging.current) return;
-        // Panel is on the right, so dragging left = wider
-        const delta = startX.current - ev.clientX;
+        const delta =
+          side === "right"
+            ? startX.current - ev.clientX
+            : ev.clientX - startX.current;
         const newWidth = Math.min(maxWidth, Math.max(minWidth, startWidth.current + delta));
         setWidth(newWidth);
       };
@@ -64,7 +68,7 @@ export function useResizablePanel({
       document.body.style.cursor = "col-resize";
       document.body.style.userSelect = "none";
     },
-    [width, minWidth, maxWidth],
+    [width, minWidth, maxWidth, side],
   );
 
   const toggleMaximize = useCallback(() => {

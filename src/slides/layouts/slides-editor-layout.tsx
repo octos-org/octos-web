@@ -14,6 +14,7 @@ import {
   ContentViewerOverlay,
   type ViewerState,
 } from "@/components/content-viewer";
+import { useResizablePanel } from "@/hooks/use-resizable-panel";
 import { useSlides } from "../context/slides-context";
 import { ProjectFiles } from "../components/project-files";
 import { useTheme } from "@/hooks/use-theme";
@@ -29,6 +30,26 @@ export function SlidesEditorLayout({
   const [showFiles, setShowFiles] = useState(true);
   const { project } = useSlides();
   const { theme, toggleTheme } = useTheme();
+  const {
+    effectiveWidth: chatWidth,
+    onMouseDown: onChatResizeStart,
+  } = useResizablePanel({
+    side: "left",
+    minWidth: 320,
+    maxWidth: 720,
+    defaultWidth: 384,
+    storageKey: "octos_slides_chat_width",
+  });
+  const {
+    effectiveWidth: filesWidth,
+    onMouseDown: onFilesResizeStart,
+  } = useResizablePanel({
+    side: "right",
+    minWidth: 240,
+    maxWidth: 560,
+    defaultWidth: 256,
+    storageKey: "octos_slides_files_width",
+  });
   const [viewerState, setViewerState] = useState<ViewerState>({
     type: null,
     entry: null,
@@ -62,8 +83,14 @@ export function SlidesEditorLayout({
         </div>
       );
     }
-    return <ProjectFiles slug={project.slug} onOpenFile={openProjectFile} />;
-  }, [openProjectFile, project?.slug, showFiles]);
+    return (
+      <ProjectFiles
+        slug={project.slug}
+        sessionId={project.chatSessionId}
+        onOpenFile={openProjectFile}
+      />
+    );
+  }, [openProjectFile, project?.chatSessionId, project?.slug, showFiles]);
 
   return (
     <div className="flex h-screen flex-col bg-surface-dark">
@@ -125,22 +152,42 @@ export function SlidesEditorLayout({
       <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Left: Chat */}
         {showChat && (
-          <div className="w-96 shrink-0 border-r border-border bg-surface">
-            {chatPanel || (
-              <div className="flex h-full items-center justify-center text-xs text-muted/50">
-                Chat with the slides agent
-              </div>
-            )}
-          </div>
+          <>
+            <div
+              style={{ width: chatWidth }}
+              className="shrink-0 overflow-hidden border-r border-border bg-surface"
+            >
+              {chatPanel || (
+                <div className="flex h-full items-center justify-center text-xs text-muted/50">
+                  Chat with the slides agent
+                </div>
+              )}
+            </div>
+            <div
+              onMouseDown={onChatResizeStart}
+              className="w-1 shrink-0 cursor-col-resize bg-transparent hover:bg-accent/30 transition-colors"
+              title="Resize chat panel"
+            />
+          </>
         )}
 
         {/* Right: Preview */}
         <div className="flex-1 min-w-0 bg-surface-dark">{previewPanel}</div>
 
         {showFiles && (
-          <div className="w-64 shrink-0 border-l border-border bg-surface">
-            {filesPanel}
-          </div>
+          <>
+            <div
+              onMouseDown={onFilesResizeStart}
+              className="w-1 shrink-0 cursor-col-resize bg-transparent hover:bg-accent/30 transition-colors"
+              title="Resize files panel"
+            />
+            <div
+              style={{ width: filesWidth }}
+              className="shrink-0 overflow-hidden border-l border-border bg-surface"
+            >
+              {filesPanel}
+            </div>
+          </>
         )}
       </div>
 

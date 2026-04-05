@@ -34,9 +34,10 @@ export async function listSlidesFiles(
     throw new Error(`HTTP ${resp.status}`);
   }
   const files = (await resp.json()) as SlidesFileEntry[];
-  return files.filter((file) =>
+  const filtered = files.filter((file) =>
     requestedDirs.some((dir) => fileMatchesSlidesDir(file, dir)),
   );
+  return ensureCoreSlidesFiles(filtered, requestedDirs);
 }
 
 export function slidesFileToContentEntry(file: SlidesFileEntry): ContentEntry {
@@ -104,4 +105,49 @@ function fileMatchesSlidesDir(
   }
 
   return normalizedPath.includes(`/${normalizedDir}/`);
+}
+
+function ensureCoreSlidesFiles(
+  files: SlidesFileEntry[],
+  requestedDirs: string[],
+): SlidesFileEntry[] {
+  const nextFiles = [...files];
+  const seenPaths = new Set(nextFiles.map((file) => normalizeSlidesDir(file.path)));
+
+  for (const dir of requestedDirs) {
+    if (!dir.startsWith("slides/")) continue;
+
+    const dirFiles = nextFiles.filter((file) => fileMatchesSlidesDir(file, dir));
+    const rootFile =
+      dirFiles.find((file) => normalizeSlidesDir(file.group) === dir) ??
+      dirFiles[0];
+    if (!rootFile) continue;
+
+    const normalizedRootPath = rootFile.path.replace(/\\/g, "/");
+    const projectRoot = normalizedRootPath.slice(
+      0,
+      normalizedRootPath.lastIndexOf("/"),
+    );
+    if (!projectRoot) continue;
+
+    for (const filename of ["script.js", "memory.md", "changelog.md"]) {
+      const path = `${projectRoot}/${filename}`;
+      const normalizedPath = normalizeSlidesDir(path);
+      if (seenPaths.has(normalizedPath)) continue;
+
+      nextFiles.push({
+        filename,
+        path,
+        size: 0,
+        modified: rootFile.modified,
+        category: /\.(md|markdown|txt|js|ts|tsx|jsx|json)$/i.test(filename)
+          ? "report"
+          : rootFile.category,
+        group: dir,
+      });
+      seenPaths.add(normalizedPath);
+    }
+  }
+
+  return nextFiles;
 }
