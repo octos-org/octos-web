@@ -237,10 +237,11 @@ export function sendMessage(opts: SendOptions): void {
           }),
         );
 
-        // Start polling for background task results (file deliveries, notifications)
+        // Always poll once for file deliveries that may have been sent during
+        // the agent loop (send_file SSE event might have been missed).
+        // For bg_tasks, poll continuously until completion notification.
+        pollForBackgroundResults(sessionId, assistantMsgId, abortSignal, !event.has_bg_tasks);
         if (event.has_bg_tasks) {
-          pollForBackgroundResults(sessionId, assistantMsgId, abortSignal);
-          // Notify TaskStatusIndicator to start polling /api/sessions/{id}/tasks
           window.dispatchEvent(
             new CustomEvent("crew:bg_tasks", { detail: { sessionId } }),
           );
@@ -328,10 +329,12 @@ async function pollForBackgroundResults(
   sessionId: string,
   lastMsgId: string,
   abortSignal?: AbortSignal,
+  once = false,
 ): Promise<void> {
   const pollStart = new Date().toISOString();
+  const maxPolls = once ? 1 : 300;
 
-  for (let i = 0; i < 300; i++) {
+  for (let i = 0; i < maxPolls; i++) {
     if (abortSignal?.aborted) return;
     await new Promise((r) => setTimeout(r, 2000));
 

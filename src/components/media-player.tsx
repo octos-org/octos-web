@@ -17,10 +17,11 @@ export function MediaPlayer({ src, type, title }: MediaPlayerProps) {
     if (!ref.current) return;
     if (playing) {
       ref.current.pause();
+      setPlaying(false);
     } else {
-      ref.current.play();
+      // preload="none" means we need to load first, then play
+      ref.current.play().then(() => setPlaying(true)).catch(() => {});
     }
-    setPlaying(!playing);
   }
 
   function onTimeUpdate() {
@@ -65,6 +66,7 @@ export function MediaPlayer({ src, type, title }: MediaPlayerProps) {
         <audio
           ref={ref as React.RefObject<HTMLAudioElement>}
           src={src}
+          preload="none"
           onTimeUpdate={onTimeUpdate}
           onLoadedMetadata={onLoadedMetadata}
           onEnded={onEnded}

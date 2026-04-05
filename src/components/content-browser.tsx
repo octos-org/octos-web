@@ -126,6 +126,11 @@ export function ContentBrowser({
         </div>
       </div>
 
+      {/* Inline audio player (above filters) */}
+      {audioEntry && (
+        <AudioPlayer entry={audioEntry} onClose={() => setAudioEntry(null)} />
+      )}
+
       {/* Filters */}
       <div className="pt-2">
         <ContentFilterBar
@@ -170,11 +175,6 @@ export function ContentBrowser({
           />
         )}
       </div>
-
-      {/* Inline audio player (inside this panel) */}
-      {audioEntry && (
-        <AudioPlayer entry={audioEntry} onClose={() => setAudioEntry(null)} />
-      )}
 
       {/* Bulk action bar */}
       {selected.size > 0 && (

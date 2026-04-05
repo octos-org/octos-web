@@ -1,3 +1,4 @@
+import { useState, useMemo } from "react";
 import {
   FileText,
   Music,
@@ -8,6 +9,10 @@ import {
   Download,
   Trash2,
   Check,
+  FolderOpen,
+  FolderClosed,
+  ChevronRight,
+  ChevronDown,
 } from "lucide-react";
 import type { ContentEntry } from "@/api/content";
 import { downloadContent } from "@/api/content";
@@ -65,9 +70,78 @@ export function ContentList({
     );
   }
 
+  // Group entries by parent directory
+  const grouped = useMemo(() => {
+    const groups = new Map<string, ContentEntry[]>();
+    for (const entry of entries) {
+      // Extract parent dir from path: /a/b/c/file.md → b/c
+      const parts = entry.path.split("/");
+      const dataIdx = parts.findIndex((p) => p === "data");
+      const dirParts = dataIdx >= 0 ? parts.slice(dataIdx + 1, -1) : parts.slice(-3, -1);
+      const dir = dirParts.join("/") || "files";
+      if (!groups.has(dir)) groups.set(dir, []);
+      groups.get(dir)!.push(entry);
+    }
+    return groups;
+  }, [entries]);
+
   return (
-    <div className="flex flex-col gap-1 px-3">
-      {entries.map((entry) => {
+    <div className="flex flex-col gap-2 px-3">
+      {Array.from(grouped.entries()).map(([dir, dirEntries]) => (
+        <FolderSection
+          key={dir}
+          name={dir}
+          entries={dirEntries}
+          selected={selected}
+          onToggleSelect={onToggleSelect}
+          onOpen={onOpen}
+          onDelete={onDelete}
+        />
+      ))}
+    </div>
+  );
+}
+
+function FolderSection({
+  name,
+  entries,
+  selected,
+  onToggleSelect,
+  onOpen,
+  onDelete,
+}: {
+  name: string;
+  entries: ContentEntry[];
+  selected: Set<string>;
+  onToggleSelect: (id: string) => void;
+  onOpen: (entry: ContentEntry) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(true);
+
+  return (
+    <div>
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-semibold text-text-strong hover:bg-surface-container"
+      >
+        {open ? (
+          <>
+            <ChevronDown size={14} className="text-muted shrink-0" />
+            <FolderOpen size={14} className="text-accent/70 shrink-0" />
+          </>
+        ) : (
+          <>
+            <ChevronRight size={14} className="text-muted shrink-0" />
+            <FolderClosed size={14} className="text-muted shrink-0" />
+          </>
+        )}
+        <span className="truncate text-left">{name}</span>
+        <span className="ml-auto text-[10px] text-muted/50 shrink-0">{entries.length}</span>
+      </button>
+      {open && (
+        <div className="ml-3 border-l border-border/30 pl-2 space-y-1">
+          {entries.map((entry) => {
         const Icon = CATEGORY_ICON[entry.category] || File;
         const color = CATEGORY_COLOR[entry.category] || "text-gray-400";
         const isSelected = selected.has(entry.id);
@@ -100,7 +174,7 @@ export function ContentList({
 
             {/* Info */}
             <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium text-text">
+              <p className="truncate text-sm font-medium text-text-strong">
                 {entry.filename}
               </p>
               <div className="flex items-center gap-2 text-[10px] text-muted">
@@ -138,6 +212,8 @@ export function ContentList({
           </div>
         );
       })}
+        </div>
+      )}
     </div>
   );
 }

@@ -152,6 +152,37 @@ let filesLoaded = false;
 export async function loadAllSessionFiles(): Promise<void> {
   if (filesLoaded) return;
   filesLoaded = true;
+
+  // Load content files from profile directories (research, slides, skill-output)
+  try {
+    const token = getToken();
+    const resp = await fetch(
+      `${API_BASE}/api/files/list?dirs=research,slides,skill-output`,
+      { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+    );
+    if (resp.ok) {
+      const files = (await resp.json()) as {
+        filename: string;
+        path: string;
+        size: number;
+        modified: string;
+        category: string;
+        group: string;
+      }[];
+      for (const f of files) {
+        addFile({
+          sessionId: "_content",
+          filename: f.filename,
+          filePath: f.path,
+          caption: f.group || f.category,
+        });
+      }
+    }
+  } catch {
+    // content listing not available
+  }
+
+  // Also load from session message history
   try {
     const { listSessions, getMessages } = await import("@/api/sessions");
     const sessions = await listSessions();

@@ -3,9 +3,10 @@ import type { ContentEntry } from "@/api/content";
 import { downloadContent } from "@/api/content";
 import { ImageAlbumViewer } from "@/components/viewers/image-album-viewer";
 import { VideoPlayer } from "@/components/viewers/video-player";
+import { MarkdownViewer } from "@/components/viewers/markdown-viewer";
 
 export interface ViewerState {
-  type: "image" | "audio" | "video" | null;
+  type: "image" | "audio" | "video" | "markdown" | null;
   entry: ContentEntry | null;
   allEntries: ContentEntry[];
 }
@@ -33,9 +34,21 @@ export function useContentViewer() {
         case "video":
           setState({ type: "video", entry, allEntries: [] });
           break;
+        case "report":
+          // Markdown/text reports — open in viewer
+          if (/\.(md|txt|markdown)$/i.test(entry.filename)) {
+            setState({ type: "markdown", entry, allEntries: [] });
+          } else {
+            downloadContent(entry);
+          }
+          break;
         default:
-          // Reports, slides, other — all trigger download
-          downloadContent(entry);
+          // Check filename for markdown
+          if (/\.(md|txt|markdown)$/i.test(entry.filename)) {
+            setState({ type: "markdown", entry, allEntries: [] });
+          } else {
+            downloadContent(entry);
+          }
           break;
       }
     },
@@ -79,6 +92,8 @@ export function ContentViewerOverlay({
     }
     case "video":
       return <VideoPlayer entry={state.entry} onClose={onClose} />;
+    case "markdown":
+      return <MarkdownViewer entry={state.entry} onClose={onClose} />;
     default:
       return null;
   }

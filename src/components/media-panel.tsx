@@ -1,6 +1,7 @@
+import { useState, useMemo } from "react";
 import { useAllFiles, type FileEntry } from "@/store/file-store";
 import { MediaPlayer } from "./media-player";
-import { X, Download, FileIcon, Music, Film, Image, FileText, Loader2 } from "lucide-react";
+import { X, Download, FileIcon, Music, Film, Image, FileText, Loader2, Eye, FolderOpen, FolderClosed, ChevronRight, ChevronDown } from "lucide-react";
 import { API_BASE } from "@/lib/constants";
 import { getToken } from "@/api/client";
 
@@ -66,6 +67,7 @@ function FileItem({ file }: { file: FileEntry }) {
   const audio = isAudio(file.filename);
   const video = isVideo(file.filename);
   const image = isImage(file.filename);
+  const [expanded, setExpanded] = useState(false);
 
   const handleDownload = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -111,15 +113,21 @@ function FileItem({ file }: { file: FileEntry }) {
         )}
       </div>
 
-      {/* Inline player for audio */}
-      {audio && file.blobUrl && (
+      {/* Inline player for audio/video — only when user clicks to expand */}
+      {(audio || video) && file.blobUrl && !expanded && (
+        <button
+          onClick={() => setExpanded(true)}
+          className="mt-2 flex items-center gap-1.5 rounded-lg bg-surface-dark px-2.5 py-1.5 text-xs text-muted hover:text-accent"
+        >
+          <Eye size={12} /> Play
+        </button>
+      )}
+      {audio && file.blobUrl && expanded && (
         <div className="mt-2">
           <MediaPlayer src={file.blobUrl} type="audio" />
         </div>
       )}
-
-      {/* Inline player for video */}
-      {video && file.blobUrl && (
+      {video && file.blobUrl && expanded && (
         <div className="mt-2">
           <MediaPlayer src={file.blobUrl} type="video" />
         </div>
@@ -139,8 +147,54 @@ function FileItem({ file }: { file: FileEntry }) {
   );
 }
 
+function FolderGroup({ name, files }: { name: string; files: FileEntry[] }) {
+  const [open, setOpen] = useState(true);
+  const label = name === "session" || name === "" ? "Chat Files" : name;
+
+  return (
+    <div>
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-text hover:bg-surface-container"
+      >
+        {open ? (
+          <>
+            <ChevronDown size={14} className="text-muted shrink-0" />
+            <FolderOpen size={14} className="text-accent/70 shrink-0" />
+          </>
+        ) : (
+          <>
+            <ChevronRight size={14} className="text-muted shrink-0" />
+            <FolderClosed size={14} className="text-muted shrink-0" />
+          </>
+        )}
+        <span className="truncate">{label}</span>
+        <span className="ml-auto text-[10px] text-muted/50">{files.length}</span>
+      </button>
+      {open && (
+        <div className="ml-4 space-y-1 border-l border-border/30 pl-2">
+          {files.map((file) => (
+            <FileItem key={file.id} file={file} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function MediaPanel({ open, onClose }: MediaPanelProps) {
   const files = useAllFiles();
+
+  // Group files by caption (which stores the group/category from content API)
+  const grouped = useMemo(() => {
+    const groups = new Map<string, FileEntry[]>();
+    for (const f of files) {
+      const group = f.caption || "session";
+      if (!groups.has(group)) groups.set(group, []);
+      groups.get(group)!.push(f);
+    }
+    return groups;
+  }, [files]);
 
   return (
     <>
@@ -182,8 +236,8 @@ export function MediaPanel({ open, onClose }: MediaPanelProps) {
           </button>
         </div>
 
-        {/* File list */}
-        <div className="flex-1 overflow-y-auto p-3 space-y-2">
+        {/* File list grouped by category */}
+        <div className="flex-1 overflow-y-auto p-3 space-y-3">
           {files.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center py-12">
               <FileIcon size={32} className="text-muted/30 mb-3" />
@@ -191,7 +245,9 @@ export function MediaPanel({ open, onClose }: MediaPanelProps) {
               <p className="text-xs text-muted/60 mt-1">Files generated during this session will appear here</p>
             </div>
           ) : (
-            files.map((file) => <FileItem key={file.id} file={file} />)
+            Array.from(grouped.entries()).map(([group, groupFiles]) => (
+              <FolderGroup key={group} name={group} files={groupFiles} />
+            ))
           )}
         </div>
       </div>

@@ -28,21 +28,50 @@ export { SEL };
 // ── Login ──────────────────────────────────────────────────────
 
 export async function login(page: Page) {
-  // Inject test token directly into localStorage (bypasses login UI)
+  const profileId = process.env.PROFILE_ID || "dspfac";
+
+  // Inject test token and profile selection into localStorage
   await page.goto("/", { waitUntil: "domcontentloaded" });
-  await page.evaluate((token) => {
-    localStorage.setItem("octos_session_token", token);
-    localStorage.setItem("octos_auth_token", token);
-  }, AUTH_TOKEN);
+  await page.evaluate(
+    ({ token, profile }) => {
+      localStorage.setItem("octos_session_token", token);
+      localStorage.setItem("octos_auth_token", token);
+      localStorage.setItem("selected_profile", profile);
+    },
+    { token: AUTH_TOKEN, profile: profileId },
+  );
   await page.reload({ waitUntil: "networkidle" });
 
-  // Should land on chat directly with valid token
-  const onChat = await page.locator(SEL.chatInput).isVisible({ timeout: 10_000 }).catch(() => false);
+  // Check if we landed on chat
+  const onChat = await page
+    .locator(SEL.chatInput)
+    .isVisible({ timeout: 5_000 })
+    .catch(() => false);
   if (onChat) return;
 
-  // If redirected to login, navigate to chat directly (token is in localStorage)
+  // Try navigating to chat page directly
   await page.goto("/chat", { waitUntil: "networkidle" });
-  await page.waitForSelector(SEL.chatInput, { timeout: 10_000 });
+  const chatVisible = await page
+    .locator(SEL.chatInput)
+    .isVisible({ timeout: 5_000 })
+    .catch(() => false);
+  if (chatVisible) return;
+
+  // If still on dashboard, click "Start" on the gateway, then navigate to chat
+  const startBtn = page.locator("button", { hasText: "Start" });
+  if (await startBtn.isVisible().catch(() => false)) {
+    await startBtn.click();
+    await page.waitForTimeout(5000);
+  }
+
+  // Try the messaging page
+  const msgLink = page.locator("text=Messaging").first();
+  if (await msgLink.isVisible().catch(() => false)) {
+    await msgLink.click();
+    await page.waitForTimeout(2000);
+  }
+
+  await page.waitForSelector(SEL.chatInput, { timeout: 15_000 });
 }
 
 // ── Input helpers ──────────────────────────────────────────────

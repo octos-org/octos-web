@@ -82,7 +82,14 @@ export function useContentLoader(filters: ContentFilters) {
   }, [stableKey]);
 }
 
-// --- Bridge: listen for new file events and refresh ---
+/** Call this after auth is confirmed to load initial content. */
+export function initContentStore() {
+  if (entries.length === 0 && !loading) {
+    loadContent({ sort: "newest", limit: 100 });
+  }
+}
+
+// --- Bridge for new file events ---
 
 if (typeof window !== "undefined") {
   window.addEventListener("crew:file", () => {

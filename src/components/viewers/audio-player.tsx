@@ -46,9 +46,10 @@ export function AudioPlayer({ entry, onClose }: AudioPlayerProps) {
     if (playing) {
       audio.pause();
     } else {
-      audio.play();
+      audio.play().then(() => setPlaying(true)).catch(() => setPlaying(false));
+      return;
     }
-    setPlaying(!playing);
+    setPlaying(false);
   };
 
   const seek = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -69,7 +70,7 @@ export function AudioPlayer({ entry, onClose }: AudioPlayerProps) {
 
   return (
     <div className="border-t border-border bg-surface-container px-3 py-2.5">
-      <audio ref={audioRef} src={audioUrl(entry)} preload="metadata" />
+      <audio ref={audioRef} src={audioUrl(entry)} preload="none" />
 
       <div className="flex items-center gap-3">
         {/* Icon */}

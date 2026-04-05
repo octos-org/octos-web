@@ -92,7 +92,7 @@ export function FileDelivery({ sessionId }: { sessionId?: string }) {
               <div>
                 <div className="mb-1.5 text-xs text-muted">🎵 {f.filename}{f.caption}</div>
                 {f.blobUrl ? (
-                  <audio controls autoPlay className="w-full h-8">
+                  <audio key={f.blobUrl} controls preload="metadata" className="w-full h-8">
                     <source src={f.blobUrl} />
                   </audio>
                 ) : (

@@ -41,7 +41,7 @@ export function VideoPlayer({ entry, onClose }: VideoPlayerProps) {
         <video
           src={url}
           controls
-          autoPlay
+          playsInline
           className="max-h-[85vh] max-w-[90vw] rounded-lg"
         >
           Your browser does not support the video tag.

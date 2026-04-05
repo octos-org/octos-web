@@ -5,7 +5,6 @@ import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 import { Download } from "lucide-react";
-import { MediaPlayer } from "./media-player";
 import mermaid from "mermaid";
 import DOMPurify from "dompurify";
 
@@ -102,9 +101,9 @@ const mdComponents: Record<string, any> = {
   a: ({ href, children }: any) => {
     if (!href) return <>{children}</>;
     if (/\.(mp3|wav|ogg|webm|m4a|aac|flac)$/i.test(href))
-      return <MediaPlayer src={href} type="audio" title={typeof children === "string" ? children : "audio"} />;
+      return <a href={href} download className="inline-flex items-center gap-1 rounded-md bg-surface-light px-2 py-1 text-xs text-link hover:bg-accent/20 hover:text-accent"><Download size={12} />🎵 {children}</a>;
     if (/\.(mp4|webm|mov)$/i.test(href))
-      return <MediaPlayer src={href} type="video" title={typeof children === "string" ? children : "video"} />;
+      return <a href={href} download className="inline-flex items-center gap-1 rounded-md bg-surface-light px-2 py-1 text-xs text-link hover:bg-accent/20 hover:text-accent"><Download size={12} />🎬 {children}</a>;
     if (/\.(pdf|pptx|docx|xlsx|zip|tar|gz)$/i.test(href))
       return <a href={href} download className="inline-flex items-center gap-1 rounded-md bg-surface-light px-2 py-1 text-xs text-link hover:bg-accent/20 hover:text-accent"><Download size={12} />{children}</a>;
     return <a href={href} target="_blank" rel="noopener noreferrer" className="text-link hover:text-accent hover:underline">{children}</a>;

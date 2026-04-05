@@ -207,19 +207,7 @@ function FileAttachment({ file }: { file: MessageFile }) {
   }, [blobUrl, file.filename]);
 
   if (isAudio) {
-    return (
-      <div className="rounded-lg border border-border bg-surface-light p-2">
-        {blobUrl ? (
-          <audio controls preload="metadata" className="w-full max-w-xs" src={blobUrl} />
-        ) : (
-          <div className="flex h-8 items-center justify-center text-xs text-muted">Loading...</div>
-        )}
-        <div className="mt-1 truncate text-xs text-muted">
-          {file.filename}
-          {file.caption && <span className="ml-1 text-muted/70">-- {file.caption}</span>}
-        </div>
-      </div>
-    );
+    return <AudioAttachment file={file} blobUrl={blobUrl} />;
   }
 
   if (isVideo) {
@@ -279,6 +267,69 @@ interface TaskInfo {
   status: "spawned" | "running" | "completed" | "failed";
   started_at: string;
   error: string | null;
+}
+
+/** Audio attachment — <audio> element only created on first play click. */
+function AudioAttachment({ file, blobUrl }: { file: MessageFile; blobUrl?: string }) {
+  const [activated, setActivated] = useState(false);
+  const [playing, setPlaying] = useState(false);
+  const audioRef = useRef<HTMLAudioElement>(null);
+
+  const toggle = useCallback(() => {
+    if (!activated) {
+      setActivated(true);
+      setPlaying(true);
+      return;
+    }
+    const el = audioRef.current;
+    if (!el) return;
+    if (playing) {
+      el.pause();
+      setPlaying(false);
+    } else {
+      el.play().then(() => setPlaying(true)).catch(() => setPlaying(false));
+    }
+  }, [activated, playing]);
+
+  // Auto-play once <audio> mounts after activation
+  useEffect(() => {
+    if (activated && audioRef.current && playing) {
+      audioRef.current.play().catch(() => setPlaying(false));
+    }
+  }, [activated, playing]);
+
+  return (
+    <div className="rounded-lg border border-border bg-surface-light p-2">
+      {blobUrl ? (
+        <div className="flex items-center gap-2">
+          <button
+            onClick={toggle}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-white hover:bg-accent-dim"
+          >
+            {playing ? (
+              <span className="text-xs font-bold">❚❚</span>
+            ) : (
+              <span className="text-xs font-bold ml-0.5">▶</span>
+            )}
+          </button>
+          {activated && (
+            <audio
+              ref={audioRef}
+              src={blobUrl}
+              preload="auto"
+              onEnded={() => setPlaying(false)}
+            />
+          )}
+          <div className="min-w-0 flex-1 truncate text-xs text-muted">
+            {file.filename}
+            {file.caption && <span className="ml-1 text-muted/70">-- {file.caption}</span>}
+          </div>
+        </div>
+      ) : (
+        <div className="flex h-8 items-center justify-center text-xs text-muted">Loading...</div>
+      )}
+    </div>
+  );
 }
 
 function TaskStatusIndicator() {
