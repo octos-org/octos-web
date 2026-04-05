@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { ChevronLeft, ChevronRight, Download, Maximize2 } from "lucide-react";
 import { SLIDE_ASPECT_RATIO } from "../constants";
 import type { Slide } from "../types";
+import { useAuthenticatedFileUrl } from "./authenticated-file-image";
 
 interface Props {
   slides: Slide[];
@@ -21,6 +22,7 @@ export default function SlidePreview({
   const [imgError, setImgError] = useState(false);
 
   const current = slides[currentIndex];
+  const currentImageUrl = useAuthenticatedFileUrl(current?.thumbnailUrl);
 
   const goPrev = useCallback(() => {
     if (currentIndex > 0) onIndexChange(currentIndex - 1);
@@ -64,13 +66,19 @@ export default function SlidePreview({
           style={{ maxHeight: "100%", aspectRatio: `${SLIDE_ASPECT_RATIO}` }}
         >
           {current?.thumbnailUrl && !imgError ? (
-            <img
-              src={current.thumbnailUrl}
-              alt={current.title || `Slide ${currentIndex + 1}`}
-              className="w-full h-full object-contain"
-              onError={() => setImgError(true)}
-              draggable={false}
-            />
+            currentImageUrl ? (
+              <img
+                src={currentImageUrl}
+                alt={current.title || `Slide ${currentIndex + 1}`}
+                className="w-full h-full object-contain"
+                onError={() => setImgError(true)}
+                draggable={false}
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center bg-black text-sm text-muted">
+                Loading preview...
+              </div>
+            )
           ) : (
             <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-surface-dark to-surface p-8 text-white">
               <div className="text-xs uppercase tracking-widest text-muted mb-4">

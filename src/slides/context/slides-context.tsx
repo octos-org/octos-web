@@ -1,6 +1,15 @@
-import { createContext, useContext, useCallback, useRef, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  type ReactNode,
+} from "react";
+
 import type { SlidesProject, Slide } from "../types";
 import { useSlidesProject, updateSlidesProject } from "../store";
+import { listSlidesFiles } from "../api";
 
 interface SlidesContextValue {
   project: SlidesProject | undefined;
@@ -30,6 +39,70 @@ export function SlidesProvider({
   // Keep a ref to the latest project so callbacks never close over stale state
   const projectRef = useRef(project);
   projectRef.current = project;
+
+  useEffect(() => {
+    const current = projectRef.current;
+    if (!current?.scaffolded || !current.slug) return;
+
+    let stopped = false;
+    let pollTimer: ReturnType<typeof setTimeout> | undefined;
+
+    async function pollSlideImages() {
+      try {
+        const latest = projectRef.current;
+        if (!latest?.slug) return;
+
+        const files = await listSlidesFiles(`slides/${latest.slug}/output/imgs`);
+        if (stopped) return;
+
+        const pngFiles = files
+          .filter((file) => /\.png$/i.test(file.filename))
+          .sort((a, b) => a.filename.localeCompare(b.filename, undefined, { numeric: true }));
+
+        if (pngFiles.length === 0) return;
+
+        const nextSlides: Slide[] = pngFiles.map((file, index) => {
+          const existing = latest.slides[index];
+          return {
+            index,
+            title: existing?.title || `Slide ${index + 1}`,
+            notes: existing?.notes || "",
+            layout: existing?.layout || (index === 0 ? "title" : "content"),
+            thumbnailUrl: file.path,
+          };
+        });
+
+        const slidesChanged =
+          nextSlides.length !== latest.slides.length ||
+          nextSlides.some((slide, index) => {
+            const existing = latest.slides[index];
+            return (
+              !existing ||
+              existing.thumbnailUrl !== slide.thumbnailUrl ||
+              existing.title !== slide.title ||
+              existing.notes !== slide.notes ||
+              existing.layout !== slide.layout
+            );
+          });
+
+        if (slidesChanged) {
+          updateSlidesProject(latest.id, { slides: nextSlides });
+          reload();
+        }
+      } catch {
+        // Keep polling even if the backend scaffold is still warming up.
+      } finally {
+        if (!stopped) pollTimer = setTimeout(pollSlideImages, 5000);
+      }
+    }
+
+    void pollSlideImages();
+
+    return () => {
+      stopped = true;
+      if (pollTimer) clearTimeout(pollTimer);
+    };
+  }, [project?.id, project?.scaffolded, project?.slug, reload]);
 
   const updateSlide = useCallback(
     (index: number, update: Partial<Slide>) => {

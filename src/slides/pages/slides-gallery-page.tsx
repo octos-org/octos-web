@@ -1,6 +1,8 @@
 import { useState, useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Presentation, Plus, Search, ArrowLeft } from "lucide-react";
+
+import { AuthenticatedFileImage } from "../components/authenticated-file-image";
 import { useSlidesProjects, searchSlidesProjects } from "../store";
 import { TEMPLATES, TEMPLATE_COLORS } from "../constants";
 
@@ -133,10 +135,10 @@ export function SlidesGalleryPage() {
                 {/* Thumbnail */}
                 <div className="aspect-video bg-surface-dark flex items-center justify-center">
                   {p.slides[0]?.thumbnailUrl ? (
-                    <img
-                      src={p.slides[0].thumbnailUrl}
+                    <AuthenticatedFileImage
+                      filePath={p.slides[0].thumbnailUrl}
                       alt={p.title}
-                      className="w-full h-full object-cover"
+                      className="h-full w-full object-cover"
                     />
                   ) : (
                     <Presentation

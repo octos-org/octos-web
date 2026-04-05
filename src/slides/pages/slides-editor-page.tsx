@@ -48,10 +48,7 @@ function SlidesEditorContent() {
       }
       chatPanel={
         project ? (
-          <SlidesChat
-            sessionId={project.chatSessionId}
-            projectTitle={project.title}
-          />
+          <SlidesChat sessionId={project.chatSessionId} />
         ) : undefined
       }
     />

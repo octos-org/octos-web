@@ -12,7 +12,7 @@ export interface Slide {
   index: number;
   title: string;
   notes: string;
-  /** PNG preview URL (/api/files/{path}?token=) */
+  /** Server file path for the PNG preview image. */
   thumbnailUrl?: string;
   layout: SlideLayout;
 }
@@ -30,6 +30,10 @@ export interface SlidesProject {
   updatedAt: number;
   /** Dedicated agent session for this deck */
   chatSessionId: string;
+  /** True once the backend `/new slides ...` scaffold has been created. */
+  scaffolded?: boolean;
+  /** Backend directory slug under `slides/`. */
+  slug?: string;
   slides: Slide[];
   /** Server path to current PPTX */
   pptxPath?: string;
