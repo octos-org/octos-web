@@ -23,8 +23,9 @@ export async function listSlidesFiles(
   dirs: string | string[],
 ): Promise<SlidesFileEntry[]> {
   const token = getToken();
+  const requestedDirs = (Array.isArray(dirs) ? dirs : [dirs]).map(normalizeSlidesDir);
   const params = new URLSearchParams({
-    dirs: Array.isArray(dirs) ? dirs.join(",") : dirs,
+    dirs: requestedDirs.join(","),
   });
   const resp = await fetch(`${API_BASE}/api/files/list?${params.toString()}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -32,7 +33,10 @@ export async function listSlidesFiles(
   if (!resp.ok) {
     throw new Error(`HTTP ${resp.status}`);
   }
-  return resp.json();
+  const files = (await resp.json()) as SlidesFileEntry[];
+  return files.filter((file) =>
+    requestedDirs.some((dir) => fileMatchesSlidesDir(file, dir)),
+  );
 }
 
 export function slidesFileToContentEntry(file: SlidesFileEntry): ContentEntry {
@@ -77,4 +81,27 @@ export function inferGroupName(
   const relative = normalized.slice(idx + marker.length);
   const parts = relative.split("/").slice(0, -1);
   return parts.join("/") || "root";
+}
+
+function normalizeSlidesDir(dir: string): string {
+  return dir.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+}
+
+function fileMatchesSlidesDir(
+  file: Pick<SlidesFileEntry, "path" | "group">,
+  dir: string,
+): boolean {
+  const normalizedDir = normalizeSlidesDir(dir);
+  const normalizedPath = normalizeSlidesDir(file.path);
+  const normalizedGroup = normalizeSlidesDir(file.group);
+
+  if (normalizedGroup === normalizedDir || normalizedGroup.startsWith(`${normalizedDir}/`)) {
+    return true;
+  }
+
+  if (normalizedPath === normalizedDir || normalizedPath.endsWith(`/${normalizedDir}`)) {
+    return true;
+  }
+
+  return normalizedPath.includes(`/${normalizedDir}/`);
 }

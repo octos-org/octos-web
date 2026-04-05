@@ -17,6 +17,10 @@ interface Props {
 export function SlidesChat({ sessionId }: Props) {
   const { project, save } = useSlides();
   const scaffoldStartedRef = useRef(false);
+  const projectId = project?.id;
+  const projectTitle = project?.title;
+  const projectSlug = project?.slug;
+  const projectScaffolded = project?.scaffolded;
 
   // Load history for this session
   useEffect(() => {
@@ -24,9 +28,11 @@ export function SlidesChat({ sessionId }: Props) {
   }, [sessionId]);
 
   useEffect(() => {
-    if (!project || project.scaffolded || scaffoldStartedRef.current) return;
+    if (!projectId || !projectTitle || projectScaffolded || scaffoldStartedRef.current) {
+      return;
+    }
 
-    const slug = project.slug || slugifySlidesTitle(project.title);
+    const slug = projectSlug || slugifySlidesTitle(projectTitle);
     const token = getToken();
     const abort = new AbortController();
     scaffoldStartedRef.current = true;
@@ -52,7 +58,7 @@ export function SlidesChat({ sessionId }: Props) {
       });
 
     return () => abort.abort();
-  }, [project, save, sessionId]);
+  }, [projectId, projectScaffolded, projectSlug, projectTitle, save, sessionId]);
 
   const sessionValue = useMemo(
     () => ({
