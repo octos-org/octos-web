@@ -6,6 +6,7 @@ import { useResizablePanel } from "@/hooks/use-resizable-panel";
 import { CostBar } from "@/components/cost-bar";
 import { SessionList } from "@/components/session-list";
 import { ContentBrowser } from "@/components/content-browser";
+import { useSession } from "@/runtime/session-context";
 import {
   useContentViewer,
   ContentViewerOverlay,
@@ -16,6 +17,7 @@ import { useContent } from "@/store/content-store";
 
 export function ChatLayout({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth();
+  const { currentSessionId } = useSession();
   const status = useOctosStatus();
   const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
@@ -161,6 +163,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
                 isMaximized={isMaximized}
                 onToggleMaximize={toggleMaximize}
                 onOpenViewer={openViewer}
+                sessionId={currentSessionId}
               />
             </div>
           </>
@@ -176,6 +179,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
             isMaximized={isMaximized}
             onToggleMaximize={toggleMaximize}
             onOpenViewer={openViewer}
+            sessionId={currentSessionId}
           />
         </div>
       )}

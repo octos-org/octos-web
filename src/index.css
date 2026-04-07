@@ -89,6 +89,10 @@
 }
 
 /* ── Base ───────────────────────────────────────────── */
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+}
 body {
   margin: 0;
   background: var(--color-surface-dark);

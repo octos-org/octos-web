@@ -1,6 +1,7 @@
 import { useSyncExternalStore, useEffect } from "react";
 import {
   fetchContent,
+  matchesContentSession,
   deleteContent as apiDelete,
   bulkDeleteContent as apiBulkDelete,
   type ContentEntry,
@@ -43,9 +44,13 @@ export async function loadContent(filters: ContentFilters = {}) {
   notify();
 
   try {
-    const result = await fetchContent(filters);
-    entries = result.entries;
-    total = result.total;
+    const { sessionId, ...serverFilters } = filters;
+    const result = await fetchContent(serverFilters);
+    const filteredEntries = sessionId
+      ? result.entries.filter((entry) => matchesContentSession(entry, sessionId))
+      : result.entries;
+    entries = filteredEntries;
+    total = filteredEntries.length;
     loading = false;
     notify();
   } catch (e) {
@@ -83,9 +88,10 @@ export function useContentLoader(filters: ContentFilters) {
 }
 
 /** Call this after auth is confirmed to load initial content. */
-export function initContentStore() {
+export function initContentStore(filters: ContentFilters = {}) {
+  currentFilters = filters;
   if (entries.length === 0 && !loading) {
-    loadContent({ sort: "newest", limit: 100 });
+    loadContent(filters);
   }
 }
 

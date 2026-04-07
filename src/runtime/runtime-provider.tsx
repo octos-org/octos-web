@@ -10,7 +10,7 @@ import { SessionProvider, useSession } from "./session-context";
 import * as StreamManager from "./stream-manager";
 import * as MessageStore from "@/store/message-store";
 import { loadAllSessionFiles } from "@/store/file-store";
-import { initContentStore } from "@/store/content-store";
+import { loadContent } from "@/store/content-store";
 import { getSessionStatus } from "@/api/sessions";
 
 /** Max sessions kept in memory simultaneously. */
@@ -24,8 +24,17 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
   // Load all session files into the media panel on first mount
   useEffect(() => {
     loadAllSessionFiles();
-    initContentStore();
   }, []);
+
+  useEffect(() => {
+    loadContent({
+      sort: "newest",
+      limit: 100,
+      sessionId: currentSessionId,
+    }).catch(() => {
+      // Content index is non-critical for chat.
+    });
+  }, [currentSessionId]);
 
   // Load message history into the store when a session is activated
   useEffect(() => {

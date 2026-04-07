@@ -29,6 +29,7 @@ export interface ContentFilters {
   sort?: "newest" | "oldest" | "name" | "size";
   limit?: number;
   offset?: number;
+  sessionId?: string;
 }
 
 // --- API ---
@@ -49,6 +50,37 @@ export async function fetchContent(
   return request<ContentQueryResult>(
     `/api/my/content${qs ? `?${qs}` : ""}`,
   );
+}
+
+export function matchesContentSession(
+  entry: Pick<ContentEntry, "session_id" | "path">,
+  sessionId?: string,
+): boolean {
+  if (!sessionId) return true;
+  if (entry.session_id === sessionId) return true;
+
+  const candidates = [
+    `_main:api:${sessionId}`,
+    `api:${sessionId}`,
+  ];
+
+  const rawPath = entry.path || "";
+  let decodedPath = rawPath;
+  try {
+    decodedPath = decodeURIComponent(rawPath);
+  } catch {
+    // Keep the raw path when decoding fails.
+  }
+
+  return candidates.some((candidate) => {
+    const encoded = encodeURIComponent(candidate);
+    return (
+      rawPath.includes(`/${encoded}/`) ||
+      rawPath.includes(encoded) ||
+      decodedPath.includes(`/${candidate}/`) ||
+      decodedPath.includes(candidate)
+    );
+  });
 }
 
 export async function deleteContent(id: string): Promise<void> {

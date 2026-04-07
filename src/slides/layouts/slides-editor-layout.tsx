@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   FolderOpen,
@@ -28,8 +28,10 @@ export function SlidesEditorLayout({
 }) {
   const [showChat, setShowChat] = useState(true);
   const [showFiles, setShowFiles] = useState(true);
-  const { project } = useSlides();
+  const { project, save } = useSlides();
   const { theme, toggleTheme } = useTheme();
+  const [editingTitle, setEditingTitle] = useState(false);
+  const titleInputRef = useRef<HTMLInputElement>(null);
   const {
     effectiveWidth: chatWidth,
     onMouseDown: onChatResizeStart,
@@ -86,8 +88,10 @@ export function SlidesEditorLayout({
     return (
       <ProjectFiles
         slug={project.slug}
+        title={project.title}
         sessionId={project.chatSessionId}
         onOpenFile={openProjectFile}
+        onRename={(t) => save({ title: t })}
       />
     );
   }, [openProjectFile, project?.chatSessionId, project?.slug, showFiles]);
@@ -106,9 +110,31 @@ export function SlidesEditorLayout({
           </Link>
           <div className="w-px h-5 bg-border" />
           <Presentation size={16} className="text-accent" />
-          <span className="text-sm font-medium text-white truncate max-w-sm">
-            {project?.title || "Untitled Deck"}
-          </span>
+          {editingTitle ? (
+            <input
+              ref={titleInputRef}
+              defaultValue={project?.title || ""}
+              className="text-sm font-medium text-text bg-surface-container rounded px-2 py-0.5 outline-none border border-accent/50 max-w-sm"
+              autoFocus
+              onBlur={(e) => {
+                const v = e.target.value.trim();
+                if (v && v !== project?.title) save({ title: v });
+                setEditingTitle(false);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+                if (e.key === "Escape") setEditingTitle(false);
+              }}
+            />
+          ) : (
+            <span
+              className="text-sm font-medium text-text truncate max-w-sm cursor-pointer hover:text-accent transition"
+              onClick={() => setEditingTitle(true)}
+              title="Click to rename"
+            >
+              {project?.title || "Untitled Deck"}
+            </span>
+          )}
           {project && (
             <span className="text-xs px-2 py-0.5 rounded-full bg-surface-container text-muted">
               {project.slides.length} slides

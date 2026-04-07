@@ -23,8 +23,41 @@ import {
 
 interface ProjectFilesProps {
   slug: string;
+  title?: string;
   sessionId: string;
   onOpenFile: (entry: ContentEntry, allEntries: ContentEntry[]) => void;
+  onRename?: (title: string) => void;
+}
+
+function EditableTitle({ value, onSave }: { value: string; onSave?: (v: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  if (editing && onSave) {
+    return (
+      <input
+        defaultValue={value}
+        className="mt-1 w-full text-[11px] text-muted bg-surface-container rounded px-1 py-0.5 outline-none border border-accent/50"
+        autoFocus
+        onBlur={(e) => {
+          const v = e.target.value.trim();
+          if (v && v !== value) onSave(v);
+          setEditing(false);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+          if (e.key === "Escape") setEditing(false);
+        }}
+      />
+    );
+  }
+  return (
+    <div
+      className="mt-1 text-[11px] text-muted/70 cursor-pointer hover:text-accent transition truncate"
+      onClick={() => onSave && setEditing(true)}
+      title="Click to rename"
+    >
+      {value}
+    </div>
+  );
 }
 
 function formatSize(bytes: number): string {
@@ -52,7 +85,7 @@ function fileIcon(file: SlidesFileEntry) {
   return File;
 }
 
-export function ProjectFiles({ slug, sessionId, onOpenFile }: ProjectFilesProps) {
+export function ProjectFiles({ slug, title, sessionId, onOpenFile, onRename }: ProjectFilesProps) {
   const [files, setFiles] = useState<SlidesFileEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
@@ -177,7 +210,7 @@ export function ProjectFiles({ slug, sessionId, onOpenFile }: ProjectFilesProps)
         <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">
           Project Files
         </div>
-        <div className="mt-1 text-[11px] text-muted/70">{slug}</div>
+        <EditableTitle value={title || slug} onSave={onRename} />
       </div>
       <div className="flex-1 overflow-y-auto px-2 py-2">
         <div className="space-y-2">

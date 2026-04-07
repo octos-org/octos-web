@@ -12,11 +12,13 @@ export interface SlidesFileEntry {
 }
 
 export function slugifySlidesTitle(title: string): string {
-  const slug = title
+  const base = title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return slug || "untitled-deck";
+  // Append short random suffix to avoid slug collisions across sessions
+  const suffix = Math.random().toString(36).slice(2, 7);
+  return `${base || "untitled"}-${suffix}`;
 }
 
 export async function listSlidesFiles(

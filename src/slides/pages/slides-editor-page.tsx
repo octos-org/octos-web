@@ -26,16 +26,7 @@ function SlidesEditorContent() {
     }
   }, [currentIndex, navigate, project]);
 
-  // Esc key → back to gallery
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
-        navigate("/slides");
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [navigate]);
+  // Removed: Esc was navigating to gallery even when image viewer was open
 
   return (
     <SlidesEditorLayout

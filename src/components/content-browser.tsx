@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { X, Maximize2, Minimize2, Download, Trash2, Loader2 } from "lucide-react";
 import type { ContentEntry, ContentFilters } from "@/api/content";
 import { downloadContent } from "@/api/content";
@@ -21,6 +21,7 @@ interface ContentBrowserProps {
   isMaximized: boolean;
   onToggleMaximize: () => void;
   onOpenViewer: (entry: ContentEntry, allEntries: ContentEntry[]) => void;
+  sessionId: string;
 }
 
 export function ContentBrowser({
@@ -29,16 +30,29 @@ export function ContentBrowser({
   isMaximized,
   onToggleMaximize,
   onOpenViewer,
+  sessionId,
 }: ContentBrowserProps) {
   const [filters, setFilters] = useState<ContentFilters>({
     sort: "newest",
     limit: 100,
+    sessionId,
   });
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     return (localStorage.getItem("octos_view_mode") as ViewMode) || "list";
   });
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [audioEntry, setAudioEntry] = useState<ContentEntry | null>(null);
+
+  useEffect(() => {
+    setFilters((prev) => {
+      if (prev.sessionId === sessionId) return prev;
+      return {
+        ...prev,
+        sessionId,
+        offset: 0,
+      };
+    });
+  }, [sessionId]);
 
   useContentLoader(filters);
   const { entries, total, loading, error } = useContent();
