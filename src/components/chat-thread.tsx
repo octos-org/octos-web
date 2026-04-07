@@ -248,11 +248,10 @@ function FileAttachment({ file }: { file: MessageFile }) {
     <button
       onClick={handleDownload}
       disabled={!blobUrl}
-      className="inline-flex items-center gap-1.5 rounded-lg bg-surface-container px-3 py-2 text-xs text-link hover:bg-accent/20 hover:text-accent disabled:opacity-50"
+      className="inline-flex items-center gap-1.5 rounded-lg bg-surface-container px-3 py-2 text-xs text-link hover:bg-accent/20 hover:text-accent disabled:opacity-50 max-w-full overflow-hidden"
     >
-      <Download size={14} />
-      <span className="truncate max-w-[200px]">{file.filename}</span>
-      {file.caption && <span className="text-muted/70">-- {file.caption}</span>}
+      <Download size={14} className="shrink-0" />
+      <span className="truncate">{file.filename}</span>
     </button>
   );
 }
