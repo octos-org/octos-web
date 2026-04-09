@@ -8,9 +8,9 @@
 import { type ReactNode, useEffect, useRef } from "react";
 import { SessionProvider, useSession } from "./session-context";
 import * as StreamManager from "./stream-manager";
+import { resumeSessionStream } from "./sse-bridge";
+import * as FileStore from "@/store/file-store";
 import * as MessageStore from "@/store/message-store";
-import { loadAllSessionFiles } from "@/store/file-store";
-import { loadContent } from "@/store/content-store";
 import { getSessionStatus } from "@/api/sessions";
 
 /** Max sessions kept in memory simultaneously. */
@@ -18,27 +18,13 @@ const MAX_CACHED = 5;
 
 /** Tracks which sessions have been mounted so we can evict old ones. */
 function RuntimeWithSession({ children }: { children: ReactNode }) {
-  const { currentSessionId } = useSession();
+  const { currentSessionId, setServerTaskActive } = useSession();
   const mountedRef = useRef(new Set<string>());
-
-  // Load all session files into the media panel on first mount
-  useEffect(() => {
-    loadAllSessionFiles();
-  }, []);
-
-  useEffect(() => {
-    loadContent({
-      sort: "newest",
-      limit: 100,
-      sessionId: currentSessionId,
-    }).catch(() => {
-      // Content index is non-critical for chat.
-    });
-  }, [currentSessionId]);
 
   // Load message history into the store when a session is activated
   useEffect(() => {
     MessageStore.loadHistory(currentSessionId);
+    void FileStore.loadSessionFiles(currentSessionId);
     mountedRef.current.add(currentSessionId);
 
     // Evict old sessions if over limit
@@ -59,8 +45,21 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
 
     (async () => {
       try {
+        await MessageStore.loadHistory(currentSessionId);
+        await FileStore.loadSessionFiles(currentSessionId);
+        if (cancelled) return;
+
         const status = await getSessionStatus(currentSessionId);
+        setServerTaskActive(currentSessionId, status.active);
         if (!status.active || cancelled) return;
+
+        MessageStore.ensureStreamingAssistantMessage(
+          currentSessionId,
+          status.has_deferred_files
+            ? "Background tasks are still running..."
+            : "Resuming ongoing work...",
+        );
+        resumeSessionStream(currentSessionId);
 
         // Server is still processing — show thinking indicator
         window.dispatchEvent(
@@ -74,7 +73,9 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
           if (cancelled) break;
           await new Promise((r) => setTimeout(r, 5000));
           try {
+            await FileStore.loadSessionFiles(currentSessionId);
             const s = await getSessionStatus(currentSessionId);
+            setServerTaskActive(currentSessionId, s.active);
             if (!s.active) break;
           } catch {
             // keep polling
@@ -83,6 +84,7 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
 
         // Reload history now that the task is done
         if (!cancelled) {
+          await FileStore.loadSessionFiles(currentSessionId);
           MessageStore.clearMessages(currentSessionId);
           await MessageStore.loadHistory(currentSessionId);
           window.dispatchEvent(
@@ -90,16 +92,18 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
               detail: { thinking: false, iteration: 0, sessionId: currentSessionId },
             }),
           );
+          setServerTaskActive(currentSessionId, false);
         }
       } catch {
         // status endpoint unavailable — not fatal
+        setServerTaskActive(currentSessionId, false);
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [currentSessionId]);
+  }, [currentSessionId, setServerTaskActive]);
 
   return <>{children}</>;
 }

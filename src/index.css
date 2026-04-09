@@ -71,21 +71,8 @@
   --color-code-header-bg: #0f4590;
   --color-code-text: #d0ddef;
   --color-blockquote-border: #E85B26;
-  --color-sidebar: #0D3B7C;
+  --color-sidebar: var(--color-surface-dark);
   --color-highlight: #F9D53F;
-}
-
-/* ── Sidebar: always dark bg → always light text ────── */
-[data-theme="light"] .sidebar-scope {
-  --color-text: #c8d8ec;
-  --color-text-strong: #f0f4f8;
-  --color-muted: #7b9ac0;
-  --color-surface-light: #0f4590;
-  --color-surface-container: #0a3570;
-  --color-border: rgba(255, 255, 255, 0.08);
-  --color-outline: rgba(255, 255, 255, 0.12);
-  --color-accent-container: rgba(59, 130, 246, 0.15);
-  --color-assistant-bubble: #0f4590;
 }
 
 /* ── Base ───────────────────────────────────────────── */

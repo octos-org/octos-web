@@ -12,17 +12,15 @@ import {
   ContentViewerOverlay,
 } from "@/components/content-viewer";
 import { LogOut, Sun, Moon, Settings, PanelRight } from "lucide-react";
-import { useNavigate } from "react-router-dom";
-import { useContent } from "@/store/content-store";
+import { useFileStore } from "@/store/file-store";
 
 export function ChatLayout({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth();
-  const { currentSessionId } = useSession();
+  const { currentSessionId, currentSessionTitle, renameSession } = useSession();
   const status = useOctosStatus();
   const { theme, toggleTheme } = useTheme();
-  const navigate = useNavigate();
   const [mediaPanelOpen, setMediaPanelOpen] = useState(false);
-  const { entries } = useContent();
+  const sessionFiles = useFileStore(currentSessionId);
   const { effectiveWidth, isMaximized, onMouseDown, toggleMaximize } =
     useResizablePanel();
   const { state: viewerState, openViewer, closeViewer, closeAudio } =
@@ -62,14 +60,6 @@ export function ChatLayout({ children }: { children: ReactNode }) {
           <span className="text-lg font-semibold tracking-tight text-text-strong">octos</span>
           <div className="ml-auto flex items-center gap-1">
             <button
-              onClick={() => navigate("/settings")}
-              className="rounded-xl p-2 text-muted hover:bg-surface-container hover:text-text-strong"
-              title="Settings"
-              aria-label="Settings"
-            >
-              <Settings size={16} />
-            </button>
-            <button
               onClick={toggleTheme}
               className="rounded-xl p-2 text-muted hover:bg-surface-container hover:text-text-strong"
               title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
@@ -92,9 +82,17 @@ export function ChatLayout({ children }: { children: ReactNode }) {
           )}
           {user && (
             <div className="flex items-center justify-between">
-              <span className="truncate text-sm text-text">
-                {user.email}
-              </span>
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span className="truncate text-sm text-text">{user.email}</span>
+                <button
+                  onClick={() => window.location.assign("/admin/my")}
+                  className="shrink-0 rounded-lg p-1.5 text-muted hover:bg-surface-container hover:text-text-strong"
+                  title="Settings"
+                  aria-label="Settings"
+                >
+                  <Settings size={14} />
+                </button>
+              </div>
               <button
                 onClick={logout}
                 className="rounded-lg p-1.5 text-muted hover:bg-surface-container hover:text-text-strong"
@@ -109,27 +107,34 @@ export function ChatLayout({ children }: { children: ReactNode }) {
       {/* Main + Media Panel */}
       <div className="flex flex-1 min-w-0 min-h-0">
         <main className="flex flex-1 min-w-0 flex-col min-h-0">
-          {/* Top bar with cost + files toggle */}
-          <div className="flex items-center">
+          {/* Top bar with title + cost + files toggle */}
+          <div className="border-b border-border/60 bg-surface-dark">
+            <div className="flex items-center px-5 pt-3">
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-lg font-bold text-text-strong">
+                  {currentSessionTitle}
+                </div>
+              </div>
+              <button
+                onClick={() => setMediaPanelOpen((v) => !v)}
+                className={`relative flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
+                  mediaPanelOpen
+                    ? "bg-accent/20 text-accent"
+                    : "text-muted hover:bg-surface-container hover:text-text-strong"
+                }`}
+                title={mediaPanelOpen ? "Close files panel" : "Open files panel"}
+              >
+                <PanelRight size={16} />
+                {sessionFiles.length > 0 && !mediaPanelOpen && (
+                  <span className="absolute -right-0.5 -top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-accent text-[9px] font-bold text-white">
+                    {sessionFiles.length}
+                  </span>
+                )}
+              </button>
+            </div>
             <div className="flex-1 min-w-0">
               <CostBar model={status?.model} provider={status?.provider} />
             </div>
-            <button
-              onClick={() => setMediaPanelOpen((v) => !v)}
-              className={`relative mr-2 flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
-                mediaPanelOpen
-                  ? "bg-accent/20 text-accent"
-                  : "text-muted hover:bg-surface-container hover:text-text-strong"
-              }`}
-              title={mediaPanelOpen ? "Close files panel" : "Open files panel"}
-            >
-              <PanelRight size={16} />
-              {entries.length > 0 && !mediaPanelOpen && (
-                <span className="absolute -right-0.5 -top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-accent text-[9px] font-bold text-white">
-                  {entries.length}
-                </span>
-              )}
-            </button>
           </div>
           <div className="relative flex-1 min-h-0 overflow-hidden">
             {children}
@@ -164,6 +169,8 @@ export function ChatLayout({ children }: { children: ReactNode }) {
                 onToggleMaximize={toggleMaximize}
                 onOpenViewer={openViewer}
                 sessionId={currentSessionId}
+                sessionTitle={currentSessionTitle}
+                onRenameTitle={(title) => renameSession(currentSessionId, title)}
               />
             </div>
           </>
@@ -180,6 +187,8 @@ export function ChatLayout({ children }: { children: ReactNode }) {
             onToggleMaximize={toggleMaximize}
             onOpenViewer={openViewer}
             sessionId={currentSessionId}
+            sessionTitle={currentSessionTitle}
+            onRenameTitle={(title) => renameSession(currentSessionId, title)}
           />
         </div>
       )}

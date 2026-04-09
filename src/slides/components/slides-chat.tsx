@@ -64,8 +64,13 @@ export function SlidesChat({ sessionId }: Props) {
     () => ({
       sessions: [],
       currentSessionId: sessionId,
+      currentSessionTitle: project?.title || "Slides Agent",
+      currentSessionStats: null,
       initialMessages: [] as never[],
       activeTaskOnServer: false,
+      setServerTaskActive: () => {},
+      renameSession: () => {},
+      updateSessionStats: () => {},
       switchSession: () => {},
       createSession: () => {},
       removeSession: async () => {},

@@ -10,6 +10,9 @@ import {
 import { listSessions, getMessages, getSessionStatus, deleteSession as apiDeleteSession } from "@/api/sessions";
 import type { SessionInfo, MessageInfo } from "@/api/types";
 
+const SESSION_TITLE_STORAGE_KEY = "octos_session_titles";
+const SESSION_STATS_STORAGE_KEY = "octos_session_stats";
+
 /** Extract a short title from message content, handling JSON content parts. */
 function extractTitle(content: string): string {
   let text = content;
@@ -34,12 +37,24 @@ export interface SessionWithTitle extends SessionInfo {
   _local?: boolean;
 }
 
+export interface SessionRunStats {
+  model?: string;
+  inputTokens: number;
+  outputTokens: number;
+  cost: number | null;
+}
+
 interface SessionContextValue {
   sessions: SessionWithTitle[];
   currentSessionId: string;
+  currentSessionTitle: string;
+  currentSessionStats: SessionRunStats | null;
   initialMessages: MessageInfo[];
   /** True if the current session has a task running on the server. */
   activeTaskOnServer: boolean;
+  setServerTaskActive: (sessionId: string, active: boolean) => void;
+  renameSession: (sessionId: string, title: string) => void;
+  updateSessionStats: (sessionId: string, stats: Partial<SessionRunStats>) => void;
   switchSession: (id: string) => void;
   createSession: () => void;
   removeSession: (id: string) => Promise<void>;
@@ -58,6 +73,40 @@ export function useSession() {
 
 function generateSessionId(): string {
   return `web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function loadStoredTitles(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = localStorage.getItem(SESSION_TITLE_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistStoredTitles(titles: Record<string, string>) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(SESSION_TITLE_STORAGE_KEY, JSON.stringify(titles));
+}
+
+function loadStoredStats(): Record<string, SessionRunStats> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = localStorage.getItem(SESSION_STATS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistStoredStats(stats: Record<string, SessionRunStats>) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(SESSION_STATS_STORAGE_KEY, JSON.stringify(stats));
 }
 
 /** Extract a sortable timestamp from a session ID.
@@ -88,7 +137,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   });
   const [initialMessages, setInitialMessages] = useState<MessageInfo[]>([]);
   const [activeTaskOnServer, setActiveTaskOnServer] = useState(false);
-  const titleCache = useRef<Record<string, string>>({});
+  const titleCache = useRef<Record<string, string>>(loadStoredTitles());
+  const statsCache = useRef<Record<string, SessionRunStats>>(loadStoredStats());
 
   // Persist current session ID for refresh recovery
   useEffect(() => {
@@ -128,6 +178,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             const firstUser = msgs.find((m) => m.role === "user" && m.content?.trim());
             if (firstUser) {
               titleCache.current[s.id] = extractTitle(firstUser.content);
+              persistStoredTitles(titleCache.current);
             }
           } catch {
             // ignore
@@ -156,7 +207,92 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     refreshSessions();
   }, [refreshSessions]);
 
+  useEffect(() => {
+    function handleCost(e: Event) {
+      const detail = (e as CustomEvent).detail;
+      const sessionId = detail?.sessionId;
+      if (!sessionId) return;
+      const current = statsCache.current[sessionId] ?? {
+        inputTokens: 0,
+        outputTokens: 0,
+        cost: null,
+      };
+      statsCache.current[sessionId] = {
+        ...current,
+        inputTokens: detail.input_tokens ?? current.inputTokens,
+        outputTokens: detail.output_tokens ?? current.outputTokens,
+        cost: detail.session_cost ?? current.cost,
+      };
+      persistStoredStats(statsCache.current);
+    }
+
+    function handleMeta(e: Event) {
+      const detail = (e as CustomEvent).detail;
+      const sessionId = detail?.sessionId;
+      if (!sessionId) return;
+      const current = statsCache.current[sessionId] ?? {
+        inputTokens: 0,
+        outputTokens: 0,
+        cost: null,
+      };
+      statsCache.current[sessionId] = {
+        ...current,
+        model: detail.model || current.model,
+        inputTokens: detail.tokens_in ?? current.inputTokens,
+        outputTokens: detail.tokens_out ?? current.outputTokens,
+      };
+      persistStoredStats(statsCache.current);
+    }
+
+    window.addEventListener("crew:cost", handleCost);
+    window.addEventListener("crew:message_meta", handleMeta);
+    return () => {
+      window.removeEventListener("crew:cost", handleCost);
+      window.removeEventListener("crew:message_meta", handleMeta);
+    };
+  }, []);
+
   const switchRequestRef = useRef(0);
+  const setServerTaskActive = useCallback(
+    (sessionId: string, active: boolean) => {
+      setActiveTaskOnServer((prev) => {
+        if (sessionId !== currentSessionId) return prev;
+        return active;
+      });
+    },
+    [currentSessionId],
+  );
+
+  const renameSession = useCallback((sessionId: string, title: string) => {
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    titleCache.current[sessionId] = trimmed;
+    persistStoredTitles(titleCache.current);
+    setSessions((prev) => {
+      const existing = prev.find((s) => s.id === sessionId);
+      if (existing) {
+        return prev.map((s) => (s.id === sessionId ? { ...s, title: trimmed } : s));
+      }
+      return [{ id: sessionId, message_count: 0, title: trimmed, _local: true }, ...prev];
+    });
+  }, []);
+
+  const updateSessionStats = useCallback(
+    (sessionId: string, stats: Partial<SessionRunStats>) => {
+      const current = statsCache.current[sessionId] ?? {
+        inputTokens: 0,
+        outputTokens: 0,
+        cost: null,
+      };
+      statsCache.current[sessionId] = {
+        ...current,
+        ...stats,
+      };
+      persistStoredStats(statsCache.current);
+    },
+    [],
+  );
+
   const switchSession = useCallback(async (id: string) => {
     // Guard against race: only the latest switch request wins
     const requestId = ++switchRequestRef.current;
@@ -183,8 +319,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const markSessionActive = useCallback(
     (firstMessage?: string) => {
-      const title = firstMessage ? extractTitle(firstMessage) : undefined;
-      if (title) titleCache.current[currentSessionId] = title;
+      const existingTitle = titleCache.current[currentSessionId];
+      const title =
+        !existingTitle && firstMessage ? extractTitle(firstMessage) : existingTitle;
+      if (title && !existingTitle) {
+        titleCache.current[currentSessionId] = title;
+        persistStoredTitles(titleCache.current);
+      }
       setSessions((prev) => {
         const existing = prev.find((s) => s.id === currentSessionId);
         if (existing) {
@@ -208,6 +349,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const removeSession = useCallback(async (id: string) => {
     try {
       await apiDeleteSession(id);
+      if (titleCache.current[id]) {
+        delete titleCache.current[id];
+        persistStoredTitles(titleCache.current);
+      }
+      if (statsCache.current[id]) {
+        delete statsCache.current[id];
+        persistStoredStats(statsCache.current);
+      }
       setSessions((prev) => prev.filter((s) => s.id !== id));
       if (id === currentSessionId) {
         setInitialMessages([]);
@@ -218,13 +367,24 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
   }, [currentSessionId]);
 
+  const currentSessionTitle =
+    sessions.find((s) => s.id === currentSessionId)?.title ||
+    titleCache.current[currentSessionId] ||
+    formatSessionName(currentSessionId);
+  const currentSessionStats = statsCache.current[currentSessionId] ?? null;
+
   return (
     <SessionContext.Provider
       value={{
         sessions,
         currentSessionId,
+        currentSessionTitle,
+        currentSessionStats,
         initialMessages,
         activeTaskOnServer,
+        setServerTaskActive,
+        renameSession,
+        updateSessionStats,
         switchSession,
         createSession,
         removeSession,
@@ -235,4 +395,23 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       {children}
     </SessionContext.Provider>
   );
+}
+
+function formatSessionName(id: string): string {
+  if (id.startsWith("web-")) {
+    const parts = id.split("-");
+    if (parts.length >= 2) {
+      const ts = parseInt(parts[1], 10);
+      if (!isNaN(ts)) {
+        const d = new Date(ts);
+        return d.toLocaleDateString(undefined, {
+          month: "short",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+      }
+    }
+  }
+  return id;
 }

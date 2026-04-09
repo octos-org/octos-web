@@ -1,10 +1,4 @@
-import { useEffect, useState } from "react";
-
-interface CostState {
-  inputTokens: number;
-  outputTokens: number;
-  cost: number | null;
-}
+import { useSession } from "@/runtime/session-context";
 
 export function CostBar({
   model,
@@ -13,34 +7,18 @@ export function CostBar({
   model?: string;
   provider?: string;
 }) {
-  const [cost, setCost] = useState<CostState>({
-    inputTokens: 0,
-    outputTokens: 0,
-    cost: null,
-  });
-
-  useEffect(() => {
-    function handler(e: Event) {
-      const d = (e as CustomEvent).detail;
-      setCost({
-        inputTokens: d.input_tokens ?? 0,
-        outputTokens: d.output_tokens ?? 0,
-        cost: d.session_cost ?? null,
-      });
-    }
-    window.addEventListener("crew:cost", handler);
-    return () => window.removeEventListener("crew:cost", handler);
-  }, []);
+  const { currentSessionStats } = useSession();
 
   const parts: string[] = [];
-  if (model && model !== "none") parts.push(model);
-  if (cost.inputTokens || cost.outputTokens) {
+  const displayModel = currentSessionStats?.model || model;
+  if (displayModel && displayModel !== "none") parts.push(displayModel);
+  if (currentSessionStats?.inputTokens || currentSessionStats?.outputTokens) {
     parts.push(
-      `${cost.inputTokens.toLocaleString()} in / ${cost.outputTokens.toLocaleString()} out`,
+      `${(currentSessionStats?.inputTokens ?? 0).toLocaleString()} in / ${(currentSessionStats?.outputTokens ?? 0).toLocaleString()} out`,
     );
   }
-  if (cost.cost != null) {
-    parts.push(`$${cost.cost.toFixed(4)}`);
+  if (currentSessionStats?.cost != null) {
+    parts.push(`$${currentSessionStats.cost.toFixed(4)}`);
   }
 
   if (parts.length === 0 && !provider) return null;

@@ -39,6 +39,133 @@ interface ManagedStream {
 
 const streams = new Map<string, ManagedStream>();
 
+function createManagedStream(sessionId: string): ManagedStream {
+  const abort = new AbortController();
+  const stream: ManagedStream = {
+    sessionId,
+    events: [],
+    active: true,
+    completed: false,
+    subscribers: new Set(),
+    abort,
+    text: "",
+  };
+  streams.set(sessionId, stream);
+  window.dispatchEvent(
+    new CustomEvent("crew:stream_state", {
+      detail: { sessionId, active: true },
+    }),
+  );
+  return stream;
+}
+
+async function consumeSseResponse(
+  stream: ManagedStream,
+  resp: Response,
+): Promise<void> {
+  if (!resp.ok || !resp.body) {
+    stream.active = false;
+    return;
+  }
+
+  const contentType = resp.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    stream.active = false;
+    return;
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop()!;
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const data = line.slice(6).trim();
+        if (!data || data === "[DONE]") continue;
+
+        let event: SseEvent;
+        try {
+          event = JSON.parse(data);
+        } catch {
+          continue;
+        }
+
+        if (event.type === "token") {
+          stream.text += event.text;
+        } else if (event.type === "replace") {
+          stream.text = event.text;
+        } else if (event.type === "done") {
+          if (event.content) stream.text = event.content;
+          stream.completed = true;
+        }
+
+        const streamEvent: StreamEvent = { raw: event };
+        stream.events.push(streamEvent);
+        for (const sub of stream.subscribers) {
+          try {
+            sub(streamEvent);
+          } catch {
+            // ignore subscriber error
+          }
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function finalizeStream(sessionId: string, stream: ManagedStream): void {
+  stream.active = false;
+  window.dispatchEvent(
+    new CustomEvent("crew:stream_state", {
+      detail: { sessionId, active: false },
+    }),
+  );
+  setTimeout(() => {
+    stream.events = [];
+  }, 5000);
+
+  const queued = stream._queued;
+  if (queued && queued.length > 0) {
+    const next = queued.shift()!;
+    stream._queued = queued.length > 0 ? queued : undefined;
+    setTimeout(() => startStream(sessionId, next.message, next.media), 100);
+  }
+}
+
+function runStreamFetch(
+  sessionId: string,
+  stream: ManagedStream,
+  fetcher: () => Promise<Response>,
+): void {
+  (async () => {
+    try {
+      const resp = await fetcher();
+      await consumeSseResponse(stream, resp);
+    } catch (err) {
+      if (err instanceof Error && err.name !== "AbortError") {
+        console.warn("[stream-manager] stream error:", err.message);
+        const errorEvent: StreamEvent = {
+          raw: { type: "error", message: err.message },
+        };
+        for (const cb of stream.subscribers) cb(errorEvent);
+      }
+    } finally {
+      finalizeStream(sessionId, stream);
+    }
+  })();
+}
+
 /**
  * Start an SSE stream for a session. The stream runs independently
  * of React lifecycle. Call subscribe() to receive events.
@@ -58,152 +185,71 @@ export function startStream(
     return "queued";
   }
 
-  const abort = new AbortController();
-  const stream: ManagedStream = {
-    sessionId,
-    events: [],
-    active: true,
-    completed: false,
-    subscribers: new Set(),
-    abort,
-    text: "",
-  };
-  streams.set(sessionId, stream);
-  window.dispatchEvent(
-    new CustomEvent("crew:stream_state", {
-      detail: { sessionId, active: true },
-    }),
-  );
+  const stream = createManagedStream(sessionId);
 
   const token = getToken();
   const settings = getSettings();
 
-  // Run fetch in background — NOT tied to any React component
-  (async () => {
-    try {
-      const searchHeaders: Record<string, string> = {
-        "X-Search-Engine": settings.searchEngine,
-      };
-      if (settings.serperApiKey) {
-        searchHeaders["X-Serper-Api-Key"] = settings.serperApiKey;
-      }
-      if (settings.crawl4aiUrl) {
-        searchHeaders["X-Crawl4ai-Url"] = settings.crawl4aiUrl;
-      }
-
-      const resp = await fetch(`${API_BASE}/api/chat`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          ...searchHeaders,
-        },
-        body: JSON.stringify({
-          message,
-          session_id: sessionId,
-          stream: true,
-          media,
-        }),
-        signal: abort.signal,
-      });
-
-      if (!resp.ok || !resp.body) {
-        stream.active = false;
-        return;
-      }
-
-      // Handle queued response
-      const contentType = resp.headers.get("content-type") || "";
-      if (contentType.includes("application/json")) {
-        stream.active = false;
-        return;
-      }
-
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop()!;
-
-          for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            const data = line.slice(6).trim();
-            if (!data || data === "[DONE]") continue;
-
-            let event: SseEvent;
-            try {
-              event = JSON.parse(data);
-            } catch {
-              continue;
-            }
-
-            // Track text state
-            if (event.type === "token") {
-              stream.text += event.text;
-            } else if (event.type === "replace") {
-              stream.text = event.text;
-            } else if (event.type === "done") {
-              if (event.content) stream.text = event.content;
-              stream.completed = true;
-            }
-
-            const streamEvent: StreamEvent = { raw: event };
-            stream.events.push(streamEvent);
-
-            // Notify all current subscribers
-            for (const sub of stream.subscribers) {
-              try {
-                sub(streamEvent);
-              } catch {
-                // subscriber error, ignore
-              }
-            }
-          }
-        }
-      } finally {
-        reader.releaseLock();
-      }
-    } catch (err) {
-      // fetch aborted or network error — notify subscribers
-      if (err instanceof Error && err.name !== "AbortError") {
-        console.warn("[stream-manager] stream error:", err.message);
-        const errorEvent: StreamEvent = {
-          raw: { type: "error", message: err.message },
-        };
-        for (const cb of stream.subscribers) cb(errorEvent);
-      }
-    } finally {
-      stream.active = false;
-      window.dispatchEvent(
-        new CustomEvent("crew:stream_state", {
-          detail: { sessionId, active: false },
-        }),
-      );
-      // Clean up event buffer after completion to prevent memory leak.
-      // Keep only the final text, drop individual events.
-      setTimeout(() => {
-        stream.events = [];
-      }, 5000);
-
-      // Process queued messages — start a new stream for the next one
-      const queued = stream._queued;
-      if (queued && queued.length > 0) {
-        const next = queued.shift()!;
-        stream._queued = queued.length > 0 ? queued : undefined;
-        // Small delay to let the adapter's done handler finish
-        setTimeout(() => startStream(sessionId, next.message, next.media), 100);
-      }
+  runStreamFetch(sessionId, stream, async () => {
+    const searchHeaders: Record<string, string> = {
+      "X-Search-Engine": settings.searchEngine,
+    };
+    if (settings.serperApiKey) {
+      searchHeaders["X-Serper-Api-Key"] = settings.serperApiKey;
     }
-  })();
+    if (settings.crawl4aiUrl) {
+      searchHeaders["X-Crawl4ai-Url"] = settings.crawl4aiUrl;
+    }
+
+    return fetch(`${API_BASE}/api/chat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...searchHeaders,
+      },
+      body: JSON.stringify({
+        message,
+        session_id: sessionId,
+        stream: true,
+        media,
+      }),
+      signal: stream.abort.signal,
+    });
+  });
 
   return "started";
+}
+
+/**
+ * Reattach to an existing server-side stream for a session after refresh.
+ */
+export function attachStream(sessionId: string): "attached" | "busy" {
+  const existing = streams.get(sessionId);
+  if (existing?.active) return "busy";
+
+  const token = getToken();
+  const stream = createManagedStream(sessionId);
+
+  runStreamFetch(sessionId, stream, () =>
+    fetch(`${API_BASE}/api/chat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        message: "",
+        session_id: sessionId,
+        stream: true,
+        media: [],
+        attach_only: true,
+      }),
+      signal: stream.abort.signal,
+    }),
+  );
+
+  return "attached";
 }
 
 /**

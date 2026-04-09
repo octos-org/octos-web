@@ -29,7 +29,7 @@ export function HomeNav({ onNewProject }: { onNewProject: () => void }) {
         Chat
       </button>
       <button
-        onClick={() => navigate("/settings")}
+        onClick={() => window.location.assign("/admin/my")}
         className="rounded-xl p-2.5 text-muted hover:bg-surface-container hover:text-text-strong"
         title="Settings"
       >

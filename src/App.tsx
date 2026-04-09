@@ -6,7 +6,6 @@ import { OctosRuntimeProvider } from "./runtime/runtime-provider";
 import { ChatLayout } from "./layouts/chat-layout";
 import { ChatThread } from "./components/chat-thread";
 import { HomePage } from "./pages/home-page";
-import { SettingsPage } from "./pages/settings-page";
 import { StudioPage } from "./pages/studio-page";
 import { SlidesGalleryPage } from "./slides/pages/slides-gallery-page";
 import { SlidesEditorPage } from "./slides/pages/slides-editor-page";
@@ -26,6 +25,13 @@ function ChatPage() {
   );
 }
 
+function RedirectToAdminSettings() {
+  if (typeof window !== "undefined") {
+    window.location.replace("/admin/my");
+  }
+  return null;
+}
+
 export function App() {
   return (
     <BrowserRouter basename={import.meta.env.BASE_URL}>
@@ -37,7 +43,7 @@ export function App() {
             <Route path="/chat/*" element={<ChatPage />} />
             <Route path="/studio/new" element={<StudioPage />} />
             <Route path="/studio/:projectId" element={<StudioPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/settings" element={<RedirectToAdminSettings />} />
             <Route path="/slides" element={<SlidesGalleryPage />} />
             <Route path="/slides/:id/present" element={<SlidesPresentPage />} />
             <Route path="/slides/:id" element={<SlidesEditorPage />} />

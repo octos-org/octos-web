@@ -24,7 +24,11 @@ export function LoginPage() {
     setError("");
     setSending(true);
     try {
-      await authApi.sendCode(email);
+      const resp = await authApi.sendCode(email);
+      if (!resp.ok) {
+        setError(resp.message || "Failed to send code");
+        return;
+      }
       setStep("code");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to send code");
