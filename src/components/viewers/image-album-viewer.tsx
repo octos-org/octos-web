@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { X, ChevronLeft, ChevronRight, ZoomIn, ZoomOut } from "lucide-react";
 import type { ContentEntry } from "@/api/content";
-import { getToken } from "@/api/client";
-import { API_BASE } from "@/lib/constants";
+import { buildAuthenticatedFileUrl } from "@/api/files";
 
 interface ImageAlbumViewerProps {
   entries: ContentEntry[];
@@ -11,9 +10,7 @@ interface ImageAlbumViewerProps {
 }
 
 function imageUrl(entry: ContentEntry): string {
-  const token = getToken();
-  const base = `${API_BASE}/api/files?path=${encodeURIComponent(entry.path)}`;
-  return token ? `${base}&_token=${token}` : base;
+  return buildAuthenticatedFileUrl(entry.path);
 }
 
 export function ImageAlbumViewer({

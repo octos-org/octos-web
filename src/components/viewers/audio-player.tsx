@@ -1,8 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { X, Play, Pause, Music } from "lucide-react";
 import type { ContentEntry } from "@/api/content";
-import { getToken } from "@/api/client";
-import { API_BASE } from "@/lib/constants";
+import { buildAuthenticatedFileUrl } from "@/api/files";
 
 interface AudioPlayerProps {
   entry: ContentEntry;
@@ -10,9 +9,7 @@ interface AudioPlayerProps {
 }
 
 function audioUrl(entry: ContentEntry): string {
-  const token = getToken();
-  const base = `${API_BASE}/api/files?path=${encodeURIComponent(entry.path)}`;
-  return token ? `${base}&_token=${token}` : base;
+  return buildAuthenticatedFileUrl(entry.path);
 }
 
 export function AudioPlayer({ entry, onClose }: AudioPlayerProps) {

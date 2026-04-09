@@ -11,6 +11,7 @@
 import * as StreamManager from "./stream-manager";
 import * as MessageStore from "@/store/message-store";
 import { API_BASE } from "@/lib/constants";
+import { displayFilenameFromPath } from "@/lib/utils";
 import { getToken } from "@/api/client";
 import { getMessages as fetchSessionMessages } from "@/api/sessions";
 
@@ -93,6 +94,53 @@ export function sendMessage(opts: SendOptions): void {
   });
 
   // 4. Subscribe to events and route into the store
+  bindStreamToAssistant({
+    sessionId,
+    assistantMsgId,
+    streamStatus,
+    onComplete,
+    abortController,
+    abortSignal,
+  });
+}
+
+export function resumeSessionStream(
+  sessionId: string,
+  onComplete?: () => void,
+): void {
+  const abortController = new AbortController();
+  const abortSignal = abortController.signal;
+  const attachStatus = StreamManager.attachStream(sessionId);
+  const assistantMsgId = MessageStore.ensureStreamingAssistantMessage(
+    sessionId,
+    "Resuming ongoing work...",
+  );
+
+  bindStreamToAssistant({
+    sessionId,
+    assistantMsgId,
+    streamStatus: attachStatus === "busy" ? "started" : "started",
+    onComplete,
+    abortController,
+    abortSignal,
+  });
+}
+
+function bindStreamToAssistant({
+  sessionId,
+  assistantMsgId,
+  streamStatus,
+  onComplete,
+  abortController,
+  abortSignal,
+}: {
+  sessionId: string;
+  assistantMsgId: string;
+  streamStatus: "started" | "queued";
+  onComplete?: () => void;
+  abortController: AbortController;
+  abortSignal: AbortSignal;
+}): void {
   let rawText = "";
   let toolCallCounter = 0;
   const toolCalls = new Map<
@@ -174,6 +222,7 @@ export function sendMessage(opts: SendOptions): void {
       case "file": {
         if (event.path && event.filename) {
           const caption = event.caption || "";
+          const fileUrl = `${API_BASE}/api/files/${encodeURIComponent(event.path)}`;
 
           // Find the right message to attach to
           let targetMsgId = assistantMsgId;
@@ -191,7 +240,16 @@ export function sendMessage(opts: SendOptions): void {
             caption,
           });
 
-          // crew:file DOM event is dispatched by StreamManager — no need to duplicate here
+          window.dispatchEvent(
+            new CustomEvent("crew:file", {
+              detail: {
+                fileUrl,
+                filename: event.filename,
+                caption,
+                sessionId,
+              },
+            }),
+          );
         }
         break;
       }
@@ -350,7 +408,7 @@ async function pollForBackgroundResults(
         // File delivery — message has media paths
         if (msg.media && msg.media.length > 0) {
           for (const filePath of msg.media) {
-            const filename = filePath.split("/").pop() || "file";
+            const filename = displayFilenameFromPath(filePath);
             MessageStore.appendFile(sessionId, lastMsgId, {
               filename,
               path: filePath,
@@ -363,7 +421,7 @@ async function pollForBackgroundResults(
             new CustomEvent("crew:file", {
               detail: {
                 fileUrl,
-                filename: msg.media[0].split("/").pop() || "file",
+                filename: displayFilenameFromPath(msg.media[0]),
                 caption: msg.content || "",
                 sessionId,
               },

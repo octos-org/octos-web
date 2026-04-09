@@ -8,6 +8,7 @@
 
 import { useSyncExternalStore } from "react";
 import { getMessages as fetchMessages } from "@/api/sessions";
+import { displayFilenameFromPath } from "@/lib/utils";
 import { addFile as addToFileStore } from "@/store/file-store";
 
 // ---------------------------------------------------------------------------
@@ -151,6 +152,12 @@ export function appendFile(
   if (msg.files.some((f) => f.path === file.path)) return;
   list[idx] = { ...msg, files: [...msg.files, file] };
   messagesBySession.set(sessionId, [...list]);
+  addToFileStore({
+    sessionId,
+    filename: file.filename,
+    filePath: file.path,
+    caption: file.caption ?? "",
+  });
   notify();
 }
 
@@ -165,6 +172,51 @@ export function clearMessages(sessionId: string): void {
   loadedSessions.delete(sessionId);
   loadingPromises.delete(sessionId);
   notify();
+}
+
+/**
+ * Ensure a visible in-progress assistant bubble exists for a session.
+ *
+ * Used after page reload when the server is still working but the transient
+ * streaming UI state was lost.
+ */
+export function ensureStreamingAssistantMessage(
+  sessionId: string,
+  text = "Resuming ongoing work...",
+): string {
+  const list = getList(sessionId);
+  const existing = [...list]
+    .reverse()
+    .find((message) => message.role === "assistant" && message.status === "streaming");
+
+  if (existing) {
+    if (!existing.text && text) {
+      existing.text = text;
+      messagesBySession.set(sessionId, [...list]);
+      notify();
+    }
+    return existing.id;
+  }
+
+  const latestAssistantText = [...list]
+    .reverse()
+    .find((message) => message.role === "assistant" && message.text.trim())
+    ?.text;
+  const initialText = latestAssistantText || text;
+
+  const id = nextId();
+  list.push({
+    id,
+    role: "assistant",
+    text: initialText,
+    files: [],
+    toolCalls: [],
+    status: "streaming",
+    timestamp: Date.now(),
+  });
+  messagesBySession.set(sessionId, [...list]);
+  notify();
+  return id;
 }
 
 // ---------------------------------------------------------------------------
@@ -195,7 +247,7 @@ export function loadHistory(sessionId: string): Promise<void> {
           if (!m.content.trim()) continue;
           // Extract file attachments from media paths
           const files: MessageFile[] = (m.media ?? []).map((path) => ({
-            filename: path.split("/").pop() || "file",
+            filename: displayFilenameFromPath(path),
             path,
             caption: "",
           }));

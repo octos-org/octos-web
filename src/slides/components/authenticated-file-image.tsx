@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { getToken } from "@/api/client";
-import { API_BASE } from "@/lib/constants";
+import { buildFileUrl } from "@/api/files";
 
 export function useAuthenticatedFileUrl(filePath?: string): string | undefined {
   const [blobUrl, setBlobUrl] = useState<string | undefined>(undefined);
@@ -23,7 +23,7 @@ export function useAuthenticatedFileUrl(filePath?: string): string | undefined {
     }
 
     const token = getToken();
-    const url = `${API_BASE}/api/files?path=${encodeURIComponent(filePath)}`;
+    const url = buildFileUrl(filePath);
 
     fetch(url, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},

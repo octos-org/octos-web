@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { getToken } from "@/api/client";
-import { API_BASE } from "@/lib/constants";
+import { buildFileUrl } from "@/api/files";
 
 interface DeliveredFile {
   filePath: string;
@@ -40,7 +40,7 @@ async function addFile(file: DeliveredFile) {
 
   try {
     const token = getToken();
-    const fetchUrl = `${API_BASE}/api/files?path=${encodeURIComponent(file.filePath)}`;
+    const fetchUrl = buildFileUrl(file.filePath);
     const resp = await fetch(fetchUrl, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
@@ -101,7 +101,7 @@ export function FileDelivery({ sessionId }: { sessionId?: string }) {
               </div>
             ) : (
               <a
-                href={f.blobUrl || `${API_BASE}/api/files?path=${encodeURIComponent(f.filePath)}`}
+                href={f.blobUrl || buildFileUrl(f.filePath)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1.5 text-sm text-accent hover:underline"

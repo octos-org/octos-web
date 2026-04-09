@@ -1,8 +1,7 @@
 import { useEffect } from "react";
 import { X } from "lucide-react";
 import type { ContentEntry } from "@/api/content";
-import { getToken } from "@/api/client";
-import { API_BASE } from "@/lib/constants";
+import { buildAuthenticatedFileUrl } from "@/api/files";
 
 interface VideoPlayerProps {
   entry: ContentEntry;
@@ -10,10 +9,7 @@ interface VideoPlayerProps {
 }
 
 export function VideoPlayer({ entry, onClose }: VideoPlayerProps) {
-  const token = getToken();
-  const url = `${API_BASE}/api/files?path=${encodeURIComponent(entry.path)}${
-    token ? `&_token=${token}` : ""
-  }`;
+  const url = buildAuthenticatedFileUrl(entry.path);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {

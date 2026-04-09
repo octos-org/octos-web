@@ -2,8 +2,8 @@ import { useState, useMemo } from "react";
 import { useAllFiles, type FileEntry } from "@/store/file-store";
 import { MediaPlayer } from "./media-player";
 import { X, Download, FileIcon, Music, Film, Image, FileText, Loader2, Eye, FolderOpen, FolderClosed, ChevronRight, ChevronDown } from "lucide-react";
-import { API_BASE } from "@/lib/constants";
 import { getToken } from "@/api/client";
+import { buildFileUrl } from "@/api/files";
 
 interface MediaPanelProps {
   open: boolean;
@@ -45,7 +45,7 @@ function formatTime(ts: number) {
 /** Download a file using fetch with Authorization header, then trigger a browser download. */
 async function secureDownload(filePath: string, filename: string) {
   const token = getToken();
-  const url = `${API_BASE}/api/files?path=${encodeURIComponent(filePath)}`;
+  const url = buildFileUrl(filePath);
   const headers: Record<string, string> = {};
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;

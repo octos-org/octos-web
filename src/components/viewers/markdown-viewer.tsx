@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { X, Download, Maximize2, Minimize2 } from "lucide-react";
 import { MarkdownContent } from "@/components/markdown-renderer";
 import { getToken } from "@/api/client";
-import { API_BASE } from "@/lib/constants";
+import { buildFileUrl } from "@/api/files";
 import type { ContentEntry } from "@/api/content";
 
 interface MarkdownViewerProps {
@@ -17,7 +17,7 @@ export function MarkdownViewer({ entry, onClose }: MarkdownViewerProps) {
 
   useEffect(() => {
     const token = getToken();
-    const url = `${API_BASE}/api/files?path=${encodeURIComponent(entry.path)}`;
+    const url = buildFileUrl(entry.path);
     fetch(url, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
@@ -61,7 +61,7 @@ export function MarkdownViewer({ entry, onClose }: MarkdownViewerProps) {
               {maximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
             </button>
             <a
-              href={`${API_BASE}/api/files?path=${encodeURIComponent(entry.path)}`}
+              href={buildFileUrl(entry.path)}
               download={entry.filename}
               className="flex h-8 w-8 items-center justify-center rounded-lg text-muted hover:bg-surface-container hover:text-accent"
               title="Download"

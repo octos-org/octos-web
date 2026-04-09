@@ -1,6 +1,9 @@
 import { useSyncExternalStore } from "react";
 import { getToken } from "@/api/client";
+import { buildFileUrl } from "@/api/files";
+import { getSessionFiles } from "@/api/sessions";
 import { API_BASE } from "@/lib/constants";
+import { displayFilenameFromPath } from "@/lib/utils";
 
 export interface FileEntry {
   id: string;
@@ -15,9 +18,13 @@ export interface FileEntry {
   caption?: string;
 }
 
+type NewFileEntry = Omit<FileEntry, "id" | "timestamp" | "status"> & {
+  size?: number;
+  timestamp?: number;
+};
+
 // --- Internal state (profile-scoped, not session-scoped) ---
 const allFiles: FileEntry[] = [];
-const seenPaths = new Set<string>();
 const listeners = new Set<() => void>();
 
 let version = 0;
@@ -41,15 +48,51 @@ function subscribe(cb: () => void): () => void {
 
 // --- Public API ---
 
-export function addFile(entry: Omit<FileEntry, "id" | "timestamp" | "status">) {
-  // Deduplicate by filePath
-  if (seenPaths.has(entry.filePath)) return;
-  seenPaths.add(entry.filePath);
+export function addFile(entry: NewFileEntry) {
+  const sessionId = entry.sessionId || "";
+
+  // Keep files distinct per session. The same physical path can legitimately
+  // appear in multiple sessions, especially for shared research outputs.
+  // Still merge legacy unscoped entries into a scoped session when possible.
+  const existing =
+    allFiles.find(
+      (file) => file.filePath === entry.filePath && file.sessionId === sessionId,
+    ) ||
+    (sessionId
+      ? allFiles.find(
+          (file) => file.filePath === entry.filePath && file.sessionId === "",
+        )
+      : allFiles.find((file) => file.filePath === entry.filePath));
+  if (existing) {
+    let changed = false;
+    if (!existing.sessionId && sessionId) {
+      existing.sessionId = sessionId;
+      changed = true;
+    }
+    if ((!existing.caption || existing.caption === "") && entry.caption) {
+      existing.caption = entry.caption;
+      changed = true;
+    }
+    if ((!existing.size || existing.size <= 0) && entry.size && entry.size > 0) {
+      existing.size = entry.size;
+      changed = true;
+    }
+    if (
+      entry.timestamp &&
+      (!existing.timestamp || entry.timestamp > existing.timestamp)
+    ) {
+      existing.timestamp = entry.timestamp;
+      changed = true;
+    }
+    if (changed) notify();
+    return;
+  }
 
   const file: FileEntry = {
     ...entry,
+    sessionId,
     id: `file-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    timestamp: Date.now(),
+    timestamp: entry.timestamp ?? Date.now(),
     status: "generating",
   };
   allFiles.push(file);
@@ -72,7 +115,6 @@ export function removeFile(id: string): void {
   if (idx !== -1) {
     const file = allFiles[idx];
     if (file.blobUrl) URL.revokeObjectURL(file.blobUrl);
-    seenPaths.delete(file.filePath);
     allFiles.splice(idx, 1);
     notify();
   }
@@ -83,7 +125,6 @@ export function revokeAll(): void {
     if (file.blobUrl) URL.revokeObjectURL(file.blobUrl);
   }
   allFiles.length = 0;
-  seenPaths.clear();
   notify();
 }
 
@@ -99,7 +140,7 @@ export function getFilesForSession(sessionId: string): FileEntry[] {
 async function fetchBlob(file: FileEntry) {
   try {
     const token = getToken();
-    const url = `${API_BASE}/api/files?path=${encodeURIComponent(file.filePath)}`;
+    const url = buildFileUrl(file.filePath);
     const resp = await fetch(url, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
@@ -115,6 +156,24 @@ async function fetchBlob(file: FileEntry) {
     }
   } catch {
     updateFile(file.id, { status: "ready" });
+  }
+}
+
+export async function loadSessionFiles(sessionId: string): Promise<void> {
+  try {
+    const files = await getSessionFiles(sessionId);
+    for (const file of files) {
+      addFile({
+        sessionId,
+        filename: file.filename,
+        filePath: file.path,
+        size: file.size_bytes,
+        timestamp: Date.parse(file.modified_at) || Date.now(),
+        caption: "",
+      });
+    }
+  } catch {
+    // session file listing unavailable
   }
 }
 
@@ -196,7 +255,7 @@ export async function loadAllSessionFiles(): Promise<void> {
         // Check media array (new persist format)
         if (msg.media && msg.media.length > 0) {
           for (const path of msg.media) {
-            const filename = path.split("/").pop() || "file";
+            const filename = displayFilenameFromPath(path);
             addFile({
               sessionId: session.id,
               filename,
@@ -210,7 +269,7 @@ export async function loadAllSessionFiles(): Promise<void> {
         if (fileMatches) {
           for (const match of fileMatches) {
             const path = match[1];
-            const filename = path.split("/").pop() || "file";
+            const filename = displayFilenameFromPath(path);
             addFile({
               sessionId: session.id,
               filename,

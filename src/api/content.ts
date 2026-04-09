@@ -1,5 +1,6 @@
 import { request, getToken } from "@/api/client";
 import { API_BASE } from "@/lib/constants";
+import { buildFileUrl } from "@/api/files";
 
 // --- Types ---
 
@@ -102,7 +103,7 @@ export function thumbnailUrl(id: string): string {
 export async function downloadContent(entry: ContentEntry): Promise<void> {
   const token = getToken();
   const resp = await fetch(
-    `${API_BASE}/api/files?path=${encodeURIComponent(entry.path)}`,
+    buildFileUrl(entry.path),
     { headers: token ? { Authorization: `Bearer ${token}` } : {} },
   );
   if (!resp.ok) throw new Error(`Download failed: ${resp.status}`);

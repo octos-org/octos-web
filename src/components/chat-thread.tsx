@@ -34,7 +34,9 @@ import * as StreamManager from "@/runtime/stream-manager";
 import { MarkdownContent } from "./markdown-renderer";
 import { ThinkingIndicator } from "./thinking-indicator";
 import { ToolProgressIndicator } from "./tool-progress-indicator";
+import { buildFileUrl } from "@/api/files";
 import { API_BASE } from "@/lib/constants";
+import { displayFilenameFromPath } from "@/lib/utils";
 import { getToken } from "@/api/client";
 
 // ---------------------------------------------------------------------------
@@ -164,7 +166,7 @@ function useBlobUrl(filePath: string): string | undefined {
     }
 
     const token = getToken();
-    const apiUrl = `${API_BASE}/api/files?path=${encodeURIComponent(filePath)}`;
+    const apiUrl = buildFileUrl(filePath);
     fetch(apiUrl, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
@@ -381,6 +383,7 @@ function TaskStatusIndicator() {
 
     window.addEventListener("crew:bg_tasks", handleBgTasks);
     window.addEventListener("crew:task_status", handleTaskStatus);
+    void poll();
     return () => {
       stopped = true;
       if (pollTimer) clearTimeout(pollTimer);
@@ -944,7 +947,7 @@ function Composer() {
 
     const messageText =
       input ||
-      `[Attached: ${mediaPaths.map((p) => p.split("/").pop() || "file").join(", ")}]`;
+      `[Attached: ${mediaPaths.map((p) => displayFilenameFromPath(p)).join(", ")}]`;
 
     // Send via SSE bridge (StreamManager queues if a stream is already active)
     bridgeSend({

@@ -52,5 +52,14 @@ export async function request<T>(
     throw new Error(text || `HTTP ${resp.status}`);
   }
 
-  return resp.json();
+  if (resp.status === 204) {
+    return undefined as T;
+  }
+
+  const text = await resp.text();
+  if (!text.trim()) {
+    return undefined as T;
+  }
+
+  return JSON.parse(text) as T;
 }

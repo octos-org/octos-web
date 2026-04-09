@@ -1,6 +1,13 @@
 import { request } from "./client";
 import type { SessionInfo, MessageInfo } from "./types";
 
+export interface SessionFileInfo {
+  filename: string;
+  path: string;
+  size_bytes: number;
+  modified_at: string;
+}
+
 export async function listSessions(): Promise<SessionInfo[]> {
   return request("/api/sessions");
 }
@@ -26,6 +33,14 @@ export async function getSessionStatus(
 ): Promise<{ active: boolean; has_deferred_files: boolean }> {
   return request(
     `/api/sessions/${encodeURIComponent(sessionId)}/status`,
+  );
+}
+
+export async function getSessionFiles(
+  sessionId: string,
+): Promise<SessionFileInfo[]> {
+  return request(
+    `/api/sessions/${encodeURIComponent(sessionId)}/files`,
   );
 }
 
