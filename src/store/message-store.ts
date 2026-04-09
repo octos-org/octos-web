@@ -252,18 +252,14 @@ export function loadHistory(sessionId: string): Promise<void> {
             caption: "",
           }));
 
-          // File-only messages (from background task delivery) and bg notifications
-          // should merge into the assistant message that initiated the task.
+          // File-only messages from background task delivery should merge into
+          // the assistant message that initiated the task. Background success
+          // or failure notifications must remain visible as standalone bubbles.
           const isFileOnly = files.length > 0 && /^\[file:/.test(m.content.trim());
-          const isBgNotification = role === "assistant" && /^[✓✗]/.test(m.content.trim()) && files.length === 0;
 
-          if (isFileOnly || isBgNotification) {
+          if (isFileOnly) {
             // Find the assistant message that has a tool_call matching this file's tool.
-            // Extract tool name from notification (e.g. "✓ mofa_slides completed")
-            // or from file path (e.g. "skill-output/mofa-slides-xxx/file.pptx")
-            const toolHint = isBgNotification
-              ? m.content.match(/[✓✗]\s*(\w+)/)?.[1] || ""
-              : "";
+            // Extract tool hint from file path (e.g. "skill-output/mofa-slides-xxx/file.pptx")
             const fileHint = files[0]?.path?.match(/skills?[/-](\w+)/)?.[1] || "";
 
             // Find the originating assistant message (has tool_calls for this tool)
@@ -271,7 +267,6 @@ export function loadHistory(sessionId: string): Promise<void> {
               c.role === "assistant" &&
               c.toolCalls.length > 0 &&
               c.toolCalls.some((tc) =>
-                tc.name === toolHint ||
                 tc.name?.includes(fileHint) ||
                 fileHint.includes(tc.name || "---")
               )
