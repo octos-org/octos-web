@@ -48,6 +48,8 @@ export interface SlidesProject {
   gitRepoPath?: string;
   currentCommit?: string;
   versions: SlideVersion[];
+  /** Manifest generatedAt — used to detect content changes when file paths stay the same */
+  manifestGeneratedAt?: string;
   /** Links back to StudioProject if created from studio */
   studioProjectId?: string;
   studioOutputId?: string;

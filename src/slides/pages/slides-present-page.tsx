@@ -101,7 +101,7 @@ function SlidesPresentContent() {
   }, [goBack, goNext, goPrev]);
 
   const currentSlide = generatedSlides[currentIndex];
-  const currentImageUrl = useAuthenticatedFileUrl(currentSlide?.thumbnailUrl);
+  const currentImageUrl = useAuthenticatedFileUrl(currentSlide?.thumbnailUrl, project?.manifestGeneratedAt);
 
   if (!project) return null;
 

@@ -10,6 +10,8 @@ interface Props {
   onIndexChange: (index: number) => void;
   pptxUrl?: string;
   onPresent?: () => void;
+  /** Changes when slide images are regenerated — forces image re-fetch */
+  version?: string;
 }
 
 export default function SlidePreview({
@@ -18,11 +20,12 @@ export default function SlidePreview({
   onIndexChange,
   pptxUrl,
   onPresent,
+  version,
 }: Props) {
   const [imgError, setImgError] = useState(false);
 
   const current = slides[currentIndex];
-  const currentImageUrl = useAuthenticatedFileUrl(current?.thumbnailUrl);
+  const currentImageUrl = useAuthenticatedFileUrl(current?.thumbnailUrl, version);
 
   const goPrev = useCallback(() => {
     if (currentIndex > 0) onIndexChange(currentIndex - 1);

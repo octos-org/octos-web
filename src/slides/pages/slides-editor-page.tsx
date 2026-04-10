@@ -37,6 +37,7 @@ function SlidesEditorContent() {
           onIndexChange={setCurrentIndex}
           pptxUrl={project?.pptxUrl}
           onPresent={handlePresent}
+          version={project?.manifestGeneratedAt}
         />
       }
       chatPanel={

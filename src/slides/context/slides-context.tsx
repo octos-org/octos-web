@@ -9,7 +9,7 @@ import {
 
 import type { SlidesProject, Slide } from "../types";
 import { useSlidesProject, updateSlidesProject } from "../store";
-import { listSlidesFiles } from "../api";
+import { fetchSlidesManifest, listSlidesFiles } from "../api";
 
 interface SlidesContextValue {
   project: SlidesProject | undefined;
@@ -42,7 +42,7 @@ export function SlidesProvider({
 
   useEffect(() => {
     const current = projectRef.current;
-    if (!current?.scaffolded || !current.slug) return;
+    if (!current?.scaffolded || !current.slug || !current.chatSessionId) return;
 
     let stopped = false;
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
@@ -50,24 +50,34 @@ export function SlidesProvider({
     async function pollSlideImages() {
       try {
         const latest = projectRef.current;
-        if (!latest?.slug) return;
+        if (!latest?.slug || !latest.chatSessionId) return;
 
-        const files = await listSlidesFiles(`slides/${latest.slug}/output/imgs`);
+        const files = await listSlidesFiles(`slides/${latest.slug}`, {
+          sessionId: latest.chatSessionId,
+        });
         if (stopped) return;
 
-        const pngFiles = files
-          .filter((file) => /\.png$/i.test(file.filename))
-          .sort((a, b) => a.filename.localeCompare(b.filename, undefined, { numeric: true }));
+        const manifest = await fetchSlidesManifest(latest.slug, files);
+        if (stopped || !manifest) return;
 
-        if (pngFiles.length === 0) return;
+        const existingByAsset = new Map<string, Slide>();
+        for (const slide of latest.slides) {
+          const assetKey = slideAssetKey(slide.thumbnailUrl);
+          if (assetKey) {
+            existingByAsset.set(assetKey, slide);
+          }
+        }
+        const hasExistingAssets = existingByAsset.size > 0;
 
-        const nextSlides: Slide[] = pngFiles.map((file, index) => {
-          const existing = latest.slides[index];
+        const nextSlides: Slide[] = manifest.slides.map((file, index) => {
+          const existing = existingByAsset.get(file.filename)
+            ?? existingByAsset.get(slideAssetKey(file.path) ?? "")
+            ?? (!hasExistingAssets ? latest.slides[index] : undefined);
           return {
             index,
-            title: existing?.title || `Slide ${index + 1}`,
+            title: existing?.title || `Slide ${file.index + 1}`,
             notes: existing?.notes || "",
-            layout: existing?.layout || (index === 0 ? "title" : "content"),
+            layout: existing?.layout || (file.index === 0 ? "title" : "content"),
             thumbnailUrl: file.path,
           };
         });
@@ -85,8 +95,17 @@ export function SlidesProvider({
             );
           });
 
-        if (slidesChanged) {
-          updateSlidesProject(latest.id, { slides: nextSlides });
+        // Also detect content changes even when paths stay the same.
+        // manifest.generatedAt changes on every regeneration.
+        const contentChanged =
+          !slidesChanged &&
+          manifest.generatedAt !== latest.manifestGeneratedAt;
+
+        if (slidesChanged || contentChanged) {
+          updateSlidesProject(latest.id, {
+            slides: nextSlides,
+            manifestGeneratedAt: manifest.generatedAt,
+          });
           reload();
         }
       } catch {
@@ -102,7 +121,7 @@ export function SlidesProvider({
       stopped = true;
       if (pollTimer) clearTimeout(pollTimer);
     };
-  }, [project?.id, project?.scaffolded, project?.slug, reload]);
+  }, [project?.chatSessionId, project?.id, project?.scaffolded, project?.slug, reload]);
 
   const updateSlide = useCallback(
     (index: number, update: Partial<Slide>) => {
@@ -181,4 +200,11 @@ export function useSlides() {
   const ctx = useContext(SlidesContext);
   if (!ctx) throw new Error("useSlides must be used within SlidesProvider");
   return ctx;
+}
+
+function slideAssetKey(path?: string): string | null {
+  if (!path) return null;
+  const normalized = path.replace(/\\/g, "/");
+  const key = normalized.split("/").pop();
+  return key || null;
 }

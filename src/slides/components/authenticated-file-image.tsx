@@ -3,7 +3,11 @@ import { useEffect, useState } from "react";
 import { getToken } from "@/api/client";
 import { buildFileUrl } from "@/api/files";
 
-export function useAuthenticatedFileUrl(filePath?: string): string | undefined {
+/**
+ * @param filePath - path to the file
+ * @param version - optional cache-buster; change this to force re-fetch when file content changes
+ */
+export function useAuthenticatedFileUrl(filePath?: string, version?: string | number): string | undefined {
   const [blobUrl, setBlobUrl] = useState<string | undefined>(undefined);
 
   useEffect(() => {
@@ -27,6 +31,7 @@ export function useAuthenticatedFileUrl(filePath?: string): string | undefined {
 
     fetch(url, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
+      cache: "no-store",
     })
       .then((resp) => {
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -45,7 +50,7 @@ export function useAuthenticatedFileUrl(filePath?: string): string | undefined {
       revoked = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [filePath]);
+  }, [filePath, version]);
 
   return blobUrl;
 }
@@ -54,14 +59,17 @@ interface AuthenticatedFileImageProps {
   filePath?: string;
   alt: string;
   className?: string;
+  /** Change to force re-fetch when file content changes at the same path */
+  version?: string | number;
 }
 
 export function AuthenticatedFileImage({
   filePath,
   alt,
   className,
+  version,
 }: AuthenticatedFileImageProps) {
-  const src = useAuthenticatedFileUrl(filePath);
+  const src = useAuthenticatedFileUrl(filePath, version);
 
   if (!src) return null;
 
