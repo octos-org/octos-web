@@ -8,8 +8,9 @@ import {
   ChevronRight,
 } from "lucide-react";
 
+import { hydrateSlidesProjectFromSession } from "../api";
 import { SlidesProvider, useSlides } from "../context/slides-context";
-import { getSlidesProject } from "../store";
+import { getSlidesProject, upsertSlidesProject } from "../store";
 import { useAuthenticatedFileUrl } from "../components/authenticated-file-image";
 import { SLIDE_ASPECT_RATIO } from "../constants";
 
@@ -194,20 +195,38 @@ function SlidesPresentContent() {
 
 export function SlidesPresentPage() {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
+  const [hydrating, setHydrating] = useState(false);
 
   const project = id ? getSlidesProject(id) : undefined;
 
   useEffect(() => {
-    if (id && !project) {
-      navigate("/slides", { replace: true });
-    }
-  }, [id, navigate, project]);
+    if (!id || project) return;
+    const sessionId = id;
+    let stopped = false;
+    setHydrating(true);
 
+    async function hydrate() {
+      try {
+        const nextProject = await hydrateSlidesProjectFromSession(sessionId);
+        if (stopped || !nextProject) return;
+        upsertSlidesProject(nextProject);
+      } finally {
+        if (!stopped) setHydrating(false);
+      }
+    }
+
+    void hydrate();
+
+    return () => {
+      stopped = true;
+    };
+  }, [id, project]);
+
+  if (!id || (!project && hydrating)) return null;
   if (!id || !project) return null;
 
   return (
-    <SlidesProvider projectId={id}>
+    <SlidesProvider projectId={project.id}>
       <SlidesPresentContent />
     </SlidesProvider>
   );

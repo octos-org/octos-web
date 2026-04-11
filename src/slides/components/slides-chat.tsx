@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef } from "react";
 
-import { getToken } from "@/api/client";
+import { buildApiHeaders } from "@/api/client";
 import { ChatThread } from "@/components/chat-thread";
 import { API_BASE } from "@/lib/constants";
 import { SessionContext } from "@/runtime/session-context";
 import * as MessageStore from "@/store/message-store";
 
-import { slugifySlidesTitle } from "../api";
+import { buildSlidesSlug } from "../api";
 import { useSlides } from "../context/slides-context";
 import { SlidesTaskStatusIndicator } from "./slides-task-status-indicator";
 
@@ -32,8 +32,7 @@ export function SlidesChat({ sessionId }: Props) {
       return;
     }
 
-    const slug = projectSlug || slugifySlidesTitle(projectTitle);
-    const token = getToken();
+    const slug = projectSlug || buildSlidesSlug(projectTitle, projectId);
     const abort = new AbortController();
     scaffoldStartedRef.current = true;
 
@@ -41,7 +40,7 @@ export function SlidesChat({ sessionId }: Props) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...buildApiHeaders(),
       },
       body: JSON.stringify({
         message: `/new slides ${slug}`,
@@ -49,7 +48,7 @@ export function SlidesChat({ sessionId }: Props) {
       }),
       signal: abort.signal,
     })
-      .then((resp) => {
+      .then(async (resp) => {
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         save({ scaffolded: true, slug });
       })
@@ -90,7 +89,7 @@ export function SlidesChat({ sessionId }: Props) {
           <SlidesTaskStatusIndicator sessionId={sessionId} />
         </div>
         <div className="flex-1 min-h-0 overflow-hidden">
-          <ChatThread />
+          <ChatThread hideFileOnlyAssistantMessages />
         </div>
       </div>
     </SessionContext.Provider>

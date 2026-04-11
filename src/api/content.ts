@@ -1,4 +1,4 @@
-import { request, getToken } from "@/api/client";
+import { request, getSelectedProfileId, getToken } from "@/api/client";
 import { API_BASE } from "@/lib/constants";
 import { buildFileUrl } from "@/api/files";
 
@@ -60,10 +60,8 @@ export function matchesContentSession(
   if (!sessionId) return true;
   if (entry.session_id === sessionId) return true;
 
-  const candidates = [
-    `_main:api:${sessionId}`,
-    `api:${sessionId}`,
-  ];
+  const profileId = getSelectedProfileId();
+  const candidates = [profileId ? `${profileId}:api:${sessionId}` : `api:${sessionId}`];
 
   const rawPath = entry.path || "";
   let decodedPath = rawPath;

@@ -78,7 +78,7 @@ export function SlidesEditorLayout({
 
   const filesPanel = useMemo(() => {
     if (!showFiles) return null;
-    if (!project?.slug) {
+    if (!project?.slug || !project.scaffolded) {
       return (
         <div className="flex h-full items-center justify-center px-4 text-center text-xs text-muted">
           Project files appear after the slides session has been scaffolded.
@@ -89,99 +89,102 @@ export function SlidesEditorLayout({
       <ProjectFiles
         slug={project.slug}
         title={project.title}
-        sessionId={project.chatSessionId}
+        sessionId={project.id}
         onOpenFile={openProjectFile}
         onRename={(t) => save({ title: t })}
       />
     );
-  }, [openProjectFile, project?.chatSessionId, project?.slug, showFiles]);
+  }, [openProjectFile, project?.id, project?.scaffolded, project?.slug, project?.title, save, showFiles]);
 
   return (
-    <div className="flex h-screen flex-col bg-surface-dark">
+    <div className="chat-shell flex h-screen flex-col gap-3 p-3">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-surface">
-        <div className="flex items-center gap-3">
-          <Link
-            to="/slides"
-            className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-muted hover:text-white hover:bg-surface-container transition text-sm"
-          >
-            <ArrowLeft size={16} />
-            Back
-          </Link>
-          <div className="w-px h-5 bg-border" />
-          <Presentation size={16} className="text-accent" />
-          {editingTitle ? (
-            <input
-              ref={titleInputRef}
-              defaultValue={project?.title || ""}
-              className="text-sm font-medium text-text bg-surface-container rounded px-2 py-0.5 outline-none border border-accent/50 max-w-sm"
-              autoFocus
-              onBlur={(e) => {
-                const v = e.target.value.trim();
-                if (v && v !== project?.title) save({ title: v });
-                setEditingTitle(false);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") e.currentTarget.blur();
-                if (e.key === "Escape") setEditingTitle(false);
-              }}
-            />
-          ) : (
-            <span
-              className="text-sm font-medium text-text truncate max-w-sm cursor-pointer hover:text-accent transition"
-              onClick={() => setEditingTitle(true)}
-              title="Click to rename"
+      <div className="glass-panel rounded-[16px] p-3">
+        <div className="glass-toolbar flex items-center justify-between gap-4 rounded-[14px] px-4 py-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <Link
+              to="/slides"
+              className="glass-icon-button flex items-center gap-1.5 rounded-[10px] px-3 py-2 text-sm"
             >
-              {project?.title || "Untitled Deck"}
-            </span>
-          )}
-          {project && (
-            <span className="text-xs px-2 py-0.5 rounded-full bg-surface-container text-muted">
-              {project.slides.length} slides
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={toggleTheme}
-            className="rounded-lg p-2 text-muted hover:text-text transition"
-            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-          >
-            {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
-          </button>
-          <button
-            onClick={() => setShowChat(!showChat)}
-            className={`rounded-lg p-2 transition ${
-              showChat
-                ? "bg-surface-container text-accent"
-                : "text-muted hover:text-text"
-            }`}
-            title="Toggle chat"
-          >
-            <MessageSquare size={16} />
-          </button>
-          <button
-            onClick={() => setShowFiles((value) => !value)}
-            className={`rounded-lg p-2 transition ${
-              showFiles
-                ? "bg-surface-container text-accent"
-                : "text-muted hover:text-text"
-            }`}
-            title="Toggle files"
-          >
-            <FolderOpen size={16} />
-          </button>
+              <ArrowLeft size={16} />
+              Back
+            </Link>
+            <div className="glass-pill h-9 w-px self-stretch rounded-full px-0 py-0" />
+            <div className="glass-pill flex h-10 w-10 items-center justify-center rounded-[10px] text-accent">
+              <Presentation size={16} />
+            </div>
+            <div className="min-w-0">
+              <div className="shell-kicker">Slides Workspace</div>
+              {editingTitle ? (
+                <input
+                  ref={titleInputRef}
+                  defaultValue={project?.title || ""}
+                  className="mt-1 max-w-sm rounded-[12px] border border-accent/50 bg-surface-container px-3 py-2 text-lg font-semibold tracking-tight text-text outline-none"
+                  autoFocus
+                  onBlur={(e) => {
+                    const v = e.target.value.trim();
+                    if (v && v !== project?.title) save({ title: v });
+                    setEditingTitle(false);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                    if (e.key === "Escape") setEditingTitle(false);
+                  }}
+                />
+              ) : (
+                <span
+                  className="block max-w-sm truncate text-lg font-semibold tracking-tight text-text-strong transition hover:text-accent"
+                  onClick={() => setEditingTitle(true)}
+                  title="Click to rename"
+                >
+                  {project?.title || "Untitled Deck"}
+                </span>
+              )}
+            </div>
+            {project && (
+              <span className="glass-pill rounded-[12px] px-3 py-1.5 text-xs text-muted">
+                {project.slides.length} slides
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={toggleTheme}
+              className="glass-icon-button rounded-[10px] p-2.5"
+              title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            >
+              {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+            </button>
+            <button
+              onClick={() => setShowChat(!showChat)}
+              className={`glass-icon-button rounded-[10px] p-2.5 ${
+                showChat ? "is-active" : ""
+              }`}
+              title="Toggle chat"
+            >
+              <MessageSquare size={16} />
+            </button>
+            <button
+              onClick={() => setShowFiles((value) => !value)}
+              className={`glass-icon-button rounded-[10px] p-2.5 ${
+                showFiles ? "is-active" : ""
+              }`}
+              title="Toggle files"
+            >
+              <FolderOpen size={16} />
+            </button>
+          </div>
         </div>
       </div>
 
       {/* Layout: chat (left) + preview (center) + files (right) */}
-      <div className="flex flex-1 min-h-0 overflow-hidden">
+      <div className="flex flex-1 min-h-0 overflow-hidden gap-3">
         {/* Left: Chat */}
         {showChat && (
           <>
             <div
               style={{ width: chatWidth }}
-              className="shrink-0 overflow-hidden border-r border-border bg-surface"
+              className="glass-panel shrink-0 overflow-hidden rounded-[16px]"
             >
               {chatPanel || (
                 <div className="flex h-full items-center justify-center text-xs text-muted/50">
@@ -191,25 +194,27 @@ export function SlidesEditorLayout({
             </div>
             <div
               onMouseDown={onChatResizeStart}
-              className="w-1 shrink-0 cursor-col-resize bg-transparent hover:bg-accent/30 transition-colors"
+              className="panel-resize-handle"
               title="Resize chat panel"
             />
           </>
         )}
 
         {/* Right: Preview */}
-        <div className="flex-1 min-w-0 bg-surface-dark">{previewPanel}</div>
+        <div className="glass-panel flex-1 min-w-0 overflow-hidden rounded-[16px]">
+          {previewPanel}
+        </div>
 
         {showFiles && (
           <>
             <div
               onMouseDown={onFilesResizeStart}
-              className="w-1 shrink-0 cursor-col-resize bg-transparent hover:bg-accent/30 transition-colors"
+              className="panel-resize-handle"
               title="Resize files panel"
             />
             <div
               style={{ width: filesWidth }}
-              className="shrink-0 overflow-hidden border-l border-border bg-surface"
+              className="shrink-0 overflow-hidden"
             >
               {filesPanel}
             </div>

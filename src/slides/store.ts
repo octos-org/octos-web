@@ -6,7 +6,7 @@ const STORAGE_KEY = "octos-slides-projects";
 function loadProjects(): SlidesProject[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    return raw ? (JSON.parse(raw) as SlidesProject[]) : [];
   } catch {
     return [];
   }
@@ -45,18 +45,18 @@ export function getAllSlidesProjects(): SlidesProject[] {
 }
 
 export function getSlidesProject(id: string): SlidesProject | undefined {
-  return loadProjects().find((p) => p.id === id);
+  return loadProjects().find((project) => project.id === id);
 }
 
 export function createSlidesProject(
   partial: Partial<SlidesProject> & { title: string },
 ): SlidesProject {
   const now = Date.now();
+  const sessionId = `slides-${now}-${Math.random().toString(36).slice(2, 8)}`;
   const project: SlidesProject = {
-    id: generateSlidesId(),
+    id: sessionId,
     createdAt: now,
     updatedAt: now,
-    chatSessionId: `slides-${now}-${Math.random().toString(36).slice(2, 8)}`,
     slides: [],
     template: "business",
     tags: [],
@@ -74,15 +74,37 @@ export function updateSlidesProject(
   update: Partial<SlidesProject>,
 ): SlidesProject | undefined {
   const projects = loadProjects();
-  const idx = projects.findIndex((p) => p.id === id);
+  const idx = projects.findIndex((project) => project.id === id);
   if (idx === -1) return undefined;
-  projects[idx] = { ...projects[idx], ...update, updatedAt: Date.now() };
+  projects[idx] = {
+    ...projects[idx],
+    ...update,
+    updatedAt: Date.now(),
+  };
   saveProjects(projects);
   return projects[idx];
 }
 
+export function upsertSlidesProject(project: SlidesProject): SlidesProject {
+  const projects = loadProjects();
+  const idx = projects.findIndex((entry) => entry.id === project.id);
+
+  if (idx === -1) {
+    projects.unshift(project);
+  } else {
+    projects[idx] = {
+      ...projects[idx],
+      ...project,
+      updatedAt: project.updatedAt || Date.now(),
+    };
+  }
+
+  saveProjects(projects);
+  return idx === -1 ? project : projects[idx];
+}
+
 export function deleteSlidesProject(id: string): void {
-  const projects = loadProjects().filter((p) => p.id !== id);
+  const projects = loadProjects().filter((project) => project.id !== id);
   saveProjects(projects);
 }
 

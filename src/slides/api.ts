@@ -2,6 +2,7 @@ import { buildApiHeaders } from "@/api/client";
 import type { ContentEntry } from "@/api/content";
 import { buildFileUrl } from "@/api/files";
 import { API_BASE } from "@/lib/constants";
+import type { Slide, SlidesProject } from "./types";
 
 export interface SlidesFileEntry {
   filename: string;
@@ -132,6 +133,13 @@ export async function fetchSlidesManifest(
   return normalizeSlidesManifest(data, manifestPath);
 }
 
+export async function hydrateSlidesProjectFromSession(
+  sessionId: string,
+): Promise<SlidesProject | null> {
+  const files = await listSlidesFiles("slides", { sessionId });
+  return buildSlidesProjectFromFiles(sessionId, files);
+}
+
 export function slidesFileToContentEntry(file: SlidesFileEntry): ContentEntry {
   return {
     id: file.path,
@@ -178,6 +186,67 @@ export function inferGroupName(
 
 function normalizeSlidesDir(dir: string): string {
   return dir.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+}
+
+function resolveSlidesSlug(files: SlidesFileEntry[]): string | null {
+  for (const file of files) {
+    const normalizedPath = file.path.replace(/\\/g, "/");
+    const match = normalizedPath.match(/\/slides\/([^/]+)\//);
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+  return null;
+}
+
+async function buildSlidesProjectFromFiles(
+  sessionId: string,
+  files: SlidesFileEntry[],
+): Promise<SlidesProject | null> {
+  if (files.length === 0) return null;
+  const slug = resolveSlidesSlug(files);
+  if (!slug) return null;
+
+  const manifest = await fetchSlidesManifest(slug, files);
+  const slides: Slide[] =
+    manifest?.slides.map((slide, index) => ({
+      index,
+      title: `Slide ${index + 1}`,
+      notes: "",
+      layout: index === 0 ? "title" : "content",
+      thumbnailUrl: slide.path,
+    })) ?? [];
+
+  const pptxPath =
+    manifest?.outFile ||
+    files
+      .filter((file) => /\.pptx$/i.test(file.filename))
+      .sort((left, right) => right.modified.localeCompare(left.modified))[0]?.path;
+
+  return {
+    id: sessionId,
+    title: titleFromSlidesSlug(slug),
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    scaffolded: true,
+    slug,
+    slides,
+    pptxPath,
+    pptxUrl: pptxPath ? buildFileUrl(pptxPath) : undefined,
+    template: "business",
+    tags: [],
+    versions: [],
+    manifestGeneratedAt: manifest?.generatedAt,
+  };
+}
+
+function titleFromSlidesSlug(slug: string): string {
+  return slug
+    .replace(/-[a-z0-9]{6}$/i, "")
+    .split("-")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ") || "Untitled Deck";
 }
 
 function resolveSlidesManifestPath(

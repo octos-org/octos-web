@@ -42,7 +42,7 @@ export function SlidesProvider({
 
   useEffect(() => {
     const current = projectRef.current;
-    if (!current?.scaffolded || !current.slug || !current.chatSessionId) return;
+    if (!current?.scaffolded || !current.slug) return;
 
     let stopped = false;
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
@@ -50,10 +50,10 @@ export function SlidesProvider({
     async function pollSlideImages() {
       try {
         const latest = projectRef.current;
-        if (!latest?.slug || !latest.chatSessionId) return;
+        if (!latest?.slug) return;
 
         const files = await listSlidesFiles(`slides/${latest.slug}`, {
-          sessionId: latest.chatSessionId,
+          sessionId: latest.id,
         });
         if (stopped) return;
 
@@ -121,7 +121,7 @@ export function SlidesProvider({
       stopped = true;
       if (pollTimer) clearTimeout(pollTimer);
     };
-  }, [project?.chatSessionId, project?.id, project?.scaffolded, project?.slug, reload]);
+  }, [project?.id, project?.scaffolded, project?.slug, reload]);
 
   const updateSlide = useCallback(
     (index: number, update: Partial<Slide>) => {

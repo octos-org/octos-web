@@ -28,8 +28,6 @@ export interface SlidesProject {
   title: string;
   createdAt: number;
   updatedAt: number;
-  /** Dedicated agent session for this deck */
-  chatSessionId: string;
   /** True once the backend `/new slides ...` scaffold has been created. */
   scaffolded?: boolean;
   /** Backend directory slug under `slides/`. */

@@ -4,7 +4,8 @@ import { SlidesProvider, useSlides } from "../context/slides-context";
 import { SlidesEditorLayout } from "../layouts/slides-editor-layout";
 import SlidePreview from "../components/slide-preview";
 import { SlidesChat } from "../components/slides-chat";
-import { getSlidesProject } from "../store";
+import { hydrateSlidesProjectFromSession } from "../api";
+import { getSlidesProject, upsertSlidesProject } from "../store";
 
 function SlidesEditorContent() {
   const { project } = useSlides();
@@ -41,9 +42,7 @@ function SlidesEditorContent() {
         />
       }
       chatPanel={
-        project ? (
-          <SlidesChat sessionId={project.chatSessionId} />
-        ) : undefined
+        project ? <SlidesChat sessionId={project.id} /> : undefined
       }
     />
   );
@@ -51,20 +50,70 @@ function SlidesEditorContent() {
 
 export function SlidesEditorPage() {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
+  const [hydrating, setHydrating] = useState(false);
+  const [hydrateError, setHydrateError] = useState<string | null>(null);
 
   const project = id ? getSlidesProject(id) : undefined;
 
   useEffect(() => {
-    if (id && !project) {
-      navigate("/slides", { replace: true });
-    }
-  }, [id, project, navigate]);
+    if (!id || project) return;
+    const sessionId = id;
 
-  if (!id || !project) return null;
+    let stopped = false;
+    setHydrating(true);
+    setHydrateError(null);
+
+    async function hydrate() {
+      try {
+        const nextProject = await hydrateSlidesProjectFromSession(sessionId);
+        if (stopped) return;
+
+        if (!nextProject) {
+          setHydrateError("Slides session unavailable.");
+          return;
+        }
+
+        upsertSlidesProject(nextProject);
+      } catch (error) {
+        if (stopped) return;
+        setHydrateError(
+          error instanceof Error ? error.message : "Failed to load slides session.",
+        );
+      } finally {
+        if (!stopped) setHydrating(false);
+      }
+    }
+
+    void hydrate();
+
+    return () => {
+      stopped = true;
+    };
+  }, [id, project]);
+
+  if (!id) return null;
+
+  if (!project) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-surface-dark px-6 text-center">
+        <div className="max-w-md rounded-2xl border border-border bg-surface p-6">
+          <div className="text-sm font-semibold uppercase tracking-[0.18em] text-muted">
+            Slides Workspace
+          </div>
+          <div className="mt-4 text-base text-white">
+            {hydrating ? "Loading slides session..." : "Slides session unavailable"}
+          </div>
+          <div className="mt-3 text-sm leading-6 text-muted">
+            {hydrateError ||
+              "Octos is reconstructing this deck from the backend session workspace."}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <SlidesProvider projectId={id}>
+    <SlidesProvider projectId={project.id}>
       <SlidesEditorContent />
     </SlidesProvider>
   );

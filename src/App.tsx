@@ -10,6 +10,8 @@ import { StudioPage } from "./pages/studio-page";
 import { SlidesGalleryPage } from "./slides/pages/slides-gallery-page";
 import { SlidesEditorPage } from "./slides/pages/slides-editor-page";
 import { SlidesPresentPage } from "./slides/pages/slides-present-page";
+import { SitesGalleryPage } from "./sites/pages/sites-gallery-page";
+import { SitesEditorPage } from "./sites/pages/sites-editor-page";
 
 function ChatPage() {
   return (
@@ -47,6 +49,8 @@ export function App() {
             <Route path="/slides" element={<SlidesGalleryPage />} />
             <Route path="/slides/:id/present" element={<SlidesPresentPage />} />
             <Route path="/slides/:id" element={<SlidesEditorPage />} />
+            <Route path="/sites" element={<SitesGalleryPage />} />
+            <Route path="/sites/:id" element={<SitesEditorPage />} />
           </Route>
         </Routes>
       </AuthProvider>
