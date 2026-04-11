@@ -28,6 +28,13 @@ export interface MessageFile {
   caption?: string;
 }
 
+export interface MessageMeta {
+  model: string;
+  tokens_in: number;
+  tokens_out: number;
+  duration_s: number;
+}
+
 export interface Message {
   id: string;
   role: "user" | "assistant" | "system";
@@ -39,6 +46,7 @@ export interface Message {
   status: "streaming" | "complete" | "error";
   timestamp: number;
   historySeq?: number;
+  meta?: MessageMeta;
 }
 
 // ---------------------------------------------------------------------------
@@ -282,9 +290,33 @@ function indexFilesForSession(sessionId: string, messages: Message[]): void {
 }
 
 function replaceHistoryFromApi(sessionId: string, apiMessages: MessageInfo[]): void {
+  const existing = messagesBySession.get(sessionId) ?? [];
+  const consumedOptimisticIndices = new Set<number>();
   const converted = apiMessages
     .map(convertApiMessage)
-    .filter((message): message is Message => message !== null);
+    .filter((message): message is Message => message !== null)
+    .map((message) => {
+      const optimisticMatchIndex = findOptimisticMatchIndex(existing, message);
+      if (
+        optimisticMatchIndex === -1 ||
+        consumedOptimisticIndices.has(optimisticMatchIndex)
+      ) {
+        return message;
+      }
+
+      consumedOptimisticIndices.add(optimisticMatchIndex);
+      const optimistic = existing[optimisticMatchIndex];
+      return {
+        ...message,
+        id: optimistic.id,
+        clientMessageId: message.clientMessageId ?? optimistic.clientMessageId,
+        responseToClientMessageId:
+          message.responseToClientMessageId ?? optimistic.responseToClientMessageId,
+        files: mergeMessageFiles(message.files, optimistic.files),
+        toolCalls: message.toolCalls.length > 0 ? message.toolCalls : optimistic.toolCalls,
+        meta: optimistic.meta,
+      };
+    });
   messagesBySession.set(sessionId, converted);
   indexFilesForSession(sessionId, converted);
   loadedSessions.add(sessionId);
@@ -313,7 +345,7 @@ export function addMessage(
 export function updateMessage(
   sessionId: string,
   messageId: string,
-  updates: Partial<Pick<Message, "text" | "status" | "files" | "toolCalls">>,
+  updates: Partial<Pick<Message, "text" | "status" | "files" | "toolCalls" | "meta">>,
 ): void {
   const list = messagesBySession.get(sessionId);
   if (!list) return;
@@ -322,6 +354,14 @@ export function updateMessage(
   list[idx] = { ...list[idx], ...updates };
   messagesBySession.set(sessionId, [...list]);
   notify();
+}
+
+export function setMessageMeta(
+  sessionId: string,
+  messageId: string,
+  meta: MessageMeta,
+): void {
+  updateMessage(sessionId, messageId, { meta });
 }
 
 /** Append text to a streaming message. */
@@ -418,6 +458,7 @@ export function appendHistoryMessages(sessionId: string, apiMessages: MessageInf
         status: "complete",
         timestamp: converted.timestamp,
         historySeq: converted.historySeq,
+        meta: optimistic.meta,
       };
       if (typeof converted.historySeq === "number") {
         maxSeq = Math.max(maxSeq, converted.historySeq);

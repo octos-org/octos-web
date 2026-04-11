@@ -6,7 +6,7 @@ import { useResizablePanel } from "@/hooks/use-resizable-panel";
 import { CostBar } from "@/components/cost-bar";
 import { SessionList } from "@/components/session-list";
 import { ContentBrowser } from "@/components/content-browser";
-import { SessionTaskDock } from "@/components/session-task-dock";
+import { SessionTaskIndicator } from "@/components/session-task-dock";
 import { useSession } from "@/runtime/session-context";
 import {
   useContentViewer,
@@ -160,6 +160,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
                     {currentSessionTitle}
                   </div>
                 </div>
+                <SessionTaskIndicator />
                 <button
                   onClick={() => setMediaPanelOpen((v) => !v)}
                   className={`glass-icon-button relative rounded-[12px] p-2.5 ${
@@ -180,7 +181,6 @@ export function ChatLayout({ children }: { children: ReactNode }) {
               </div>
             </div>
           </div>
-          <SessionTaskDock />
           <div className="relative flex-1 min-h-0 overflow-hidden px-2 pb-2">
             {children}
             {/* Inline toast notification */}

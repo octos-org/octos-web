@@ -131,7 +131,6 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
         ]);
         if (cancelled) return;
 
-        setServerTaskActive(currentSessionId, status.active);
         TaskStore.replaceTasks(currentSessionId, tasks);
 
         if (status.active && !StreamManager.isActive(currentSessionId)) {
@@ -164,6 +163,10 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
         const hasActiveTasks = tasks.some(isTaskActive);
         const hasBackgroundWork =
           status.active || status.has_bg_tasks || status.has_deferred_files || hasActiveTasks;
+        const hasBackgroundIndicatorState =
+          status.has_bg_tasks || status.has_deferred_files || hasActiveTasks;
+
+        setServerTaskActive(currentSessionId, hasBackgroundIndicatorState);
 
         if (hasBackgroundWork || streamActive) {
           lastBackgroundActivityAt = Date.now();

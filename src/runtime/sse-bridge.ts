@@ -249,21 +249,23 @@ function bindStreamToAssistant({
           const caption = event.caption || "";
           const fileUrl = `${API_BASE}/api/files/${encodeURIComponent(event.path)}`;
 
-          // Find the right message to attach to
-          let targetMsgId = assistantMsgId;
+          // Only attach inline when we can confidently match the file to a
+          // known tool call. Unscoped file events may be deferred outputs from
+          // older background tasks and should be attached by authoritative
+          // history sync, not to the current streaming bubble.
           if (event.tool_call_id) {
             const msgs = MessageStore.getMessages(sessionId);
             const match = msgs.find((m) =>
               m.toolCalls.some((tc) => tc.id === event.tool_call_id),
             );
-            if (match) targetMsgId = match.id;
+            if (match) {
+              MessageStore.appendFile(sessionId, match.id, {
+                filename: event.filename,
+                path: event.path,
+                caption,
+              });
+            }
           }
-
-          MessageStore.appendFile(sessionId, targetMsgId, {
-            filename: event.filename,
-            path: event.path,
-            caption,
-          });
 
           window.dispatchEvent(
             new CustomEvent("crew:file", {
@@ -299,6 +301,12 @@ function bindStreamToAssistant({
         });
 
         if (event.model || event.tokens_in || event.tokens_out) {
+          MessageStore.setMessageMeta(sessionId, assistantMsgId, {
+            model: event.model || "",
+            tokens_in: event.tokens_in || 0,
+            tokens_out: event.tokens_out || 0,
+            duration_s: event.duration_s || 0,
+          });
           window.dispatchEvent(
             new CustomEvent("crew:message_meta", {
               detail: {

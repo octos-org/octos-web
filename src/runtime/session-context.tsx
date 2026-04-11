@@ -62,7 +62,7 @@ interface SessionContextValue {
   currentSessionTitle: string;
   currentSessionStats: SessionRunStats | null;
   initialMessages: MessageInfo[];
-  /** True if the current session has a task running on the server. */
+  /** True if the current session has background work pending on the server. */
   activeTaskOnServer: boolean;
   setServerTaskActive: (sessionId: string, active: boolean) => void;
   renameSession: (sessionId: string, title: string) => void;
@@ -172,7 +172,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         if (msgs.length > 0) setInitialMessages(msgs);
       }).catch(() => {});
       getSessionStatus(saved).then((status) => {
-        setActiveTaskOnServer(status.active);
+        setActiveTaskOnServer(
+          Boolean(status.has_bg_tasks || status.has_deferred_files),
+        );
       }).catch(() => {});
     }
   }, []);
@@ -315,11 +317,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     try {
       const [messages, status] = await Promise.all([
         getMessages(id),
-        getSessionStatus(id).catch(() => ({ active: false, has_deferred_files: false })),
+        getSessionStatus(id).catch(() => ({
+          active: false,
+          has_deferred_files: false,
+          has_bg_tasks: false,
+        })),
       ]);
       if (switchRequestRef.current !== requestId) return; // stale
       setInitialMessages(messages);
-      setActiveTaskOnServer(status.active);
+      setActiveTaskOnServer(
+        Boolean(status.has_bg_tasks || status.has_deferred_files),
+      );
     } catch {
       if (switchRequestRef.current !== requestId) return;
       setInitialMessages([]);

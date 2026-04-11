@@ -32,6 +32,7 @@ import {
   clearMessages,
   type Message,
   type MessageFile,
+  type MessageMeta,
 } from "@/store/message-store";
 import { uploadFiles } from "@/api/chat";
 import { sendMessage as bridgeSend } from "@/runtime/sse-bridge";
@@ -161,7 +162,7 @@ const AssistantBubble = memo(function AssistantBubble({
         )}
 
         {/* Message meta */}
-        <MessageMetaInline messageId={message.id} isLast={isLast} timestamp={message.timestamp} />
+        <MessageMetaInline message={message} />
       </div>
     </div>
   );
@@ -350,49 +351,17 @@ function AudioAttachment({ file, blobUrl }: { file: MessageFile; blobUrl?: strin
 // Inline message meta (replaces the old assistant-ui based MessageMeta)
 // ---------------------------------------------------------------------------
 
-interface MetaData {
-  model: string;
-  tokens_in: number;
-  tokens_out: number;
-  duration_s: number;
-}
-
 function formatTokens(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
   return n.toString();
 }
 
 function MessageMetaInline({
-  messageId,
-  isLast,
-  timestamp,
+  message,
 }: {
-  messageId: string;
-  isLast: boolean;
-  timestamp: number;
+  message: Message;
 }) {
-  const { currentSessionId } = useSession();
-  const [meta, setMeta] = useState<MetaData | null>(null);
-
-  useEffect(() => {
-    if (!isLast) return;
-    function handleMeta(e: Event) {
-      const detail = (e as CustomEvent).detail;
-      if (detail.sessionId && detail.sessionId !== currentSessionId) return;
-      // Accept meta if it targets this message or is the generic last-message meta
-      if (detail.messageId && detail.messageId !== messageId) return;
-      if (detail.model || detail.tokens_in || detail.tokens_out) {
-        setMeta({
-          model: detail.model || "",
-          tokens_in: detail.tokens_in || 0,
-          tokens_out: detail.tokens_out || 0,
-          duration_s: detail.duration_s || 0,
-        });
-      }
-    }
-    window.addEventListener("crew:message_meta", handleMeta);
-    return () => window.removeEventListener("crew:message_meta", handleMeta);
-  }, [isLast, currentSessionId, messageId]);
+  const meta: MessageMeta | undefined = message.meta;
 
   const parts: string[] = [];
   if (meta) {
@@ -401,7 +370,7 @@ function MessageMetaInline({
     if (meta.tokens_out) parts.push(`${formatTokens(meta.tokens_out)} out`);
     if (meta.duration_s) parts.push(`${meta.duration_s}s`);
   }
-  parts.push(formatTimestamp(timestamp));
+  parts.push(formatTimestamp(message.timestamp));
 
   if (meta && (meta.model || meta.tokens_in || meta.tokens_out)) {
     return (
@@ -414,7 +383,7 @@ function MessageMetaInline({
 
   return (
     <div className="mt-1.5 text-[10px] text-muted/60 select-none">
-      {formatTimestamp(timestamp)}
+      {formatTimestamp(message.timestamp)}
     </div>
   );
 }
