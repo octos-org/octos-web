@@ -44,6 +44,18 @@ export interface SessionRunStats {
   cost: number | null;
 }
 
+export interface SessionSendRequest {
+  sessionId: string;
+  text: string;
+  requestText: string;
+  media: string[];
+  audioUploadMode?: "recording" | "upload";
+}
+
+export interface SessionBeforeSendResult extends Partial<SessionSendRequest> {
+  handled?: boolean;
+}
+
 interface SessionContextValue {
   sessions: SessionWithTitle[];
   currentSessionId: string;
@@ -61,6 +73,10 @@ interface SessionContextValue {
   refreshSessions: () => Promise<void>;
   /** Mark the current session as active (has sent at least one message). */
   markSessionActive: (firstMessage?: string) => void;
+  /** Optional per-surface hook that can initialize or rewrite a send before it hits the SSE bridge. */
+  beforeSend?: (
+    request: SessionSendRequest,
+  ) => Promise<SessionBeforeSendResult | void>;
 }
 
 export const SessionContext = createContext<SessionContextValue | null>(null);

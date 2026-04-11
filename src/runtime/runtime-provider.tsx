@@ -1,8 +1,9 @@
 /**
- * Runtime provider — manages session lifecycle and message history loading.
+ * Runtime provider — manages session lifecycle and authoritative background sync.
  *
- * No longer uses assistant-ui's runtime. Instead, the SSE bridge writes
- * directly to the message store, and the ChatThread reads from it.
+ * The runtime layer owns session recovery and background-task polling. UI
+ * components read from stores only; they do not drive `/tasks` or `/messages`
+ * synchronization themselves.
  */
 
 import { type ReactNode, useEffect, useRef } from "react";
@@ -11,10 +12,53 @@ import * as StreamManager from "./stream-manager";
 import { resumeSessionStream } from "./sse-bridge";
 import * as FileStore from "@/store/file-store";
 import * as MessageStore from "@/store/message-store";
-import { getSessionStatus } from "@/api/sessions";
+import * as TaskStore from "@/store/task-store";
+import {
+  getMessages as fetchSessionMessages,
+  getSessionStatus,
+  getSessionTasks,
+} from "@/api/sessions";
+import { buildFileUrl } from "@/api/files";
+import { displayFilenameFromPath } from "@/lib/utils";
+import type { BackgroundTaskInfo, MessageInfo } from "@/api/types";
 
 /** Max sessions kept in memory simultaneously. */
 const MAX_CACHED = 5;
+const BACKGROUND_SYNC_INTERVAL_MS = 2000;
+const BACKGROUND_SYNC_GRACE_MS = 15000;
+
+function isTaskActive(task: BackgroundTaskInfo): boolean {
+  return task.status === "spawned" || task.status === "running";
+}
+
+function attachmentCaption(content: string): string {
+  return /^\s*[✓✗]\s+\S+.*\b(completed|failed|error)\b/iu.test(content.trim())
+    ? ""
+    : content;
+}
+
+function emitNewFileEvents(
+  sessionId: string,
+  messages: MessageInfo[],
+  knownPaths: Set<string>,
+): void {
+  for (const message of messages) {
+    for (const filePath of message.media ?? []) {
+      if (knownPaths.has(filePath)) continue;
+      knownPaths.add(filePath);
+      window.dispatchEvent(
+        new CustomEvent("crew:file", {
+          detail: {
+            fileUrl: buildFileUrl(filePath),
+            filename: displayFilenameFromPath(filePath),
+            caption: attachmentCaption(message.content ?? ""),
+            sessionId,
+          },
+        }),
+      );
+    }
+  }
+}
 
 /** Tracks which sessions have been mounted so we can evict old ones. */
 function RuntimeWithSession({ children }: { children: ReactNode }) {
@@ -33,60 +77,105 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
         if (id !== currentSessionId && !StreamManager.isActive(id)) {
           mountedRef.current.delete(id);
           MessageStore.clearMessages(id);
+          TaskStore.clearTasks(id);
           break;
         }
       }
     }
   }, [currentSessionId]);
 
-  // Poll for response if the server has an active task (e.g. after browser refresh)
   useEffect(() => {
     let cancelled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | undefined;
+    let syncInFlight = false;
+    let syncQueued = false;
+    let lastBackgroundActivityAt = 0;
 
-    (async () => {
+    const requestSync = () => {
+      if (cancelled) return;
+      if (syncInFlight) {
+        syncQueued = true;
+        return;
+      }
+      syncInFlight = true;
+      void syncSession().finally(() => {
+        syncInFlight = false;
+        if (syncQueued && !cancelled) {
+          syncQueued = false;
+          requestSync();
+        }
+      });
+    };
+
+    const scheduleNext = (delayMs = BACKGROUND_SYNC_INTERVAL_MS) => {
+      if (cancelled) return;
+      if (pollTimer) clearTimeout(pollTimer);
+      pollTimer = setTimeout(requestSync, delayMs);
+    };
+
+    async function syncSession() {
       try {
         await MessageStore.loadHistory(currentSessionId);
         await FileStore.loadSessionFiles(currentSessionId);
         if (cancelled) return;
 
-        const status = await getSessionStatus(currentSessionId);
+        const knownPaths = new Set(
+          MessageStore.getMessages(currentSessionId).flatMap((message) =>
+            message.files.map((file) => file.path),
+          ),
+        );
+
+        const [status, tasks] = await Promise.all([
+          getSessionStatus(currentSessionId),
+          getSessionTasks(currentSessionId).catch(() => [] as BackgroundTaskInfo[]),
+        ]);
+        if (cancelled) return;
+
         setServerTaskActive(currentSessionId, status.active);
-        if (!status.active || cancelled) return;
+        TaskStore.replaceTasks(currentSessionId, tasks);
 
-        MessageStore.ensureStreamingAssistantMessage(
-          currentSessionId,
-          status.has_deferred_files
-            ? "Background tasks are still running..."
-            : "Resuming ongoing work...",
-        );
-        resumeSessionStream(currentSessionId);
-
-        // Server is still processing — show thinking indicator
-        window.dispatchEvent(
-          new CustomEvent("crew:thinking", {
-            detail: { thinking: true, iteration: 0, sessionId: currentSessionId },
-          }),
-        );
-
-        // Poll until the task completes
-        for (let i = 0; i < 360; i++) {
-          if (cancelled) break;
-          await new Promise((r) => setTimeout(r, 5000));
-          try {
-            await FileStore.loadSessionFiles(currentSessionId);
-            const s = await getSessionStatus(currentSessionId);
-            setServerTaskActive(currentSessionId, s.active);
-            if (!s.active) break;
-          } catch {
-            // keep polling
-          }
+        if (status.active && !StreamManager.isActive(currentSessionId)) {
+          MessageStore.ensureStreamingAssistantMessage(
+            currentSessionId,
+            "Resuming ongoing work...",
+          );
+          resumeSessionStream(currentSessionId);
+          window.dispatchEvent(
+            new CustomEvent("crew:thinking", {
+              detail: { thinking: true, iteration: 0, sessionId: currentSessionId },
+            }),
+          );
         }
 
-        // Reload history now that the task is done
-        if (!cancelled) {
-          await FileStore.loadSessionFiles(currentSessionId);
-          MessageStore.clearMessages(currentSessionId);
-          await MessageStore.loadHistory(currentSessionId);
+        const messages = await fetchSessionMessages(
+          currentSessionId,
+          500,
+          0,
+          MessageStore.getMaxHistorySeq(currentSessionId),
+        );
+        if (cancelled) return;
+
+        if (messages.length > 0) {
+          MessageStore.appendHistoryMessages(currentSessionId, messages);
+          emitNewFileEvents(currentSessionId, messages, knownPaths);
+        }
+
+        const streamActive = StreamManager.isActive(currentSessionId);
+        const hasActiveTasks = tasks.some(isTaskActive);
+        const hasBackgroundWork =
+          status.active || status.has_bg_tasks || status.has_deferred_files || hasActiveTasks;
+
+        if (hasBackgroundWork || streamActive) {
+          lastBackgroundActivityAt = Date.now();
+        }
+
+        const withinGraceWindow =
+          lastBackgroundActivityAt > 0 &&
+          Date.now() - lastBackgroundActivityAt < BACKGROUND_SYNC_GRACE_MS;
+
+        if (hasBackgroundWork || streamActive || withinGraceWindow) {
+          scheduleNext();
+        } else {
           window.dispatchEvent(
             new CustomEvent("crew:thinking", {
               detail: { thinking: false, iteration: 0, sessionId: currentSessionId },
@@ -95,13 +184,52 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
           setServerTaskActive(currentSessionId, false);
         }
       } catch {
-        // status endpoint unavailable — not fatal
-        setServerTaskActive(currentSessionId, false);
+        if (!cancelled) {
+          scheduleNext(5000);
+        }
       }
-    })();
+    }
+
+    function handleBgTasks(event: Event) {
+      const detail = (event as CustomEvent).detail;
+      if (detail?.sessionId !== currentSessionId) return;
+      lastBackgroundActivityAt = Date.now();
+      requestSync();
+    }
+
+    function handleTaskStatus(event: Event) {
+      const detail = (event as CustomEvent).detail;
+      if (detail?.sessionId !== currentSessionId) return;
+      const task = detail?.task as BackgroundTaskInfo | undefined;
+      if (task) {
+        TaskStore.mergeTask(currentSessionId, task);
+        if (isTaskActive(task)) {
+          lastBackgroundActivityAt = Date.now();
+        }
+      }
+      requestSync();
+    }
+
+    function handleStreamState(event: Event) {
+      const detail = (event as CustomEvent).detail;
+      if (detail?.sessionId !== currentSessionId) return;
+      if (detail?.active) {
+        lastBackgroundActivityAt = Date.now();
+      }
+      requestSync();
+    }
+
+    window.addEventListener("crew:bg_tasks", handleBgTasks);
+    window.addEventListener("crew:task_status", handleTaskStatus);
+    window.addEventListener("crew:stream_state", handleStreamState);
+    requestSync();
 
     return () => {
       cancelled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+      window.removeEventListener("crew:bg_tasks", handleBgTasks);
+      window.removeEventListener("crew:task_status", handleTaskStatus);
+      window.removeEventListener("crew:stream_state", handleStreamState);
     };
   }, [currentSessionId, setServerTaskActive]);
 

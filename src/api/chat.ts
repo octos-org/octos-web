@@ -1,4 +1,4 @@
-import { getToken, clearToken } from "./client";
+import { buildApiHeaders, clearToken } from "./client";
 import { API_BASE } from "@/lib/constants";
 import type { ChatResponse } from "./types";
 import { request } from "./client";
@@ -6,6 +6,7 @@ import { request } from "./client";
 export async function sendMessage(
   message: string,
   sessionId?: string,
+  clientMessageId?: string,
   signal?: AbortSignal,
 ): Promise<ChatResponse> {
   return request("/api/chat", {
@@ -13,22 +14,28 @@ export async function sendMessage(
     body: JSON.stringify({
       message,
       session_id: sessionId,
+      client_message_id: clientMessageId,
     }),
     signal,
   });
 }
 
 /** Upload files to the server. Returns array of server-side file paths. */
-export async function uploadFiles(files: File[]): Promise<string[]> {
+export async function uploadFiles(
+  files: File[],
+  audioUploadMode?: "recording" | "upload",
+): Promise<string[]> {
   const form = new FormData();
+  if (audioUploadMode) {
+    form.append("audio_upload_mode", audioUploadMode);
+  }
   for (const file of files) {
     form.append("file", file);
   }
 
-  const token = getToken();
   const resp = await fetch(`${API_BASE}/api/upload`, {
     method: "POST",
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    headers: buildApiHeaders(),
     body: form,
   });
 

@@ -52,7 +52,10 @@ function clean(text: string): string {
 export interface SendOptions {
   sessionId: string;
   text: string;
+  requestText?: string;
   media: string[];
+  clientMessageId?: string;
+  audioUploadMode?: "recording" | "upload";
   /** Called once the session should appear in the sidebar. */
   onSessionActive?: (firstMessage: string) => void;
   /** Called when the assistant response is complete. */
@@ -65,15 +68,30 @@ export interface SendOptions {
  * Returns immediately. The store is updated reactively as events arrive.
  */
 export function sendMessage(opts: SendOptions): void {
-  const { sessionId, text, media, onSessionActive, onComplete } = opts;
+  const {
+    sessionId,
+    text,
+    requestText,
+    media,
+    clientMessageId = crypto.randomUUID(),
+    audioUploadMode,
+    onSessionActive,
+    onComplete,
+  } = opts;
   const abortController = new AbortController();
   const abortSignal = abortController.signal;
+  const localFiles = media.map((path) => ({
+    filename: displayFilenameFromPath(path),
+    path,
+    caption: "",
+  }));
 
   // 1. Write user message to store
   MessageStore.addMessage(sessionId, {
     role: "user",
     text,
-    files: [],
+    clientMessageId,
+    files: localFiles,
     toolCalls: [],
     status: "complete",
   });
@@ -82,12 +100,19 @@ export function sendMessage(opts: SendOptions): void {
   onSessionActive?.(text);
 
   // 2. Start SSE stream
-  const streamStatus = StreamManager.startStream(sessionId, text, media);
+  const streamStatus = StreamManager.startStream(
+    sessionId,
+    requestText ?? text,
+    media,
+    clientMessageId,
+    audioUploadMode,
+  );
 
   // 3. Create the assistant message placeholder
   const assistantMsgId = MessageStore.addMessage(sessionId, {
     role: "assistant",
     text: "",
+    responseToClientMessageId: clientMessageId,
     files: [],
     toolCalls: [],
     status: "streaming",
@@ -295,10 +320,10 @@ function bindStreamToAssistant({
           }),
         );
 
-        // Always poll once for file deliveries that may have been sent during
-        // the agent loop (send_file SSE event might have been missed).
-        // For bg_tasks, poll continuously until completion notification.
-        pollForBackgroundResults(sessionId, assistantMsgId, abortSignal, !event.has_bg_tasks);
+        // After the main stream finishes, refresh from authoritative history once.
+        // Ongoing background task and deferred-file synchronization is owned by
+        // the session runtime, not by this send-flow bridge.
+        pollForBackgroundResults(sessionId, abortSignal, !event.has_bg_tasks);
         if (event.has_bg_tasks) {
           window.dispatchEvent(
             new CustomEvent("crew:bg_tasks", { detail: { sessionId } }),
@@ -377,66 +402,28 @@ function setupCleanup(
 }
 
 /**
- * Poll for background task results after SSE `done`.
+ * Refresh authoritative history after SSE `done`.
  *
- * Background tasks (spawn_only) may deliver files or status notifications
- * after the main agent loop finishes. This polls the session messages API
- * to catch those deliveries (up to 10 minutes, every 2 seconds).
+ * Background tasks continue through the session runtime sync loop.
  */
 async function pollForBackgroundResults(
   sessionId: string,
-  lastMsgId: string,
   abortSignal?: AbortSignal,
-  once = false,
+  _once = false,
 ): Promise<void> {
-  const pollStart = new Date().toISOString();
-  const maxPolls = once ? 1 : 300;
-
-  for (let i = 0; i < maxPolls; i++) {
+  for (let attempt = 0; attempt < 30; attempt++) {
     if (abortSignal?.aborted) return;
-    await new Promise((r) => setTimeout(r, 2000));
+    if (!StreamManager.isActive(sessionId)) break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
 
-    try {
-      const messages = await fetchSessionMessages(sessionId);
+  if (abortSignal?.aborted) return;
 
-      // Find messages newer than when polling started
-      const newMsgs = messages.filter(
-        (m) => m.timestamp && m.timestamp > pollStart,
-      );
-
-      for (const msg of newMsgs) {
-        // File delivery — message has media paths
-        if (msg.media && msg.media.length > 0) {
-          for (const filePath of msg.media) {
-            const filename = displayFilenameFromPath(filePath);
-            MessageStore.appendFile(sessionId, lastMsgId, {
-              filename,
-              path: filePath,
-              caption: msg.content || "",
-            });
-          }
-          // Dispatch for toast + media panel
-          const fileUrl = `${API_BASE}/api/files/${encodeURIComponent(msg.media[0])}`;
-          window.dispatchEvent(
-            new CustomEvent("crew:file", {
-              detail: {
-                fileUrl,
-                filename: displayFilenameFromPath(msg.media[0]),
-                caption: msg.content || "",
-                sessionId,
-              },
-            }),
-          );
-        }
-
-        // Status notification (success/failure markers) — stop polling
-        if (msg.content?.startsWith("\u2713") || msg.content?.startsWith("\u2717")) {
-          return;
-        }
-      }
-    } catch {
-      // poll failed, keep trying
-    }
+  try {
+    const snapshot = await fetchSessionMessages(sessionId);
+    MessageStore.replaceHistory(sessionId, snapshot);
+  } catch {
+    return;
   }
 }
 

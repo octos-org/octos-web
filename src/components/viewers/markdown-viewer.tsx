@@ -1,7 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { X, Download, Maximize2, Minimize2 } from "lucide-react";
 import { MarkdownContent } from "@/components/markdown-renderer";
-import { getToken } from "@/api/client";
+import { buildApiHeaders } from "@/api/client";
 import { buildFileUrl } from "@/api/files";
 import type { ContentEntry } from "@/api/content";
 
@@ -14,12 +14,13 @@ export function MarkdownViewer({ entry, onClose }: MarkdownViewerProps) {
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [maximized, setMaximized] = useState(false);
+  const isMarkdownLike = /\.(md|markdown|txt)$/i.test(entry.filename);
 
-  useEffect(() => {
-    const token = getToken();
+  const loadContent = useCallback(() => {
     const url = buildFileUrl(entry.path);
+    setError(null);
     fetch(url, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: buildApiHeaders(),
     })
       .then((resp) => {
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -28,6 +29,63 @@ export function MarkdownViewer({ entry, onClose }: MarkdownViewerProps) {
       .then(setContent)
       .catch((e) => setError(e.message));
   }, [entry.path]);
+
+  useEffect(() => {
+    loadContent();
+  }, [loadContent]);
+
+  useEffect(() => {
+    const sessionId = entry.session_id;
+    if (!sessionId) return;
+
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+
+    function matchesSession(detail: unknown): boolean {
+      return (
+        !!detail &&
+        typeof detail === "object" &&
+        "sessionId" in detail &&
+        detail.sessionId === sessionId
+      );
+    }
+
+    function scheduleRefresh() {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
+        loadContent();
+      }, 500);
+    }
+
+    function handleEvent(event: Event) {
+      const detail =
+        event instanceof CustomEvent ? (event.detail as unknown) : undefined;
+      if (!matchesSession(detail)) return;
+      scheduleRefresh();
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") {
+        scheduleRefresh();
+      }
+    }
+
+    window.addEventListener("focus", scheduleRefresh);
+    window.addEventListener("crew:file", handleEvent);
+    window.addEventListener("crew:bg_tasks", handleEvent);
+    window.addEventListener("crew:task_status", handleEvent);
+    window.addEventListener("crew:tool_progress", handleEvent);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      window.removeEventListener("focus", scheduleRefresh);
+      window.removeEventListener("crew:file", handleEvent);
+      window.removeEventListener("crew:bg_tasks", handleEvent);
+      window.removeEventListener("crew:task_status", handleEvent);
+      window.removeEventListener("crew:tool_progress", handleEvent);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [entry.session_id, loadContent]);
 
   // Escape key closes
   useEffect(() => {
@@ -83,11 +141,15 @@ export function MarkdownViewer({ entry, onClose }: MarkdownViewerProps) {
             <div className="text-sm text-red-400">Failed to load: {error}</div>
           ) : content === null ? (
             <div className="text-sm text-muted animate-pulse">Loading...</div>
-          ) : (
+          ) : isMarkdownLike ? (
             <MarkdownContent
               text={content}
               className="prose prose-invert prose-sm max-w-none"
             />
+          ) : (
+            <pre className="overflow-x-auto rounded-2xl border border-border bg-surface px-4 py-4 text-xs leading-6 text-text">
+              <code>{content}</code>
+            </pre>
           )}
         </div>
       </div>

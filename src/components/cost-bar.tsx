@@ -24,10 +24,12 @@ export function CostBar({
   if (parts.length === 0 && !provider) return null;
 
   return (
-    <div data-testid="cost-bar" className="flex items-center gap-4 bg-surface-dark px-5 py-2.5 text-xs text-muted/70">
+    <div data-testid="cost-bar" className="flex flex-wrap items-center gap-2 text-xs text-muted/80">
       {parts.map((p, i) => (
-        <span key={i}>
-          {i > 0 && <span className="mr-4 text-muted/20">&middot;</span>}
+        <span
+          key={i}
+          className="glass-pill rounded-[12px] px-3 py-1.5"
+        >
           {p}
         </span>
       ))}

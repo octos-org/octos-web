@@ -8,6 +8,7 @@
 
 import { useSyncExternalStore } from "react";
 import { getMessages as fetchMessages } from "@/api/sessions";
+import type { MessageInfo } from "@/api/types";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { addFile as addToFileStore } from "@/store/file-store";
 
@@ -31,10 +32,13 @@ export interface Message {
   id: string;
   role: "user" | "assistant" | "system";
   text: string;
+  clientMessageId?: string;
+  responseToClientMessageId?: string;
   files: MessageFile[];
   toolCalls: ToolCallInfo[];
   status: "streaming" | "complete" | "error";
   timestamp: number;
+  historySeq?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +92,203 @@ function getList(sessionId: string): Message[] {
     messagesBySession.set(sessionId, list);
   }
   return list;
+}
+
+function parseLegacyFileLine(line: string): MessageFile | null {
+  const match = line.trim().match(/^\[file:([^\]]+)\]\s*(.*)$/u);
+  if (!match) return null;
+
+  const path = match[1]?.trim();
+  if (!path) return null;
+
+  const fallbackName = displayFilenameFromPath(path);
+  const remainder = (match[2] || "").trim();
+  if (!remainder) {
+    return { filename: fallbackName, path, caption: "" };
+  }
+
+  const separator = " — ";
+  const sepIdx = remainder.indexOf(separator);
+  if (sepIdx === -1) {
+    return { filename: remainder || fallbackName, path, caption: "" };
+  }
+
+  const filename = remainder.slice(0, sepIdx).trim() || fallbackName;
+  const caption = remainder.slice(sepIdx + separator.length).trim();
+  return { filename, path, caption };
+}
+
+function parseLegacyFileDeliveries(content: string): {
+  text: string;
+  files: MessageFile[];
+} {
+  if (!content.includes("[file:")) {
+    return { text: content, files: [] };
+  }
+
+  const files: MessageFile[] = [];
+  const remainingLines: string[] = [];
+  const seenPaths = new Set<string>();
+
+  for (const line of content.split(/\r?\n/u)) {
+    const parsed = parseLegacyFileLine(line);
+    if (!parsed) {
+      remainingLines.push(line);
+      continue;
+    }
+
+    if (seenPaths.has(parsed.path)) continue;
+    seenPaths.add(parsed.path);
+    files.push(parsed);
+  }
+
+  return {
+    text: remainingLines.join("\n").trim(),
+    files,
+  };
+}
+
+function mergeMessageFiles(primary: MessageFile[], fallback: MessageFile[]): MessageFile[] {
+  const merged = new Map<string, MessageFile>();
+
+  for (const file of primary) {
+    merged.set(file.path, file);
+  }
+
+  for (const file of fallback) {
+    const existing = merged.get(file.path);
+    if (!existing) {
+      merged.set(file.path, file);
+      continue;
+    }
+
+    merged.set(file.path, {
+      ...existing,
+      filename: existing.filename || file.filename,
+      caption: existing.caption || file.caption || "",
+    });
+  }
+
+  return Array.from(merged.values());
+}
+
+function normalizeMessageText(text: string): string {
+  return text.replace(/\s+/gu, " ").trim();
+}
+
+function sameFilePaths(a: MessageFile[], b: MessageFile[]): boolean {
+  if (a.length !== b.length) return false;
+  const aPaths = [...a.map((file) => file.path)].sort();
+  const bPaths = [...b.map((file) => file.path)].sort();
+  return aPaths.every((path, index) => path === bPaths[index]);
+}
+
+function sameToolCallNames(a: ToolCallInfo[], b: ToolCallInfo[]): boolean {
+  if (a.length !== b.length) return false;
+  const aNames = [...a.map((tool) => tool.name)].sort();
+  const bNames = [...b.map((tool) => tool.name)].sort();
+  return aNames.every((name, index) => name === bNames[index]);
+}
+
+function findOptimisticMatchIndex(list: Message[], authoritative: Message): number {
+  if (authoritative.clientMessageId) {
+    const directMatchIndex = list.findIndex(
+      (candidate) =>
+        candidate.role === authoritative.role &&
+        candidate.clientMessageId === authoritative.clientMessageId,
+    );
+    if (directMatchIndex !== -1) return directMatchIndex;
+  }
+
+  if (authoritative.responseToClientMessageId) {
+    const responseMatchIndex = list.findIndex(
+      (candidate) =>
+        candidate.role === authoritative.role &&
+        candidate.responseToClientMessageId === authoritative.responseToClientMessageId,
+    );
+    if (responseMatchIndex !== -1) return responseMatchIndex;
+  }
+
+  const authoritativeText = normalizeMessageText(authoritative.text);
+  const authoritativeTime = authoritative.timestamp;
+
+  let bestIndex = -1;
+  let bestTimeDelta = Number.MAX_SAFE_INTEGER;
+
+  for (let index = 0; index < list.length; index += 1) {
+    const candidate = list[index];
+    if (typeof candidate.historySeq === "number") continue;
+    if (candidate.role !== authoritative.role) continue;
+    if (normalizeMessageText(candidate.text) !== authoritativeText) continue;
+    if (!sameFilePaths(candidate.files, authoritative.files)) continue;
+    if (!sameToolCallNames(candidate.toolCalls, authoritative.toolCalls)) continue;
+
+    const timeDelta = Math.abs(candidate.timestamp - authoritativeTime);
+    if (timeDelta > 60_000) continue;
+    if (timeDelta >= bestTimeDelta) continue;
+
+    bestIndex = index;
+    bestTimeDelta = timeDelta;
+  }
+
+  return bestIndex;
+}
+
+function convertApiMessage(m: MessageInfo): Message | null {
+  if (m.role === "tool") return null;
+  const role = m.role === "user" ? "user" : m.role === "system" ? "system" : "assistant";
+  const mediaFiles: MessageFile[] = (m.media ?? []).map((path) => ({
+    filename: displayFilenameFromPath(path),
+    path,
+    caption: "",
+  }));
+  const parsedLegacy = parseLegacyFileDeliveries(m.content);
+  const files = mergeMessageFiles(parsedLegacy.files, mediaFiles);
+  const text = parsedLegacy.text;
+  if (!text.trim() && files.length === 0) return null;
+
+  const toolCalls: ToolCallInfo[] =
+    m.tool_calls?.filter((tc) => tc.name).map((tc) => ({
+      id: tc.id || "",
+      name: tc.name || "",
+      status: "complete" as const,
+    })) ?? [];
+
+  return {
+    id: nextId(),
+    role,
+    text,
+    clientMessageId: m.client_message_id,
+    responseToClientMessageId: m.response_to_client_message_id,
+    files,
+    toolCalls,
+    status: "complete",
+    timestamp: m.timestamp ? new Date(m.timestamp).getTime() : Date.now(),
+    historySeq: typeof m.seq === "number" ? m.seq : undefined,
+  };
+}
+
+function indexFilesForSession(sessionId: string, messages: Message[]): void {
+  for (const message of messages) {
+    for (const file of message.files) {
+      addToFileStore({
+        sessionId,
+        filename: file.filename,
+        filePath: file.path,
+        caption: file.caption ?? "",
+      });
+    }
+  }
+}
+
+function replaceHistoryFromApi(sessionId: string, apiMessages: MessageInfo[]): void {
+  const converted = apiMessages
+    .map(convertApiMessage)
+    .filter((message): message is Message => message !== null);
+  messagesBySession.set(sessionId, converted);
+  indexFilesForSession(sessionId, converted);
+  loadedSessions.add(sessionId);
+  notify();
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +375,80 @@ export function clearMessages(sessionId: string): void {
   notify();
 }
 
+export function getMaxHistorySeq(sessionId: string): number {
+  return getMessages(sessionId).reduce((maxSeq, message) => {
+    if (typeof message.historySeq !== "number") return maxSeq;
+    return Math.max(maxSeq, message.historySeq);
+  }, -1);
+}
+
+export function replaceHistory(sessionId: string, apiMessages: MessageInfo[]): void {
+  replaceHistoryFromApi(sessionId, apiMessages);
+}
+
+export function appendHistoryMessages(sessionId: string, apiMessages: MessageInfo[]): number {
+  if (apiMessages.length === 0) return getMaxHistorySeq(sessionId);
+
+  const list = getList(sessionId);
+  let changed = false;
+  let maxSeq = getMaxHistorySeq(sessionId);
+
+  for (const apiMessage of apiMessages) {
+    const converted = convertApiMessage(apiMessage);
+    if (!converted) continue;
+    if (
+      typeof converted.historySeq === "number" &&
+      list.some((message) => message.historySeq === converted.historySeq)
+    ) {
+      maxSeq = Math.max(maxSeq, converted.historySeq);
+      continue;
+    }
+
+    const optimisticMatchIndex = findOptimisticMatchIndex(list, converted);
+    if (optimisticMatchIndex !== -1) {
+      const optimistic = list[optimisticMatchIndex];
+      list[optimisticMatchIndex] = {
+        ...optimistic,
+        text: converted.text,
+        clientMessageId: converted.clientMessageId ?? optimistic.clientMessageId,
+        responseToClientMessageId:
+          converted.responseToClientMessageId ?? optimistic.responseToClientMessageId,
+        files: mergeMessageFiles(converted.files, optimistic.files),
+        toolCalls: converted.toolCalls.length > 0 ? converted.toolCalls : optimistic.toolCalls,
+        status: "complete",
+        timestamp: converted.timestamp,
+        historySeq: converted.historySeq,
+      };
+      if (typeof converted.historySeq === "number") {
+        maxSeq = Math.max(maxSeq, converted.historySeq);
+      }
+      changed = true;
+      continue;
+    }
+
+    list.push(converted);
+    if (typeof converted.historySeq === "number") {
+      maxSeq = Math.max(maxSeq, converted.historySeq);
+    }
+    changed = true;
+  }
+
+  if (changed) {
+    list.sort((a, b) => {
+      const aSeq = typeof a.historySeq === "number" ? a.historySeq : Number.MAX_SAFE_INTEGER;
+      const bSeq = typeof b.historySeq === "number" ? b.historySeq : Number.MAX_SAFE_INTEGER;
+      if (aSeq !== bSeq) return aSeq - bSeq;
+      return a.timestamp - b.timestamp;
+    });
+    messagesBySession.set(sessionId, [...list]);
+    indexFilesForSession(sessionId, list);
+    loadedSessions.add(sessionId);
+    notify();
+  }
+
+  return maxSeq;
+}
+
 /**
  * Ensure a visible in-progress assistant bubble exists for a session.
  *
@@ -236,102 +511,11 @@ export function loadHistory(sessionId: string): Promise<void> {
   const promise = (async () => {
     try {
       const apiMessages = await fetchMessages(sessionId);
-      console.log(`[message-store] loadHistory(${sessionId}): got ${apiMessages.length} messages, roles:`, apiMessages.map(m => m.role));
       // Only populate if the store is still empty for this session
       // (streaming may have started while we were loading)
       if (!messagesBySession.has(sessionId) || messagesBySession.get(sessionId)!.length === 0) {
-        const converted: Message[] = [];
-        for (const m of apiMessages) {
-          if (m.role === "tool") continue; // skip raw tool results
-          const role = m.role === "user" ? "user" : m.role === "system" ? "system" : "assistant";
-          if (!m.content.trim()) continue;
-          // Extract file attachments from media paths
-          const files: MessageFile[] = (m.media ?? []).map((path) => ({
-            filename: displayFilenameFromPath(path),
-            path,
-            caption: "",
-          }));
-
-          // File-only messages from background task delivery should merge into
-          // the assistant message that initiated the task. Background success
-          // or failure notifications must remain visible as standalone bubbles.
-          const isFileOnly = files.length > 0 && /^\[file:/.test(m.content.trim());
-
-          if (isFileOnly) {
-            // Find the assistant message that has a tool_call matching this file's tool.
-            // Extract tool hint from file path (e.g. "skill-output/mofa-slides-xxx/file.pptx")
-            const fileHint = files[0]?.path?.match(/skills?[/-](\w+)/)?.[1] || "";
-
-            // Find the originating assistant message (has tool_calls for this tool)
-            let target = [...converted].reverse().find((c) =>
-              c.role === "assistant" &&
-              c.toolCalls.length > 0 &&
-              c.toolCalls.some((tc) =>
-                tc.name?.includes(fileHint) ||
-                fileHint.includes(tc.name || "---")
-              )
-            );
-
-            // Fallback: last assistant message with any tool calls
-            if (!target) {
-              target = [...converted].reverse().find(
-                (c) => c.role === "assistant" && c.toolCalls.length > 0,
-              );
-            }
-
-            // Final fallback: last assistant message
-            if (!target) {
-              target = [...converted].reverse().find((c) => c.role === "assistant");
-            }
-
-            if (target) {
-              for (const f of files) {
-                if (!target.files.some((ef) => ef.path === f.path)) {
-                  target.files.push(f);
-                }
-              }
-            }
-            // Skip adding as standalone bubble
-          } else {
-            // Parse tool_calls from API response (used for file→message matching)
-            const toolCalls: { id: string; name: string; status: "complete" }[] =
-              m.tool_calls
-                ? m.tool_calls
-                    .filter((tc) => tc.name)
-                    .map((tc) => ({
-                      id: tc.id || "",
-                      name: tc.name || "",
-                      status: "complete" as const,
-                    }))
-                : [];
-
-            converted.push({
-              id: nextId(),
-              role,
-              text: m.content,
-              files,
-              toolCalls,
-              status: "complete",
-              timestamp: m.timestamp ? new Date(m.timestamp).getTime() : Date.now(),
-            });
-          }
-
-          // Populate file store for the media panel
-          for (const f of files) {
-            addToFileStore({
-              sessionId,
-              filename: f.filename,
-              filePath: f.path,
-              caption: "",
-            });
-          }
-        }
-        if (converted.length > 0) {
-          messagesBySession.set(sessionId, converted);
-          notify();
-        }
+        replaceHistoryFromApi(sessionId, apiMessages);
       }
-      loadedSessions.add(sessionId);
     } catch {
       // API unavailable — not fatal, store stays empty
     } finally {
