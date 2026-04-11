@@ -68,7 +68,8 @@ interface SessionContextValue {
   renameSession: (sessionId: string, title: string) => void;
   updateSessionStats: (sessionId: string, stats: Partial<SessionRunStats>) => void;
   switchSession: (id: string) => void;
-  createSession: () => void;
+  goBack: () => Promise<boolean>;
+  createSession: (title?: string) => string;
   removeSession: (id: string) => Promise<void>;
   refreshSessions: () => Promise<void>;
   /** Mark the current session as active (has sent at least one message). */
@@ -153,6 +154,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   });
   const [initialMessages, setInitialMessages] = useState<MessageInfo[]>([]);
   const [activeTaskOnServer, setActiveTaskOnServer] = useState(false);
+  const previousSessionIdRef = useRef<string | null>(null);
   const titleCache = useRef<Record<string, string>>(loadStoredTitles());
   const statsCache = useRef<Record<string, SessionRunStats>>(loadStoredStats());
 
@@ -312,6 +314,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   );
 
   const switchSession = useCallback(async (id: string) => {
+    if (id !== currentSessionId) {
+      previousSessionIdRef.current = currentSessionId;
+    }
     // Guard against race: only the latest switch request wins
     const requestId = ++switchRequestRef.current;
     try {
@@ -336,10 +341,29 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setCurrentSessionId(id);
   }, []);
 
-  const createSession = useCallback(() => {
+  const createSession = useCallback((title?: string) => {
+    const nextId = generateSessionId();
+    previousSessionIdRef.current = currentSessionId;
+    const trimmedTitle = title?.trim();
+    if (trimmedTitle) {
+      titleCache.current[nextId] = trimmedTitle;
+      persistStoredTitles(titleCache.current);
+      setSessions((prev) => [
+        { id: nextId, message_count: 0, title: trimmedTitle, _local: true },
+        ...prev,
+      ]);
+    }
     setInitialMessages([]);
-    setCurrentSessionId(generateSessionId());
-  }, []);
+    setCurrentSessionId(nextId);
+    return nextId;
+  }, [currentSessionId]);
+
+  const goBack = useCallback(async () => {
+    const previous = previousSessionIdRef.current;
+    if (!previous || previous === currentSessionId) return false;
+    await switchSession(previous);
+    return true;
+  }, [currentSessionId, switchSession]);
 
   const markSessionActive = useCallback(
     (firstMessage?: string) => {
@@ -410,6 +434,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         renameSession,
         updateSessionStats,
         switchSession,
+        goBack,
         createSession,
         removeSession,
         refreshSessions,
