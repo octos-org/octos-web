@@ -1,6 +1,27 @@
 import { API_BASE, TOKEN_KEY, ADMIN_TOKEN_KEY } from "@/lib/constants";
 import { getSettings } from "@/hooks/use-settings";
 
+function inferProfileIdFromHost(): string | null {
+  if (typeof window === "undefined") return null;
+  const hostname = window.location.hostname;
+  const suffixes = [".octos.ominix.io", ".crew.ominix.io"];
+  for (const suffix of suffixes) {
+    if (!hostname.endsWith(suffix)) continue;
+    const subdomain = hostname.slice(0, -suffix.length);
+    if (!subdomain || subdomain === "crew" || subdomain === "octos" || subdomain === "www") {
+      return null;
+    }
+    return subdomain;
+  }
+  return null;
+}
+
+function isLocalBrowserHost(): boolean {
+  if (typeof window === "undefined") return false;
+  const hostname = window.location.hostname;
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
 export function getToken(): string | null {
   return (
     localStorage.getItem(TOKEN_KEY) || localStorage.getItem(ADMIN_TOKEN_KEY)
@@ -16,19 +37,84 @@ export function clearToken() {
   localStorage.removeItem(ADMIN_TOKEN_KEY);
 }
 
+export function getSelectedProfileId(includeStoredFallback = true): string | null {
+  // Exact-account portals must be driven by the current hostname, not stale
+  // browser state from a different account or sub-account tab.
+  return (
+    inferProfileIdFromHost() ||
+    (includeStoredFallback ? localStorage.getItem("selected_profile") : null)
+  );
+}
+
+export function setSelectedProfileId(profileId: string) {
+  localStorage.setItem("selected_profile", profileId);
+}
+
+let selectedProfilePromise: Promise<string | null> | null = null;
+
+export async function ensureSelectedProfileId(): Promise<string | null> {
+  const existing = getSelectedProfileId();
+  if (existing) return existing;
+  if (selectedProfilePromise) return selectedProfilePromise;
+
+  selectedProfilePromise = (async () => {
+    const token = getToken();
+    if (!token) return null;
+
+    try {
+      const resp = await fetch(`${API_BASE}/api/my/profile`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!resp.ok) return null;
+      const payload = (await resp.json()) as { profile?: { id?: string } };
+      const profileId = payload.profile?.id?.trim();
+      if (profileId) {
+        setSelectedProfileId(profileId);
+        return profileId;
+      }
+      return null;
+    } finally {
+      selectedProfilePromise = null;
+    }
+  })();
+
+  return selectedProfilePromise;
+}
+
+export function buildApiHeaders(
+  extraHeaders: Record<string, string> = {},
+  profileIdOverride?: string | null,
+  includeStoredProfileFallback = true,
+): Record<string, string> {
+  const token = getToken();
+  const profileId =
+    profileIdOverride === undefined
+      ? getSelectedProfileId(includeStoredProfileFallback)
+      : profileIdOverride;
+
+  return {
+    ...extraHeaders,
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(profileId ? { "X-Profile-Id": profileId } : {}),
+  };
+}
+
 export async function request<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
-  const token = getToken();
   const settings = getSettings();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(options.headers as Record<string, string>),
   };
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
+  const isAuthPath = path.startsWith("/api/auth/");
+  const includeStoredProfileFallback = !isAuthPath;
+  const profileHeaderOverride = isAuthPath && !isLocalBrowserHost() ? null : undefined;
+  Object.assign(
+    headers,
+    buildApiHeaders({}, profileHeaderOverride, includeStoredProfileFallback),
+  );
   // Pass search engine preference (not sensitive)
   headers["X-Search-Engine"] = settings.searchEngine;
   // Sensitive keys (serperApiKey, crawl4aiUrl) are stored server-side
