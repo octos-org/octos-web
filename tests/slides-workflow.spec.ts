@@ -223,10 +223,7 @@ test("slash commands: /sessions, /new, /help work without blocking", async ({
   await sendBtn.click();
   await page.waitForTimeout(5000);
 
-  const helpBubbles = await countAssistantBubbles(page);
-  expect(helpBubbles).toBeGreaterThan(0);
-
-  const helpText = (await page.locator(SEL.assistantMessage).last().textContent()) || "";
+  const helpText = (await page.locator(SEL.cmdFeedback).textContent()) || "";
   expect(helpText.includes("/new") || helpText.includes("command")).toBe(true);
 
   // Send button should NOT be locked after command
