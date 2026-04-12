@@ -7,7 +7,9 @@ import {
   FolderClosed,
   FolderOpen,
   Image as ImageIcon,
+  Music,
   Presentation,
+  Video as VideoIcon,
 } from "lucide-react";
 
 import type { ContentEntry } from "@/api/content";
@@ -99,16 +101,26 @@ function formatTime(value: string): string {
 
 function relativePathForSlides(file: SlidesFileEntry, slug: string): string {
   const normalizedPath = file.path.replace(/\\/g, "/");
-  const slidesMarker = `/slides/${slug}/`;
-  const slidesIndex = normalizedPath.lastIndexOf(slidesMarker);
-  if (slidesIndex !== -1) {
-    return `slides/${slug}/${normalizedPath.slice(slidesIndex + slidesMarker.length)}`;
+
+  // Try workspace-relative markers in priority order
+  const markers = [
+    { marker: `/slides/${slug}/`, prefix: `slides/${slug}/` },
+    { marker: "/skill-output/", prefix: "skill-output/" },
+    { marker: "/research/", prefix: "research/" },
+    { marker: "/sites/", prefix: "sites/" },
+  ];
+
+  for (const { marker, prefix } of markers) {
+    const index = normalizedPath.lastIndexOf(marker);
+    if (index !== -1) {
+      return `${prefix}${normalizedPath.slice(index + marker.length)}`;
+    }
   }
 
-  const skillOutputMarker = "/skill-output/";
-  const skillOutputIndex = normalizedPath.lastIndexOf(skillOutputMarker);
-  if (skillOutputIndex !== -1) {
-    return `skill-output/${normalizedPath.slice(skillOutputIndex + skillOutputMarker.length)}`;
+  // Fallback: try to extract from group field
+  if (file.group) {
+    const group = file.group.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+    return `${group}/${file.filename}`;
   }
 
   return file.filename;
@@ -145,6 +157,7 @@ function expectedFolders(slug: string): string[] {
     `slides/${slug}/output`,
     `slides/${slug}/history`,
     "skill-output",
+    "research",
   ];
 }
 
@@ -225,7 +238,7 @@ function buildTree(files: SlidesFileEntry[], slug: string): TreeNode[] {
 function defaultFolderOpen(name: string, depth: number) {
   return (
     depth < 2 ||
-    ["slides", "skill-output", "output", "imgs", "frames", "history"].includes(name)
+    ["slides", "skill-output", "output", "imgs", "frames", "history", "research", "sites"].includes(name)
   );
 }
 
@@ -237,6 +250,8 @@ function fileIcon(file: SlidesFileEntry) {
   const category = inferContentCategory(file);
   if (category === "slides") return Presentation;
   if (category === "image") return ImageIcon;
+  if (category === "audio") return Music;
+  if (category === "video") return VideoIcon;
   if (isViewerFile(file.filename)) return FileText;
   return File;
 }
@@ -246,7 +261,10 @@ export function ProjectFiles({ slug, title, sessionId, onOpenFile, onRename }: P
   const [manifest, setManifest] = useState<SlidesRenderManifest | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
-  const requestedDirs = useMemo(() => [`slides/${slug}`, "skill-output"], [slug]);
+  const requestedDirs = useMemo(
+    () => [`slides/${slug}`, "skill-output", "research", "sites"],
+    [slug],
+  );
 
   const triggerRefresh = useCallback(() => {
     setRefreshTick((value) => value + 1);
