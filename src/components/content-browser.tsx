@@ -45,7 +45,7 @@ function EditableTitle({
     return (
       <input
         defaultValue={value}
-        className="mt-1 w-full rounded-lg border border-accent/50 bg-surface-container px-2.5 py-2 text-base font-bold text-text outline-none"
+        className="mt-2 w-full rounded-[12px] border border-accent/40 bg-surface-container px-3 py-2.5 text-[1.08rem] font-semibold tracking-tight text-text outline-none"
         autoFocus
         onBlur={(e) => {
           const next = e.target.value.trim();
@@ -63,7 +63,7 @@ function EditableTitle({
   return (
     <button
       type="button"
-      className="mt-1 block w-full truncate text-left text-lg font-bold text-text transition hover:text-accent"
+      className="mt-2 block w-full truncate text-left text-[1.24rem] font-semibold tracking-tight text-text-strong transition hover:text-accent"
       title="Click to rename session"
       onClick={() => onSave && setEditing(true)}
     >
@@ -192,42 +192,35 @@ export function ContentBrowser({
   if (!open) return null;
 
   return (
-    <div className="flex h-full flex-col bg-sidebar">
-      <div className="flex items-center justify-between border-b border-border px-3 py-2.5">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
+    <div className="glass-panel flex h-full flex-col overflow-hidden rounded-[16px]">
+      <div className="px-3 pt-3">
+        <div className="glass-toolbar flex items-start justify-between gap-3 rounded-[14px] px-4 py-4">
+          <div className="min-w-0 flex-1">
             <div className="min-w-0 flex-1">
+              <div className="shell-kicker">Session Files</div>
               <EditableTitle value={sessionTitle} onSave={onRenameTitle} />
             </div>
-            {entries.length > 0 && (
-              <span className="rounded-full bg-accent/20 px-1.5 py-0.5 text-[10px] font-medium text-accent">
-                {entries.length}
-              </span>
-            )}
           </div>
-          <div className="mt-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted/70">
-            Session Files
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onToggleMaximize}
+              className="glass-icon-button rounded-[10px] p-2"
+              title={isMaximized ? "Restore" : "Maximize"}
+            >
+              {isMaximized ? (
+                <Minimize2 className="h-4 w-4" />
+              ) : (
+                <Maximize2 className="h-4 w-4" />
+              )}
+            </button>
+            <button
+              onClick={onClose}
+              className="glass-icon-button rounded-[10px] p-2"
+              title="Close"
+            >
+              <X className="h-4 w-4" />
+            </button>
           </div>
-        </div>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={onToggleMaximize}
-            className="rounded-lg p-1.5 text-muted hover:bg-surface-container hover:text-text"
-            title={isMaximized ? "Restore" : "Maximize"}
-          >
-            {isMaximized ? (
-              <Minimize2 className="h-4 w-4" />
-            ) : (
-              <Maximize2 className="h-4 w-4" />
-            )}
-          </button>
-          <button
-            onClick={onClose}
-            className="rounded-lg p-1.5 text-muted hover:bg-surface-container hover:text-text"
-            title="Close"
-          >
-            <X className="h-4 w-4" />
-          </button>
         </div>
       </div>
 
@@ -235,13 +228,13 @@ export function ContentBrowser({
         <AudioPlayer entry={audioEntry} onClose={() => setAudioEntry(null)} />
       )}
 
-      <div className="flex-1 overflow-y-auto px-2 py-2">
+      <div className="flex-1 overflow-y-auto px-3 pb-3 pt-2">
         {entries.length === 0 ? (
-          <div className="flex h-full items-center justify-center px-4 text-center text-xs text-muted">
+          <div className="shell-empty-state flex h-full items-center justify-center rounded-[12px] px-5 text-center text-sm text-muted">
             Files generated in this session will appear here.
           </div>
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-3">
             {grouped.map(([groupName, groupEntries]) => (
               <FileGroup
                 key={groupName}
@@ -279,10 +272,10 @@ function FileGroup({
   const [open, setOpen] = useState(true);
 
   return (
-    <div>
+    <div className="glass-section rounded-[12px] p-1.5">
       <button
         onClick={() => setOpen((value) => !value)}
-        className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-xs font-semibold text-text-strong hover:bg-surface-container"
+        className="flex w-full items-center gap-2 rounded-[12px] px-3 py-2.5 text-left text-xs font-semibold text-text-strong hover:bg-surface-elevated/60"
       >
         {open ? (
           <>
@@ -301,7 +294,7 @@ function FileGroup({
         </span>
       </button>
       {open && (
-        <div className="ml-3 space-y-1 border-l border-border/30 pl-2">
+        <div className="ml-3 mt-2 space-y-2 border-l border-border/40 pl-3">
           {entries.map((entry) => {
             const Icon = fileIcon(entry);
             const opensViewer =
@@ -313,7 +306,7 @@ function FileGroup({
             return (
               <div
                 key={entry.id}
-                className="flex items-start gap-2 rounded-xl bg-surface-container px-2.5 py-2 transition-colors hover:bg-surface-elevated"
+                className="glass-file-row flex items-start gap-2 rounded-[12px] px-3 py-3 transition-colors hover:bg-surface-elevated/70"
               >
                 <button
                   onClick={() => {
@@ -325,28 +318,28 @@ function FileGroup({
                   }}
                   className="flex min-w-0 flex-1 items-start gap-2 text-left"
                 >
-                <div className="mt-0.5 shrink-0 text-muted">
-                  <Icon size={14} />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm text-text-strong">
-                    {entry.filename}
+                  <div className="glass-pill mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] text-muted">
+                    <Icon size={14} />
                   </div>
-                  <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-muted">
-                    <span>{formatSize(entry.size_bytes)}</span>
-                    <span>{formatTime(entry.created_at)}</span>
-                    <span className="uppercase tracking-[0.14em] text-muted/60">
-                      {entry.category}
-                    </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium text-text-strong">
+                      {entry.filename}
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-muted">
+                      <span>{formatSize(entry.size_bytes)}</span>
+                      <span>{formatTime(entry.created_at)}</span>
+                      <span className="uppercase tracking-[0.14em] text-muted/60">
+                        {entry.category}
+                      </span>
+                    </div>
                   </div>
-                </div>
                 </button>
                 <button
                   onClick={(event) => {
                     event.stopPropagation();
                     void downloadContent(entry);
                   }}
-                  className="shrink-0 rounded-lg p-1.5 text-muted hover:bg-surface-dark hover:text-accent"
+                  className="glass-icon-button shrink-0 rounded-[10px] p-1.5 hover:text-accent"
                   title="Download"
                 >
                   <Download size={14} />

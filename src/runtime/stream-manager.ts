@@ -5,7 +5,7 @@
  * React components subscribe/unsubscribe without killing the underlying stream.
  */
 
-import { getToken } from "@/api/client";
+import { buildApiHeaders } from "@/api/client";
 import { API_BASE } from "@/lib/constants";
 import { getSettings } from "@/hooks/use-settings";
 import type { SseEvent } from "@/api/types";
@@ -34,7 +34,12 @@ interface ManagedStream {
   /** Final accumulated text from token/replace events. */
   text: string;
   /** Queued messages waiting for this stream to finish. */
-  _queued?: { message: string; media: string[] }[];
+  _queued?: {
+    message: string;
+    media: string[];
+    clientMessageId?: string;
+    audioUploadMode?: "recording" | "upload";
+  }[];
 }
 
 const streams = new Map<string, ManagedStream>();
@@ -139,7 +144,17 @@ function finalizeStream(sessionId: string, stream: ManagedStream): void {
   if (queued && queued.length > 0) {
     const next = queued.shift()!;
     stream._queued = queued.length > 0 ? queued : undefined;
-    setTimeout(() => startStream(sessionId, next.message, next.media), 100);
+    setTimeout(
+      () =>
+        startStream(
+          sessionId,
+          next.message,
+          next.media,
+          next.clientMessageId,
+          next.audioUploadMode,
+        ),
+      100,
+    );
   }
 }
 
@@ -174,6 +189,8 @@ export function startStream(
   sessionId: string,
   message: string,
   media: string[],
+  clientMessageId?: string,
+  audioUploadMode?: "recording" | "upload",
 ): "started" | "queued" {
   // If there's already an active stream for this session, queue this message
   // and start a new stream when the current one finishes.
@@ -181,13 +198,12 @@ export function startStream(
   if (existing?.active) {
     // Store the queued message — it will be sent when the current stream ends
     if (!existing._queued) existing._queued = [];
-    existing._queued.push({ message, media });
+    existing._queued.push({ message, media, clientMessageId, audioUploadMode });
     return "queued";
   }
 
   const stream = createManagedStream(sessionId);
 
-  const token = getToken();
   const settings = getSettings();
 
   runStreamFetch(sessionId, stream, async () => {
@@ -205,14 +221,16 @@ export function startStream(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...buildApiHeaders(),
         ...searchHeaders,
       },
       body: JSON.stringify({
         message,
         session_id: sessionId,
+        client_message_id: clientMessageId,
         stream: true,
         media,
+        audio_upload_mode: audioUploadMode,
       }),
       signal: stream.abort.signal,
     });
@@ -228,7 +246,6 @@ export function attachStream(sessionId: string): "attached" | "busy" {
   const existing = streams.get(sessionId);
   if (existing?.active) return "busy";
 
-  const token = getToken();
   const stream = createManagedStream(sessionId);
 
   runStreamFetch(sessionId, stream, () =>
@@ -236,7 +253,7 @@ export function attachStream(sessionId: string): "attached" | "busy" {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...buildApiHeaders(),
       },
       body: JSON.stringify({
         message: "",

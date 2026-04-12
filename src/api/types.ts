@@ -3,6 +3,7 @@
 export interface ChatRequest {
   message: string;
   session_id?: string;
+  client_message_id?: string;
   media?: string[];
 }
 
@@ -18,11 +19,26 @@ export interface SessionInfo {
 }
 
 export interface MessageInfo {
+  seq?: number;
   role: "user" | "assistant" | "system" | "tool";
   content: string;
+  client_message_id?: string;
+  response_to_client_message_id?: string;
   timestamp: string;
   media?: string[];
   tool_calls?: { id?: string; name?: string }[];
+}
+
+export interface BackgroundTaskInfo {
+  id: string;
+  tool_name: string;
+  tool_call_id?: string;
+  status: "spawned" | "running" | "completed" | "failed";
+  started_at: string;
+  completed_at?: string | null;
+  output_files?: string[];
+  error: string | null;
+  session_key?: string;
 }
 
 export interface ServerStatus {

@@ -82,11 +82,321 @@ html, body, #root {
 }
 body {
   margin: 0;
-  background: var(--color-surface-dark);
+  background:
+    radial-gradient(1200px 720px at -10% -10%, color-mix(in srgb, var(--color-accent) 22%, transparent), transparent 58%),
+    radial-gradient(900px 640px at 110% 0%, color-mix(in srgb, var(--color-heading-accent) 12%, transparent), transparent 56%),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-surface-dark) 92%, black 8%) 0%,
+      color-mix(in srgb, var(--color-surface) 94%, transparent) 48%,
+      color-mix(in srgb, var(--color-surface-light) 96%, transparent) 100%
+    );
   color: var(--color-text);
-  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: "SF Pro Text", "SF Pro Display", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+.chat-shell {
+  position: relative;
+  isolation: isolate;
+}
+
+.chat-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(560px 320px at 12% 18%, color-mix(in srgb, var(--color-text-strong) 8%, transparent), transparent 72%),
+    radial-gradient(680px 400px at 88% 8%, color-mix(in srgb, var(--color-accent) 14%, transparent), transparent 74%);
+  opacity: 0.9;
+}
+
+.glass-panel,
+.glass-section,
+.glass-pill,
+.glass-file-row,
+.glass-list-item,
+.glass-toolbar {
+  border: 1px solid color-mix(in srgb, var(--color-text-strong) 10%, var(--color-border) 90%);
+  backdrop-filter: blur(28px) saturate(150%);
+  -webkit-backdrop-filter: blur(28px) saturate(150%);
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease,
+    border-color 0.18s ease,
+    background-color 0.18s ease;
+}
+
+.glass-panel {
+  background: color-mix(in srgb, var(--color-surface-light) 76%, transparent);
+  box-shadow:
+    0 24px 60px rgba(3, 14, 34, 0.28),
+    inset 0 1px 0 color-mix(in srgb, white 10%, transparent);
+}
+
+.glass-toolbar {
+  background: color-mix(in srgb, var(--color-surface-elevated) 72%, transparent);
+  box-shadow:
+    0 18px 40px rgba(5, 16, 38, 0.18),
+    inset 0 1px 0 color-mix(in srgb, white 8%, transparent);
+}
+
+.glass-section {
+  background: color-mix(in srgb, var(--color-surface-container) 72%, transparent);
+  box-shadow:
+    0 14px 32px rgba(6, 18, 42, 0.14),
+    inset 0 1px 0 color-mix(in srgb, white 7%, transparent);
+}
+
+.glass-pill {
+  background: color-mix(in srgb, var(--color-surface-elevated) 68%, transparent);
+  box-shadow:
+    0 10px 24px rgba(5, 16, 38, 0.12),
+    inset 0 1px 0 color-mix(in srgb, white 7%, transparent);
+}
+
+.glass-list-item {
+  background: color-mix(in srgb, var(--color-surface-container) 44%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 4%, transparent);
+}
+
+.glass-list-item:hover {
+  transform: translateY(-1px);
+}
+
+.glass-list-item[data-active="true"] {
+  background: color-mix(in srgb, var(--color-accent) 14%, var(--color-surface-elevated) 86%);
+  border-color: color-mix(in srgb, var(--color-accent) 28%, var(--color-border) 72%);
+  box-shadow:
+    0 16px 34px color-mix(in srgb, var(--color-accent) 16%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 8%, transparent);
+}
+
+.session-row {
+  position: relative;
+  overflow: hidden;
+}
+
+.session-row-rail {
+  position: absolute;
+  left: 8px;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-accent) 82%, white 18%);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--color-accent) 24%, transparent);
+}
+
+.glass-file-row {
+  background: color-mix(in srgb, var(--color-surface-container) 58%, transparent);
+  box-shadow:
+    0 10px 24px rgba(5, 16, 38, 0.1),
+    inset 0 1px 0 color-mix(in srgb, white 6%, transparent);
+}
+
+.glass-icon-button {
+  border: 1px solid color-mix(in srgb, var(--color-text-strong) 10%, var(--color-border) 90%);
+  background: color-mix(in srgb, var(--color-surface-elevated) 62%, transparent);
+  color: var(--color-muted);
+  box-shadow:
+    0 10px 22px rgba(5, 16, 38, 0.12),
+    inset 0 1px 0 color-mix(in srgb, white 7%, transparent);
+}
+
+.glass-icon-button:hover {
+  color: var(--color-text-strong);
+  border-color: color-mix(in srgb, var(--color-accent) 18%, var(--color-border) 82%);
+  background: color-mix(in srgb, var(--color-surface-elevated) 78%, transparent);
+}
+
+.glass-icon-button.is-active {
+  color: var(--color-accent);
+  border-color: color-mix(in srgb, var(--color-accent) 26%, var(--color-border) 74%);
+  background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface-elevated) 90%);
+  box-shadow:
+    0 14px 28px color-mix(in srgb, var(--color-accent) 18%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 9%, transparent);
+}
+
+.glass-backdrop {
+  background: color-mix(in srgb, var(--color-surface-dark) 66%, transparent);
+  backdrop-filter: blur(20px) saturate(130%);
+  -webkit-backdrop-filter: blur(20px) saturate(130%);
+}
+
+.shell-kicker {
+  color: color-mix(in srgb, var(--color-muted) 88%, white 12%);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.shell-empty-state {
+  background: color-mix(in srgb, var(--color-surface-container) 44%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--color-text-strong) 12%, var(--color-border) 88%);
+}
+
+.message-card {
+  border: 1px solid color-mix(in srgb, var(--color-text-strong) 8%, var(--color-border) 92%);
+  backdrop-filter: blur(16px) saturate(135%);
+  -webkit-backdrop-filter: blur(16px) saturate(135%);
+  box-shadow:
+    0 12px 28px rgba(6, 18, 42, 0.12),
+    inset 0 1px 0 color-mix(in srgb, white 5%, transparent);
+}
+
+.message-card-user {
+  background: color-mix(in srgb, var(--color-user-bubble) 90%, var(--color-surface-elevated) 10%);
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.message-card-assistant {
+  background: color-mix(in srgb, var(--color-assistant-bubble) 84%, transparent);
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.message-attachment-card {
+  border: 1px solid color-mix(in srgb, var(--color-text-strong) 8%, var(--color-border) 92%);
+  background: color-mix(in srgb, var(--color-surface-container) 48%, transparent);
+  box-shadow:
+    0 10px 22px rgba(5, 16, 38, 0.08),
+    inset 0 1px 0 color-mix(in srgb, white 5%, transparent);
+}
+
+.composer-shell {
+  border: 1px solid color-mix(in srgb, var(--color-text-strong) 10%, var(--color-border) 90%);
+  background: color-mix(in srgb, var(--color-surface-elevated) 60%, transparent);
+  backdrop-filter: blur(26px) saturate(145%);
+  -webkit-backdrop-filter: blur(26px) saturate(145%);
+  box-shadow:
+    0 20px 40px rgba(4, 14, 34, 0.16),
+    inset 0 1px 0 color-mix(in srgb, white 7%, transparent);
+}
+
+.composer-toolbar {
+  border-top: 1px solid color-mix(in srgb, var(--color-text-strong) 6%, var(--color-border) 94%);
+}
+
+.session-task-indicator {
+  display: inline-flex;
+  max-width: min(32rem, 42vw);
+  align-items: center;
+  gap: 0.7rem;
+  flex-shrink: 1;
+}
+
+.session-task-indicator-dot {
+  position: relative;
+  flex-shrink: 0;
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: 999px;
+  border: 2px solid color-mix(in srgb, var(--color-accent) 28%, transparent);
+  border-top-color: color-mix(in srgb, var(--color-accent) 96%, white 4%);
+  border-right-color: color-mix(in srgb, var(--color-accent) 72%, transparent);
+  opacity: 0.95;
+}
+
+.session-task-indicator-dot.is-active {
+  animation: sessionTaskSpin 0.85s linear infinite;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
+
+.session-task-indicator-dot.is-failed {
+  border-color: color-mix(in srgb, #ef4444 72%, transparent);
+  border-top-color: #ef4444;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #ef4444 12%, transparent);
+}
+
+@keyframes sessionTaskSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes shellRise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-shell-rise {
+  animation: shellRise 0.24s cubic-bezier(0.2, 0, 0, 1);
+}
+
+[data-theme="light"] .glass-panel {
+  background: color-mix(in srgb, white 82%, var(--color-surface-light) 18%);
+  box-shadow:
+    0 26px 52px rgba(14, 38, 70, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+
+[data-theme="light"] .glass-toolbar,
+[data-theme="light"] .glass-pill,
+[data-theme="light"] .glass-section,
+[data-theme="light"] .glass-file-row,
+[data-theme="light"] .glass-list-item,
+[data-theme="light"] .glass-icon-button {
+  box-shadow:
+    0 14px 34px rgba(14, 38, 70, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
+}
+
+[data-theme="light"] .glass-toolbar {
+  background: color-mix(in srgb, white 84%, var(--color-surface-light) 16%);
+}
+
+[data-theme="light"] .glass-section,
+[data-theme="light"] .glass-file-row,
+[data-theme="light"] .glass-list-item {
+  background: color-mix(in srgb, white 78%, var(--color-surface-container) 22%);
+}
+
+[data-theme="light"] .glass-pill,
+[data-theme="light"] .glass-icon-button {
+  background: color-mix(in srgb, white 74%, var(--color-surface-elevated) 26%);
+}
+
+[data-theme="light"] .glass-list-item[data-active="true"] {
+  background: color-mix(in srgb, var(--color-accent) 9%, white 91%);
+}
+
+[data-theme="light"] .message-card,
+[data-theme="light"] .message-attachment-card,
+[data-theme="light"] .composer-shell {
+  box-shadow:
+    0 14px 28px rgba(14, 38, 70, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+[data-theme="light"] .message-card-user {
+  background: color-mix(in srgb, var(--color-user-bubble) 74%, white 26%);
+}
+
+[data-theme="light"] .message-card-assistant {
+  background: color-mix(in srgb, white 78%, var(--color-surface-container) 22%);
+}
+
+[data-theme="light"] .session-task-indicator-dot {
+  border-color: color-mix(in srgb, var(--color-accent) 24%, transparent);
+  border-top-color: color-mix(in srgb, var(--color-accent) 86%, black 8%);
 }
 
 /* ── Scrollbar ──────────────────────────────────────── */
@@ -124,6 +434,9 @@ body {
 .prose {
   line-height: 1.7;
   letter-spacing: 0.01em;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .prose pre {
   background: var(--color-code-block-bg);
@@ -131,6 +444,9 @@ body {
   border-radius: 12px;
   font-size: 0.8rem;
   color: var(--color-code-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .prose code:not(pre code) {
   background: color-mix(in srgb, var(--color-code-inline) 12%, transparent);
@@ -138,6 +454,8 @@ body {
   padding: 0.15em 0.4em;
   border-radius: 6px;
   font-size: 0.85em;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .prose a {
   color: var(--color-link);
@@ -200,6 +518,46 @@ body {
 /* ── Smooth transitions on interactive elements ─────── */
 button, a, input, textarea {
   transition: all 0.2s cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* ── Resizable panel handles ─────────────────────────── */
+.panel-resize-handle {
+  position: relative;
+  width: 10px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.panel-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 14px;
+  bottom: 14px;
+  left: 50%;
+  width: 3px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-text) 14%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-surface-elevated) 85%, transparent),
+    0 2px 10px color-mix(in srgb, var(--color-text-strong) 10%, transparent);
+  transition:
+    background 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s ease;
+}
+
+.panel-resize-handle:hover::after,
+.panel-resize-handle:active::after {
+  background: color-mix(in srgb, var(--color-accent) 50%, var(--color-text) 20%);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 18%, transparent),
+    0 6px 18px color-mix(in srgb, var(--color-accent) 20%, transparent);
+}
+
+.panel-resize-handle:active::after {
+  transform: translateX(-50%) scaleY(1.04);
 }
 
 /* ── Selection ──────────────────────────────────────── */

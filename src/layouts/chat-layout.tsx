@@ -6,6 +6,7 @@ import { useResizablePanel } from "@/hooks/use-resizable-panel";
 import { CostBar } from "@/components/cost-bar";
 import { SessionList } from "@/components/session-list";
 import { ContentBrowser } from "@/components/content-browser";
+import { SessionTaskIndicator } from "@/components/session-task-dock";
 import { useSession } from "@/runtime/session-context";
 import {
   useContentViewer,
@@ -21,8 +22,23 @@ export function ChatLayout({ children }: { children: ReactNode }) {
   const { theme, toggleTheme } = useTheme();
   const [mediaPanelOpen, setMediaPanelOpen] = useState(false);
   const sessionFiles = useFileStore(currentSessionId);
-  const { effectiveWidth, isMaximized, onMouseDown, toggleMaximize } =
+  const {
+    effectiveWidth,
+    isMaximized,
+    onMouseDown,
+    toggleMaximize,
+  } =
     useResizablePanel();
+  const {
+    effectiveWidth: historyPanelWidth,
+    onMouseDown: onHistoryPanelMouseDown,
+  } = useResizablePanel({
+    minWidth: 240,
+    maxWidth: 520,
+    defaultWidth: 288,
+    storageKey: "octos_history_panel_width",
+    side: "left",
+  });
   const { state: viewerState, openViewer, closeViewer, closeAudio } =
     useContentViewer();
 
@@ -52,21 +68,33 @@ export function ChatLayout({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <div className="flex h-screen bg-surface-dark">
+    <div className="chat-shell flex h-screen gap-3 p-3">
       {/* Sidebar */}
-      <aside className="sidebar-scope flex w-72 flex-col bg-sidebar">
+      <aside
+        style={{ width: historyPanelWidth }}
+        className="sidebar-scope glass-panel flex shrink-0 flex-col overflow-hidden rounded-[16px]"
+      >
         {/* Header */}
-        <div className="flex items-center gap-3 px-5 py-5">
-          <span className="text-lg font-semibold tracking-tight text-text-strong">octos</span>
-          <div className="ml-auto flex items-center gap-1">
-            <button
-              onClick={toggleTheme}
-              className="rounded-xl p-2 text-muted hover:bg-surface-container hover:text-text-strong"
-              title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-              aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-            >
-              {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
-            </button>
+        <div className="px-3 pt-3">
+          <div className="glass-toolbar rounded-[14px] px-4 py-4">
+            <div className="flex items-start gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="shell-kicker">Octos Workspace</div>
+                <div className="mt-1 text-xl font-semibold tracking-tight text-text-strong">
+                  Chat History
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={toggleTheme}
+                  className="glass-icon-button rounded-[12px] p-2.5"
+                  title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+                  aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+                >
+                  {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -74,78 +102,95 @@ export function ChatLayout({ children }: { children: ReactNode }) {
         <SessionList />
 
         {/* Footer */}
-        <div className="px-5 py-4">
-          {status && status.model && status.model !== "none" && (
-            <div className="mb-2 text-[11px] text-muted/70">
-              {status.provider !== "none" ? `${status.provider}/` : ""}{status.model}
-            </div>
-          )}
-          {user && (
-            <div className="flex items-center justify-between">
-              <div className="flex min-w-0 items-center gap-1.5">
-                <span className="truncate text-sm text-text">{user.email}</span>
-                <button
-                  onClick={() => window.location.assign("/admin/my")}
-                  className="shrink-0 rounded-lg p-1.5 text-muted hover:bg-surface-container hover:text-text-strong"
-                  title="Settings"
-                  aria-label="Settings"
-                >
-                  <Settings size={14} />
-                </button>
+        <div className="px-3 pb-3 pt-2">
+          <div className="glass-section rounded-[12px] px-4 py-3">
+            {status && status.model && status.model !== "none" && (
+              <div className="mb-2 text-[11px] text-muted/75">
+                {status.provider !== "none" ? `${status.provider}/` : ""}{status.model}
               </div>
-              <button
-                onClick={logout}
-                className="rounded-lg p-1.5 text-muted hover:bg-surface-container hover:text-text-strong"
-              >
-                <LogOut size={14} />
-              </button>
-            </div>
-          )}
-        </div>
-      </aside>
-
-      {/* Main + Media Panel */}
-      <div className="flex flex-1 min-w-0 min-h-0">
-        <main className="flex flex-1 min-w-0 flex-col min-h-0">
-          {/* Top bar with title + cost + files toggle */}
-          <div className="border-b border-border/60 bg-surface-dark">
-            <div className="flex items-center px-5 pt-3">
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-lg font-bold text-text-strong">
-                  {currentSessionTitle}
+            )}
+            {user && (
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium text-text">
+                    {user.email}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() =>
+                      window.open("/admin/my", "_blank", "noopener,noreferrer")
+                    }
+                    className="glass-icon-button rounded-[10px] p-2"
+                    title="Settings"
+                    aria-label="Settings"
+                  >
+                    <Settings size={14} />
+                  </button>
+                  <button
+                    onClick={logout}
+                    className="glass-icon-button rounded-[10px] p-2"
+                    title="Log out"
+                    aria-label="Log out"
+                  >
+                    <LogOut size={14} />
+                  </button>
                 </div>
               </div>
-              <button
-                onClick={() => setMediaPanelOpen((v) => !v)}
-                className={`relative flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
-                  mediaPanelOpen
-                    ? "bg-accent/20 text-accent"
-                    : "text-muted hover:bg-surface-container hover:text-text-strong"
-                }`}
-                title={mediaPanelOpen ? "Close files panel" : "Open files panel"}
-              >
-                <PanelRight size={16} />
-                {sessionFiles.length > 0 && !mediaPanelOpen && (
-                  <span className="absolute -right-0.5 -top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-accent text-[9px] font-bold text-white">
-                    {sessionFiles.length}
-                  </span>
-                )}
-              </button>
-            </div>
-            <div className="flex-1 min-w-0">
-              <CostBar model={status?.model} provider={status?.provider} />
+            )}
+          </div>
+        </div>
+      </aside>
+      <div
+        onMouseDown={onHistoryPanelMouseDown}
+        className="panel-resize-handle"
+        title="Resize chat history"
+      />
+
+      {/* Main + Media Panel */}
+      <div className="flex flex-1 min-w-0 min-h-0 gap-3">
+        <main className="glass-panel flex flex-1 min-w-0 flex-col min-h-0 overflow-hidden rounded-[16px]">
+          {/* Top bar with title + cost + files toggle */}
+          <div className="px-3 pt-3">
+            <div className="glass-toolbar rounded-[14px] px-4 py-4">
+              <div className="flex items-start gap-4">
+                <div className="min-w-0 flex-1">
+                  <div className="shell-kicker">Current Session</div>
+                  <div className="truncate pr-3 text-[1.24rem] font-semibold tracking-tight text-text-strong">
+                    {currentSessionTitle}
+                  </div>
+                </div>
+                <SessionTaskIndicator />
+                <button
+                  onClick={() => setMediaPanelOpen((v) => !v)}
+                  className={`glass-icon-button relative rounded-[12px] p-2.5 ${
+                    mediaPanelOpen ? "is-active" : ""
+                  }`}
+                  title={mediaPanelOpen ? "Close files panel" : "Open files panel"}
+                >
+                  <PanelRight size={16} />
+                  {sessionFiles.length > 0 && !mediaPanelOpen && (
+                    <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-accent px-1 text-[10px] font-bold text-white shadow-lg">
+                      {sessionFiles.length}
+                    </span>
+                  )}
+                </button>
+              </div>
+              <div className="mt-3 min-w-0">
+                <CostBar model={status?.model} provider={status?.provider} />
+              </div>
             </div>
           </div>
-          <div className="relative flex-1 min-h-0 overflow-hidden">
+          <div className="relative flex-1 min-h-0 overflow-hidden px-2 pb-2">
             {children}
             {/* Inline toast notification */}
             {toast && (
               <button
                 onClick={openPanel}
-                className="absolute bottom-20 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 rounded-xl bg-surface-elevated px-4 py-2.5 text-sm text-text shadow-lg border border-border animate-in fade-in slide-in-from-bottom-2 duration-300 hover:bg-surface-container cursor-pointer"
+                className="glass-pill absolute bottom-20 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-[12px] px-4 py-2.5 text-sm text-text shadow-lg hover:text-text-strong"
               >
                 <span>{toast}</span>
-                <span className="text-xs text-accent font-medium">Open</span>
+                <span className="text-xs font-semibold uppercase tracking-[0.12em] text-accent">View</span>
               </button>
             )}
           </div>
@@ -156,11 +201,11 @@ export function ChatLayout({ children }: { children: ReactNode }) {
           <>
             <div
               onMouseDown={onMouseDown}
-              className="w-1 cursor-col-resize bg-transparent hover:bg-accent/30 transition-colors"
+              className="panel-resize-handle"
             />
             <div
               style={{ width: effectiveWidth }}
-              className="shrink-0 overflow-hidden border-l border-border"
+              className="shrink-0 overflow-hidden"
             >
               <ContentBrowser
                 open={mediaPanelOpen}
@@ -179,7 +224,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
 
       {/* Maximized content panel — covers entire window including sidebar */}
       {mediaPanelOpen && isMaximized && (
-        <div className="fixed inset-0 z-40 bg-sidebar">
+        <div className="glass-backdrop fixed inset-0 z-40 p-3">
           <ContentBrowser
             open={mediaPanelOpen}
             onClose={() => { setMediaPanelOpen(false); toggleMaximize(); }}

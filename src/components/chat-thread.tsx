@@ -27,7 +27,13 @@ import {
   Download,
 } from "lucide-react";
 import { useSession } from "@/runtime/session-context";
-import { useMessages, clearMessages, type Message, type MessageFile } from "@/store/message-store";
+import {
+  useMessages,
+  clearMessages,
+  type Message,
+  type MessageFile,
+  type MessageMeta,
+} from "@/store/message-store";
 import { uploadFiles } from "@/api/chat";
 import { sendMessage as bridgeSend } from "@/runtime/sse-bridge";
 import * as StreamManager from "@/runtime/stream-manager";
@@ -35,9 +41,8 @@ import { MarkdownContent } from "./markdown-renderer";
 import { ThinkingIndicator } from "./thinking-indicator";
 import { ToolProgressIndicator } from "./tool-progress-indicator";
 import { buildFileUrl } from "@/api/files";
-import { API_BASE } from "@/lib/constants";
 import { displayFilenameFromPath } from "@/lib/utils";
-import { getToken } from "@/api/client";
+import { getToken, request } from "@/api/client";
 
 // ---------------------------------------------------------------------------
 // Message bubbles
@@ -49,18 +54,37 @@ function formatTimestamp(ts: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+function userBubbleVisibleText(message: Message): string {
+  if (message.files.length === 0) return message.text;
+  const trimmed = message.text.trim();
+  if (/^\[Attached: .*\]$/u.test(trimmed)) return "";
+  if (trimmed === "[User sent an image]") return "";
+  return message.text;
+}
+
+function visibleAttachmentCaption(caption?: string): string {
+  if (!caption) return "";
+  if (/^\s*[✓✗]\s+\S+.*\b(completed|failed|error)\b/iu.test(caption.trim())) {
+    return "";
+  }
+  return caption;
+}
+
 const UserBubble = memo(function UserBubble({ message }: { message: Message }) {
+  const visibleText = userBubbleVisibleText(message);
   return (
     <div className="flex justify-end px-4 py-3">
-      <div className="flex flex-col items-end max-w-[75%]">
-        <div
-          data-testid="user-message"
-          className="rounded-2xl rounded-br-md bg-user-bubble px-5 py-3 text-sm leading-relaxed text-text"
-        >
-          {message.text}
-        </div>
+      <div className="flex max-w-[74%] flex-col items-end">
+        {visibleText && (
+          <div
+            data-testid="user-message"
+            className="message-card message-card-user rounded-[14px] rounded-br-[4px] px-4 py-2.5 text-sm leading-relaxed text-text"
+          >
+            {visibleText}
+          </div>
+        )}
         {message.files.length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-2">
+          <div className={`${visibleText ? "mt-2" : ""} flex flex-wrap gap-2`}>
             {message.files.map((f) => (
               <FileAttachment key={f.path} file={f} />
             ))}
@@ -85,12 +109,12 @@ const AssistantBubble = memo(function AssistantBubble({
     <div className="flex px-4 py-3">
       <div
         data-testid="assistant-message"
-        className="max-w-[92%] rounded-2xl rounded-bl-md bg-assistant-bubble px-5 py-4 text-sm leading-relaxed text-text elevation-1 transition-all duration-300 ease-out"
+        className="message-card message-card-assistant animate-shell-rise max-w-[88%] rounded-[14px] rounded-bl-[4px] px-4 py-3 text-sm leading-relaxed text-text"
       >
         {message.text ? (
           <MarkdownContent
             text={message.text}
-            className="prose prose-invert prose-sm max-w-none"
+            className="prose prose-invert prose-sm max-w-none min-w-0 break-words"
           />
         ) : message.status === "streaming" ? (
           <span className="inline-flex items-center gap-1">
@@ -115,12 +139,12 @@ const AssistantBubble = memo(function AssistantBubble({
             {message.toolCalls.map((tc) => (
               <span
                 key={tc.id}
-                className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-mono ${
+                className={`glass-pill inline-flex items-center gap-1 rounded-[10px] px-2.5 py-1 text-[10px] font-mono ${
                   tc.status === "running"
-                    ? "bg-accent/20 text-accent animate-pulse"
+                    ? "border-accent/20 bg-accent/14 text-accent animate-pulse"
                     : tc.status === "error"
-                      ? "bg-red-500/20 text-red-400"
-                      : "bg-surface-container text-muted"
+                      ? "border-red-500/20 bg-red-500/12 text-red-400"
+                      : "text-muted"
                 }`}
               >
                 {tc.name}
@@ -128,9 +152,6 @@ const AssistantBubble = memo(function AssistantBubble({
             ))}
           </div>
         )}
-
-        {/* Background task status (only for the last message) */}
-        {isLast && <TaskStatusIndicator />}
 
         {/* Thinking + tool progress (only for the last streaming message) */}
         {isLast && message.status === "streaming" && (
@@ -141,7 +162,7 @@ const AssistantBubble = memo(function AssistantBubble({
         )}
 
         {/* Message meta */}
-        <MessageMetaInline messageId={message.id} isLast={isLast} timestamp={message.timestamp} />
+        <MessageMetaInline message={message} />
       </div>
     </div>
   );
@@ -197,6 +218,7 @@ function FileAttachment({ file }: { file: MessageFile }) {
   const isAudio = /\.(mp3|wav|ogg|webm|m4a|aac|flac|opus)$/i.test(file.filename);
   const isVideo = /\.(mp4|webm|mov)$/i.test(file.filename);
   const isImage = /\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i.test(file.filename);
+  const visibleCaption = visibleAttachmentCaption(file.caption);
 
   const handleDownload = useCallback(() => {
     if (!blobUrl) return;
@@ -214,9 +236,9 @@ function FileAttachment({ file }: { file: MessageFile }) {
 
   if (isVideo) {
     return (
-      <div className="rounded-lg border border-border bg-surface-light p-2">
+      <div className="message-attachment-card rounded-[10px] p-2">
         {blobUrl ? (
-          <video controls preload="metadata" className="w-full max-w-sm rounded" src={blobUrl} />
+          <video controls preload="metadata" className="w-full max-w-sm rounded-[8px]" src={blobUrl} />
         ) : (
           <div className="flex h-24 items-center justify-center text-xs text-muted">Loading...</div>
         )}
@@ -231,16 +253,19 @@ function FileAttachment({ file }: { file: MessageFile }) {
         <img
           src={blobUrl}
           alt={file.filename}
-          className="max-w-full max-h-64 rounded-lg border border-border"
+          className="message-attachment-card max-h-64 max-w-full rounded-[10px]"
           loading="lazy"
         />
-        {file.caption && (
-          <div className="mt-1 text-xs text-muted">{file.caption}</div>
+        {visibleCaption && (
+          <div className="mt-1 text-xs text-muted">{visibleCaption}</div>
         )}
       </a>
     ) : (
-      <div className="flex h-24 items-center justify-center rounded-lg border border-border text-xs text-muted">
-        Loading...
+      <div className="message-attachment-card flex h-32 w-28 items-center justify-center rounded-[10px] bg-[linear-gradient(135deg,rgba(255,255,255,0.16),rgba(255,255,255,0.06))]">
+        <div className="flex w-full flex-col gap-2 px-3">
+          <div className="h-16 w-full animate-pulse rounded-[8px] bg-white/10" />
+          <div className="h-2.5 w-2/3 animate-pulse rounded-full bg-white/10" />
+        </div>
       </div>
     );
   }
@@ -250,7 +275,7 @@ function FileAttachment({ file }: { file: MessageFile }) {
     <button
       onClick={handleDownload}
       disabled={!blobUrl}
-      className="inline-flex items-center gap-1.5 rounded-lg bg-surface-container px-3 py-2 text-xs text-link hover:bg-accent/20 hover:text-accent disabled:opacity-50 max-w-full overflow-hidden"
+      className="glass-pill inline-flex max-w-full items-center gap-1.5 overflow-hidden rounded-[10px] px-3 py-2 text-xs text-link hover:text-accent disabled:opacity-50"
     >
       <Download size={14} className="shrink-0" />
       <span className="truncate">{file.filename}</span>
@@ -258,23 +283,12 @@ function FileAttachment({ file }: { file: MessageFile }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Background task status indicator
-// ---------------------------------------------------------------------------
-
-interface TaskInfo {
-  id: string;
-  tool_name: string;
-  status: "spawned" | "running" | "completed" | "failed";
-  started_at: string;
-  error: string | null;
-}
-
 /** Audio attachment — <audio> element only created on first play click. */
 function AudioAttachment({ file, blobUrl }: { file: MessageFile; blobUrl?: string }) {
   const [activated, setActivated] = useState(false);
   const [playing, setPlaying] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const visibleCaption = visibleAttachmentCaption(file.caption);
 
   const toggle = useCallback(() => {
     if (!activated) {
@@ -300,12 +314,12 @@ function AudioAttachment({ file, blobUrl }: { file: MessageFile; blobUrl?: strin
   }, [activated, playing]);
 
   return (
-    <div className="rounded-lg border border-border bg-surface-light p-2">
+    <div className="message-attachment-card rounded-[10px] p-2">
       {blobUrl ? (
         <div className="flex items-center gap-2">
           <button
             onClick={toggle}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-white hover:bg-accent-dim"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] bg-accent text-white hover:bg-accent-dim"
           >
             {playing ? (
               <span className="text-xs font-bold">❚❚</span>
@@ -323,7 +337,7 @@ function AudioAttachment({ file, blobUrl }: { file: MessageFile; blobUrl?: strin
           )}
           <div className="min-w-0 flex-1 truncate text-xs text-muted">
             {file.filename}
-            {file.caption && <span className="ml-1 text-muted/70">-- {file.caption}</span>}
+            {visibleCaption && <span className="ml-1 text-muted/70">-- {visibleCaption}</span>}
           </div>
         </div>
       ) : (
@@ -333,118 +347,9 @@ function AudioAttachment({ file, blobUrl }: { file: MessageFile; blobUrl?: strin
   );
 }
 
-function TaskStatusIndicator() {
-  const { currentSessionId } = useSession();
-  const [tasks, setTasks] = useState<TaskInfo[]>([]);
-
-  // Poll /api/sessions/{id}/tasks every 2s while there are active tasks
-  useEffect(() => {
-    let stopped = false;
-    let pollTimer: ReturnType<typeof setTimeout> | undefined;
-
-    // Start polling when SSE done event has bg_tasks
-    function handleBgTasks(e: Event) {
-      const detail = (e as CustomEvent).detail;
-      if (detail?.sessionId !== currentSessionId) return;
-      poll();
-    }
-
-    async function poll() {
-      if (stopped) return;
-      try {
-        const token = getToken();
-        const resp = await fetch(
-          `${API_BASE}/api/sessions/${encodeURIComponent(currentSessionId)}/tasks`,
-          { headers: token ? { Authorization: `Bearer ${token}` } : {} },
-        );
-        if (resp.ok) {
-          const data = (await resp.json()) as TaskInfo[];
-          if (!stopped) setTasks(data);
-          // Keep polling if any task is still active
-          const hasActive = data.some(
-            (t) => t.status === "running" || t.status === "spawned",
-          );
-          if (hasActive && !stopped) {
-            pollTimer = setTimeout(poll, 2000);
-          }
-        }
-      } catch {
-        // poll failed, retry
-        if (!stopped) pollTimer = setTimeout(poll, 3000);
-      }
-    }
-
-    // Also listen for SSE task_status events (if stream is still open)
-    function handleTaskStatus(e: Event) {
-      const detail = (e as CustomEvent).detail;
-      if (detail?.sessionId !== currentSessionId) return;
-      poll(); // refresh from API on any status change
-    }
-
-    window.addEventListener("crew:bg_tasks", handleBgTasks);
-    window.addEventListener("crew:task_status", handleTaskStatus);
-    void poll();
-    return () => {
-      stopped = true;
-      if (pollTimer) clearTimeout(pollTimer);
-      window.removeEventListener("crew:bg_tasks", handleBgTasks);
-      window.removeEventListener("crew:task_status", handleTaskStatus);
-    };
-  }, [currentSessionId]);
-
-  if (tasks.length === 0) return null;
-
-  return (
-    <div className="mt-2 flex flex-col gap-1">
-      {tasks.map((task) => (
-        <TaskStatusPill key={task.id} task={task} />
-      ))}
-    </div>
-  );
-}
-
-function TaskStatusPill({ task }: { task: TaskInfo }) {
-  const [, setTick] = useState(0);
-  const isActive = task.status === "running" || task.status === "spawned";
-
-  useEffect(() => {
-    if (!isActive) return;
-    const id = setInterval(() => setTick((t) => t + 1), 1000);
-    return () => clearInterval(id);
-  }, [isActive]);
-
-  const elapsed = Math.round(
-    (Date.now() - new Date(task.started_at).getTime()) / 1000,
-  );
-
-  return (
-    <div className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-mono bg-surface-container">
-      {isActive ? (
-        <span className="h-2 w-2 rounded-full bg-accent animate-pulse" />
-      ) : task.status === "completed" ? (
-        <span className="text-green-400 text-xs">&#10003;</span>
-      ) : (
-        <span className="text-red-400 text-xs">&#10007;</span>
-      )}
-      <span className="text-muted">{task.tool_name}</span>
-      {isActive && <span className="text-muted/60">{elapsed}s</span>}
-      {task.status === "failed" && task.error && (
-        <span className="text-red-400 truncate max-w-[200px]">{task.error}</span>
-      )}
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Inline message meta (replaces the old assistant-ui based MessageMeta)
 // ---------------------------------------------------------------------------
-
-interface MetaData {
-  model: string;
-  tokens_in: number;
-  tokens_out: number;
-  duration_s: number;
-}
 
 function formatTokens(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
@@ -452,36 +357,11 @@ function formatTokens(n: number): string {
 }
 
 function MessageMetaInline({
-  messageId,
-  isLast,
-  timestamp,
+  message,
 }: {
-  messageId: string;
-  isLast: boolean;
-  timestamp: number;
+  message: Message;
 }) {
-  const { currentSessionId } = useSession();
-  const [meta, setMeta] = useState<MetaData | null>(null);
-
-  useEffect(() => {
-    if (!isLast) return;
-    function handleMeta(e: Event) {
-      const detail = (e as CustomEvent).detail;
-      if (detail.sessionId && detail.sessionId !== currentSessionId) return;
-      // Accept meta if it targets this message or is the generic last-message meta
-      if (detail.messageId && detail.messageId !== messageId) return;
-      if (detail.model || detail.tokens_in || detail.tokens_out) {
-        setMeta({
-          model: detail.model || "",
-          tokens_in: detail.tokens_in || 0,
-          tokens_out: detail.tokens_out || 0,
-          duration_s: detail.duration_s || 0,
-        });
-      }
-    }
-    window.addEventListener("crew:message_meta", handleMeta);
-    return () => window.removeEventListener("crew:message_meta", handleMeta);
-  }, [isLast, currentSessionId, messageId]);
+  const meta: MessageMeta | undefined = message.meta;
 
   const parts: string[] = [];
   if (meta) {
@@ -490,7 +370,7 @@ function MessageMetaInline({
     if (meta.tokens_out) parts.push(`${formatTokens(meta.tokens_out)} out`);
     if (meta.duration_s) parts.push(`${meta.duration_s}s`);
   }
-  parts.push(formatTimestamp(timestamp));
+  parts.push(formatTimestamp(message.timestamp));
 
   if (meta && (meta.model || meta.tokens_in || meta.tokens_out)) {
     return (
@@ -503,7 +383,7 @@ function MessageMetaInline({
 
   return (
     <div className="mt-1.5 text-[10px] text-muted/60 select-none">
-      {formatTimestamp(timestamp)}
+      {formatTimestamp(message.timestamp)}
     </div>
   );
 }
@@ -530,6 +410,34 @@ const COMMANDS = [
   // Help
   { cmd: "/help", desc: "Show available commands" },
 ];
+
+interface MyProfileResponse {
+  profile?: {
+    config?: {
+      gateway?: {
+        system_prompt?: string | null;
+      };
+    };
+  };
+}
+
+async function getMyProfileSystemPrompt(): Promise<string | null> {
+  const response = await request<MyProfileResponse>("/api/my/profile");
+  return response.profile?.config?.gateway?.system_prompt ?? null;
+}
+
+async function updateMyProfileSystemPrompt(systemPrompt: string | null): Promise<void> {
+  await request("/api/my/profile", {
+    method: "PUT",
+    body: JSON.stringify({
+      config: {
+        gateway: {
+          system_prompt: systemPrompt,
+        },
+      },
+    }),
+  });
+}
 
 // ---------------------------------------------------------------------------
 // AudioBuffer to WAV helper
@@ -582,29 +490,55 @@ interface PendingFile {
   file: File;
   preview?: string;
   serverPath?: string;
+  source?: "recording" | "upload";
 }
 
 // ---------------------------------------------------------------------------
 // Main ChatThread component
 // ---------------------------------------------------------------------------
 
-export function ChatThread() {
+interface ChatThreadProps {
+  hideFileOnlyAssistantMessages?: boolean;
+}
+
+function isFileOnlyAssistantMessage(message: Message): boolean {
+  return (
+    message.role === "assistant" &&
+    !message.text.trim() &&
+    message.files.length > 0 &&
+    message.toolCalls.length === 0
+  );
+}
+
+export function ChatThread({
+  hideFileOnlyAssistantMessages = false,
+}: ChatThreadProps = {}) {
   const { currentSessionId } = useSession();
   const messages = useMessages(currentSessionId);
-  const hasMessages = messages.length > 0;
+  const visibleMessages = useMemo(
+    () =>
+      hideFileOnlyAssistantMessages
+        ? messages.filter((message) => !isFileOnlyAssistantMessage(message))
+        : messages,
+    [hideFileOnlyAssistantMessages, messages],
+  );
+  const hasMessages = visibleMessages.length > 0;
 
   return (
-    <div className="flex h-full flex-col min-h-0 bg-surface-dark">
+    <div className="flex h-full min-h-0 flex-col bg-transparent">
       {hasMessages ? (
-        <MessageList messages={messages} sessionId={currentSessionId} />
+        <MessageList messages={visibleMessages} sessionId={currentSessionId} />
       ) : (
-        <div className="flex flex-1 min-h-0 flex-col items-center justify-center px-6">
-          <h1 className="mb-3 text-3xl font-light tracking-tight text-text-strong">
-            What can I help with?
-          </h1>
-          <p className="mb-10 text-sm text-muted">
-            Ask anything, attach files, or record a voice message.
-          </p>
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6">
+          <div className="glass-section animate-shell-rise max-w-xl rounded-[12px] px-7 py-9 text-center">
+            <div className="shell-kicker">Conversation Studio</div>
+            <h1 className="mb-3 mt-3 text-3xl font-light tracking-tight text-text-strong">
+              What can I help with?
+            </h1>
+            <p className="text-sm text-muted">
+              Ask anything, attach files, or record a voice message.
+            </p>
+          </div>
         </div>
       )}
       <div className="shrink-0">
@@ -679,7 +613,18 @@ function MessageList({
 // ---------------------------------------------------------------------------
 
 function Composer() {
-  const { createSession, removeSession, currentSessionId, refreshSessions, markSessionActive } =
+  const {
+    sessions,
+    createSession,
+    removeSession,
+    currentSessionId,
+    historyTopic,
+    refreshSessions,
+    markSessionActive,
+    switchSession,
+    goBack,
+    beforeSend,
+  } =
     useSession();
   const messages = useMessages(currentSessionId);
   const isRunning = useMemo(
@@ -773,7 +718,7 @@ function Composer() {
         }
         const filename = `${mode}-${Date.now()}.${ext}`;
         const file = new File([blob], filename, { type: fileType });
-        const pf: PendingFile = { file };
+        const pf: PendingFile = { file, source: "recording" };
         if (mode === "video") pf.preview = URL.createObjectURL(blob);
         setPendingFiles((prev) => [...prev, pf]);
         stream.getTracks().forEach((t) => t.stop());
@@ -861,7 +806,7 @@ function Composer() {
 
   const addFiles = useCallback((files: FileList | File[]) => {
     const newFiles: PendingFile[] = Array.from(files).map((file) => {
-      const pf: PendingFile = { file };
+      const pf: PendingFile = { file, source: "upload" };
       if (file.type.startsWith("image/")) pf.preview = URL.createObjectURL(file);
       return pf;
     });
@@ -891,14 +836,115 @@ function Composer() {
   const sendingRef = useRef(false);
   const isEmpty = text.trim().length === 0;
 
+  const formatSessionList = useCallback(() => {
+    const visible = sessions.filter((session) => (session.message_count ?? 0) > 0 || session._local);
+    if (visible.length === 0) return "No sessions found.";
+    return visible
+      .map((session, index) => {
+        const label = session.title?.trim() || session.id;
+        const marker = session.id === currentSessionId ? "*" : " ";
+        return `${marker} ${index + 1}. ${label}`;
+      })
+      .join("\n");
+  }, [currentSessionId, sessions]);
+
+  const findSessionMatches = useCallback(
+    (query: string) => {
+      const needle = query.trim().toLowerCase();
+      if (!needle) return [];
+      return sessions.filter((session) => {
+        const title = session.title?.toLowerCase() || "";
+        const id = session.id.toLowerCase();
+        return title.includes(needle) || id.includes(needle);
+      });
+    },
+    [sessions],
+  );
+
   const handleSend = useCallback(async () => {
     if (isEmpty && pendingFiles.length === 0) return;
     const input = text.trim();
 
+    let mediaPaths: string[] = [];
+    let audioUploadMode: "recording" | "upload" | undefined;
+
+    const slashAttachedText = pendingFiles.length
+      ? `[Attached: ${pendingFiles.map((pf) => pf.file.name).join(", ")}]`
+      : "";
+    const slashRequestText =
+      input ||
+      (pendingFiles.length > 0 ? slashAttachedText : "");
+
+    const slashPayload = {
+      sessionId: currentSessionId,
+      text: slashRequestText,
+      requestText: slashRequestText,
+      media: mediaPaths,
+      audioUploadMode,
+    };
+
+    try {
+      const intercepted = beforeSend
+        ? await beforeSend(slashPayload)
+        : undefined;
+      if (intercepted?.handled) {
+        sendingRef.current = false;
+        setText("");
+        refreshSessions();
+        return;
+      }
+    } catch (e) {
+      setCmdFeedback(
+        `Send failed: ${e instanceof Error ? e.message : "unknown error"}`,
+      );
+      setTimeout(() => setCmdFeedback(null), 4000);
+      sendingRef.current = false;
+      return;
+    }
+
     // Handle slash commands
-    if (input === "/new") {
+    if (input === "/new" || input.startsWith("/new ")) {
       setText("");
-      createSession();
+      const title = input === "/new" ? undefined : input.slice("/new".length).trim();
+      createSession(title);
+      return;
+    }
+    if (input === "/sessions") {
+      setText("");
+      setCmdFeedback(formatSessionList());
+      setTimeout(() => setCmdFeedback(null), 10000);
+      return;
+    }
+    if (input === "/back" || input === "/b") {
+      setText("");
+      const switched = await goBack();
+      setCmdFeedback(switched ? "Switched to previous session." : "No previous session.");
+      setTimeout(() => setCmdFeedback(null), 4000);
+      return;
+    }
+    if (input === "/s" || input === "/switch") {
+      setText("");
+      setCmdFeedback("Usage: /s <session title or id fragment>");
+      setTimeout(() => setCmdFeedback(null), 4000);
+      return;
+    }
+    if (input.startsWith("/s ")) {
+      const query = input.slice(3).trim();
+      const matches = findSessionMatches(query);
+      setText("");
+      if (matches.length === 0) {
+        setCmdFeedback(`No session matches "${query}".`);
+      } else if (matches.length > 1) {
+        setCmdFeedback(
+          `Multiple matches:\n${matches
+            .map((session) => `- ${session.title?.trim() || session.id}`)
+            .join("\n")}`,
+        );
+      } else {
+        await switchSession(matches[0].id);
+        setCmdFeedback(`Switched to ${matches[0].title?.trim() || matches[0].id}.`);
+      }
+      setTimeout(() => setCmdFeedback(null), 6000);
       return;
     }
     if (input === "/clear") {
@@ -908,9 +954,80 @@ function Composer() {
       createSession();
       return;
     }
-    if (input === "/delete") {
+    if (input === "/delete" || input === "/d") {
       setText("");
-      removeSession(currentSessionId);
+      await removeSession(currentSessionId);
+      return;
+    }
+    if (input.startsWith("/delete ") || input.startsWith("/d ")) {
+      const query =
+        input.startsWith("/delete ")
+          ? input.slice("/delete ".length).trim()
+          : input.slice("/d ".length).trim();
+      const matches = findSessionMatches(query);
+      setText("");
+      if (matches.length === 0) {
+        setCmdFeedback(`No session matches "${query}".`);
+      } else if (matches.length > 1) {
+        setCmdFeedback(
+          `Multiple matches:\n${matches
+            .map((session) => `- ${session.title?.trim() || session.id}`)
+            .join("\n")}`,
+        );
+      } else {
+        await removeSession(matches[0].id);
+        setCmdFeedback(`Deleted ${matches[0].title?.trim() || matches[0].id}.`);
+      }
+      setTimeout(() => setCmdFeedback(null), 6000);
+      return;
+    }
+    if (input === "/soul" || input === "/soul show") {
+      setText("");
+      try {
+        const systemPrompt = await getMyProfileSystemPrompt();
+        setCmdFeedback(
+          systemPrompt?.trim()
+            ? `Current soul:\n${systemPrompt}`
+            : "Current soul: (none)",
+        );
+      } catch (e) {
+        setCmdFeedback(
+          `Failed to read soul: ${e instanceof Error ? e.message : "unknown error"}`,
+        );
+      }
+      setTimeout(() => setCmdFeedback(null), 12000);
+      return;
+    }
+    if (input === "/soul reset") {
+      setText("");
+      try {
+        await updateMyProfileSystemPrompt(null);
+        setCmdFeedback("Soul reset.");
+      } catch (e) {
+        setCmdFeedback(
+          `Failed to reset soul: ${e instanceof Error ? e.message : "unknown error"}`,
+        );
+      }
+      setTimeout(() => setCmdFeedback(null), 6000);
+      return;
+    }
+    if (input.startsWith("/soul ")) {
+      const soulText = input.slice("/soul ".length).trim();
+      setText("");
+      if (!soulText) {
+        setCmdFeedback("Usage: /soul <text> | /soul show | /soul reset");
+        setTimeout(() => setCmdFeedback(null), 4000);
+        return;
+      }
+      try {
+        await updateMyProfileSystemPrompt(soulText);
+        setCmdFeedback("Soul updated.");
+      } catch (e) {
+        setCmdFeedback(
+          `Failed to update soul: ${e instanceof Error ? e.message : "unknown error"}`,
+        );
+      }
+      setTimeout(() => setCmdFeedback(null), 6000);
       return;
     }
     if (input === "/help" || input === "/") {
@@ -924,13 +1041,20 @@ function Composer() {
 
     sendingRef.current = true;
 
-    let mediaPaths: string[] = [];
-
     // Upload files first
     if (pendingFiles.length > 0) {
+      const audioFiles = pendingFiles.filter((pf) => pf.file.type.startsWith("audio/"));
+      if (audioFiles.length > 0) {
+        audioUploadMode = audioFiles.every((pf) => pf.source === "recording")
+          ? "recording"
+          : "upload";
+      }
       setUploading(true);
       try {
-        mediaPaths = await uploadFiles(pendingFiles.map((pf) => pf.file));
+        mediaPaths = await uploadFiles(
+          pendingFiles.map((pf) => pf.file),
+          audioUploadMode,
+        );
       } catch (e) {
         setCmdFeedback(`Upload failed: ${e instanceof Error ? e.message : "unknown error"}`);
         setTimeout(() => setCmdFeedback(null), 4000);
@@ -945,15 +1069,48 @@ function Composer() {
       setUploading(false);
     }
 
+    const attachedText = `[Attached: ${mediaPaths.map((p) => displayFilenameFromPath(p)).join(", ")}]`;
     const messageText =
       input ||
-      `[Attached: ${mediaPaths.map((p) => displayFilenameFromPath(p)).join(", ")}]`;
+      (audioUploadMode === "recording" ? "[Voice message]" : attachedText);
+    const requestText =
+      !input && audioUploadMode ? "" : messageText;
+
+    let finalPayload = {
+      sessionId: currentSessionId,
+      text: messageText,
+      requestText,
+      media: mediaPaths,
+      audioUploadMode,
+    };
+
+    try {
+      const intercepted = beforeSend
+        ? await beforeSend(finalPayload)
+        : undefined;
+      if (intercepted?.handled) {
+        sendingRef.current = false;
+        setText("");
+        refreshSessions();
+        return;
+      }
+      finalPayload = {
+        ...finalPayload,
+        ...intercepted,
+      };
+    } catch (e) {
+      setCmdFeedback(
+        `Send failed: ${e instanceof Error ? e.message : "unknown error"}`,
+      );
+      setTimeout(() => setCmdFeedback(null), 4000);
+      sendingRef.current = false;
+      return;
+    }
 
     // Send via SSE bridge (StreamManager queues if a stream is already active)
     bridgeSend({
-      sessionId: currentSessionId,
-      text: messageText,
-      media: mediaPaths,
+      ...finalPayload,
+      historyTopic,
       onSessionActive: (firstMsg) => markSessionActive(firstMsg),
       onComplete: () => {
         sendingRef.current = false;
@@ -963,15 +1120,21 @@ function Composer() {
 
     setText("");
   }, [
+    sessions,
     text,
     isEmpty,
     pendingFiles,
-    isRunning,
     currentSessionId,
+    historyTopic,
     createSession,
+    switchSession,
+    goBack,
     removeSession,
     refreshSessions,
     markSessionActive,
+    beforeSend,
+    formatSessionList,
+    findSessionMatches,
   ]);
 
   const handleCancel = useCallback(() => {
@@ -1019,7 +1182,7 @@ function Composer() {
 
   return (
     <div
-      className="bg-surface-dark px-4 pb-6 pt-2"
+      className="px-4 pb-6 pt-2"
       onPaste={handlePaste}
     >
       <div
@@ -1037,7 +1200,7 @@ function Composer() {
         {cmdFeedback && (
           <div
             data-testid="cmd-feedback"
-            className="mb-3 rounded-xl bg-accent-container px-4 py-2.5 text-xs text-accent"
+            className="glass-pill animate-shell-rise mb-3 whitespace-pre-wrap rounded-[10px] px-3.5 py-2 text-xs text-accent"
           >
             {cmdFeedback}
           </div>
@@ -1048,7 +1211,7 @@ function Composer() {
               <button
                 key={c.cmd}
                 onClick={() => setText(c.cmd)}
-                className="rounded-lg bg-surface-container px-3 py-1.5 text-xs text-text hover:bg-accent-container hover:text-accent"
+                className="glass-pill rounded-[10px] px-3 py-1.5 text-xs text-text hover:text-accent"
               >
                 <span className="font-mono">{c.cmd}</span>{" "}
                 <span className="text-muted">{c.desc}</span>
@@ -1058,14 +1221,14 @@ function Composer() {
         )}
         {/* Camera preview */}
         {cameraStream && (
-          <div className="mb-3 overflow-hidden rounded-2xl bg-surface-container elevation-2">
+          <div className="glass-section animate-shell-rise mb-3 overflow-hidden rounded-[12px]">
             <video ref={cameraPreviewRef} muted playsInline className="h-48 w-full object-cover" />
-            <div className="flex items-center justify-between px-4 py-2.5 bg-surface-elevated">
+            <div className="flex items-center justify-between px-4 py-2.5">
               <span className="text-xs text-muted">Camera preview</span>
               <div className="flex gap-2">
                 <button
                   onClick={cancelCamera}
-                  className="rounded-lg px-3 py-1.5 text-xs text-muted hover:text-text hover:bg-surface-container"
+                  className="glass-icon-button rounded-[10px] px-3 py-1.5 text-xs hover:text-text"
                 >
                   Cancel
                 </button>
@@ -1081,7 +1244,7 @@ function Composer() {
         )}
         {/* Recording indicator */}
         {recording && (
-          <div className="mb-3 flex items-center gap-3 rounded-2xl bg-red-900/20 px-4 py-3">
+          <div className="glass-pill animate-shell-rise mb-3 flex items-center gap-3 rounded-[10px] border-red-500/20 bg-red-900/14 px-4 py-3">
             <div className="h-2.5 w-2.5 animate-pulse rounded-full bg-red-500" />
             <span className="text-sm text-red-400">
               {recording === "voice" ? "Recording audio" : "Recording video"} --{" "}
@@ -1096,7 +1259,7 @@ function Composer() {
           </div>
         )}
         {recording === "video" && (
-          <div className="mb-2 overflow-hidden rounded-lg border border-border">
+          <div className="message-attachment-card mb-2 overflow-hidden rounded-[10px]">
             <video ref={videoPreviewRef} muted className="h-48 w-full object-cover" />
           </div>
         )}
@@ -1104,18 +1267,18 @@ function Composer() {
         {pendingFiles.length > 0 && (
           <div className="mb-3 flex flex-wrap items-center gap-2.5">
             {pendingFiles.map((pf, i) => (
-              <div key={i} className="relative group rounded-xl bg-surface-container p-1.5 elevation-1">
+              <div key={i} className="message-attachment-card animate-shell-rise relative group rounded-[10px] p-1.5">
                 {pf.preview && pf.file.type.startsWith("image/") ? (
-                  <img src={pf.preview} alt={pf.file.name} className="h-16 w-16 rounded-lg object-cover" />
+                  <img src={pf.preview} alt={pf.file.name} className="h-16 w-16 rounded-[8px] object-cover" />
                 ) : pf.preview && pf.file.type.startsWith("video/") ? (
-                  <video src={pf.preview} className="h-16 w-16 rounded-lg object-cover" />
+                  <video src={pf.preview} className="h-16 w-16 rounded-[8px] object-cover" />
                 ) : pf.file.type.startsWith("audio/") ? (
-                  <div className="flex h-16 w-16 flex-col items-center justify-center rounded-lg bg-surface text-xs text-muted">
+                  <div className="flex h-16 w-16 flex-col items-center justify-center rounded-[8px] bg-surface text-xs text-muted">
                     <Mic size={20} />
                     <span className="mt-1 text-[10px]">{(pf.file.size / 1024).toFixed(0)}KB</span>
                   </div>
                 ) : (
-                  <div className="flex h-16 w-16 flex-col items-center justify-center rounded-lg bg-surface text-xs text-muted">
+                  <div className="flex h-16 w-16 flex-col items-center justify-center rounded-[8px] bg-surface text-xs text-muted">
                     <FileIcon size={20} />
                     <span className="mt-1 max-w-[56px] truncate">{pf.file.name.split(".").pop()}</span>
                   </div>
@@ -1130,7 +1293,7 @@ function Composer() {
             ))}
           </div>
         )}
-        <div className="flex flex-col rounded-2xl bg-surface-container p-2 elevation-1">
+        <div className="composer-shell animate-shell-rise flex flex-col rounded-[12px] p-2">
           <input
             ref={fileInputRef}
             type="file"
@@ -1157,7 +1320,7 @@ function Composer() {
               onCompositionStart={() => { composingRef.current = true; }}
               onCompositionEnd={() => { composingRef.current = false; }}
               rows={1}
-              className="flex-1 resize-none bg-transparent px-3 py-2.5 text-sm text-text placeholder-muted/60 outline-none"
+              className="flex-1 resize-none bg-transparent px-3 py-2 text-sm text-text placeholder-muted/60 outline-none"
               autoFocus
             />
             <button
@@ -1165,7 +1328,7 @@ function Composer() {
               aria-label="Send message"
               onClick={handleSend}
               disabled={isEmpty && pendingFiles.length === 0}
-              className={`flex shrink-0 items-center justify-center rounded-xl disabled:opacity-30 ${
+              className={`flex shrink-0 items-center justify-center rounded-[10px] disabled:opacity-30 ${
                 pendingFiles.length > 0
                   ? "h-10 gap-1.5 px-4 bg-green-600 text-white hover:bg-green-700"
                   : "h-10 w-10 bg-accent text-white hover:bg-accent-dim"
@@ -1187,20 +1350,20 @@ function Composer() {
                 data-testid="cancel-button"
                 aria-label="Cancel"
                 onClick={handleCancel}
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-red-600 text-white hover:bg-red-700"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] bg-red-600 text-white hover:bg-red-700"
               >
                 <Square size={16} />
               </button>
             )}
           </div>
           {/* Bottom row: media buttons */}
-          <div className="flex items-center gap-0.5 px-1 pt-1">
+          <div className="composer-toolbar mt-2 flex items-center gap-0.5 px-1 pt-2">
             <button
               data-testid="attach-button"
               aria-label="Attach file"
               onClick={() => fileInputRef.current?.click()}
               disabled={recording !== null}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-surface-elevated hover:text-accent disabled:opacity-30"
+              className="glass-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] disabled:opacity-30"
               title="Attach files"
             >
               <Paperclip size={16} />
@@ -1208,10 +1371,10 @@ function Composer() {
             <button
               data-testid="voice-button"
               onClick={() => (recording === "voice" ? stopRecording() : startRecording("voice"))}
-              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
+              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] ${
                 recording === "voice"
                   ? "bg-red-600 text-white animate-pulse"
-                  : "text-muted hover:bg-surface-elevated hover:text-accent"
+                  : "glass-icon-button"
               } ${recording === "video" ? "opacity-30 pointer-events-none" : ""}`}
               title={recording === "voice" ? "Stop recording" : "Record voice"}
             >
@@ -1220,10 +1383,10 @@ function Composer() {
             <button
               data-testid="video-button"
               onClick={() => (recording === "video" ? stopRecording() : startRecording("video"))}
-              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
+              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] ${
                 recording === "video"
                   ? "bg-red-600 text-white animate-pulse"
-                  : "text-muted hover:bg-surface-elevated hover:text-accent"
+                  : "glass-icon-button"
               } ${recording === "voice" ? "opacity-30 pointer-events-none" : ""}`}
               title={recording === "video" ? "Stop recording" : "Record video"}
             >
@@ -1233,10 +1396,10 @@ function Composer() {
               data-testid="camera-button"
               onClick={cameraStream ? capturePhoto : openCamera}
               disabled={recording !== null}
-              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
+              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] ${
                 cameraStream
                   ? "bg-green-600 text-white hover:bg-green-700"
-                  : "text-muted hover:bg-surface-elevated hover:text-accent"
+                  : "glass-icon-button"
               } disabled:opacity-30`}
               title={cameraStream ? "Take photo" : "Open camera"}
             >

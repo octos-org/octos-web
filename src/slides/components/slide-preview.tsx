@@ -55,7 +55,20 @@ export default function SlidePreview({
     return (
       <div className="flex flex-col items-center justify-center h-full text-muted">
         <div className="text-4xl mb-4">📊</div>
-        <p className="text-sm">No slides yet. Generate a deck via chat.</p>
+        <p className="text-sm">
+          {pptxUrl
+            ? "Deck file exists, but preview images are missing. Regenerate into slides/<slug>/output/imgs."
+            : "No slides yet. Generate a deck via chat."}
+        </p>
+        {pptxUrl && (
+          <a
+            href={pptxUrl}
+            download
+            className="mt-3 rounded-lg bg-accent/10 px-3 py-2 text-xs font-medium text-accent hover:bg-accent/20"
+          >
+            Download PPTX
+          </a>
+        )}
       </div>
     );
   }

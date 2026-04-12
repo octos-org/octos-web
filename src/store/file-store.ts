@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { getToken } from "@/api/client";
+import { buildApiHeaders } from "@/api/client";
 import { buildFileUrl } from "@/api/files";
 import { getSessionFiles } from "@/api/sessions";
 import { API_BASE } from "@/lib/constants";
@@ -139,10 +139,9 @@ export function getFilesForSession(sessionId: string): FileEntry[] {
 
 async function fetchBlob(file: FileEntry) {
   try {
-    const token = getToken();
     const url = buildFileUrl(file.filePath);
     const resp = await fetch(url, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: buildApiHeaders(),
     });
     if (resp.ok) {
       const blob = await resp.blob();
@@ -214,10 +213,9 @@ export async function loadAllSessionFiles(): Promise<void> {
 
   // Load content files from profile directories (research, slides, skill-output)
   try {
-    const token = getToken();
     const resp = await fetch(
       `${API_BASE}/api/files/list?dirs=research,slides,skill-output`,
-      { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+      { headers: buildApiHeaders() },
     );
     if (resp.ok) {
       const files = (await resp.json()) as {
