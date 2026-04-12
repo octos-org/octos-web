@@ -102,6 +102,11 @@ function getList(sessionId: string): Message[] {
   return list;
 }
 
+function historyLoadKey(sessionId: string, topic?: string): string {
+  const trimmedTopic = topic?.trim();
+  return trimmedTopic ? `${sessionId}#${trimmedTopic}` : sessionId;
+}
+
 function parseLegacyFileLine(line: string): MessageFile | null {
   const match = line.trim().match(/^\[file:([^\]]+)\]\s*(.*)$/u);
   if (!match) return null;
@@ -410,8 +415,16 @@ export function getMessages(sessionId: string): Message[] {
 /** Clear all messages for a session (e.g. on session delete). */
 export function clearMessages(sessionId: string): void {
   messagesBySession.delete(sessionId);
-  loadedSessions.delete(sessionId);
-  loadingPromises.delete(sessionId);
+  for (const key of [...loadedSessions]) {
+    if (key === sessionId || key.startsWith(`${sessionId}#`)) {
+      loadedSessions.delete(key);
+    }
+  }
+  for (const key of [...loadingPromises.keys()]) {
+    if (key === sessionId || key.startsWith(`${sessionId}#`)) {
+      loadingPromises.delete(key);
+    }
+  }
   notify();
 }
 
@@ -514,17 +527,11 @@ export function ensureStreamingAssistantMessage(
     return existing.id;
   }
 
-  const latestAssistantText = [...list]
-    .reverse()
-    .find((message) => message.role === "assistant" && message.text.trim())
-    ?.text;
-  const initialText = latestAssistantText || text;
-
   const id = nextId();
   list.push({
     id,
     role: "assistant",
-    text: initialText,
+    text,
     files: [],
     toolCalls: [],
     status: "streaming",
@@ -543,28 +550,33 @@ export function ensureStreamingAssistantMessage(
  * Load message history from the API for a session.
  * No-ops if already loaded. Safe to call multiple times concurrently.
  */
-export function loadHistory(sessionId: string): Promise<void> {
-  if (loadedSessions.has(sessionId)) return Promise.resolve();
+export function loadHistory(sessionId: string, topic?: string): Promise<void> {
+  const loadKey = historyLoadKey(sessionId, topic);
+  if (loadedSessions.has(loadKey)) return Promise.resolve();
 
-  const existing = loadingPromises.get(sessionId);
+  const existing = loadingPromises.get(loadKey);
   if (existing) return existing;
 
   const promise = (async () => {
     try {
-      const apiMessages = await fetchMessages(sessionId);
-      // Only populate if the store is still empty for this session
-      // (streaming may have started while we were loading)
-      if (!messagesBySession.has(sessionId) || messagesBySession.get(sessionId)!.length === 0) {
+      const apiMessages = await fetchMessages(sessionId, 500, 0, undefined, topic);
+      // Topic-scoped surfaces like slides/site should always replace with
+      // authoritative topic history. Generic chat sessions keep the older
+      // "only if empty" behavior to avoid clobbering active optimistic state.
+      if (topic?.trim()) {
+        replaceHistoryFromApi(sessionId, apiMessages);
+      } else if (!messagesBySession.has(sessionId) || messagesBySession.get(sessionId)!.length === 0) {
         replaceHistoryFromApi(sessionId, apiMessages);
       }
     } catch {
       // API unavailable — not fatal, store stays empty
     } finally {
-      loadingPromises.delete(sessionId);
+      loadingPromises.delete(loadKey);
     }
   })();
 
-  loadingPromises.set(sessionId, promise);
+  loadedSessions.add(loadKey);
+  loadingPromises.set(loadKey, promise);
   return promise;
 }
 

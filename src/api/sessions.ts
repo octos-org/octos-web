@@ -17,6 +17,7 @@ export async function getMessages(
   limit = 500,
   offset = 0,
   sinceSeq?: number,
+  topic?: string,
 ): Promise<MessageInfo[]> {
   const params = new URLSearchParams({
     limit: String(limit),
@@ -25,6 +26,9 @@ export async function getMessages(
   });
   if (typeof sinceSeq === "number" && Number.isFinite(sinceSeq) && sinceSeq >= 0) {
     params.set("since_seq", String(sinceSeq));
+  }
+  if (topic?.trim()) {
+    params.set("topic", topic.trim());
   }
   return request(
     `/api/sessions/${encodeURIComponent(sessionId)}/messages?${params.toString()}`,

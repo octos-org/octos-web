@@ -59,6 +59,7 @@ export interface SessionBeforeSendResult extends Partial<SessionSendRequest> {
 interface SessionContextValue {
   sessions: SessionWithTitle[];
   currentSessionId: string;
+  historyTopic?: string;
   currentSessionTitle: string;
   currentSessionStats: SessionRunStats | null;
   initialMessages: MessageInfo[];
@@ -426,6 +427,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       value={{
         sessions,
         currentSessionId,
+        historyTopic: undefined,
         currentSessionTitle,
         currentSessionStats,
         initialMessages,

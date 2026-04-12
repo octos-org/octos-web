@@ -12,7 +12,6 @@ import * as StreamManager from "./stream-manager";
 import * as MessageStore from "@/store/message-store";
 import { API_BASE } from "@/lib/constants";
 import { displayFilenameFromPath } from "@/lib/utils";
-import { getToken } from "@/api/client";
 import { getMessages as fetchSessionMessages } from "@/api/sessions";
 
 // ---------------------------------------------------------------------------
@@ -51,6 +50,7 @@ function clean(text: string): string {
 
 export interface SendOptions {
   sessionId: string;
+  historyTopic?: string;
   text: string;
   requestText?: string;
   media: string[];
@@ -70,6 +70,7 @@ export interface SendOptions {
 export function sendMessage(opts: SendOptions): void {
   const {
     sessionId,
+    historyTopic,
     text,
     requestText,
     media,
@@ -80,6 +81,7 @@ export function sendMessage(opts: SendOptions): void {
   } = opts;
   const abortController = new AbortController();
   const abortSignal = abortController.signal;
+  const sentAt = Date.now();
   const localFiles = media.map((path) => ({
     filename: displayFilenameFromPath(path),
     path,
@@ -126,11 +128,15 @@ export function sendMessage(opts: SendOptions): void {
     onComplete,
     abortController,
     abortSignal,
+    clientMessageId,
+    sentAt,
+    historyTopic,
   });
 }
 
 export function resumeSessionStream(
   sessionId: string,
+  historyTopic?: string,
   onComplete?: () => void,
 ): void {
   const abortController = new AbortController();
@@ -148,6 +154,8 @@ export function resumeSessionStream(
     onComplete,
     abortController,
     abortSignal,
+    sentAt: Date.now(),
+    historyTopic,
   });
 }
 
@@ -158,6 +166,9 @@ function bindStreamToAssistant({
   onComplete,
   abortController,
   abortSignal,
+  clientMessageId,
+  sentAt,
+  historyTopic,
 }: {
   sessionId: string;
   assistantMsgId: string;
@@ -165,6 +176,9 @@ function bindStreamToAssistant({
   onComplete?: () => void;
   abortController: AbortController;
   abortSignal: AbortSignal;
+  clientMessageId?: string;
+  sentAt: number;
+  historyTopic?: string;
 }): void {
   let rawText = "";
   let toolCallCounter = 0;
@@ -331,7 +345,7 @@ function bindStreamToAssistant({
         // After the main stream finishes, refresh from authoritative history once.
         // Ongoing background task and deferred-file synchronization is owned by
         // the session runtime, not by this send-flow bridge.
-        pollForBackgroundResults(sessionId, abortSignal, !event.has_bg_tasks);
+        pollForBackgroundResults(sessionId, historyTopic, abortSignal, !event.has_bg_tasks);
         if (event.has_bg_tasks) {
           window.dispatchEvent(
             new CustomEvent("crew:bg_tasks", { detail: { sessionId } }),
@@ -366,11 +380,35 @@ function bindStreamToAssistant({
   if (streamStatus === "queued") {
     StreamManager.waitForNewStream(sessionId).then(() => {
       const unsub = StreamManager.subscribeNew(sessionId, handleEvent);
-      if (unsub) setupCleanup(sessionId, assistantMsgId, unsub, rawText, onComplete, abortController);
+      if (unsub) {
+        setupCleanup(
+          sessionId,
+          assistantMsgId,
+          unsub,
+          rawText,
+          historyTopic,
+          onComplete,
+          abortController,
+          clientMessageId,
+          sentAt,
+        );
+      }
     });
   } else {
     const unsub = StreamManager.subscribe(sessionId, handleEvent);
-    if (unsub) setupCleanup(sessionId, assistantMsgId, unsub, rawText, onComplete, abortController);
+    if (unsub) {
+      setupCleanup(
+        sessionId,
+        assistantMsgId,
+        unsub,
+        rawText,
+        historyTopic,
+        onComplete,
+        abortController,
+        clientMessageId,
+        sentAt,
+      );
+    }
   }
 }
 
@@ -380,8 +418,11 @@ function setupCleanup(
   assistantMsgId: string,
   _unsub: () => void,
   _rawText: string,
+  historyTopic?: string,
   _onComplete?: () => void,
   _abortController?: AbortController,
+  clientMessageId?: string,
+  sentAt?: number,
 ): void {
   // The subscriber is automatically cleaned up when the stream ends
   // (StreamManager clears subscribers). We also listen for stream_state
@@ -401,7 +442,14 @@ function setupCleanup(
           _onComplete?.();
         } else {
           // No content — poll for response
-          pollForResponse(sessionId, assistantMsgId, _abortController?.signal).then(() => _onComplete?.());
+          pollForResponse(
+            sessionId,
+            assistantMsgId,
+            clientMessageId,
+            sentAt,
+            historyTopic,
+            _abortController?.signal,
+          ).then(() => _onComplete?.());
         }
       }
     }
@@ -416,6 +464,7 @@ function setupCleanup(
  */
 async function pollForBackgroundResults(
   sessionId: string,
+  historyTopic?: string,
   abortSignal?: AbortSignal,
   _once = false,
 ): Promise<void> {
@@ -428,7 +477,7 @@ async function pollForBackgroundResults(
   if (abortSignal?.aborted) return;
 
   try {
-    const snapshot = await fetchSessionMessages(sessionId);
+    const snapshot = await fetchSessionMessages(sessionId, 500, 0, undefined, historyTopic);
     MessageStore.replaceHistory(sessionId, snapshot);
   } catch {
     return;
@@ -439,29 +488,36 @@ async function pollForBackgroundResults(
 async function pollForResponse(
   sessionId: string,
   assistantMsgId: string,
+  clientMessageId?: string,
+  sentAt?: number,
+  historyTopic?: string,
   abortSignal?: AbortSignal,
 ): Promise<void> {
   for (let i = 0; i < 180; i++) {
     if (abortSignal?.aborted) return;
     await new Promise((r) => setTimeout(r, 5000));
     try {
-      const token = getToken();
-      const resp = await fetch(
-        `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/messages?limit=3`,
-        { headers: token ? { Authorization: `Bearer ${token}` } : {} },
-      );
-      if (resp.ok) {
-        const msgs = (await resp.json()) as { role: string; content: string }[];
-        const lastAssistant = [...msgs]
-          .reverse()
-          .find((m) => m.role === "assistant" && m.content.length > 20);
-        if (lastAssistant) {
-          MessageStore.updateMessage(sessionId, assistantMsgId, {
-            text: lastAssistant.content,
-            status: "complete",
-          });
-          return;
+      const msgs = await fetchSessionMessages(sessionId, 50, 0, undefined, historyTopic);
+
+      const matchedAssistant = [...msgs].reverse().find((message) => {
+        if (message.role !== "assistant") return false;
+        if (!message.content || message.content.trim().length <= 20) return false;
+        if (clientMessageId) {
+          return message.response_to_client_message_id === clientMessageId;
         }
+
+        if (!sentAt) return false;
+        const messageTime = Date.parse(message.timestamp);
+        if (Number.isNaN(messageTime)) return false;
+        return messageTime >= sentAt - 2_000;
+      });
+
+      if (matchedAssistant) {
+        MessageStore.updateMessage(sessionId, assistantMsgId, {
+          text: matchedAssistant.content,
+          status: "complete",
+        });
+        return;
       }
     } catch {
       // keep polling

@@ -42,7 +42,7 @@ import { ThinkingIndicator } from "./thinking-indicator";
 import { ToolProgressIndicator } from "./tool-progress-indicator";
 import { buildFileUrl } from "@/api/files";
 import { displayFilenameFromPath } from "@/lib/utils";
-import { getToken } from "@/api/client";
+import { getToken, request } from "@/api/client";
 
 // ---------------------------------------------------------------------------
 // Message bubbles
@@ -411,6 +411,34 @@ const COMMANDS = [
   { cmd: "/help", desc: "Show available commands" },
 ];
 
+interface MyProfileResponse {
+  profile?: {
+    config?: {
+      gateway?: {
+        system_prompt?: string | null;
+      };
+    };
+  };
+}
+
+async function getMyProfileSystemPrompt(): Promise<string | null> {
+  const response = await request<MyProfileResponse>("/api/my/profile");
+  return response.profile?.config?.gateway?.system_prompt ?? null;
+}
+
+async function updateMyProfileSystemPrompt(systemPrompt: string | null): Promise<void> {
+  await request("/api/my/profile", {
+    method: "PUT",
+    body: JSON.stringify({
+      config: {
+        gateway: {
+          system_prompt: systemPrompt,
+        },
+      },
+    }),
+  });
+}
+
 // ---------------------------------------------------------------------------
 // AudioBuffer to WAV helper
 // ---------------------------------------------------------------------------
@@ -586,11 +614,15 @@ function MessageList({
 
 function Composer() {
   const {
+    sessions,
     createSession,
     removeSession,
     currentSessionId,
+    historyTopic,
     refreshSessions,
     markSessionActive,
+    switchSession,
+    goBack,
     beforeSend,
   } =
     useSession();
@@ -804,14 +836,115 @@ function Composer() {
   const sendingRef = useRef(false);
   const isEmpty = text.trim().length === 0;
 
+  const formatSessionList = useCallback(() => {
+    const visible = sessions.filter((session) => (session.message_count ?? 0) > 0 || session._local);
+    if (visible.length === 0) return "No sessions found.";
+    return visible
+      .map((session, index) => {
+        const label = session.title?.trim() || session.id;
+        const marker = session.id === currentSessionId ? "*" : " ";
+        return `${marker} ${index + 1}. ${label}`;
+      })
+      .join("\n");
+  }, [currentSessionId, sessions]);
+
+  const findSessionMatches = useCallback(
+    (query: string) => {
+      const needle = query.trim().toLowerCase();
+      if (!needle) return [];
+      return sessions.filter((session) => {
+        const title = session.title?.toLowerCase() || "";
+        const id = session.id.toLowerCase();
+        return title.includes(needle) || id.includes(needle);
+      });
+    },
+    [sessions],
+  );
+
   const handleSend = useCallback(async () => {
     if (isEmpty && pendingFiles.length === 0) return;
     const input = text.trim();
 
+    let mediaPaths: string[] = [];
+    let audioUploadMode: "recording" | "upload" | undefined;
+
+    const slashAttachedText = pendingFiles.length
+      ? `[Attached: ${pendingFiles.map((pf) => pf.file.name).join(", ")}]`
+      : "";
+    const slashRequestText =
+      input ||
+      (pendingFiles.length > 0 ? slashAttachedText : "");
+
+    const slashPayload = {
+      sessionId: currentSessionId,
+      text: slashRequestText,
+      requestText: slashRequestText,
+      media: mediaPaths,
+      audioUploadMode,
+    };
+
+    try {
+      const intercepted = beforeSend
+        ? await beforeSend(slashPayload)
+        : undefined;
+      if (intercepted?.handled) {
+        sendingRef.current = false;
+        setText("");
+        refreshSessions();
+        return;
+      }
+    } catch (e) {
+      setCmdFeedback(
+        `Send failed: ${e instanceof Error ? e.message : "unknown error"}`,
+      );
+      setTimeout(() => setCmdFeedback(null), 4000);
+      sendingRef.current = false;
+      return;
+    }
+
     // Handle slash commands
-    if (input === "/new") {
+    if (input === "/new" || input.startsWith("/new ")) {
       setText("");
-      createSession();
+      const title = input === "/new" ? undefined : input.slice("/new".length).trim();
+      createSession(title);
+      return;
+    }
+    if (input === "/sessions") {
+      setText("");
+      setCmdFeedback(formatSessionList());
+      setTimeout(() => setCmdFeedback(null), 10000);
+      return;
+    }
+    if (input === "/back" || input === "/b") {
+      setText("");
+      const switched = await goBack();
+      setCmdFeedback(switched ? "Switched to previous session." : "No previous session.");
+      setTimeout(() => setCmdFeedback(null), 4000);
+      return;
+    }
+    if (input === "/s" || input === "/switch") {
+      setText("");
+      setCmdFeedback("Usage: /s <session title or id fragment>");
+      setTimeout(() => setCmdFeedback(null), 4000);
+      return;
+    }
+    if (input.startsWith("/s ")) {
+      const query = input.slice(3).trim();
+      const matches = findSessionMatches(query);
+      setText("");
+      if (matches.length === 0) {
+        setCmdFeedback(`No session matches "${query}".`);
+      } else if (matches.length > 1) {
+        setCmdFeedback(
+          `Multiple matches:\n${matches
+            .map((session) => `- ${session.title?.trim() || session.id}`)
+            .join("\n")}`,
+        );
+      } else {
+        await switchSession(matches[0].id);
+        setCmdFeedback(`Switched to ${matches[0].title?.trim() || matches[0].id}.`);
+      }
+      setTimeout(() => setCmdFeedback(null), 6000);
       return;
     }
     if (input === "/clear") {
@@ -821,9 +954,80 @@ function Composer() {
       createSession();
       return;
     }
-    if (input === "/delete") {
+    if (input === "/delete" || input === "/d") {
       setText("");
-      removeSession(currentSessionId);
+      await removeSession(currentSessionId);
+      return;
+    }
+    if (input.startsWith("/delete ") || input.startsWith("/d ")) {
+      const query =
+        input.startsWith("/delete ")
+          ? input.slice("/delete ".length).trim()
+          : input.slice("/d ".length).trim();
+      const matches = findSessionMatches(query);
+      setText("");
+      if (matches.length === 0) {
+        setCmdFeedback(`No session matches "${query}".`);
+      } else if (matches.length > 1) {
+        setCmdFeedback(
+          `Multiple matches:\n${matches
+            .map((session) => `- ${session.title?.trim() || session.id}`)
+            .join("\n")}`,
+        );
+      } else {
+        await removeSession(matches[0].id);
+        setCmdFeedback(`Deleted ${matches[0].title?.trim() || matches[0].id}.`);
+      }
+      setTimeout(() => setCmdFeedback(null), 6000);
+      return;
+    }
+    if (input === "/soul" || input === "/soul show") {
+      setText("");
+      try {
+        const systemPrompt = await getMyProfileSystemPrompt();
+        setCmdFeedback(
+          systemPrompt?.trim()
+            ? `Current soul:\n${systemPrompt}`
+            : "Current soul: (none)",
+        );
+      } catch (e) {
+        setCmdFeedback(
+          `Failed to read soul: ${e instanceof Error ? e.message : "unknown error"}`,
+        );
+      }
+      setTimeout(() => setCmdFeedback(null), 12000);
+      return;
+    }
+    if (input === "/soul reset") {
+      setText("");
+      try {
+        await updateMyProfileSystemPrompt(null);
+        setCmdFeedback("Soul reset.");
+      } catch (e) {
+        setCmdFeedback(
+          `Failed to reset soul: ${e instanceof Error ? e.message : "unknown error"}`,
+        );
+      }
+      setTimeout(() => setCmdFeedback(null), 6000);
+      return;
+    }
+    if (input.startsWith("/soul ")) {
+      const soulText = input.slice("/soul ".length).trim();
+      setText("");
+      if (!soulText) {
+        setCmdFeedback("Usage: /soul <text> | /soul show | /soul reset");
+        setTimeout(() => setCmdFeedback(null), 4000);
+        return;
+      }
+      try {
+        await updateMyProfileSystemPrompt(soulText);
+        setCmdFeedback("Soul updated.");
+      } catch (e) {
+        setCmdFeedback(
+          `Failed to update soul: ${e instanceof Error ? e.message : "unknown error"}`,
+        );
+      }
+      setTimeout(() => setCmdFeedback(null), 6000);
       return;
     }
     if (input === "/help" || input === "/") {
@@ -836,9 +1040,6 @@ function Composer() {
     }
 
     sendingRef.current = true;
-
-    let mediaPaths: string[] = [];
-    let audioUploadMode: "recording" | "upload" | undefined;
 
     // Upload files first
     if (pendingFiles.length > 0) {
@@ -909,6 +1110,7 @@ function Composer() {
     // Send via SSE bridge (StreamManager queues if a stream is already active)
     bridgeSend({
       ...finalPayload,
+      historyTopic,
       onSessionActive: (firstMsg) => markSessionActive(firstMsg),
       onComplete: () => {
         sendingRef.current = false;
@@ -918,16 +1120,21 @@ function Composer() {
 
     setText("");
   }, [
+    sessions,
     text,
     isEmpty,
     pendingFiles,
-    isRunning,
     currentSessionId,
+    historyTopic,
     createSession,
+    switchSession,
+    goBack,
     removeSession,
     refreshSessions,
     markSessionActive,
     beforeSend,
+    formatSessionList,
+    findSessionMatches,
   ]);
 
   const handleCancel = useCallback(() => {
@@ -993,7 +1200,7 @@ function Composer() {
         {cmdFeedback && (
           <div
             data-testid="cmd-feedback"
-            className="glass-pill animate-shell-rise mb-3 rounded-[10px] px-3.5 py-2 text-xs text-accent"
+            className="glass-pill animate-shell-rise mb-3 whitespace-pre-wrap rounded-[10px] px-3.5 py-2 text-xs text-accent"
           >
             {cmdFeedback}
           </div>

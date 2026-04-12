@@ -21,11 +21,12 @@ export function SlidesChat({ sessionId }: Props) {
   const projectTitle = project?.title;
   const projectSlug = project?.slug;
   const projectScaffolded = project?.scaffolded;
+  const historyTopic = projectSlug ? `slides ${projectSlug}` : undefined;
 
   // Load history for this session
   useEffect(() => {
-    MessageStore.loadHistory(sessionId);
-  }, [sessionId]);
+    void MessageStore.loadHistory(sessionId, historyTopic);
+  }, [historyTopic, sessionId]);
 
   useEffect(() => {
     if (!projectId || !projectTitle || projectScaffolded || scaffoldStartedRef.current) {
@@ -63,6 +64,7 @@ export function SlidesChat({ sessionId }: Props) {
     () => ({
       sessions: [],
       currentSessionId: sessionId,
+      historyTopic,
       currentSessionTitle: project?.title || "Slides Agent",
       currentSessionStats: null,
       initialMessages: [] as never[],
@@ -77,7 +79,7 @@ export function SlidesChat({ sessionId }: Props) {
       refreshSessions: async () => {},
       markSessionActive: () => {},
     }),
-    [sessionId],
+    [historyTopic, project?.title, sessionId],
   );
 
   return (
