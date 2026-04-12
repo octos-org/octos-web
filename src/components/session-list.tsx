@@ -44,7 +44,7 @@ export function SessionList() {
       <div className="px-3 pb-2 pt-3">
         <button
           data-testid="new-chat-button"
-          onClick={createSession}
+          onClick={() => createSession()}
           className="glass-pill flex w-full items-center justify-center gap-2.5 rounded-[12px] px-4 py-3 text-sm font-medium text-text hover:text-text-strong"
         >
           <Plus size={16} />
