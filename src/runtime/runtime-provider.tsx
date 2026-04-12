@@ -18,9 +18,9 @@ import {
   getSessionStatus,
   getSessionTasks,
 } from "@/api/sessions";
-import { buildFileUrl } from "@/api/files";
 import { displayFilenameFromPath } from "@/lib/utils";
 import type { BackgroundTaskInfo, MessageInfo } from "@/api/types";
+import { dispatchCrewFileEvent } from "./file-events";
 
 /** Max sessions kept in memory simultaneously. */
 const MAX_CACHED = 5;
@@ -46,16 +46,12 @@ function emitNewFileEvents(
     for (const filePath of message.media ?? []) {
       if (knownPaths.has(filePath)) continue;
       knownPaths.add(filePath);
-      window.dispatchEvent(
-        new CustomEvent("crew:file", {
-          detail: {
-            fileUrl: buildFileUrl(filePath),
-            filename: displayFilenameFromPath(filePath),
-            caption: attachmentCaption(message.content ?? ""),
-            sessionId,
-          },
-        }),
-      );
+      dispatchCrewFileEvent({
+        sessionId,
+        path: filePath,
+        filename: displayFilenameFromPath(filePath),
+        caption: attachmentCaption(message.content ?? ""),
+      });
     }
   }
 }

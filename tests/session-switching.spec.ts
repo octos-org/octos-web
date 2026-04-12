@@ -8,6 +8,7 @@ import {
   getSessionItems,
   switchToSession,
   SEL,
+  getChatThreadText,
 } from "./helpers";
 
 test.describe("Session switching", () => {
@@ -54,9 +55,9 @@ test.describe("Session switching", () => {
     expect(await countAssistantBubbles(page)).toBe(1);
 
     // Body should NOT contain session 1 marker
-    const body = await page.textContent("body");
-    expect(body).not.toContain("ALPHA-111");
-    expect(body).toContain("BRAVO-222");
+    const threadText = await getChatThreadText(page);
+    expect(threadText).not.toContain("ALPHA-111");
+    expect(threadText).toContain("BRAVO-222");
   });
 
   test("sidebar shows sessions after sending messages", async ({ page }) => {
@@ -103,8 +104,8 @@ test.describe("Session switching", () => {
     await page.waitForTimeout(3000);
 
     // Should see session 1 content in the thread
-    const body = await page.textContent("body");
-    expect(body).toContain("GAMMA-333");
-    expect(body).not.toContain("DELTA-444");
+    const threadText = await getChatThreadText(page);
+    expect(threadText).toContain("GAMMA-333");
+    expect(threadText).not.toContain("DELTA-444");
   });
 });

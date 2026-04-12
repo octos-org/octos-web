@@ -10,9 +10,9 @@
 
 import * as StreamManager from "./stream-manager";
 import * as MessageStore from "@/store/message-store";
-import { API_BASE } from "@/lib/constants";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { getMessages as fetchSessionMessages } from "@/api/sessions";
+import { dispatchCrewFileEvent } from "./file-events";
 
 // ---------------------------------------------------------------------------
 // Helpers (shared with the old adapter, kept local)
@@ -261,7 +261,6 @@ function bindStreamToAssistant({
       case "file": {
         if (event.path && event.filename) {
           const caption = event.caption || "";
-          const fileUrl = `${API_BASE}/api/files/${encodeURIComponent(event.path)}`;
 
           // Only attach inline when we can confidently match the file to a
           // known tool call. Unscoped file events may be deferred outputs from
@@ -281,16 +280,12 @@ function bindStreamToAssistant({
             }
           }
 
-          window.dispatchEvent(
-            new CustomEvent("crew:file", {
-              detail: {
-                fileUrl,
-                filename: event.filename,
-                caption,
-                sessionId,
-              },
-            }),
-          );
+          dispatchCrewFileEvent({
+            sessionId,
+            path: event.path,
+            filename: event.filename,
+            caption,
+          });
         }
         break;
       }

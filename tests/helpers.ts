@@ -57,6 +57,18 @@ export async function login(page: Page) {
     .catch(() => false);
   if (chatVisible) return;
 
+  const authTokenTab = page.locator("button", { hasText: "Auth Token" });
+  if (await authTokenTab.isVisible().catch(() => false)) {
+    await authTokenTab.click();
+    await page.locator(SEL.loginTokenInput).fill(AUTH_TOKEN);
+    await page.locator(SEL.loginButton).click();
+    const tokenChatVisible = await page
+      .locator(SEL.chatInput)
+      .isVisible({ timeout: 10_000 })
+      .catch(() => false);
+    if (tokenChatVisible) return;
+  }
+
   // If still on dashboard, click "Start" on the gateway, then navigate to chat
   const startBtn = page.locator("button", { hasText: "Start" });
   if (await startBtn.isVisible().catch(() => false)) {
@@ -82,6 +94,14 @@ export function getInput(page: Page) {
 
 export function getSendButton(page: Page) {
   return page.locator(SEL.sendButton).first();
+}
+
+export async function getChatThreadText(page: Page): Promise<string> {
+  const texts = await page
+    .locator("[data-testid='user-message'], [data-testid='assistant-message']")
+    .allTextContents()
+    .catch(() => []);
+  return texts.join("\n");
 }
 
 // ── Send and wait ──────────────────────────────────────────────
