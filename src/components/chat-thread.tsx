@@ -582,6 +582,7 @@ function MessageList({
 
   return (
     <div
+      data-testid="chat-thread"
       ref={viewportRef}
       className="flex-1 min-h-0 overflow-y-auto overscroll-contain"
     >
