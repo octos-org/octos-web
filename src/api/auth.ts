@@ -1,5 +1,9 @@
 import { request } from "./client";
-import type { AuthVerifyResponse, AuthMeResponse } from "./types";
+import type {
+  AuthMeResponse,
+  AuthStatusResponse,
+  AuthVerifyResponse,
+} from "./types";
 
 export async function sendCode(email: string): Promise<{ ok: boolean; message?: string }> {
   return request("/api/auth/send-code", {
@@ -20,6 +24,10 @@ export async function verify(
 
 export async function me(): Promise<AuthMeResponse> {
   return request("/api/auth/me");
+}
+
+export async function status(): Promise<AuthStatusResponse> {
+  return request("/api/auth/status");
 }
 
 export async function logout(): Promise<void> {

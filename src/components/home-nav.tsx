@@ -4,7 +4,7 @@ import { LogOut, Sun, Moon, MessageSquare, Plus, Settings } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 export function HomeNav({ onNewProject }: { onNewProject: () => void }) {
-  const { user, logout } = useAuth();
+  const { user, portal, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
 
@@ -28,13 +28,15 @@ export function HomeNav({ onNewProject }: { onNewProject: () => void }) {
         <MessageSquare size={16} />
         Chat
       </button>
-      <button
-        onClick={() => window.location.assign("/admin/my")}
-        className="rounded-xl p-2.5 text-muted hover:bg-surface-container hover:text-text-strong"
-        title="Settings"
-      >
-        <Settings size={18} />
-      </button>
+      {portal?.can_access_admin_portal && (
+        <button
+          onClick={() => window.location.assign("/admin/my")}
+          className="rounded-xl p-2.5 text-muted hover:bg-surface-container hover:text-text-strong"
+          title="Settings"
+        >
+          <Settings size={18} />
+        </button>
+      )}
       <button
         onClick={toggleTheme}
         className="rounded-xl p-2.5 text-muted hover:bg-surface-container hover:text-text-strong"

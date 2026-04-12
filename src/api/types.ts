@@ -65,9 +65,57 @@ export interface AuthVerifyResponse {
   message?: string;
 }
 
+export type PortalKind =
+  | "bootstrap_admin"
+  | "admin"
+  | "owner"
+  | "sub_account";
+
+export type ProfileRelationship =
+  | "self_profile"
+  | "managed_child"
+  | "admin_managed";
+
+export type ProfileApiScope = "self_service" | "sub_account" | "admin";
+
+export interface AccessibleProfileSummary {
+  id: string;
+  name: string;
+  parent_id?: string | null;
+  relationship: ProfileRelationship;
+  api_scope: ProfileApiScope;
+  route_base: string;
+  can_manage_sub_accounts: boolean;
+}
+
+export interface PortalState {
+  kind: PortalKind;
+  home_profile_id: string;
+  home_route: string;
+  can_access_admin_portal: boolean;
+  can_manage_users: boolean;
+  sub_account_limit: number;
+  accessible_profiles: AccessibleProfileSummary[];
+}
+
+export interface ScopedAuthTarget {
+  id: string;
+  name: string;
+  email_login_enabled: boolean;
+}
+
+export interface AuthStatusResponse {
+  bootstrap_mode: boolean;
+  email_login_enabled: boolean;
+  admin_token_login_enabled: boolean;
+  allow_self_registration: boolean;
+  scoped_profile?: ScopedAuthTarget | null;
+}
+
 export interface AuthMeResponse {
   user: AuthUser;
   profile: unknown;
+  portal: PortalState;
 }
 
 // SSE event types

@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "./auth-context";
 import * as authApi from "@/api/auth";
+import type { AuthStatusResponse } from "@/api/types";
 
 export function LoginPage() {
-  const { login, loginWithToken } = useAuth();
+  const { login, loginWithToken, authStatus: initialAuthStatus } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   // Validate redirect target — only allow same-origin paths to prevent open redirect
@@ -12,6 +13,9 @@ export function LoginPage() {
   const redirectTo = rawRedirect?.startsWith("/") && !rawRedirect.startsWith("//") ? rawRedirect : null;
 
   const isValidEmail = (e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+  const [authStatus, setAuthStatus] = useState<AuthStatusResponse | null>(
+    initialAuthStatus,
+  );
   const [mode, setMode] = useState<"otp" | "token">("otp");
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
@@ -19,6 +23,29 @@ export function LoginPage() {
   const [step, setStep] = useState<"email" | "code">("email");
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
+
+  useEffect(() => {
+    if (initialAuthStatus) {
+      setAuthStatus(initialAuthStatus);
+      return;
+    }
+    authApi.status().then(setAuthStatus).catch(() => {
+      // Leave the page usable even if auth status probing fails.
+    });
+  }, [initialAuthStatus]);
+
+  const scopedProfile = authStatus?.scoped_profile ?? null;
+  const tokenModeEnabled = useMemo(
+    () => !scopedProfile && Boolean(authStatus?.admin_token_login_enabled),
+    [authStatus?.admin_token_login_enabled, scopedProfile],
+  );
+  const emailLoginEnabled = authStatus?.email_login_enabled ?? true;
+
+  useEffect(() => {
+    if (mode === "token" && !tokenModeEnabled) {
+      setMode("otp");
+    }
+  }, [mode, tokenModeEnabled]);
 
   async function handleSendCode() {
     setError("");
@@ -64,7 +91,16 @@ export function LoginPage() {
   return (
     <div className="flex h-screen items-center justify-center bg-surface-dark">
       <div className="w-full max-w-sm rounded-xl bg-surface p-8">
-        <h1 className="mb-6 text-2xl font-bold text-text-strong">octos</h1>
+        <h1 className="text-2xl font-bold text-text-strong">
+          {scopedProfile ? `Sign in to ${scopedProfile.name}` : "octos"}
+        </h1>
+        <p className="mb-6 mt-2 text-sm text-muted">
+          {scopedProfile
+            ? "This login is scoped to the addressed account. Use the exact email registered for this sub-account."
+            : authStatus?.bootstrap_mode
+              ? "Bootstrap admin access is enabled on this host."
+              : "Use an allowed or registered email to sign in."}
+        </p>
 
         {/* Mode tabs */}
         <div className="mb-6 flex gap-2">
@@ -78,16 +114,18 @@ export function LoginPage() {
           >
             Email OTP
           </button>
-          <button
-            onClick={() => setMode("token")}
-            className={`flex-1 rounded-lg py-2 text-sm font-medium transition ${
-              mode === "token"
-                ? "bg-accent text-surface-dark"
-                : "bg-surface-light text-muted hover:text-text-strong"
-            }`}
-          >
-            Auth Token
-          </button>
+          {tokenModeEnabled && (
+            <button
+              onClick={() => setMode("token")}
+              className={`flex-1 rounded-lg py-2 text-sm font-medium transition ${
+                mode === "token"
+                  ? "bg-accent text-surface-dark"
+                  : "bg-surface-light text-muted hover:text-text-strong"
+              }`}
+            >
+              Auth Token
+            </button>
+          )}
         </div>
 
         {error && (
@@ -96,20 +134,37 @@ export function LoginPage() {
           </div>
         )}
 
+        {!emailLoginEnabled && (
+          <div className="mb-4 rounded-lg bg-amber-900/20 p-3 text-sm text-amber-300">
+            {scopedProfile
+              ? "Email OTP login is not enabled for this account yet."
+              : "Email OTP login is not enabled on this host."}
+          </div>
+        )}
+
         {mode === "otp" ? (
           step === "email" ? (
             <div className="space-y-4">
               <input
                 type="email"
-                placeholder="Email address"
+                placeholder={
+                  scopedProfile
+                    ? "Registered account email"
+                    : "Email address"
+                }
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && isValidEmail(email) && handleSendCode()}
+                onKeyDown={(e) =>
+                  e.key === "Enter" &&
+                  isValidEmail(email) &&
+                  emailLoginEnabled &&
+                  handleSendCode()
+                }
                 className="w-full rounded-lg border border-border bg-surface-light px-4 py-3 text-text placeholder-muted outline-none focus:border-accent"
               />
               <button
                 onClick={handleSendCode}
-                disabled={!isValidEmail(email) || sending}
+                disabled={!isValidEmail(email) || sending || !emailLoginEnabled}
                 className="w-full rounded-lg bg-accent py-3 font-medium text-surface-dark transition hover:bg-accent-dim disabled:opacity-50"
               >
                 {sending ? "Sending..." : "Send Code"}

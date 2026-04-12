@@ -16,7 +16,7 @@ import { LogOut, Sun, Moon, Settings, PanelRight } from "lucide-react";
 import { useFileStore } from "@/store/file-store";
 
 export function ChatLayout({ children }: { children: ReactNode }) {
-  const { user, logout } = useAuth();
+  const { user, portal, logout } = useAuth();
   const { currentSessionId, currentSessionTitle, renameSession } = useSession();
   const status = useOctosStatus();
   const { theme, toggleTheme } = useTheme();
@@ -117,16 +117,18 @@ export function ChatLayout({ children }: { children: ReactNode }) {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <button
-                    onClick={() =>
-                      window.open("/admin/my", "_blank", "noopener,noreferrer")
-                    }
-                    className="glass-icon-button rounded-[10px] p-2"
-                    title="Settings"
-                    aria-label="Settings"
-                  >
-                    <Settings size={14} />
-                  </button>
+                  {portal?.can_access_admin_portal && (
+                    <button
+                      onClick={() =>
+                        window.open("/admin/my", "_blank", "noopener,noreferrer")
+                      }
+                      className="glass-icon-button rounded-[10px] p-2"
+                      title="Settings"
+                      aria-label="Settings"
+                    >
+                      <Settings size={14} />
+                    </button>
+                  )}
                   <button
                     onClick={logout}
                     className="glass-icon-button rounded-[10px] p-2"
