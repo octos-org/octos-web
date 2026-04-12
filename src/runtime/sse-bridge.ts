@@ -45,6 +45,50 @@ function clean(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Mode detection — parse /queue and /adaptive command responses
+// ---------------------------------------------------------------------------
+
+const QUEUE_MODE_RE = /Queue mode(?:\s+set to)?:\s*(followup|collect|steer|interrupt|speculative)/i;
+const ADAPTIVE_MODE_RE = /Adaptive mode:\s*(off|hedge|lane)/i;
+const ADAPTIVE_STATUS_RE = /^\*?\*?Adaptive Routing\*?\*?\s*\n\s*mode:\s*(off|hedge|lane)/im;
+const RESET_RE = /^Reset:/i;
+
+function detectModeUpdate(text: string, sessionId: string) {
+  const detail: Record<string, unknown> = { sessionId };
+  let matched = false;
+
+  const qm = text.match(QUEUE_MODE_RE);
+  if (qm) {
+    detail.queueMode = qm[1].toLowerCase();
+    matched = true;
+  }
+
+  const am = text.match(ADAPTIVE_MODE_RE);
+  if (am) {
+    detail.adaptiveMode = am[1].toLowerCase();
+    matched = true;
+  }
+
+  if (!am) {
+    const as = text.match(ADAPTIVE_STATUS_RE);
+    if (as) {
+      detail.adaptiveMode = as[1].toLowerCase();
+      matched = true;
+    }
+  }
+
+  if (RESET_RE.test(text)) {
+    detail.queueMode = null;
+    detail.adaptiveMode = null;
+    matched = true;
+  }
+
+  if (matched) {
+    window.dispatchEvent(new CustomEvent("crew:mode_update", { detail }));
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -329,6 +373,9 @@ function bindStreamToAssistant({
             }),
           );
         }
+
+        // Detect queue/adaptive mode changes from command responses
+        detectModeUpdate(finalText, sessionId);
 
         // Clear thinking state
         window.dispatchEvent(

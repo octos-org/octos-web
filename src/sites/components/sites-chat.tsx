@@ -5,6 +5,7 @@ import { ChatThread } from "@/components/chat-thread";
 import { API_BASE } from "@/lib/constants";
 import {
   SessionContext,
+  useModeState,
   type SessionBeforeSendResult,
   type SessionSendRequest,
 } from "@/runtime/session-context";
@@ -216,6 +217,8 @@ export function SitesChat({ sessionId }: Props) {
     [ensureSiteScaffolded],
   );
 
+  const { queueMode, adaptiveMode } = useModeState();
+
   const sessionValue = useMemo(
     () => ({
       sessions: [],
@@ -224,6 +227,8 @@ export function SitesChat({ sessionId }: Props) {
       currentSessionStats: null,
       initialMessages: [] as never[],
       activeTaskOnServer: false,
+      queueMode,
+      adaptiveMode,
       setServerTaskActive: () => {},
       renameSession: () => {},
       updateSessionStats: () => {},
@@ -235,7 +240,7 @@ export function SitesChat({ sessionId }: Props) {
       markSessionActive: () => {},
       beforeSend,
     }),
-    [beforeSend, projectTitle, sessionId],
+    [adaptiveMode, beforeSend, projectTitle, queueMode, sessionId],
   );
 
   return (

@@ -65,6 +65,27 @@ export interface SessionBeforeSendResult extends Partial<SessionSendRequest> {
   handled?: boolean;
 }
 
+export type QueueMode = "followup" | "collect" | "steer" | "interrupt" | "speculative" | null;
+export type AdaptiveMode = "off" | "hedge" | "lane" | null;
+
+/** Shared hook that listens for crew:mode_update events and returns reactive mode state. */
+export function useModeState() {
+  const [queueMode, setQueueMode] = useState<QueueMode>(null);
+  const [adaptiveMode, setAdaptiveMode] = useState<AdaptiveMode>(null);
+
+  useEffect(() => {
+    function onMode(e: Event) {
+      const detail = (e as CustomEvent).detail;
+      if (detail.queueMode !== undefined) setQueueMode(detail.queueMode);
+      if (detail.adaptiveMode !== undefined) setAdaptiveMode(detail.adaptiveMode);
+    }
+    window.addEventListener("crew:mode_update", onMode);
+    return () => window.removeEventListener("crew:mode_update", onMode);
+  }, []);
+
+  return { queueMode, adaptiveMode };
+}
+
 interface SessionContextValue {
   sessions: SessionWithTitle[];
   currentSessionId: string;
@@ -74,6 +95,10 @@ interface SessionContextValue {
   initialMessages: MessageInfo[];
   /** True if the current session has background work pending on the server. */
   activeTaskOnServer: boolean;
+  /** Current queue mode as reported by backend /queue response. */
+  queueMode: QueueMode;
+  /** Current adaptive routing mode as reported by backend /adaptive response. */
+  adaptiveMode: AdaptiveMode;
   setServerTaskActive: (sessionId: string, active: boolean) => void;
   renameSession: (sessionId: string, title: string) => void;
   updateSessionStats: (sessionId: string, stats: Partial<SessionRunStats>) => void;
@@ -164,6 +189,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   });
   const [initialMessages, setInitialMessages] = useState<MessageInfo[]>([]);
   const [activeTaskOnServer, setActiveTaskOnServer] = useState(false);
+  const { queueMode, adaptiveMode } = useModeState();
   const previousSessionIdRef = useRef<string | null>(null);
   const titleCache = useRef<Record<string, string>>(loadStoredTitles());
   const statsCache = useRef<Record<string, SessionRunStats>>(loadStoredStats());
@@ -435,6 +461,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         currentSessionStats,
         initialMessages,
         activeTaskOnServer,
+        queueMode,
+        adaptiveMode,
         setServerTaskActive,
         renameSession,
         updateSessionStats,

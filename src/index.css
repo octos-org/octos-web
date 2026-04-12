@@ -286,6 +286,14 @@ body {
   border-top: 1px solid color-mix(in srgb, var(--color-text-strong) 6%, var(--color-border) 94%);
 }
 
+.mode-badge {
+  border: 1px solid color-mix(in srgb, var(--color-accent) 24%, var(--color-border) 76%);
+  background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface-elevated) 90%);
+  color: var(--color-accent);
+  letter-spacing: 0.02em;
+  text-transform: capitalize;
+}
+
 .session-task-indicator {
   display: inline-flex;
   max-width: min(32rem, 42vw);

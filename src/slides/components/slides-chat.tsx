@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { buildApiHeaders } from "@/api/client";
 import { ChatThread } from "@/components/chat-thread";
 import { API_BASE } from "@/lib/constants";
-import { SessionContext } from "@/runtime/session-context";
+import { SessionContext, useModeState } from "@/runtime/session-context";
 import * as MessageStore from "@/store/message-store";
 
 import { buildSlidesSlug } from "../api";
@@ -60,6 +60,8 @@ export function SlidesChat({ sessionId }: Props) {
     return () => abort.abort();
   }, [projectId, projectScaffolded, projectSlug, projectTitle, save, sessionId]);
 
+  const { queueMode, adaptiveMode } = useModeState();
+
   const sessionValue = useMemo(
     () => ({
       sessions: [],
@@ -69,6 +71,8 @@ export function SlidesChat({ sessionId }: Props) {
       currentSessionStats: null,
       initialMessages: [] as never[],
       activeTaskOnServer: false,
+      queueMode,
+      adaptiveMode,
       setServerTaskActive: () => {},
       renameSession: () => {},
       updateSessionStats: () => {},
@@ -79,7 +83,7 @@ export function SlidesChat({ sessionId }: Props) {
       refreshSessions: async () => {},
       markSessionActive: () => {},
     }),
-    [historyTopic, project?.title, sessionId],
+    [adaptiveMode, historyTopic, project?.title, queueMode, sessionId],
   );
 
   return (

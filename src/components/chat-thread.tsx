@@ -25,6 +25,8 @@ import {
   Camera,
   StopCircle,
   Download,
+  Layers,
+  Route,
 } from "lucide-react";
 import { useSession } from "@/runtime/session-context";
 import {
@@ -625,6 +627,8 @@ function Composer() {
     switchSession,
     goBack,
     beforeSend,
+    queueMode,
+    adaptiveMode,
   } =
     useSession();
   const messages = useMessages(currentSessionId);
@@ -1406,6 +1410,31 @@ function Composer() {
             >
               <Camera size={16} />
             </button>
+            {/* Mode indicator badges */}
+            {(queueMode || adaptiveMode) && (
+              <div className="ml-auto flex items-center gap-1.5">
+                {queueMode && (
+                  <span
+                    data-testid="queue-mode-badge"
+                    className="mode-badge flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium"
+                    title={`Queue mode: ${queueMode}`}
+                  >
+                    <Layers size={10} />
+                    {queueMode}
+                  </span>
+                )}
+                {adaptiveMode && (
+                  <span
+                    data-testid="adaptive-mode-badge"
+                    className="mode-badge flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium"
+                    title={`Adaptive routing: ${adaptiveMode}`}
+                  >
+                    <Route size={10} />
+                    {adaptiveMode}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>
