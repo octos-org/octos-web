@@ -158,9 +158,8 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
         const streamActive = StreamManager.isActive(currentSessionId);
         const hasActiveTasks = tasks.some(isTaskActive);
         const hasBackgroundWork =
-          status.active || status.has_bg_tasks || status.has_deferred_files || hasActiveTasks;
-        const hasBackgroundIndicatorState =
-          status.has_bg_tasks || status.has_deferred_files || hasActiveTasks;
+          status.active || status.has_deferred_files || hasActiveTasks;
+        const hasBackgroundIndicatorState = hasActiveTasks;
 
         setServerTaskActive(currentSessionId, hasBackgroundIndicatorState);
 

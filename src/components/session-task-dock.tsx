@@ -20,7 +20,7 @@ function taskDisplayName(toolName: string): string {
   }
 }
 
-function buildSummary(tasks: TaskInfo[], activeTaskOnServer: boolean): {
+function buildSummary(tasks: TaskInfo[]): {
   label: string;
   detail: string;
   active: boolean;
@@ -57,25 +57,16 @@ function buildSummary(tasks: TaskInfo[], activeTaskOnServer: boolean): {
     };
   }
 
-  if (activeTaskOnServer) {
-    return {
-      label: "Background task running",
-      detail: "Waiting for task details from the server.",
-      active: true,
-      failed: false,
-    };
-  }
-
   return null;
 }
 
 export function SessionTaskIndicator() {
-  const { currentSessionId, activeTaskOnServer } = useSession();
+  const { currentSessionId } = useSession();
   const tasks = useTasks(currentSessionId);
 
   const summary = useMemo(
-    () => buildSummary(tasks, activeTaskOnServer),
-    [tasks, activeTaskOnServer],
+    () => buildSummary(tasks),
+    [tasks],
   );
 
   if (!summary) return null;

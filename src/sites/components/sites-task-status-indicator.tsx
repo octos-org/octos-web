@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { buildApiHeaders } from "@/api/client";
-import { API_BASE } from "@/lib/constants";
+import { getSessionTasks } from "@/api/sessions";
 
 interface TaskInfo {
   id: string;
@@ -13,7 +12,7 @@ interface TaskInfo {
 
 export function SitesTaskStatusIndicator({
   sessionId,
-  profileId,
+  profileId: _profileId,
 }: {
   sessionId: string;
   profileId?: string;
@@ -27,12 +26,7 @@ export function SitesTaskStatusIndicator({
     async function poll() {
       if (stopped) return;
       try {
-        const response = await fetch(
-          `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/tasks`,
-          { headers: buildApiHeaders({}, profileId) },
-        );
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = (await response.json()) as TaskInfo[];
+        const data = (await getSessionTasks(sessionId)) as TaskInfo[];
         if (stopped) return;
         setTasks(data);
 
@@ -68,7 +62,7 @@ export function SitesTaskStatusIndicator({
       window.removeEventListener("crew:bg_tasks", handleEvent);
       window.removeEventListener("crew:task_status", handleEvent);
     };
-  }, [profileId, sessionId]);
+  }, [sessionId]);
 
   if (tasks.length === 0) return null;
 

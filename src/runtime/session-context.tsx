@@ -7,11 +7,20 @@ import {
   useRef,
   type ReactNode,
 } from "react";
-import { listSessions, getMessages, getSessionStatus, deleteSession as apiDeleteSession } from "@/api/sessions";
-import type { SessionInfo, MessageInfo } from "@/api/types";
+import {
+  listSessions,
+  getMessages,
+  getSessionTasks,
+  deleteSession as apiDeleteSession,
+} from "@/api/sessions";
+import type { BackgroundTaskInfo, SessionInfo, MessageInfo } from "@/api/types";
 
 const SESSION_TITLE_STORAGE_KEY = "octos_session_titles";
 const SESSION_STATS_STORAGE_KEY = "octos_session_stats";
+
+function isTaskActive(task: BackgroundTaskInfo): boolean {
+  return task.status === "spawned" || task.status === "running";
+}
 
 /** Extract a short title from message content, handling JSON content parts. */
 function extractTitle(content: string): string {
@@ -174,11 +183,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       getMessages(saved).then((msgs) => {
         if (msgs.length > 0) setInitialMessages(msgs);
       }).catch(() => {});
-      getSessionStatus(saved).then((status) => {
-        setActiveTaskOnServer(
-          Boolean(status.has_bg_tasks || status.has_deferred_files),
-        );
-      }).catch(() => {});
+      getSessionTasks(saved)
+        .then((tasks) => {
+          setActiveTaskOnServer(tasks.some(isTaskActive));
+        })
+        .catch(() => {});
     }
   }, []);
 
@@ -321,19 +330,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     // Guard against race: only the latest switch request wins
     const requestId = ++switchRequestRef.current;
     try {
-      const [messages, status] = await Promise.all([
+      const [messages, tasks] = await Promise.all([
         getMessages(id),
-        getSessionStatus(id).catch(() => ({
-          active: false,
-          has_deferred_files: false,
-          has_bg_tasks: false,
-        })),
+        getSessionTasks(id).catch(() => [] as BackgroundTaskInfo[]),
       ]);
       if (switchRequestRef.current !== requestId) return; // stale
       setInitialMessages(messages);
-      setActiveTaskOnServer(
-        Boolean(status.has_bg_tasks || status.has_deferred_files),
-      );
+      setActiveTaskOnServer(tasks.some(isTaskActive));
     } catch {
       if (switchRequestRef.current !== requestId) return;
       setInitialMessages([]);

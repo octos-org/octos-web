@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { getToken } from "@/api/client";
-import { API_BASE } from "@/lib/constants";
+import { getSessionTasks } from "@/api/sessions";
 
 interface TaskInfo {
   id: string;
@@ -25,13 +24,7 @@ export function SlidesTaskStatusIndicator({
     async function poll() {
       if (stopped) return;
       try {
-        const token = getToken();
-        const resp = await fetch(
-          `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/tasks`,
-          { headers: token ? { Authorization: `Bearer ${token}` } : {} },
-        );
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const data = (await resp.json()) as TaskInfo[];
+        const data = (await getSessionTasks(sessionId)) as TaskInfo[];
         if (stopped) return;
         setTasks(data);
 
@@ -59,6 +52,7 @@ export function SlidesTaskStatusIndicator({
 
     window.addEventListener("crew:bg_tasks", handleBgTasks);
     window.addEventListener("crew:task_status", handleTaskStatus);
+    void poll();
 
     return () => {
       stopped = true;
