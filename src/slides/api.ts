@@ -1,6 +1,7 @@
 import { buildApiHeaders } from "@/api/client";
 import type { ContentEntry } from "@/api/content";
 import { buildFileUrl } from "@/api/files";
+import { getSessionFiles } from "@/api/sessions";
 import { API_BASE } from "@/lib/constants";
 import type { Slide, SlidesProject } from "./types";
 
@@ -137,7 +138,23 @@ export async function hydrateSlidesProjectFromSession(
   sessionId: string,
 ): Promise<SlidesProject | null> {
   const files = await listSlidesFiles("slides", { sessionId });
-  return buildSlidesProjectFromFiles(sessionId, files);
+  const sessionFiles = await getSessionFiles(sessionId).catch(() => []);
+  const mergedFiles = [
+    ...files,
+    ...sessionFiles
+      .filter((file) => /\.(pptx|key)$/i.test(file.filename))
+      .map(
+        (file): SlidesFileEntry => ({
+          filename: file.filename,
+          path: file.path,
+          size: file.size_bytes,
+          modified: file.modified_at,
+          category: "slides",
+          group: "session",
+        }),
+      ),
+  ];
+  return buildSlidesProjectFromFiles(sessionId, mergedFiles);
 }
 
 export function slidesFileToContentEntry(file: SlidesFileEntry): ContentEntry {
