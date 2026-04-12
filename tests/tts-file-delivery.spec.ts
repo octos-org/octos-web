@@ -1,5 +1,12 @@
 import { test, expect, type Page } from "@playwright/test";
-import { login, sendAndWait, SEL, createNewSession } from "./helpers";
+import {
+  login,
+  sendAndWait,
+  SEL,
+  createNewSession,
+  getInput,
+  getSendButton,
+} from "./helpers";
 
 test.describe("TTS file delivery", () => {
   test.beforeEach(async ({ page }) => {
@@ -74,12 +81,21 @@ test.describe("TTS file delivery", () => {
   });
 
   test("can send new message while TTS is generating in background", async ({ page }) => {
-    // Send TTS request
     console.log("Sending TTS request...");
-    await sendAndWait(page, "测试 yangmi 语音合成", {
-      label: "tts-bg",
-      maxWait: 30_000,
-    });
+    const input = getInput(page);
+    const sendBtn = getSendButton(page);
+    await input.fill("测试 yangmi 语音合成");
+    await sendBtn.click();
+
+    await page.waitForFunction(() => {
+      const bubbles = Array.from(
+        document.querySelectorAll("[data-testid='assistant-message']"),
+      );
+      return bubbles.some((node) => {
+        const text = node.textContent || "";
+        return /后台|语音合成已在后台运行|自动发送/u.test(text);
+      });
+    }, undefined, { timeout: 30_000 });
 
     // Immediately send a follow-up question
     console.log("Sending follow-up question...");
