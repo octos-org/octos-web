@@ -412,10 +412,13 @@ function bindStreamToAssistant({
     }
   };
 
-  // For queued messages, wait for the fresh stream before subscribing
+  // For queued messages, wait for the fresh stream then subscribe WITH replay.
+  // Using subscribe (not subscribeNew) ensures events that arrived between
+  // stream creation and subscription are replayed — eliminates the race
+  // where fast responses are lost because subscribers was empty.
   if (streamStatus === "queued") {
     StreamManager.waitForNewStream(sessionId).then(() => {
-      const unsub = StreamManager.subscribeNew(sessionId, handleEvent);
+      const unsub = StreamManager.subscribe(sessionId, handleEvent);
       if (unsub) {
         setupCleanup(
           sessionId,
