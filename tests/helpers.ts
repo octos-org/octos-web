@@ -31,7 +31,7 @@ export { SEL };
 
 export async function login(page: Page) {
   const profileId = process.env.PROFILE_ID || "dspfac";
-  const testEmail = process.env.TEST_EMAIL || "e2e@test.octos.io";
+  const testEmail = process.env.TEST_EMAIL || "dspfac@gmail.com";
 
   // Inject test token and profile selection into localStorage
   await page.goto("/", { waitUntil: "domcontentloaded" });
@@ -73,33 +73,43 @@ export async function login(page: Page) {
     if (tokenChatVisible) return;
   }
 
-  // OTP login with static token — use AUTH_TOKEN as the OTP code.
-  // The backend's static_tokens config allows this to bypass real OTP.
-  const emailInput = page.locator("input[placeholder*='email' i], input[placeholder*='Email' i]").first();
-  if (await emailInput.isVisible().catch(() => false)) {
-    // Send code (triggers OTP flow, but we'll use static token instead)
-    await emailInput.fill(testEmail);
-    const sendCodeBtn = page.locator("button", { hasText: /send code/i });
-    if (await sendCodeBtn.isVisible().catch(() => false)) {
-      await sendCodeBtn.click();
-      await page.waitForTimeout(1000);
-    }
+  // OTP login with static token — call verify API from within the browser
+  // context so cookies/CORS work correctly. The backend's static_tokens
+  // config allows AUTH_TOKEN to bypass real OTP verification.
+  try {
+    const apiLoginResult = await page.evaluate(
+      async ({ email, code }) => {
+        const resp = await fetch("/api/auth/verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, code }),
+        });
+        if (!resp.ok) return null;
+        const data = await resp.json();
+        if (!data.ok || !data.token) return null;
+        localStorage.setItem("octos_session_token", data.token);
+        return data.token;
+      },
+      { email: testEmail, code: AUTH_TOKEN },
+    );
+    if (apiLoginResult) {
+      await page.reload({ waitUntil: "networkidle" });
+      const apiLoginVisible = await page
+        .locator(SEL.chatInput)
+        .isVisible({ timeout: 10_000 })
+        .catch(() => false);
+      if (apiLoginVisible) return;
 
-    // Enter static token as the verification code
-    const codeInput = page.locator("input[placeholder*='code' i], input[placeholder*='Code' i]").first();
-    if (await codeInput.isVisible({ timeout: 5_000 }).catch(() => false)) {
-      await codeInput.fill(AUTH_TOKEN);
-      const verifyBtn = page.locator("button", { hasText: /verify|sign in|log in/i });
-      if (await verifyBtn.isVisible().catch(() => false)) {
-        await verifyBtn.click();
-      }
+      // Might land on home page — navigate to chat
+      await page.goto("/chat", { waitUntil: "networkidle" });
+      const chatAfterLogin = await page
+        .locator(SEL.chatInput)
+        .isVisible({ timeout: 10_000 })
+        .catch(() => false);
+      if (chatAfterLogin) return;
     }
-
-    const otpChatVisible = await page
-      .locator(SEL.chatInput)
-      .isVisible({ timeout: 10_000 })
-      .catch(() => false);
-    if (otpChatVisible) return;
+  } catch {
+    // API login failed — fall through to UI-based attempts
   }
 
   // If still on dashboard, click "Start" on the gateway, then navigate to chat
