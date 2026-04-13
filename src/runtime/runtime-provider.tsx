@@ -201,9 +201,10 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
       const task = detail?.task as BackgroundTaskInfo | undefined;
       if (task) {
         TaskStore.mergeTask(currentSessionId, task);
-        if (isTaskActive(task)) {
-          lastBackgroundActivityAt = Date.now();
-        }
+        // Extend grace window on ANY task state change — when a task
+        // completes, we need the sync loop to keep running long enough
+        // to fetch the delivered file from session history.
+        lastBackgroundActivityAt = Date.now();
       }
       requestSync();
     }
