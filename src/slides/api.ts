@@ -1,7 +1,7 @@
 import { buildApiHeaders } from "@/api/client";
 import type { ContentEntry } from "@/api/content";
 import { buildFileUrl } from "@/api/files";
-import { getSessionFiles } from "@/api/sessions";
+import { getSessionFiles, listSessions } from "@/api/sessions";
 import { API_BASE } from "@/lib/constants";
 import type { Slide, SlidesProject } from "./types";
 
@@ -47,10 +47,11 @@ export function buildSlidesSlug(title: string, projectId: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  const suffix = projectId
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "")
-    .slice(-6) || "deck";
+  const suffix =
+    projectId
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "")
+      .slice(-6) || "deck";
   return `${base || "untitled"}-${suffix}`;
 }
 
@@ -58,7 +59,9 @@ export async function listSlidesFiles(
   dirs: string | string[],
   options: ListSlidesFilesOptions = {},
 ): Promise<SlidesFileEntry[]> {
-  const requestedDirs = (Array.isArray(dirs) ? dirs : [dirs]).map(normalizeSlidesDir);
+  const requestedDirs = (Array.isArray(dirs) ? dirs : [dirs]).map(
+    normalizeSlidesDir,
+  );
   const params = new URLSearchParams({
     dirs: requestedDirs.join(","),
   });
@@ -131,30 +134,33 @@ export async function fetchSlidesManifest(
   }
 
   const data = (await resp.json()) as unknown;
-  return normalizeSlidesManifest(data, manifestPath);
+  return normalizeSlidesManifest(data, manifestPath, files);
 }
 
 export async function hydrateSlidesProjectFromSession(
   sessionId: string,
 ): Promise<SlidesProject | null> {
-  const files = await listSlidesFiles("slides", { sessionId });
-  const sessionFiles = await getSessionFiles(sessionId).catch(() => []);
-  const mergedFiles = [
-    ...files,
-    ...sessionFiles
-      .filter((file) => /\.(pptx|key)$/i.test(file.filename))
-      .map(
-        (file): SlidesFileEntry => ({
-          filename: file.filename,
-          path: file.path,
-          size: file.size_bytes,
-          modified: file.modified_at,
-          category: "slides",
-          group: "session",
-        }),
-      ),
-  ];
-  return buildSlidesProjectFromFiles(sessionId, mergedFiles);
+  const direct = await hydrateSlidesProjectCandidate(
+    sessionId,
+    baseSessionId(sessionId),
+  );
+  if (direct) return direct;
+
+  const sessionIds = await listSessions()
+    .then((sessions) => sessions.map((session) => session.id))
+    .catch(() => []);
+  for (const candidate of alternateSlidesSessionCandidates(
+    sessionId,
+    sessionIds,
+  )) {
+    const project = await hydrateSlidesProjectCandidate(
+      candidate,
+      baseSessionId(candidate),
+    );
+    if (project) return project;
+  }
+
+  return null;
 }
 
 export function slidesFileToContentEntry(file: SlidesFileEntry): ContentEntry {
@@ -183,7 +189,8 @@ export function inferContentCategory(
   if (/\.(pptx|key)$/i.test(file.filename)) return "slides";
   if (/\.(mp4|webm|mov)$/i.test(file.filename)) return "video";
   if (/\.(mp3|wav|ogg|m4a|aac|flac|opus)$/i.test(file.filename)) return "audio";
-  if (/\.(md|markdown|txt|js|ts|tsx|jsx|json)$/i.test(file.filename)) return "report";
+  if (/\.(md|markdown|txt|js|ts|tsx|jsx|json)$/i.test(file.filename))
+    return "report";
   return "other";
 }
 
@@ -212,6 +219,11 @@ function resolveSlidesSlug(files: SlidesFileEntry[]): string | null {
     if (match?.[1]) {
       return match[1];
     }
+    const normalizedGroup = normalizeSlidesDir(file.group);
+    const groupMatch = normalizedGroup.match(/^slides\/([^/]+)/);
+    if (groupMatch?.[1]) {
+      return groupMatch[1];
+    }
   }
   return null;
 }
@@ -238,7 +250,8 @@ async function buildSlidesProjectFromFiles(
     manifest?.outFile ||
     files
       .filter((file) => /\.pptx$/i.test(file.filename))
-      .sort((left, right) => right.modified.localeCompare(left.modified))[0]?.path;
+      .sort((left, right) => right.modified.localeCompare(left.modified))[0]
+      ?.path;
 
   return {
     id: sessionId,
@@ -257,13 +270,82 @@ async function buildSlidesProjectFromFiles(
   };
 }
 
+async function hydrateSlidesProjectCandidate(
+  lookupSessionId: string,
+  projectSessionId: string,
+): Promise<SlidesProject | null> {
+  const files = await listSlidesFiles("slides", { sessionId: lookupSessionId });
+  const sessionFiles = await getSessionFiles(lookupSessionId).catch(() => []);
+  const mergedFiles = [
+    ...files,
+    ...sessionFiles
+      .filter((file) => /\.(pptx|key)$/i.test(file.filename))
+      .map(
+        (file): SlidesFileEntry => ({
+          filename: file.filename,
+          path: file.path,
+          size: file.size_bytes,
+          modified: file.modified_at,
+          category: "slides",
+          group: "session",
+        }),
+      ),
+  ];
+  return buildSlidesProjectFromFiles(projectSessionId, mergedFiles);
+}
+
+function baseSessionId(sessionId: string): string {
+  return sessionId.split("#")[0] || sessionId;
+}
+
+function alternateSlidesSessionCandidates(
+  requestedSessionId: string,
+  allSessionIds: string[],
+): string[] {
+  const requestedBase = baseSessionId(requestedSessionId);
+  const cohortPrefix = requestedBase.match(/^(slides-\d+-)/)?.[1] ?? null;
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+
+  const push = (sessionId: string) => {
+    if (!sessionId || sessionId === requestedSessionId || seen.has(sessionId))
+      return;
+    seen.add(sessionId);
+    candidates.push(sessionId);
+  };
+
+  for (const sessionId of allSessionIds) {
+    if (sessionId.startsWith(`${requestedBase}#slides `)) {
+      push(sessionId);
+    }
+  }
+
+  if (!cohortPrefix) {
+    return candidates;
+  }
+
+  for (const sessionId of allSessionIds) {
+    if (
+      sessionId.startsWith(cohortPrefix) &&
+      (sessionId.includes("#slides ") ||
+        /^slides-\d+-[a-z0-9]+$/i.test(sessionId))
+    ) {
+      push(sessionId);
+    }
+  }
+
+  return candidates;
+}
+
 function titleFromSlidesSlug(slug: string): string {
-  return slug
-    .replace(/-[a-z0-9]{6}$/i, "")
-    .split("-")
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ") || "Untitled Deck";
+  return (
+    slug
+      .replace(/-[a-z0-9]{6}$/i, "")
+      .split("-")
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ") || "Untitled Deck"
+  );
 }
 
 function resolveSlidesManifestPath(
@@ -271,28 +353,21 @@ function resolveSlidesManifestPath(
   files: SlidesFileEntry[],
 ): string | null {
   const normalizedSlug = normalizeSlidesDir(slug).split("/").pop() || slug;
-  const marker = `/slides/${normalizedSlug}/`;
+  const projectGroup = `slides/${normalizedSlug}`;
 
   // Find ALL manifest.json files under this project's output/ directory.
   // Pick the most recently modified one — handles cases like output/imgs/,
   // output/imgs_5pages/, etc.
   const manifests = files.filter((file) => {
     if (file.filename !== "manifest.json") return false;
-    const normalizedPath = normalizeSlidesDir(file.path);
-    return normalizedPath.includes(marker) && normalizedPath.includes("/output/");
+    const normalizedGroup = normalizeSlidesDir(file.group);
+    return (
+      normalizedGroup === `${projectGroup}/output/imgs` ||
+      normalizedGroup.startsWith(`${projectGroup}/output/`)
+    );
   });
 
   if (manifests.length === 0) {
-    // Fallback: construct default path from any project file
-    for (const file of files) {
-      const normalizedPath = file.path.replace(/\\/g, "/");
-      const markerIndex = normalizedPath.indexOf(marker);
-      if (markerIndex === -1) continue;
-      const projectRoot = normalizedPath
-        .slice(0, markerIndex + marker.length)
-        .replace(/\/$/, "");
-      return `${projectRoot}/output/imgs/manifest.json`;
-    }
     return null;
   }
 
@@ -314,11 +389,17 @@ function fileMatchesSlidesDir(
   const normalizedPath = normalizeSlidesDir(file.path);
   const normalizedGroup = normalizeSlidesDir(file.group);
 
-  if (normalizedGroup === normalizedDir || normalizedGroup.startsWith(`${normalizedDir}/`)) {
+  if (
+    normalizedGroup === normalizedDir ||
+    normalizedGroup.startsWith(`${normalizedDir}/`)
+  ) {
     return true;
   }
 
-  if (normalizedPath === normalizedDir || normalizedPath.endsWith(`/${normalizedDir}`)) {
+  if (
+    normalizedPath === normalizedDir ||
+    normalizedPath.endsWith(`/${normalizedDir}`)
+  ) {
     return true;
   }
 
@@ -330,13 +411,17 @@ function ensureCoreSlidesFiles(
   requestedDirs: string[],
 ): SlidesFileEntry[] {
   const nextFiles = [...files];
-  const seenPaths = new Set(nextFiles.map((file) => normalizeSlidesDir(file.path)));
+  const seenPaths = new Set(
+    nextFiles.map((file) => normalizeSlidesDir(file.path)),
+  );
 
   for (const dir of requestedDirs) {
     const parts = dir.split("/");
     if (!(parts[0] === "slides" && parts.length === 2)) continue;
 
-    const dirFiles = nextFiles.filter((file) => fileMatchesSlidesDir(file, dir));
+    const dirFiles = nextFiles.filter((file) =>
+      fileMatchesSlidesDir(file, dir),
+    );
     const rootFile =
       dirFiles.find((file) => normalizeSlidesDir(file.group) === dir) ??
       dirFiles[0];
@@ -374,6 +459,7 @@ function ensureCoreSlidesFiles(
 function normalizeSlidesManifest(
   value: unknown,
   manifestPath: string,
+  files: SlidesFileEntry[],
 ): SlidesRenderManifest {
   const raw =
     value && typeof value === "object"
@@ -386,15 +472,14 @@ function normalizeSlidesManifest(
       typeof raw.version === "number" && Number.isFinite(raw.version)
         ? raw.version
         : 1,
-    generatedAt:
-      typeof raw.generated_at === "string" ? raw.generated_at : "",
+    generatedAt: typeof raw.generated_at === "string" ? raw.generated_at : "",
     slideDir:
       typeof raw.slide_dir === "string"
-        ? resolveManifestPath(raw.slide_dir, manifestPath)
+        ? resolveManifestPath(raw.slide_dir, manifestPath, files)
         : "",
     outFile:
       typeof raw.out_file === "string"
-        ? resolveManifestPath(raw.out_file, manifestPath)
+        ? resolveManifestPath(raw.out_file, manifestPath, files)
         : "",
     slideCount:
       typeof raw.slide_count === "number" && Number.isFinite(raw.slide_count)
@@ -402,7 +487,7 @@ function normalizeSlidesManifest(
         : rawSlides.length,
     slides: rawSlides
       .map((slide, position) =>
-        normalizeManifestSlide(slide, position, manifestPath),
+        normalizeManifestSlide(slide, position, manifestPath, files),
       )
       .filter((slide): slide is SlidesManifestSlide => !!slide),
     manifestPath,
@@ -413,11 +498,12 @@ function normalizeManifestSlide(
   value: unknown,
   position: number,
   manifestPath: string,
+  files: SlidesFileEntry[],
 ): SlidesManifestSlide | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
   if (typeof raw.path !== "string" || raw.path.length === 0) return null;
-  const resolvedPath = resolveManifestPath(raw.path, manifestPath);
+  const resolvedPath = resolveManifestPath(raw.path, manifestPath, files);
 
   return {
     index:
@@ -432,7 +518,11 @@ function normalizeManifestSlide(
   };
 }
 
-function resolveManifestPath(path: string, manifestPath: string): string {
+function resolveManifestPath(
+  path: string,
+  manifestPath: string,
+  files: SlidesFileEntry[],
+): string {
   const normalizedPath = path.replace(/\\/g, "/");
   if (
     normalizedPath.startsWith("/") ||
@@ -442,18 +532,40 @@ function resolveManifestPath(path: string, manifestPath: string): string {
     return normalizedPath;
   }
 
+  const manifestDir = normalizeSlidesDir(manifestPath).replace(
+    /\/manifest\.json$/i,
+    "",
+  );
+  const normalizedRequested = normalizeSlidesDir(normalizedPath);
+  const matchedFile = files.find((file) => {
+    const normalizedGroup = normalizeSlidesDir(file.group);
+    const groupedPath = normalizeSlidesDir(
+      `${normalizedGroup}/${file.filename}`,
+    );
+    return groupedPath === normalizedRequested;
+  });
+  if (matchedFile) {
+    return matchedFile.path;
+  }
+
+  const matchedDir = files.find(
+    (file) => normalizeSlidesDir(file.group) === normalizedRequested,
+  );
+  if (matchedDir) {
+    const fullPath = matchedDir.path.replace(/\\/g, "/");
+    const suffix = `/${matchedDir.filename}`;
+    return fullPath.endsWith(suffix)
+      ? fullPath.slice(0, -suffix.length)
+      : fullPath;
+  }
+
   const normalizedManifest = manifestPath.replace(/\\/g, "/");
   const markerIndex = normalizedManifest.indexOf("/slides/");
   if (normalizedPath.startsWith("slides/") && markerIndex !== -1) {
     const workspaceRoot = normalizedManifest.slice(0, markerIndex + 1);
     return `${workspaceRoot}${normalizedPath}`;
   }
-
-  const manifestDir = normalizedManifest.slice(
-    0,
-    normalizedManifest.lastIndexOf("/") + 1,
-  );
-  return `${manifestDir}${normalizedPath.replace(/^\.?\//, "")}`;
+  return `${manifestDir}/${normalizedPath.replace(/^\.?\//, "")}`;
 }
 
 function fileBasename(path: unknown): string {

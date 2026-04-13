@@ -178,6 +178,7 @@ export function startStream(
   sessionId: string,
   message: string,
   media: string[],
+  topic?: string,
   clientMessageId?: string,
   audioUploadMode?: "recording" | "upload",
 ): "started" {
@@ -210,6 +211,7 @@ export function startStream(
       body: JSON.stringify({
         message,
         session_id: sessionId,
+        topic,
         client_message_id: clientMessageId,
         stream: true,
         media,

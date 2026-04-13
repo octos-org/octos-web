@@ -1,7 +1,4 @@
-import type {
-  ChatModelAdapter,
-  ChatModelRunResult,
-} from "@assistant-ui/react";
+import type { ChatModelAdapter, ChatModelRunResult } from "@assistant-ui/react";
 import { getToken } from "@/api/client";
 import { API_BASE } from "@/lib/constants";
 import * as StreamManager from "./stream-manager";
@@ -65,6 +62,7 @@ export function createOctosAdapter(
         sessionId,
         userText,
         getPendingMedia?.() ?? [],
+        undefined,
       );
 
       // Subscribe to events and yield results.
@@ -84,13 +82,16 @@ export function createOctosAdapter(
       const queue: StreamManager.StreamEvent[] = [];
       let resolve: (() => void) | null = null;
 
-      const unsub = StreamManager.subscribe(sessionId, (event: StreamManager.StreamEvent) => {
-        queue.push(event);
-        if (resolve) {
-          resolve();
-          resolve = null;
-        }
-      });
+      const unsub = StreamManager.subscribe(
+        sessionId,
+        (event: StreamManager.StreamEvent) => {
+          queue.push(event);
+          if (resolve) {
+            resolve();
+            resolve = null;
+          }
+        },
+      );
 
       if (!unsub) {
         // No stream found — shouldn't happen
@@ -117,12 +118,18 @@ export function createOctosAdapter(
             switch (event.type) {
               case "token":
                 text += event.text;
-                yield buildResult(stripToolProgress(stripThink(text)), toolCalls);
+                yield buildResult(
+                  stripToolProgress(stripThink(text)),
+                  toolCalls,
+                );
                 break;
 
               case "replace":
                 text = event.text;
-                yield buildResult(stripToolProgress(stripThink(text)), toolCalls);
+                yield buildResult(
+                  stripToolProgress(stripThink(text)),
+                  toolCalls,
+                );
                 break;
 
               case "tool_start": {
@@ -148,7 +155,11 @@ export function createOctosAdapter(
               case "tool_progress":
                 window.dispatchEvent(
                   new CustomEvent("crew:tool_progress", {
-                    detail: { tool: event.tool, message: event.message, sessionId },
+                    detail: {
+                      tool: event.tool,
+                      message: event.message,
+                      sessionId,
+                    },
                   }),
                 );
                 break;
@@ -156,7 +167,11 @@ export function createOctosAdapter(
               case "thinking":
                 window.dispatchEvent(
                   new CustomEvent("crew:thinking", {
-                    detail: { thinking: true, iteration: event.iteration, sessionId },
+                    detail: {
+                      thinking: true,
+                      iteration: event.iteration,
+                      sessionId,
+                    },
                   }),
                 );
                 break;
@@ -164,21 +179,33 @@ export function createOctosAdapter(
               case "response":
                 window.dispatchEvent(
                   new CustomEvent("crew:thinking", {
-                    detail: { thinking: false, iteration: event.iteration, sessionId },
+                    detail: {
+                      thinking: false,
+                      iteration: event.iteration,
+                      sessionId,
+                    },
                   }),
                 );
                 break;
 
               case "cost_update":
                 window.dispatchEvent(
-                  new CustomEvent("crew:cost", { detail: { ...event, sessionId } }),
+                  new CustomEvent("crew:cost", {
+                    detail: { ...event, sessionId },
+                  }),
                 );
                 break;
 
               case "file": {
-                const fileEvent = event as { path?: string; filename?: string; caption?: string };
+                const fileEvent = event as {
+                  path?: string;
+                  filename?: string;
+                  caption?: string;
+                };
                 if (fileEvent.path && fileEvent.filename) {
-                  const caption = fileEvent.caption ? ` — ${fileEvent.caption}` : "";
+                  const caption = fileEvent.caption
+                    ? ` — ${fileEvent.caption}`
+                    : "";
                   dispatchCrewFileEvent({
                     sessionId,
                     path: fileEvent.path,
@@ -211,7 +238,8 @@ export function createOctosAdapter(
                 break;
 
               case "error": {
-                const errMsg = (event as { message?: string }).message || "Agent error";
+                const errMsg =
+                  (event as { message?: string }).message || "Agent error";
                 text = `⚠️ Error: ${errMsg}`;
                 yield buildResult(text, toolCalls);
                 done = true;
@@ -224,7 +252,11 @@ export function createOctosAdapter(
           }
 
           // Check if stream ended without done event
-          if (!done && !StreamManager.isActive(sessionId) && queue.length === 0) {
+          if (
+            !done &&
+            !StreamManager.isActive(sessionId) &&
+            queue.length === 0
+          ) {
             break;
           }
         }
@@ -250,7 +282,11 @@ export function createOctosAdapter(
             const freshToken = getToken();
             const pollResp = await fetch(
               `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/messages?limit=3`,
-              { headers: freshToken ? { Authorization: `Bearer ${freshToken}` } : {} },
+              {
+                headers: freshToken
+                  ? { Authorization: `Bearer ${freshToken}` }
+                  : {},
+              },
             );
             if (pollResp.ok) {
               const pollMsgs = (await pollResp.json()) as {

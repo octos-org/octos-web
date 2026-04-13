@@ -29,7 +29,12 @@ export function SlidesChat({ sessionId }: Props) {
   }, [historyTopic, sessionId]);
 
   useEffect(() => {
-    if (!projectId || !projectTitle || projectScaffolded || scaffoldStartedRef.current) {
+    if (
+      !projectId ||
+      !projectTitle ||
+      projectScaffolded ||
+      scaffoldStartedRef.current
+    ) {
       return;
     }
 
@@ -58,7 +63,14 @@ export function SlidesChat({ sessionId }: Props) {
       });
 
     return () => abort.abort();
-  }, [projectId, projectScaffolded, projectSlug, projectTitle, save, sessionId]);
+  }, [
+    projectId,
+    projectScaffolded,
+    projectSlug,
+    projectTitle,
+    save,
+    sessionId,
+  ]);
 
   const { queueMode, adaptiveMode } = useModeState();
 
@@ -93,7 +105,10 @@ export function SlidesChat({ sessionId }: Props) {
           <p className="text-xs text-muted truncate">
             {project?.title || "Slides Agent"}
           </p>
-          <SlidesTaskStatusIndicator sessionId={sessionId} />
+          <SlidesTaskStatusIndicator
+            sessionId={sessionId}
+            historyTopic={historyTopic}
+          />
         </div>
         <div className="flex-1 min-h-0 overflow-hidden">
           <ChatThread hideFileOnlyAssistantMessages />

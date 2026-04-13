@@ -12,8 +12,10 @@ interface TaskInfo {
 
 export function SlidesTaskStatusIndicator({
   sessionId,
+  historyTopic,
 }: {
   sessionId: string;
+  historyTopic?: string;
 }) {
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
 
@@ -24,12 +26,17 @@ export function SlidesTaskStatusIndicator({
     async function poll() {
       if (stopped) return;
       try {
-        const data = (await getSessionTasks(sessionId)) as TaskInfo[];
+        const data = (await getSessionTasks(
+          sessionId,
+          historyTopic,
+        )) as TaskInfo[];
         if (stopped) return;
         setTasks(data);
 
         if (
-          data.some((task) => task.status === "running" || task.status === "spawned")
+          data.some(
+            (task) => task.status === "running" || task.status === "spawned",
+          )
         ) {
           pollTimer = setTimeout(poll, 2000);
         }
@@ -60,7 +67,7 @@ export function SlidesTaskStatusIndicator({
       window.removeEventListener("crew:bg_tasks", handleBgTasks);
       window.removeEventListener("crew:task_status", handleTaskStatus);
     };
-  }, [sessionId]);
+  }, [historyTopic, sessionId]);
 
   if (tasks.length === 0) return null;
 
@@ -99,7 +106,9 @@ function TaskStatusPill({ task }: { task: TaskInfo }) {
       <span className="text-muted">{task.tool_name}</span>
       {isActive && <span className="text-muted/60">{elapsed}s</span>}
       {task.status === "failed" && task.error && (
-        <span className="max-w-[220px] truncate text-red-400">{task.error}</span>
+        <span className="max-w-[220px] truncate text-red-400">
+          {task.error}
+        </span>
       )}
     </div>
   );

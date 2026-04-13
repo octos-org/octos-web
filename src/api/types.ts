@@ -3,6 +3,7 @@
 export interface ChatRequest {
   message: string;
   session_id?: string;
+  topic?: string;
   client_message_id?: string;
   media?: string[];
 }
@@ -65,11 +66,7 @@ export interface AuthVerifyResponse {
   message?: string;
 }
 
-export type PortalKind =
-  | "bootstrap_admin"
-  | "admin"
-  | "owner"
-  | "sub_account";
+export type PortalKind = "bootstrap_admin" | "admin" | "owner" | "sub_account";
 
 export type ProfileRelationship =
   | "self_profile"
@@ -134,7 +131,13 @@ export type SseEvent =
     }
   | { type: "thinking"; iteration: number }
   | { type: "response"; iteration: number }
-  | { type: "file"; path: string; filename: string; caption: string; tool_call_id?: string }
+  | {
+      type: "file";
+      path: string;
+      filename: string;
+      caption: string;
+      tool_call_id?: string;
+    }
   | {
       type: "done";
       content: string;

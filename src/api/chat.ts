@@ -6,6 +6,7 @@ import { request } from "./client";
 export async function sendMessage(
   message: string,
   sessionId?: string,
+  topic?: string,
   clientMessageId?: string,
   signal?: AbortSignal,
 ): Promise<ChatResponse> {
@@ -14,6 +15,7 @@ export async function sendMessage(
     body: JSON.stringify({
       message,
       session_id: sessionId,
+      topic,
       client_message_id: clientMessageId,
     }),
     signal,
@@ -44,7 +46,8 @@ export async function uploadFiles(
     if (resp.status === 401 || resp.status === 403) {
       clearToken();
       if (!window.location.pathname.endsWith("/login")) {
-        window.location.href = "/login?redirect=" + encodeURIComponent(window.location.pathname);
+        window.location.href =
+          "/login?redirect=" + encodeURIComponent(window.location.pathname);
       }
     }
     const text = await resp.text();

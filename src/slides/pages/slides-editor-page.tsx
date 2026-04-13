@@ -5,7 +5,11 @@ import { SlidesEditorLayout } from "../layouts/slides-editor-layout";
 import SlidePreview from "../components/slide-preview";
 import { SlidesChat } from "../components/slides-chat";
 import { hydrateSlidesProjectFromSession } from "../api";
-import { getSlidesProject, upsertSlidesProject } from "../store";
+import {
+  deleteSlidesProject,
+  getSlidesProject,
+  upsertSlidesProject,
+} from "../store";
 
 function SlidesEditorContent() {
   const { project } = useSlides();
@@ -14,7 +18,11 @@ function SlidesEditorContent() {
 
   // Clamp index when slides change
   useEffect(() => {
-    if (project && currentIndex >= project.slides.length && project.slides.length > 0) {
+    if (
+      project &&
+      currentIndex >= project.slides.length &&
+      project.slides.length > 0
+    ) {
       setCurrentIndex(project.slides.length - 1);
     }
   }, [project, currentIndex]);
@@ -41,9 +49,7 @@ function SlidesEditorContent() {
           version={project?.manifestGeneratedAt}
         />
       }
-      chatPanel={
-        project ? <SlidesChat sessionId={project.id} /> : undefined
-      }
+      chatPanel={project ? <SlidesChat sessionId={project.id} /> : undefined}
     />
   );
 }
@@ -52,6 +58,7 @@ export function SlidesEditorPage() {
   const { id } = useParams<{ id: string }>();
   const [hydrating, setHydrating] = useState(false);
   const [hydrateError, setHydrateError] = useState<string | null>(null);
+  const navigate = useNavigate();
 
   const project = id ? getSlidesProject(id) : undefined;
 
@@ -74,10 +81,16 @@ export function SlidesEditorPage() {
         }
 
         upsertSlidesProject(nextProject);
+        if (nextProject.id !== sessionId) {
+          deleteSlidesProject(sessionId);
+          navigate(`/slides/${nextProject.id}`, { replace: true });
+        }
       } catch (error) {
         if (stopped) return;
         setHydrateError(
-          error instanceof Error ? error.message : "Failed to load slides session.",
+          error instanceof Error
+            ? error.message
+            : "Failed to load slides session.",
         );
       } finally {
         if (!stopped) setHydrating(false);
@@ -89,7 +102,7 @@ export function SlidesEditorPage() {
     return () => {
       stopped = true;
     };
-  }, [id, project]);
+  }, [id, navigate, project]);
 
   if (!id) return null;
 
@@ -101,7 +114,9 @@ export function SlidesEditorPage() {
             Slides Workspace
           </div>
           <div className="mt-4 text-base text-white">
-            {hydrating ? "Loading slides session..." : "Slides session unavailable"}
+            {hydrating
+              ? "Loading slides session..."
+              : "Slides session unavailable"}
           </div>
           <div className="mt-3 text-sm leading-6 text-muted">
             {hydrateError ||

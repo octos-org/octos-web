@@ -24,7 +24,11 @@ export async function getMessages(
     offset: String(offset),
     source: "full",
   });
-  if (typeof sinceSeq === "number" && Number.isFinite(sinceSeq) && sinceSeq >= 0) {
+  if (
+    typeof sinceSeq === "number" &&
+    Number.isFinite(sinceSeq) &&
+    sinceSeq >= 0
+  ) {
     params.set("since_seq", String(sinceSeq));
   }
   if (topic?.trim()) {
@@ -43,25 +47,39 @@ export async function deleteSession(sessionId: string): Promise<void> {
 
 export async function getSessionStatus(
   sessionId: string,
-): Promise<{ active: boolean; has_deferred_files: boolean; has_bg_tasks: boolean }> {
+  topic?: string,
+): Promise<{
+  active: boolean;
+  has_deferred_files: boolean;
+  has_bg_tasks: boolean;
+}> {
+  const params = new URLSearchParams();
+  if (topic?.trim()) {
+    params.set("topic", topic.trim());
+  }
+  const query = params.toString();
   return request(
-    `/api/sessions/${encodeURIComponent(sessionId)}/status`,
+    `/api/sessions/${encodeURIComponent(sessionId)}/status${query ? `?${query}` : ""}`,
   );
 }
 
 export async function getSessionFiles(
   sessionId: string,
 ): Promise<SessionFileInfo[]> {
-  return request(
-    `/api/sessions/${encodeURIComponent(sessionId)}/files`,
-  );
+  return request(`/api/sessions/${encodeURIComponent(sessionId)}/files`);
 }
 
 export async function getSessionTasks(
   sessionId: string,
+  topic?: string,
 ): Promise<BackgroundTaskInfo[]> {
+  const params = new URLSearchParams();
+  if (topic?.trim()) {
+    params.set("topic", topic.trim());
+  }
+  const query = params.toString();
   return request(
-    `/api/sessions/${encodeURIComponent(sessionId)}/tasks`,
+    `/api/sessions/${encodeURIComponent(sessionId)}/tasks${query ? `?${query}` : ""}`,
   );
 }
 

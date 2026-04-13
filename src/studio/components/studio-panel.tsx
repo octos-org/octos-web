@@ -77,10 +77,14 @@ export function StudioPanel() {
       });
       if (!outputId) return;
 
-      const prompt = buildGenerationPrompt(activeTile, options, selectedSources);
+      const prompt = buildGenerationPrompt(
+        activeTile,
+        options,
+        selectedSources,
+      );
 
       // Start the SSE stream for this generation
-      StreamManager.startStream(genSessionId, prompt, []);
+      StreamManager.startStream(genSessionId, prompt, [], undefined);
 
       // Subscribe to capture file events and completion.
       // Use the captured outputId directly to avoid stale closure over project.outputs.
@@ -98,7 +102,10 @@ export function StudioPanel() {
         if (evt.type === "done") {
           updateOutput(outputId, {
             status: "complete",
-            preview: typeof evt.content === "string" ? evt.content.slice(0, 200) : undefined,
+            preview:
+              typeof evt.content === "string"
+                ? evt.content.slice(0, 200)
+                : undefined,
           });
           unsubscribe?.();
         }

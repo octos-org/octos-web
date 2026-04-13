@@ -48,9 +48,11 @@ function clean(text: string): string {
 // Mode detection — parse /queue and /adaptive command responses
 // ---------------------------------------------------------------------------
 
-const QUEUE_MODE_RE = /Queue mode(?:\s+set to)?:\s*(followup|collect|steer|interrupt|speculative)/i;
+const QUEUE_MODE_RE =
+  /Queue mode(?:\s+set to)?:\s*(followup|collect|steer|interrupt|speculative)/i;
 const ADAPTIVE_MODE_RE = /Adaptive mode:\s*(off|hedge|lane)/i;
-const ADAPTIVE_STATUS_RE = /^\*?\*?Adaptive Routing\*?\*?\s*\n\s*mode:\s*(off|hedge|lane)/im;
+const ADAPTIVE_STATUS_RE =
+  /^\*?\*?Adaptive Routing\*?\*?\s*\n\s*mode:\s*(off|hedge|lane)/im;
 const RESET_RE = /^Reset:/i;
 
 function detectModeUpdate(text: string, sessionId: string) {
@@ -149,6 +151,7 @@ export function sendMessage(opts: SendOptions): void {
     sessionId,
     requestText ?? text,
     media,
+    historyTopic,
     clientMessageId,
     audioUploadMode,
   );
@@ -451,7 +454,9 @@ function setupCleanup(
       const assistantMsg = msgs.find((m) => m.id === assistantMsgId);
       if (assistantMsg && assistantMsg.status === "streaming") {
         if (assistantMsg.text) {
-          MessageStore.updateMessage(sessionId, assistantMsgId, { status: "complete" });
+          MessageStore.updateMessage(sessionId, assistantMsgId, {
+            status: "complete",
+          });
           _onComplete?.();
         } else {
           // No content — poll for response
@@ -483,11 +488,18 @@ async function pollForResponse(
     if (abortSignal?.aborted) return;
     await new Promise((r) => setTimeout(r, 5000));
     try {
-      const msgs = await fetchSessionMessages(sessionId, 50, 0, undefined, historyTopic);
+      const msgs = await fetchSessionMessages(
+        sessionId,
+        50,
+        0,
+        undefined,
+        historyTopic,
+      );
 
       const matchedAssistant = [...msgs].reverse().find((message) => {
         if (message.role !== "assistant") return false;
-        if (!message.content || message.content.trim().length <= 20) return false;
+        if (!message.content || message.content.trim().length <= 20)
+          return false;
         if (clientMessageId) {
           return message.response_to_client_message_id === clientMessageId;
         }

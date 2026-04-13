@@ -10,7 +10,11 @@ import {
 
 import { hydrateSlidesProjectFromSession } from "../api";
 import { SlidesProvider, useSlides } from "../context/slides-context";
-import { getSlidesProject, upsertSlidesProject } from "../store";
+import {
+  deleteSlidesProject,
+  getSlidesProject,
+  upsertSlidesProject,
+} from "../store";
 import { useAuthenticatedFileUrl } from "../components/authenticated-file-image";
 import { SLIDE_ASPECT_RATIO } from "../constants";
 
@@ -102,7 +106,10 @@ function SlidesPresentContent() {
   }, [goBack, goNext, goPrev]);
 
   const currentSlide = generatedSlides[currentIndex];
-  const currentImageUrl = useAuthenticatedFileUrl(currentSlide?.thumbnailUrl, project?.manifestGeneratedAt);
+  const currentImageUrl = useAuthenticatedFileUrl(
+    currentSlide?.thumbnailUrl,
+    project?.manifestGeneratedAt,
+  );
 
   if (!project) return null;
 
@@ -120,7 +127,8 @@ function SlidesPresentContent() {
           <div className="text-sm text-white/60">{project.title}</div>
         </div>
         <div className="flex flex-1 items-center justify-center px-6 text-center text-white/70">
-          No generated PNG slides yet. Generate the deck first, then play it here.
+          No generated PNG slides yet. Generate the deck first, then play it
+          here.
         </div>
       </div>
     );
@@ -196,6 +204,7 @@ function SlidesPresentContent() {
 export function SlidesPresentPage() {
   const { id } = useParams<{ id: string }>();
   const [hydrating, setHydrating] = useState(false);
+  const navigate = useNavigate();
 
   const project = id ? getSlidesProject(id) : undefined;
 
@@ -210,6 +219,10 @@ export function SlidesPresentPage() {
         const nextProject = await hydrateSlidesProjectFromSession(sessionId);
         if (stopped || !nextProject) return;
         upsertSlidesProject(nextProject);
+        if (nextProject.id !== sessionId) {
+          deleteSlidesProject(sessionId);
+          navigate(`/slides/${nextProject.id}/present`, { replace: true });
+        }
       } finally {
         if (!stopped) setHydrating(false);
       }
@@ -220,7 +233,7 @@ export function SlidesPresentPage() {
     return () => {
       stopped = true;
     };
-  }, [id, project]);
+  }, [id, navigate, project]);
 
   if (!id || (!project && hydrating)) return null;
   if (!id || !project) return null;
