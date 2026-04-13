@@ -33,14 +33,10 @@ interface ManagedStream {
   abort: AbortController;
   /** Final accumulated text from token/replace events. */
   text: string;
-  /** Queued messages waiting for this stream to finish. */
-  _queued?: {
-    message: string;
-    media: string[];
-    clientMessageId?: string;
-    audioUploadMode?: "recording" | "upload";
-  }[];
 }
+
+/** Track all active streams so isActive reports true while ANY is running. */
+const activeStreams = new Set<ManagedStream>();
 
 const streams = new Map<string, ManagedStream>();
 
@@ -55,7 +51,10 @@ function createManagedStream(sessionId: string): ManagedStream {
     abort,
     text: "",
   };
+  // The streams map holds the LATEST stream per session (for subscribe/isActive).
+  // Previous streams keep running independently via their own fetch reference.
   streams.set(sessionId, stream);
+  activeStreams.add(stream);
   window.dispatchEvent(
     new CustomEvent("crew:stream_state", {
       detail: { sessionId, active: true },
@@ -131,31 +130,21 @@ async function consumeSseResponse(
 
 function finalizeStream(sessionId: string, stream: ManagedStream): void {
   stream.active = false;
-  window.dispatchEvent(
-    new CustomEvent("crew:stream_state", {
-      detail: { sessionId, active: false },
-    }),
-  );
+  activeStreams.delete(stream);
+
+  // Only emit stream_state inactive when NO streams are active for this session.
+  const anyActive = [...activeStreams].some((s) => s.sessionId === sessionId);
+  if (!anyActive) {
+    window.dispatchEvent(
+      new CustomEvent("crew:stream_state", {
+        detail: { sessionId, active: false },
+      }),
+    );
+  }
+
   setTimeout(() => {
     stream.events = [];
   }, 5000);
-
-  const queued = stream._queued;
-  if (queued && queued.length > 0) {
-    const next = queued.shift()!;
-    stream._queued = queued.length > 0 ? queued : undefined;
-    setTimeout(
-      () =>
-        startStream(
-          sessionId,
-          next.message,
-          next.media,
-          next.clientMessageId,
-          next.audioUploadMode,
-        ),
-      100,
-    );
-  }
 }
 
 function runStreamFetch(
@@ -191,17 +180,11 @@ export function startStream(
   media: string[],
   clientMessageId?: string,
   audioUploadMode?: "recording" | "upload",
-): "started" | "queued" {
-  // If there's already an active stream for this session, queue this message
-  // and start a new stream when the current one finishes.
-  const existing = streams.get(sessionId);
-  if (existing?.active) {
-    // Store the queued message — it will be sent when the current stream ends
-    if (!existing._queued) existing._queued = [];
-    existing._queued.push({ message, media, clientMessageId, audioUploadMode });
-    return "queued";
-  }
-
+): "started" {
+  // Always start immediately — no client-side queuing.
+  // Previous streams keep running independently via their own fetch reference.
+  // The backend's queue mode (followup/collect/steer/interrupt) handles
+  // concurrent messages server-side.
   const stream = createManagedStream(sessionId);
 
   const settings = getSettings();
@@ -270,52 +253,6 @@ export function attachStream(sessionId: string): "attached" | "busy" {
 }
 
 /**
- * Wait for a NEW stream to start for a session (after a queued message).
- * Resolves when the stream is created and active.
- */
-export function waitForNewStream(sessionId: string): Promise<void> {
-  return new Promise((resolve) => {
-    let resolved = false;
-    let checkTimerId: ReturnType<typeof setTimeout> | undefined;
-
-    const cleanup = () => {
-      if (resolved) return;
-      resolved = true;
-      if (checkTimerId !== undefined) clearTimeout(checkTimerId);
-      window.removeEventListener("crew:stream_state", handler);
-      resolve();
-    };
-
-    const check = () => {
-      if (resolved) return;
-      const stream = streams.get(sessionId);
-      if (stream?.active && stream.events.length === 0) {
-        // Fresh stream just started
-        cleanup();
-      } else {
-        checkTimerId = setTimeout(check, 50);
-      }
-    };
-
-    // Listen for stream_state event
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      if (detail?.sessionId === sessionId && detail?.active) {
-        // Small delay to let the stream object be set up
-        setTimeout(cleanup, 50);
-      }
-    };
-    window.addEventListener("crew:stream_state", handler);
-
-    // Start the polling check
-    checkTimerId = setTimeout(check, 50);
-
-    // Timeout: if no new stream in 60s, resolve anyway to prevent hanging
-    setTimeout(cleanup, 60000);
-  });
-}
-
-/**
  * Subscribe to a session's stream. Replays all past events immediately,
  * then delivers new events as they arrive.
  *
@@ -345,33 +282,14 @@ export function subscribe(
   };
 }
 
-/**
- * Subscribe to a session's stream WITHOUT replaying past events.
- * Used for queued messages that need to wait for a fresh stream.
- */
-export function subscribeNew(
-  sessionId: string,
-  callback: StreamSubscriber,
-): (() => void) | null {
-  const stream = streams.get(sessionId);
-  if (!stream) return null;
-
-  // No replay — only future events
-  stream.subscribers.add(callback);
-
-  return () => {
-    stream.subscribers.delete(callback);
-  };
-}
-
 /** Check if a session has an active or completed stream. */
 export function hasStream(sessionId: string): boolean {
   return streams.has(sessionId);
 }
 
-/** Check if a session's stream is still active. */
+/** Check if a session has any active stream. */
 export function isActive(sessionId: string): boolean {
-  return streams.get(sessionId)?.active ?? false;
+  return [...activeStreams].some((s) => s.sessionId === sessionId);
 }
 
 /** Get the current accumulated text for a session. */

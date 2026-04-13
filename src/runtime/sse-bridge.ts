@@ -144,8 +144,8 @@ export function sendMessage(opts: SendOptions): void {
   // Notify sidebar
   onSessionActive?.(text);
 
-  // 2. Start SSE stream
-  const streamStatus = StreamManager.startStream(
+  // 2. Start SSE stream (always immediate — no client-side queuing)
+  StreamManager.startStream(
     sessionId,
     requestText ?? text,
     media,
@@ -167,7 +167,6 @@ export function sendMessage(opts: SendOptions): void {
   bindStreamToAssistant({
     sessionId,
     assistantMsgId,
-    streamStatus,
     onComplete,
     abortController,
     clientMessageId,
@@ -182,7 +181,7 @@ export function resumeSessionStream(
   onComplete?: () => void,
 ): void {
   const abortController = new AbortController();
-  const attachStatus = StreamManager.attachStream(sessionId);
+  StreamManager.attachStream(sessionId);
   const assistantMsgId = MessageStore.ensureStreamingAssistantMessage(
     sessionId,
     "Resuming ongoing work...",
@@ -191,7 +190,6 @@ export function resumeSessionStream(
   bindStreamToAssistant({
     sessionId,
     assistantMsgId,
-    streamStatus: attachStatus === "busy" ? "started" : "started",
     onComplete,
     abortController,
     sentAt: Date.now(),
@@ -202,7 +200,6 @@ export function resumeSessionStream(
 function bindStreamToAssistant({
   sessionId,
   assistantMsgId,
-  streamStatus,
   onComplete,
   abortController,
   clientMessageId,
@@ -211,7 +208,6 @@ function bindStreamToAssistant({
 }: {
   sessionId: string;
   assistantMsgId: string;
-  streamStatus: "started" | "queued";
   onComplete?: () => void;
   abortController: AbortController;
   clientMessageId?: string;
@@ -412,42 +408,20 @@ function bindStreamToAssistant({
     }
   };
 
-  // For queued messages, wait for the fresh stream then subscribe WITH replay.
-  // Using subscribe (not subscribeNew) ensures events that arrived between
-  // stream creation and subscription are replayed — eliminates the race
-  // where fast responses are lost because subscribers was empty.
-  if (streamStatus === "queued") {
-    StreamManager.waitForNewStream(sessionId).then(() => {
-      const unsub = StreamManager.subscribe(sessionId, handleEvent);
-      if (unsub) {
-        setupCleanup(
-          sessionId,
-          assistantMsgId,
-          unsub,
-          rawText,
-          historyTopic,
-          onComplete,
-          abortController,
-          clientMessageId,
-          sentAt,
-        );
-      }
-    });
-  } else {
-    const unsub = StreamManager.subscribe(sessionId, handleEvent);
-    if (unsub) {
-      setupCleanup(
-        sessionId,
-        assistantMsgId,
-        unsub,
-        rawText,
-        historyTopic,
-        onComplete,
-        abortController,
-        clientMessageId,
-        sentAt,
-      );
-    }
+  // Subscribe with replay — events that arrived before subscription are replayed.
+  const unsub = StreamManager.subscribe(sessionId, handleEvent);
+  if (unsub) {
+    setupCleanup(
+      sessionId,
+      assistantMsgId,
+      unsub,
+      rawText,
+      historyTopic,
+      onComplete,
+      abortController,
+      clientMessageId,
+      sentAt,
+    );
   }
 }
 
