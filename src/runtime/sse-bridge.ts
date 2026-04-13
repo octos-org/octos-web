@@ -124,7 +124,6 @@ export function sendMessage(opts: SendOptions): void {
     onComplete,
   } = opts;
   const abortController = new AbortController();
-  const abortSignal = abortController.signal;
   const sentAt = Date.now();
   const localFiles = media.map((path) => ({
     filename: displayFilenameFromPath(path),
@@ -171,7 +170,6 @@ export function sendMessage(opts: SendOptions): void {
     streamStatus,
     onComplete,
     abortController,
-    abortSignal,
     clientMessageId,
     sentAt,
     historyTopic,
@@ -184,7 +182,6 @@ export function resumeSessionStream(
   onComplete?: () => void,
 ): void {
   const abortController = new AbortController();
-  const abortSignal = abortController.signal;
   const attachStatus = StreamManager.attachStream(sessionId);
   const assistantMsgId = MessageStore.ensureStreamingAssistantMessage(
     sessionId,
@@ -197,7 +194,6 @@ export function resumeSessionStream(
     streamStatus: attachStatus === "busy" ? "started" : "started",
     onComplete,
     abortController,
-    abortSignal,
     sentAt: Date.now(),
     historyTopic,
   });
@@ -209,7 +205,6 @@ function bindStreamToAssistant({
   streamStatus,
   onComplete,
   abortController,
-  abortSignal,
   clientMessageId,
   sentAt,
   historyTopic,
@@ -219,7 +214,6 @@ function bindStreamToAssistant({
   streamStatus: "started" | "queued";
   onComplete?: () => void;
   abortController: AbortController;
-  abortSignal: AbortSignal;
   clientMessageId?: string;
   sentAt: number;
   historyTopic?: string;
@@ -384,10 +378,10 @@ function bindStreamToAssistant({
           }),
         );
 
-        // After the main stream finishes, refresh from authoritative history once.
-        // Ongoing background task and deferred-file synchronization is owned by
-        // the session runtime, not by this send-flow bridge.
-        pollForBackgroundResults(sessionId, historyTopic, abortSignal, !event.has_bg_tasks);
+        // Background task and deferred-file synchronization is owned by the
+        // session runtime's incremental sync loop (appendHistoryMessages).
+        // We no longer call replaceHistory here — it races with the sync loop
+        // and can wipe optimistic messages or create duplicates.
         if (event.has_bg_tasks) {
           window.dispatchEvent(
             new CustomEvent("crew:bg_tasks", { detail: { sessionId } }),
@@ -497,33 +491,6 @@ function setupCleanup(
     }
   };
   window.addEventListener("crew:stream_state", handler);
-}
-
-/**
- * Refresh authoritative history after SSE `done`.
- *
- * Background tasks continue through the session runtime sync loop.
- */
-async function pollForBackgroundResults(
-  sessionId: string,
-  historyTopic?: string,
-  abortSignal?: AbortSignal,
-  _once = false,
-): Promise<void> {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    if (abortSignal?.aborted) return;
-    if (!StreamManager.isActive(sessionId)) break;
-    await new Promise((r) => setTimeout(r, 250));
-  }
-
-  if (abortSignal?.aborted) return;
-
-  try {
-    const snapshot = await fetchSessionMessages(sessionId, 500, 0, undefined, historyTopic);
-    MessageStore.replaceHistory(sessionId, snapshot);
-  } catch {
-    return;
-  }
 }
 
 /** Poll for a response if the stream ended without content. */
