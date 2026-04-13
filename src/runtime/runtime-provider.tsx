@@ -25,7 +25,8 @@ import { dispatchCrewFileEvent } from "./file-events";
 /** Max sessions kept in memory simultaneously. */
 const MAX_CACHED = 5;
 const BACKGROUND_SYNC_INTERVAL_MS = 2000;
-const BACKGROUND_SYNC_GRACE_MS = 15000;
+/** Number of extra sync cycles after all tasks finish, to pick up deliverables. */
+const POST_COMPLETION_SYNCS = 3;
 
 function isTaskActive(task: BackgroundTaskInfo): boolean {
   return task.status === "spawned" || task.status === "running";
@@ -85,7 +86,8 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
     let syncInFlight = false;
     let syncQueued = false;
-    let lastBackgroundActivityAt = 0;
+    /** How many extra syncs to run after all tasks finish, to pick up deliverables. */
+    let postCompletionSyncsRemaining = 0;
 
     const requestSync = () => {
       if (cancelled) return;
@@ -164,14 +166,14 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
         setServerTaskActive(currentSessionId, hasBackgroundIndicatorState);
 
         if (hasBackgroundWork || streamActive) {
-          lastBackgroundActivityAt = Date.now();
-        }
-
-        const withinGraceWindow =
-          lastBackgroundActivityAt > 0 &&
-          Date.now() - lastBackgroundActivityAt < BACKGROUND_SYNC_GRACE_MS;
-
-        if (hasBackgroundWork || streamActive || withinGraceWindow) {
+          // Tasks are active — keep syncing. Reset post-completion counter
+          // so we get fresh syncs after they finish.
+          postCompletionSyncsRemaining = POST_COMPLETION_SYNCS;
+          scheduleNext();
+        } else if (postCompletionSyncsRemaining > 0) {
+          // Tasks just finished — run a few more syncs to pick up
+          // delivered files from session history.
+          postCompletionSyncsRemaining--;
           scheduleNext();
         } else {
           window.dispatchEvent(
@@ -191,7 +193,7 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
     function handleBgTasks(event: Event) {
       const detail = (event as CustomEvent).detail;
       if (detail?.sessionId !== currentSessionId) return;
-      lastBackgroundActivityAt = Date.now();
+      postCompletionSyncsRemaining = Math.max(postCompletionSyncsRemaining, POST_COMPLETION_SYNCS);
       requestSync();
     }
 
@@ -201,10 +203,11 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
       const task = detail?.task as BackgroundTaskInfo | undefined;
       if (task) {
         TaskStore.mergeTask(currentSessionId, task);
-        // Extend grace window on ANY task state change — when a task
-        // completes, we need the sync loop to keep running long enough
-        // to fetch the delivered file from session history.
-        lastBackgroundActivityAt = Date.now();
+        if (!isTaskActive(task)) {
+          // Task just finished — ensure we sync a few more times to
+          // pick up delivered files from session history.
+          postCompletionSyncsRemaining = Math.max(postCompletionSyncsRemaining, POST_COMPLETION_SYNCS);
+        }
       }
       requestSync();
     }
@@ -213,7 +216,7 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
       const detail = (event as CustomEvent).detail;
       if (detail?.sessionId !== currentSessionId) return;
       if (detail?.active) {
-        lastBackgroundActivityAt = Date.now();
+        postCompletionSyncsRemaining = Math.max(postCompletionSyncsRemaining, POST_COMPLETION_SYNCS);
       }
       requestSync();
     }
