@@ -16,6 +16,7 @@ import { getToken } from "@/api/client";
 import { API_BASE } from "@/lib/constants";
 import { getSettings } from "@/hooks/use-settings";
 import { createOctosAdapter } from "./octos-adapter";
+import { dispatchCrewFileEvent } from "./file-events";
 import * as MessageStore from "@/store/message-store";
 
 
@@ -465,8 +466,6 @@ export function createWsAdapter(
                 const toolCallId = event.tool_call_id as string | undefined;
 
                 if (filePath && filename) {
-                  const fileUrl = `${API_BASE}/api/files/${encodeURIComponent(filePath)}`;
-
                   // Append file to the correct message (by tool_call_id or current assistant msg)
                   let targetMsgId = assistantMsgId;
                   if (toolCallId) {
@@ -484,12 +483,12 @@ export function createWsAdapter(
                     caption,
                   });
 
-                  // DOM events for file-store and notification toast
-                  window.dispatchEvent(
-                    new CustomEvent("crew:file", {
-                      detail: { fileUrl, filename, caption, sessionId },
-                    }),
-                  );
+                  dispatchCrewFileEvent({
+                    sessionId,
+                    path: filePath,
+                    filename,
+                    caption,
+                  });
                 }
                 break;
               }

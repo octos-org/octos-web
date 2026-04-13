@@ -62,6 +62,12 @@ test.describe("TTS file delivery", () => {
     }
 
     expect(fileReceived).toBe(true);
+
+    const uniqueFileUrls = await page.evaluate(() => {
+      const events = (window as any).__capturedFileEvents || [];
+      return [...new Set(events.map((event: any) => event.fileUrl))];
+    });
+    expect(uniqueFileUrls).toHaveLength(1);
   });
 
   test("regular message works without SSE being blocked by spawn_only", async ({ page }) => {
@@ -93,21 +99,47 @@ test.describe("TTS file delivery", () => {
       );
       return bubbles.some((node) => {
         const text = node.textContent || "";
-        return /后台|语音合成已在后台运行|自动发送/u.test(text);
+        return /后台|背景运行|语音合成已在后台运行|TTS 任务已启动|自动发送|自动推送/u.test(text);
       });
     }, undefined, { timeout: 30_000 });
 
     // Immediately send a follow-up question
     console.log("Sending follow-up question...");
     const start = Date.now();
-    const result = await sendAndWait(page, "1+1等于几？一个字回答", {
-      label: "followup",
-      maxWait: 30_000,
-    });
+    await input.fill("1+1等于几？一个字回答");
+    await sendBtn.click();
+
+    await page.waitForFunction(() => {
+      const bubbles = Array.from(
+        document.querySelectorAll("[data-testid='assistant-message']"),
+      );
+      return bubbles.some((node) => {
+        const text = (node.textContent || "").trim();
+        if (!text) return false;
+        if (/fm_tts|\.mp3|TTS 任务已启动|背景运行/u.test(text)) return false;
+        return /(^|[^0-9])2([^0-9]|$)|二/u.test(text);
+      });
+    }, undefined, { timeout: 30_000 });
+
     const elapsed = Date.now() - start;
 
-    console.log(`Follow-up response in ${elapsed}ms: "${result.responseText.slice(0, 100)}"`);
-    expect(result.responseLen).toBeGreaterThan(0);
+    const followupText = await page.evaluate(() => {
+      const bubbles = Array.from(
+        document.querySelectorAll("[data-testid='assistant-message']"),
+      );
+      const match = bubbles.find((node) => {
+        const text = (node.textContent || "").trim();
+        if (!text) return false;
+        if (/fm_tts|\.mp3|TTS 任务已启动|背景运行/u.test(text)) return false;
+        return /(^|[^0-9])2([^0-9]|$)|二/u.test(text);
+      });
+      return (match?.textContent || "").trim();
+    });
+
+    console.log(`Follow-up response in ${elapsed}ms: "${followupText.slice(0, 100)}"`);
+    expect(followupText.length).toBeGreaterThan(0);
+    expect(followupText).not.toMatch(/fm_tts|\.mp3|TTS 任务已启动|背景运行/u);
+    expect(followupText).toMatch(/(^|[^0-9])2([^0-9]|$)|二/u);
     // Should NOT be blocked by the TTS background task
     expect(elapsed).toBeLessThan(30_000);
   });

@@ -159,7 +159,7 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
         const hasActiveTasks = tasks.some(isTaskActive);
         const hasBackgroundWork =
           status.active || status.has_deferred_files || hasActiveTasks;
-        const hasBackgroundIndicatorState = hasActiveTasks;
+        const hasBackgroundIndicatorState = hasActiveTasks || status.has_deferred_files;
 
         setServerTaskActive(currentSessionId, hasBackgroundIndicatorState);
 

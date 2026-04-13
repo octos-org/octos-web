@@ -322,8 +322,26 @@ function replaceHistoryFromApi(sessionId: string, apiMessages: MessageInfo[]): v
         meta: optimistic.meta,
       };
     });
-  messagesBySession.set(sessionId, converted);
-  indexFilesForSession(sessionId, converted);
+
+  const pendingOptimistic = existing.filter((message, index) => {
+    if (consumedOptimisticIndices.has(index)) return false;
+    return typeof message.historySeq !== "number";
+  });
+
+  const merged = [...converted];
+  for (const optimistic of pendingOptimistic) {
+    merged.push(optimistic);
+  }
+
+  merged.sort((a, b) => {
+    const aSeq = typeof a.historySeq === "number" ? a.historySeq : Number.MAX_SAFE_INTEGER;
+    const bSeq = typeof b.historySeq === "number" ? b.historySeq : Number.MAX_SAFE_INTEGER;
+    if (aSeq !== bSeq) return aSeq - bSeq;
+    return a.timestamp - b.timestamp;
+  });
+
+  messagesBySession.set(sessionId, merged);
+  indexFilesForSession(sessionId, merged);
   loadedSessions.add(sessionId);
   notify();
 }

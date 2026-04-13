@@ -5,6 +5,7 @@ import type {
 import { getToken } from "@/api/client";
 import { API_BASE } from "@/lib/constants";
 import * as StreamManager from "./stream-manager";
+import { dispatchCrewFileEvent } from "./file-events";
 
 /** Strip tool progress lines and status composer lines from text. */
 function stripToolProgress(text: string): string {
@@ -187,18 +188,13 @@ export function createOctosAdapter(
               case "file": {
                 const fileEvent = event as { path?: string; filename?: string; caption?: string };
                 if (fileEvent.path && fileEvent.filename) {
-                  // Include token in URL for file downloads — browser GET requests
-                  // don't send Authorization headers for markdown link clicks
-                  const tok = getToken();
-                  const tokenParam = tok ? `?_token=${encodeURIComponent(tok)}` : "";
-                  const fileUrl = `${API_BASE}/api/files/${encodeURIComponent(fileEvent.path)}${tokenParam}`;
                   const caption = fileEvent.caption ? ` — ${fileEvent.caption}` : "";
-                  // Dispatch DOM event so UI can append file link even after stream ends
-                  window.dispatchEvent(
-                    new CustomEvent("crew:file", {
-                      detail: { fileUrl, filename: fileEvent.filename, caption, sessionId },
-                    }),
-                  );
+                  dispatchCrewFileEvent({
+                    sessionId,
+                    path: fileEvent.path,
+                    filename: fileEvent.filename,
+                    caption,
+                  });
                 }
                 break;
               }
