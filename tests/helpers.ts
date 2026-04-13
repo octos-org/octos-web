@@ -1,6 +1,8 @@
 import { type Page, expect } from "@playwright/test";
 
 const AUTH_TOKEN = process.env.AUTH_TOKEN || "e2e-test-2026";
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "octos-admin-2026";
+const BASE_URL = process.env.BASE_URL || "http://localhost:5174";
 
 // ── Selectors (data-testid based) ──────────────────────────────
 
@@ -334,4 +336,142 @@ export async function resetServer(page: Page) {
   });
   // Create a fresh session after reset so subsequent tests start clean
   await createNewSession(page);
+}
+
+// ── Server log helpers (via admin shell API) ─────────────────
+
+interface ShellResult {
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+  timed_out: boolean;
+}
+
+/**
+ * Execute a shell command on the server via the admin shell API.
+ * Returns null if the admin shell is not available.
+ */
+export async function adminShell(
+  command: string,
+  options: { timeoutSecs?: number; cwd?: string } = {},
+): Promise<ShellResult | null> {
+  try {
+    const resp = await fetch(`${BASE_URL}/api/admin/shell`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${ADMIN_TOKEN}`,
+      },
+      body: JSON.stringify({
+        command,
+        cwd: options.cwd,
+        timeout_secs: options.timeoutSecs ?? 10,
+      }),
+    });
+    if (!resp.ok) return null;
+    return (await resp.json()) as ShellResult;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Capture a log snapshot marker. Returns a timestamp that can be passed
+ * to `getLogsSince()` to retrieve only logs from after this point.
+ */
+export async function markLogPosition(): Promise<string> {
+  const result = await adminShell("date -u +%Y-%m-%dT%H:%M:%S");
+  return result?.stdout.trim() ?? new Date().toISOString().slice(0, 19);
+}
+
+/**
+ * Fetch server logs since a given timestamp, optionally filtered by pattern.
+ * Uses `tail` + `awk` to efficiently filter large log files.
+ */
+export async function getLogsSince(
+  since: string,
+  options: { pattern?: string; lines?: number } = {},
+): Promise<string[]> {
+  const lines = options.lines ?? 5000;
+  let cmd = `tail -${lines} ~/.octos/serve.log`;
+  if (options.pattern) {
+    cmd += ` | grep -i '${options.pattern.replace(/'/g, "'\\''")}'`;
+  }
+  // Filter by timestamp (logs are ISO 8601 prefixed)
+  cmd += ` | awk '$0 >= "${since}"'`;
+  const result = await adminShell(cmd, { timeoutSecs: 15 });
+  if (!result?.stdout) return [];
+  return result.stdout
+    .split("\n")
+    .map((line) => line.replace(/\x1b\[[0-9;]*m/g, "").trim())
+    .filter(Boolean);
+}
+
+/**
+ * Assert that a specific event appeared in server logs since the marker.
+ * Useful for verifying backend behavior that isn't visible in the UI.
+ *
+ * Example:
+ *   const mark = await markLogPosition();
+ *   await sendAndWait(page, "what's the weather in Paris?");
+ *   await assertLogContains(mark, "get_weather", "expected get_weather tool call");
+ */
+export async function assertLogContains(
+  since: string,
+  pattern: string,
+  message?: string,
+): Promise<void> {
+  const logs = await getLogsSince(since, { pattern });
+  if (logs.length === 0) {
+    const recent = await getLogsSince(since, { lines: 100 });
+    const context = recent.slice(-10).join("\n  ");
+    throw new Error(
+      `${message ?? `Expected log pattern "${pattern}" not found`}\n` +
+        `  Since: ${since}\n` +
+        `  Recent logs:\n  ${context}`,
+    );
+  }
+}
+
+/**
+ * Assert that NO matching log entries appeared since the marker.
+ * Useful for verifying that errors or unwanted behavior didn't occur.
+ */
+export async function assertLogDoesNotContain(
+  since: string,
+  pattern: string,
+  message?: string,
+): Promise<void> {
+  const logs = await getLogsSince(since, { pattern });
+  if (logs.length > 0) {
+    throw new Error(
+      `${message ?? `Unexpected log pattern "${pattern}" found`}\n` +
+        `  Since: ${since}\n` +
+        `  Matched:\n  ${logs.slice(0, 5).join("\n  ")}`,
+    );
+  }
+}
+
+/**
+ * Wait for a specific log pattern to appear, polling until timeout.
+ * Useful for background tasks that complete asynchronously.
+ */
+export async function waitForLog(
+  since: string,
+  pattern: string,
+  options: { timeoutMs?: number; pollMs?: number } = {},
+): Promise<string[]> {
+  const timeout = options.timeoutMs ?? 30_000;
+  const poll = options.pollMs ?? 2000;
+  const deadline = Date.now() + timeout;
+
+  while (Date.now() < deadline) {
+    const logs = await getLogsSince(since, { pattern });
+    if (logs.length > 0) return logs;
+    await new Promise((r) => setTimeout(r, poll));
+  }
+
+  throw new Error(
+    `Timed out waiting for log pattern "${pattern}" after ${timeout}ms`,
+  );
 }

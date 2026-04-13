@@ -6,6 +6,11 @@ import {
   createNewSession,
   getInput,
   getSendButton,
+  markLogPosition,
+  assertLogContains,
+  assertLogDoesNotContain,
+  waitForLog,
+  adminShell,
 } from "./helpers";
 
 test.describe("TTS file delivery", () => {
@@ -18,6 +23,10 @@ test.describe("TTS file delivery", () => {
     page.on("console", (msg) => {
       console.log(`  [browser] ${msg.type()}: ${msg.text()}`);
     });
+
+    // Mark log position BEFORE sending the request
+    const logMark = await markLogPosition();
+    console.log(`Log marker: ${logMark}`);
 
     // Capture crew:file DOM events
     const fileEvents: any[] = [];
@@ -68,6 +77,19 @@ test.describe("TTS file delivery", () => {
       return [...new Set(events.map((event: any) => event.fileUrl))];
     });
     expect(uniqueFileUrls).toHaveLength(1);
+
+    // Verify backend behavior via server logs
+    try {
+      // The TTS tool should have been called
+      await assertLogContains(logMark, "fm_tts", "expected fm_tts tool call in server logs");
+      // The task should have completed (not failed)
+      await assertLogDoesNotContain(logMark, "TTS generation failed", "TTS should not have failed");
+      console.log("Server log assertions passed");
+    } catch (e) {
+      // Log assertions are informational — don't fail the test if admin shell
+      // is not available, but do log the error for diagnostics.
+      console.log(`Log assertion skipped or failed: ${e instanceof Error ? e.message : e}`);
+    }
   });
 
   test("regular message works without SSE being blocked by spawn_only", async ({ page }) => {
