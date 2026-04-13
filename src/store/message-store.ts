@@ -522,6 +522,29 @@ export function appendHistoryMessages(sessionId: string, apiMessages: MessageInf
       continue;
     }
 
+    // Safety: check if a confirmed message with the same text+role already
+    // exists (e.g. two turns produced identical responses and the optimistic
+    // matcher consumed the wrong one). Merge into the existing message rather
+    // than adding a duplicate.
+    const confirmedDupe = list.findIndex(
+      (m) =>
+        typeof m.historySeq === "number" &&
+        m.role === converted.role &&
+        normalizeMessageText(m.text) === normalizeMessageText(converted.text) &&
+        typeof converted.historySeq === "number" &&
+        m.historySeq !== converted.historySeq &&
+        Math.abs(m.timestamp - converted.timestamp) < 120_000,
+    );
+    if (confirmedDupe !== -1) {
+      // Already have a confirmed message with same content — this is likely
+      // the correct instance. Skip adding a duplicate; the existing one is
+      // close enough (authoritative seq may differ but UI position is right).
+      if (typeof converted.historySeq === "number") {
+        maxSeq = Math.max(maxSeq, converted.historySeq);
+      }
+      continue;
+    }
+
     list.push(converted);
     if (typeof converted.historySeq === "number") {
       maxSeq = Math.max(maxSeq, converted.historySeq);
