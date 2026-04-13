@@ -31,6 +31,7 @@ export { SEL };
 
 export async function login(page: Page) {
   const profileId = process.env.PROFILE_ID || "dspfac";
+  const testEmail = process.env.TEST_EMAIL || "e2e@test.octos.io";
 
   // Inject test token and profile selection into localStorage
   await page.goto("/", { waitUntil: "domcontentloaded" });
@@ -59,6 +60,7 @@ export async function login(page: Page) {
     .catch(() => false);
   if (chatVisible) return;
 
+  // Auth Token tab (admin token login)
   const authTokenTab = page.locator("button", { hasText: "Auth Token" });
   if (await authTokenTab.isVisible().catch(() => false)) {
     await authTokenTab.click();
@@ -69,6 +71,35 @@ export async function login(page: Page) {
       .isVisible({ timeout: 10_000 })
       .catch(() => false);
     if (tokenChatVisible) return;
+  }
+
+  // OTP login with static token — use AUTH_TOKEN as the OTP code.
+  // The backend's static_tokens config allows this to bypass real OTP.
+  const emailInput = page.locator("input[placeholder*='email' i], input[placeholder*='Email' i]").first();
+  if (await emailInput.isVisible().catch(() => false)) {
+    // Send code (triggers OTP flow, but we'll use static token instead)
+    await emailInput.fill(testEmail);
+    const sendCodeBtn = page.locator("button", { hasText: /send code/i });
+    if (await sendCodeBtn.isVisible().catch(() => false)) {
+      await sendCodeBtn.click();
+      await page.waitForTimeout(1000);
+    }
+
+    // Enter static token as the verification code
+    const codeInput = page.locator("input[placeholder*='code' i], input[placeholder*='Code' i]").first();
+    if (await codeInput.isVisible({ timeout: 5_000 }).catch(() => false)) {
+      await codeInput.fill(AUTH_TOKEN);
+      const verifyBtn = page.locator("button", { hasText: /verify|sign in|log in/i });
+      if (await verifyBtn.isVisible().catch(() => false)) {
+        await verifyBtn.click();
+      }
+    }
+
+    const otpChatVisible = await page
+      .locator(SEL.chatInput)
+      .isVisible({ timeout: 10_000 })
+      .catch(() => false);
+    if (otpChatVisible) return;
   }
 
   // If still on dashboard, click "Start" on the gateway, then navigate to chat
