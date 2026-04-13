@@ -186,14 +186,18 @@ function mergeMessageFiles(primary: MessageFile[], fallback: MessageFile[]): Mes
 }
 
 function normalizeMessageText(text: string): string {
-  return text.replace(/\s+/gu, " ").trim();
-}
-
-function sameToolCallNames(a: ToolCallInfo[], b: ToolCallInfo[]): boolean {
-  if (a.length !== b.length) return false;
-  const aNames = [...a.map((tool) => tool.name)].sort();
-  const bNames = [...b.map((tool) => tool.name)].sort();
-  return aNames.every((name, index) => name === bNames[index]);
+  // Strip tool progress lines, streaming stats, and provider info that
+  // may differ between the SSE-streamed text and the API-stored text.
+  const lines = text.split("\n").filter((line) => {
+    const t = line.trim();
+    if (!t) return false;
+    if (/^[✓✗⚙📄✦]\s*[`\[]/u.test(t)) return false; // tool badges
+    if (/^via\s+\S+\s+\(/u.test(t)) return false; // provider info
+    if (/^\d+s(\s*·\s*[\d.]+k?[↑↓].*)?$/u.test(t)) return false; // streaming stats
+    if (t === "Processing") return false;
+    return true;
+  });
+  return lines.join(" ").replace(/\s+/gu, " ").trim();
 }
 
 function findOptimisticMatchIndex(list: Message[], authoritative: Message): number {
@@ -226,9 +230,8 @@ function findOptimisticMatchIndex(list: Message[], authoritative: Message): numb
     if (typeof candidate.historySeq === "number") continue;
     if (candidate.role !== authoritative.role) continue;
     if (normalizeMessageText(candidate.text) !== authoritativeText) continue;
-    // Don't require file match — files arrive asynchronously via SSE and
-    // may not be on the optimistic message yet when the API returns them.
-    if (!sameToolCallNames(candidate.toolCalls, authoritative.toolCalls)) continue;
+    // Don't require file or tool call match — both arrive asynchronously
+    // via SSE and may differ from the API version.
 
     const timeDelta = Math.abs(candidate.timestamp - authoritativeTime);
     if (timeDelta > 60_000) continue;
