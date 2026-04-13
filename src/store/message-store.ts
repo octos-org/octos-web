@@ -297,7 +297,10 @@ function indexFilesForSession(sessionId: string, messages: Message[]): void {
 function replaceHistoryFromApi(sessionId: string, apiMessages: MessageInfo[]): void {
   const existing = messagesBySession.get(sessionId) ?? [];
   const consumedOptimisticIndices = new Set<number>();
-  const converted = apiMessages
+
+  // Phase 1: Convert API messages to local format, merging with optimistic
+  // matches to preserve local-only state (id, meta, files from SSE).
+  const authoritative = apiMessages
     .map(convertApiMessage)
     .filter((message): message is Message => message !== null)
     .map((message) => {
@@ -323,16 +326,43 @@ function replaceHistoryFromApi(sessionId: string, apiMessages: MessageInfo[]): v
       };
     });
 
-  const pendingOptimistic = existing.filter((message, index) => {
-    if (consumedOptimisticIndices.has(index)) return false;
-    return typeof message.historySeq !== "number";
-  });
-
-  const merged = [...converted];
-  for (const optimistic of pendingOptimistic) {
-    merged.push(optimistic);
+  // Phase 2: Collect unconsumed optimistic messages — these are local-only
+  // messages the server hasn't seen yet (user just typed, or still streaming).
+  // Drop stale completed messages that SHOULD have matched but didn't (e.g.
+  // the server returned a slightly different text after tool-progress cleanup).
+  // Keep streaming messages unconditionally — they're actively being built.
+  const pending: Message[] = [];
+  for (let i = 0; i < existing.length; i++) {
+    if (consumedOptimisticIndices.has(i)) continue;
+    const msg = existing[i];
+    // Already confirmed by server in a prior sync — server is authoritative.
+    if (typeof msg.historySeq === "number") continue;
+    // Streaming or has local-only content — keep it.
+    if (msg.status === "streaming" || msg.status === "error") {
+      pending.push(msg);
+      continue;
+    }
+    // Completed optimistic user message not yet in API — keep if recent.
+    if (msg.role === "user") {
+      const age = Date.now() - msg.timestamp;
+      if (age < 120_000) {
+        pending.push(msg);
+      }
+      continue;
+    }
+    // Completed assistant message not matched — keep only if it has
+    // meaningful content (files or text) that may not be in API yet.
+    if (msg.files.length > 0 || msg.text.trim().length > 0) {
+      const age = Date.now() - msg.timestamp;
+      if (age < 30_000) {
+        pending.push(msg);
+      }
+    }
   }
 
+  // Phase 3: Merge and sort — authoritative first by seq, pending at the end
+  // ordered by timestamp.
+  const merged = [...authoritative, ...pending];
   merged.sort((a, b) => {
     const aSeq = typeof a.historySeq === "number" ? a.historySeq : Number.MAX_SAFE_INTEGER;
     const bSeq = typeof b.historySeq === "number" ? b.historySeq : Number.MAX_SAFE_INTEGER;
