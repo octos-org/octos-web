@@ -241,6 +241,9 @@ function findOptimisticMatchIndex(list: Message[], authoritative: Message): numb
   return bestIndex;
 }
 
+/** Task completion notifications are status messages, not real responses. */
+const TASK_COMPLETION_RE = /^[✓✗]\s+\S+\s+(completed|failed)\s*\(/u;
+
 function convertApiMessage(m: MessageInfo): Message | null {
   if (m.role === "tool") return null;
   const role = m.role === "user" ? "user" : m.role === "system" ? "system" : "assistant";
@@ -253,6 +256,11 @@ function convertApiMessage(m: MessageInfo): Message | null {
   const files = mergeMessageFiles(parsedLegacy.files, mediaFiles);
   const text = parsedLegacy.text;
   if (!text.trim() && files.length === 0) return null;
+  // Skip task completion status messages (e.g. "✓ fm_tts completed (file.mp3)")
+  // — the file is already delivered via the media field on a separate message.
+  if (role === "assistant" && files.length === 0 && TASK_COMPLETION_RE.test(text.trim())) {
+    return null;
+  }
 
   const toolCalls: ToolCallInfo[] =
     m.tool_calls?.filter((tc) => tc.name).map((tc) => ({
