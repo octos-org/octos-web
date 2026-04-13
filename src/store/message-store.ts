@@ -189,13 +189,6 @@ function normalizeMessageText(text: string): string {
   return text.replace(/\s+/gu, " ").trim();
 }
 
-function sameFilePaths(a: MessageFile[], b: MessageFile[]): boolean {
-  if (a.length !== b.length) return false;
-  const aPaths = [...a.map((file) => file.path)].sort();
-  const bPaths = [...b.map((file) => file.path)].sort();
-  return aPaths.every((path, index) => path === bPaths[index]);
-}
-
 function sameToolCallNames(a: ToolCallInfo[], b: ToolCallInfo[]): boolean {
   if (a.length !== b.length) return false;
   const aNames = [...a.map((tool) => tool.name)].sort();
@@ -233,7 +226,8 @@ function findOptimisticMatchIndex(list: Message[], authoritative: Message): numb
     if (typeof candidate.historySeq === "number") continue;
     if (candidate.role !== authoritative.role) continue;
     if (normalizeMessageText(candidate.text) !== authoritativeText) continue;
-    if (!sameFilePaths(candidate.files, authoritative.files)) continue;
+    // Don't require file match — files arrive asynchronously via SSE and
+    // may not be on the optimistic message yet when the API returns them.
     if (!sameToolCallNames(candidate.toolCalls, authoritative.toolCalls)) continue;
 
     const timeDelta = Math.abs(candidate.timestamp - authoritativeTime);
