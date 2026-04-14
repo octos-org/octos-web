@@ -10,6 +10,14 @@ import {
   getSlidesProject,
   upsertSlidesProject,
 } from "../store";
+import type { SlidesProject } from "../types";
+
+function shouldHydrateProject(project: SlidesProject | undefined): boolean {
+  if (!project) return true;
+  if (!project.scaffolded) return false;
+  if (!project.slug) return true;
+  return project.slides.length === 0 || !project.pptxUrl;
+}
 
 function SlidesEditorContent() {
   const { project } = useSlides();
@@ -61,9 +69,10 @@ export function SlidesEditorPage() {
   const navigate = useNavigate();
 
   const project = id ? getSlidesProject(id) : undefined;
+  const needsHydration = shouldHydrateProject(project);
 
   useEffect(() => {
-    if (!id || project) return;
+    if (!id || !needsHydration) return;
     const sessionId = id;
 
     let stopped = false;
@@ -76,6 +85,7 @@ export function SlidesEditorPage() {
         if (stopped) return;
 
         if (!nextProject) {
+          if (project) return;
           setHydrateError("Slides session unavailable.");
           return;
         }
@@ -102,7 +112,7 @@ export function SlidesEditorPage() {
     return () => {
       stopped = true;
     };
-  }, [id, navigate, project]);
+  }, [id, navigate, needsHydration, project]);
 
   if (!id) return null;
 
