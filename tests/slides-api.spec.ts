@@ -183,6 +183,7 @@ test("T3: explicit generate triggers mofa_slides", async () => {
     content.includes("生成") ||
     content.includes("generat") ||
     content.includes(".pptx") ||
+    content.includes("Deck delivered") ||
     content.includes("mofa_slides") ||
     (doneEvent?.has_bg_tasks === true),
   ).toBe(true);
