@@ -1,7 +1,12 @@
 import { buildApiHeaders } from "@/api/client";
 import type { ContentEntry } from "@/api/content";
 import { buildFileUrl } from "@/api/files";
-import { getSessionFiles, listSessions } from "@/api/sessions";
+import {
+  getSessionFiles,
+  getSessionWorkspaceContract,
+  listSessions,
+  type SessionWorkspaceContractInfo,
+} from "@/api/sessions";
 import { API_BASE } from "@/lib/constants";
 import type { Slide, SlidesProject } from "./types";
 
@@ -29,6 +34,8 @@ export interface SlidesRenderManifest {
   slides: SlidesManifestSlide[];
   manifestPath: string;
 }
+
+export type SlidesWorkspaceContract = SessionWorkspaceContractInfo;
 
 interface ListSlidesFilesOptions {
   sessionId?: string;
@@ -161,6 +168,19 @@ export async function hydrateSlidesProjectFromSession(
   }
 
   return null;
+}
+
+export async function fetchSlidesWorkspaceContract(
+  sessionId: string,
+  slug: string,
+): Promise<SlidesWorkspaceContract | null> {
+  const statuses = await getSessionWorkspaceContract(sessionId);
+  const slides = statuses.filter((status) => status.kind === "slides");
+  return (
+    slides.find((status) => status.slug === slug) ??
+    slides[0] ??
+    null
+  );
 }
 
 export function slidesFileToContentEntry(file: SlidesFileEntry): ContentEntry {

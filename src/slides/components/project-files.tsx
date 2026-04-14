@@ -1,11 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
+  AlertTriangle,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   File,
   FileText,
   FolderClosed,
   FolderOpen,
+  GitCommitHorizontal,
   Image as ImageIcon,
   Music,
   Presentation,
@@ -16,10 +19,12 @@ import type { ContentEntry } from "@/api/content";
 import { downloadContent } from "@/api/content";
 
 import {
+  fetchSlidesWorkspaceContract,
   fetchSlidesManifest,
   inferContentCategory,
   listSlidesFiles,
   slidesFileToContentEntry,
+  type SlidesWorkspaceContract,
   type SlidesRenderManifest,
   type SlidesFileEntry,
 } from "../api";
@@ -259,6 +264,7 @@ function fileIcon(file: SlidesFileEntry) {
 export function ProjectFiles({ slug, title, sessionId, onOpenFile, onRename }: ProjectFilesProps) {
   const [files, setFiles] = useState<SlidesFileEntry[]>([]);
   const [manifest, setManifest] = useState<SlidesRenderManifest | null>(null);
+  const [contract, setContract] = useState<SlidesWorkspaceContract | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
   const requestedDirs = useMemo(
@@ -276,11 +282,15 @@ export function ProjectFiles({ slug, title, sessionId, onOpenFile, onRename }: P
 
     async function load() {
       try {
-        const nextFiles = await listSlidesFiles(requestedDirs, { sessionId });
+        const [nextFiles, nextContract] = await Promise.all([
+          listSlidesFiles(requestedDirs, { sessionId }),
+          fetchSlidesWorkspaceContract(sessionId, slug).catch(() => null),
+        ]);
         const nextManifest = await fetchSlidesManifest(slug, nextFiles);
         if (!stopped) {
           setFiles(nextFiles);
           setManifest(nextManifest);
+          setContract(nextContract);
           setError(null);
         }
       } catch (err) {
@@ -379,18 +389,33 @@ export function ProjectFiles({ slug, title, sessionId, onOpenFile, onRename }: P
 
   const tree = useMemo(() => buildTree(files, slug), [files, slug]);
 
+  let body: ReactNode;
   if (error) {
-    return (
+    body = (
       <div className="shell-empty-state flex h-full items-center justify-center rounded-[12px] px-4 text-center text-sm text-muted">
         Failed to load project files: {error}
       </div>
     );
-  }
-
-  if (files.length === 0) {
-    return (
+  } else if (files.length === 0) {
+    body = (
       <div className="shell-empty-state flex h-full items-center justify-center rounded-[12px] px-4 text-center text-sm text-muted">
         Project files will appear here after the backend scaffold finishes.
+      </div>
+    );
+  } else {
+    body = (
+      <div className="space-y-1">
+        {tree.map((node) => (
+          <TreeNodeView
+            key={node.key}
+            node={node}
+            depth={0}
+            entryMap={entryMap}
+            manifestImageEntries={manifestImageEntries}
+            manifestImagePaths={manifestImagePaths}
+            onOpenFile={onOpenFile}
+          />
+        ))}
       </div>
     );
   }
@@ -401,23 +426,84 @@ export function ProjectFiles({ slug, title, sessionId, onOpenFile, onRename }: P
         <div className="glass-toolbar rounded-[14px] px-4 py-4">
           <div className="shell-kicker">Project Files</div>
           <EditableTitle value={title || slug} onSave={onRename} />
+          <WorkspaceContractCard contract={contract} />
         </div>
       </div>
       <div className="flex-1 overflow-y-auto px-2 pb-3 pt-2">
-        <div className="space-y-1">
-          {tree.map((node) => (
-            <TreeNodeView
-              key={node.key}
-              node={node}
-              depth={0}
-              entryMap={entryMap}
-              manifestImageEntries={manifestImageEntries}
-              manifestImagePaths={manifestImagePaths}
-              onOpenFile={onOpenFile}
-            />
-          ))}
+        {body}
+      </div>
+    </div>
+  );
+}
+
+function WorkspaceContractCard({
+  contract,
+}: {
+  contract: SlidesWorkspaceContract | null;
+}) {
+  if (!contract) {
+    return (
+      <div className="mt-3 rounded-[12px] border border-border/60 bg-surface-container/70 px-3 py-3 text-xs text-muted">
+        Workspace contract status is loading.
+      </div>
+    );
+  }
+
+  const failedChecks = [...contract.turn_end_checks, ...contract.completion_checks].filter(
+    (check) => !check.passed,
+  );
+  const statusTone = contract.error
+    ? "border-amber-400/40 bg-amber-500/10 text-amber-100"
+    : contract.ready
+      ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-100"
+      : "border-border/60 bg-surface-container/70 text-text";
+  const StatusIcon = contract.error || !contract.ready ? AlertTriangle : CheckCircle2;
+
+  return (
+    <div className={`mt-3 rounded-[12px] border px-3 py-3 text-xs ${statusTone}`}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <StatusIcon size={14} className="shrink-0" />
+          <span className="font-semibold">
+            {contract.error ? "Contract Error" : contract.ready ? "Contract Ready" : "Contract Incomplete"}
+          </span>
+        </div>
+        <div className="flex items-center gap-1 text-[10px] uppercase tracking-[0.16em] text-muted">
+          <GitCommitHorizontal size={12} />
+          <span>{contract.revision || "no-rev"}</span>
+          {contract.dirty ? <span className="text-amber-300">dirty</span> : null}
         </div>
       </div>
+
+      <div className="mt-2 flex flex-wrap gap-2 text-[10px]">
+        {contract.artifacts.map((artifact) => (
+          <span
+            key={artifact.name}
+            className={`rounded-full px-2 py-1 ${
+              artifact.present
+                ? "bg-emerald-500/15 text-emerald-200"
+                : "bg-amber-500/15 text-amber-200"
+            }`}
+          >
+            {artifact.name}: {artifact.present ? "ok" : "missing"}
+          </span>
+        ))}
+      </div>
+
+      {failedChecks.length > 0 ? (
+        <div className="mt-3 space-y-1 text-[11px] text-amber-100">
+          {failedChecks.slice(0, 4).map((check) => (
+            <div key={check.spec} className="rounded-[10px] bg-black/15 px-2 py-1.5">
+              <div className="font-medium">{check.spec}</div>
+              <div className="mt-0.5 text-amber-100/80">{check.reason || "validation failed"}</div>
+            </div>
+          ))}
+        </div>
+      ) : contract.error ? (
+        <div className="mt-3 rounded-[10px] bg-black/15 px-2 py-1.5 text-[11px] text-amber-100/85">
+          {contract.error}
+        </div>
+      ) : null}
     </div>
   );
 }

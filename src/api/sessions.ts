@@ -8,6 +8,33 @@ export interface SessionFileInfo {
   modified_at: string;
 }
 
+export interface SessionWorkspaceCheckInfo {
+  spec: string;
+  passed: boolean;
+  reason?: string | null;
+}
+
+export interface SessionWorkspaceArtifactInfo {
+  name: string;
+  pattern: string;
+  present: boolean;
+  matches: string[];
+}
+
+export interface SessionWorkspaceContractInfo {
+  repo_label: string;
+  kind: string;
+  slug: string;
+  policy_managed: boolean;
+  revision?: string | null;
+  dirty: boolean;
+  ready: boolean;
+  error?: string | null;
+  turn_end_checks: SessionWorkspaceCheckInfo[];
+  completion_checks: SessionWorkspaceCheckInfo[];
+  artifacts: SessionWorkspaceArtifactInfo[];
+}
+
 export async function listSessions(): Promise<SessionInfo[]> {
   return request("/api/sessions");
 }
@@ -67,6 +94,14 @@ export async function getSessionFiles(
   sessionId: string,
 ): Promise<SessionFileInfo[]> {
   return request(`/api/sessions/${encodeURIComponent(sessionId)}/files`);
+}
+
+export async function getSessionWorkspaceContract(
+  sessionId: string,
+): Promise<SessionWorkspaceContractInfo[]> {
+  return request(
+    `/api/sessions/${encodeURIComponent(sessionId)}/workspace-contract`,
+  );
 }
 
 export async function getSessionTasks(
