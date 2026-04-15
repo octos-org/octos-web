@@ -1,14 +1,27 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import { useSession } from "@/runtime/session-context";
 import * as StreamManager from "@/runtime/stream-manager";
+import { useAllTasksBySession } from "@/store/task-store";
 import { Plus, MessageSquare, Trash2, Check, X, Loader2 } from "lucide-react";
 
 export function SessionList() {
   const { sessions, currentSessionId, activeTaskOnServer, switchSession, createSession, removeSession } =
     useSession();
+  const taskEntries = useAllTasksBySession();
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [streamingSessions, setStreamingSessions] = useState<Set<string>>(new Set());
+
+  const backgroundTaskSessions = useMemo(() => {
+    const ids = new Set<string>();
+    for (const [sessionId, tasks] of taskEntries) {
+      if (tasks.some((task) => task.status === "spawned" || task.status === "running")) {
+        ids.add(sessionId);
+      }
+    }
+    if (activeTaskOnServer) ids.add(currentSessionId);
+    return ids;
+  }, [activeTaskOnServer, currentSessionId, taskEntries]);
 
   useEffect(() => {
     const sync = () => {
@@ -64,7 +77,7 @@ export function SessionList() {
             {sessions.map((s) => {
               const isBusy =
                 streamingSessions.has(s.id) ||
-                (s.id === currentSessionId && activeTaskOnServer);
+                backgroundTaskSessions.has(s.id);
               const isActive = s.id === currentSessionId;
               return (
                 <div

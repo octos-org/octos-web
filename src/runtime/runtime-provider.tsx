@@ -64,9 +64,12 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
         TaskStore.replaceTasks(currentSessionId, tasks);
         const hasActiveTasks = tasks.some(isTaskActive);
         const hasBackgroundWork =
-          status.active || status.has_deferred_files || hasActiveTasks;
+          status.active || status.has_deferred_files || status.has_bg_tasks || hasActiveTasks;
 
-        setServerTaskActive(currentSessionId, hasActiveTasks || status.has_deferred_files);
+        setServerTaskActive(
+          currentSessionId,
+          hasActiveTasks || status.has_deferred_files || status.has_bg_tasks,
+        );
 
         // Resume an active stream the server is still working on.
         if (status.active && !StreamManager.isActive(currentSessionId)) {

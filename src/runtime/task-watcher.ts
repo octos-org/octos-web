@@ -12,6 +12,8 @@ import {
   getSessionTasks,
   getMessages as fetchSessionMessages,
 } from "@/api/sessions";
+import { buildApiHeaders } from "@/api/client";
+import { API_BASE } from "@/lib/constants";
 import * as MessageStore from "@/store/message-store";
 import * as TaskStore from "@/store/task-store";
 import * as FileStore from "@/store/file-store";
@@ -33,6 +35,8 @@ interface WatchedSession {
   knownPaths: Set<string>;
   /** Previous task states — used to detect completion transitions. */
   prevActiveIds: Set<string>;
+  /** Dedicated background event stream for this session. */
+  eventAbort?: AbortController;
 }
 
 const watchedSessions = new Map<string, WatchedSession>();
@@ -44,6 +48,7 @@ export function watchSession(sessionId: string): void {
     // Already watched — reset post-completion counter in case new tasks spawned.
     const entry = watchedSessions.get(sessionId)!;
     entry.postCompletionRemaining = POST_COMPLETION_POLLS;
+    void pollSession(sessionId, entry);
     return;
   }
 
@@ -59,11 +64,14 @@ export function watchSession(sessionId: string): void {
     prevActiveIds: new Set(),
   });
 
+  ensureEventStream(sessionId);
   ensurePolling();
 }
 
 /** Stop watching a session (e.g. on session delete). */
 export function unwatchSession(sessionId: string): void {
+  const entry = watchedSessions.get(sessionId);
+  entry?.eventAbort?.abort();
   watchedSessions.delete(sessionId);
   if (watchedSessions.size === 0) stopPolling();
 }
@@ -101,6 +109,95 @@ function emitNewFileEvents(
   }
 }
 
+function applyCommittedMessages(
+  sessionId: string,
+  entry: WatchedSession,
+  messages: MessageInfo[],
+): void {
+  if (messages.length === 0) return;
+  MessageStore.appendHistoryMessages(sessionId, messages);
+  emitNewFileEvents(sessionId, messages, entry.knownPaths);
+  void FileStore.loadSessionFiles(sessionId);
+}
+
+function ensureEventStream(sessionId: string): void {
+  const entry = watchedSessions.get(sessionId);
+  if (!entry || entry.eventAbort) return;
+
+  const abort = new AbortController();
+  entry.eventAbort = abort;
+
+  void (async () => {
+    try {
+      const response = await fetch(
+        `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/events/stream`,
+        {
+          headers: buildApiHeaders(),
+          signal: abort.signal,
+        },
+      );
+      if (!response.ok || !response.body) return;
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const data = line.slice(6).trim();
+            if (!data || data === "[DONE]") continue;
+
+            let event:
+              | { type: "task_status"; task: BackgroundTaskInfo }
+              | { type: "session_result"; message: MessageInfo }
+              | { type: string };
+            try {
+              event = JSON.parse(data);
+            } catch {
+              continue;
+            }
+
+            const current = watchedSessions.get(sessionId);
+            if (!current) return;
+
+            if (event.type === "task_status" && "task" in event) {
+              TaskStore.mergeTask(sessionId, event.task);
+              current.postCompletionRemaining = POST_COMPLETION_POLLS;
+              continue;
+            }
+
+            if (event.type === "session_result" && "message" in event) {
+              applyCommittedMessages(sessionId, current, [event.message]);
+              current.postCompletionRemaining = POST_COMPLETION_POLLS;
+            }
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    } catch {
+      // Polling remains the fallback when the live background stream is unavailable.
+    } finally {
+      const current = watchedSessions.get(sessionId);
+      if (current && current.eventAbort === abort) {
+        current.eventAbort = undefined;
+        if (current.prevActiveIds.size > 0 || current.postCompletionRemaining > 0) {
+          setTimeout(() => ensureEventStream(sessionId), 1000);
+        }
+      }
+    }
+  })();
+}
+
 async function pollAll(): Promise<void> {
   const entries = [...watchedSessions.entries()];
   if (entries.length === 0) {
@@ -113,6 +210,7 @@ async function pollAll(): Promise<void> {
 
 async function pollSession(sessionId: string, entry: WatchedSession): Promise<void> {
   try {
+    ensureEventStream(sessionId);
     const tasks = await getSessionTasks(sessionId).catch(() => [] as BackgroundTaskInfo[]);
     TaskStore.replaceTasks(sessionId, tasks);
 
@@ -136,13 +234,7 @@ async function pollSession(sessionId: string, entry: WatchedSession): Promise<vo
       MessageStore.getMaxHistorySeq(sessionId),
     );
 
-    if (messages.length > 0) {
-      MessageStore.appendHistoryMessages(sessionId, messages);
-      emitNewFileEvents(sessionId, messages, entry.knownPaths);
-    }
-
-    // Also refresh file store for the file panel.
-    void FileStore.loadSessionFiles(sessionId);
+    applyCommittedMessages(sessionId, entry, messages);
 
     // Decide whether to keep watching.
     if (hasActive) {
@@ -151,6 +243,7 @@ async function pollSession(sessionId: string, entry: WatchedSession): Promise<vo
       entry.postCompletionRemaining--;
     } else {
       // All tasks terminal, post-completion syncs done — stop watching.
+      entry.eventAbort?.abort();
       watchedSessions.delete(sessionId);
       if (watchedSessions.size === 0) stopPolling();
     }

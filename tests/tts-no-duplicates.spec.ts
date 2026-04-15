@@ -13,8 +13,8 @@ import {
   createNewSession,
   getInput,
   getSendButton,
-  markLogPosition,
-  adminShell,
+  getRenderedAudioAttachments,
+  getRenderedThreadBubbles,
 } from "./helpers";
 
 /** Extract all assistant bubble texts from the page. */
@@ -38,11 +38,6 @@ async function getUserBubbles(page: import("@playwright/test").Page) {
   });
 }
 
-/** Check if text contains an audio player element. */
-async function countAudioPlayers(page: import("@playwright/test").Page) {
-  return page.locator("audio").count();
-}
-
 /** Normalize text for duplicate comparison — strip timestamps, whitespace, tool badges. */
 function normalizeForComparison(text: string): string {
   return text
@@ -51,6 +46,23 @@ function normalizeForComparison(text: string): string {
     .replace(/via\s+\S+\s*\([^)]*\)/g, "") // provider info
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function findDuplicateAudioAttachments(
+  attachments: { filename: string; path: string; text: string }[],
+): { key: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const attachment of attachments) {
+    const key =
+      attachment.path ||
+      attachment.filename ||
+      normalizeForComparison(attachment.text);
+    if (!key) continue;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .filter(([, count]) => count > 1)
+    .map(([key, count]) => ({ key, count }));
 }
 
 /** Find duplicate texts among assistant bubbles. */
@@ -92,16 +104,17 @@ test.describe("TTS duplicate message detection", () => {
 
     // Wait for file delivery (up to 45s)
     console.log("Step 2: Wait for file delivery");
-    let hasAudio = false;
+    let audioAttachments = [] as Awaited<
+      ReturnType<typeof getRenderedAudioAttachments>
+    >;
     for (let i = 0; i < 15; i++) {
       await page.waitForTimeout(3000);
-      const audioCount = await countAudioPlayers(page);
+      audioAttachments = await getRenderedAudioAttachments(page);
       const bubbles = await getAssistantBubbles(page);
       console.log(
-        `  ${i * 3}s: ${bubbles.length} assistant bubbles, ${audioCount} audio players`,
+        `  ${i * 3}s: ${bubbles.length} assistant bubbles, ${audioAttachments.length} audio attachments`,
       );
-      if (audioCount > 0) {
-        hasAudio = true;
+      if (audioAttachments.length > 0) {
         break;
       }
     }
@@ -114,35 +127,47 @@ test.describe("TTS duplicate message detection", () => {
     console.log("Step 4: Check for duplicates");
     const userBubbles = await getUserBubbles(page);
     const assistantBubbles = await getAssistantBubbles(page);
-    const audioCount = await countAudioPlayers(page);
+    audioAttachments = await getRenderedAudioAttachments(page);
+    const threadBubbles = await getRenderedThreadBubbles(page);
 
     console.log(`  User bubbles: ${userBubbles.length}`);
     console.log(`  Assistant bubbles: ${assistantBubbles.length}`);
-    console.log(`  Audio players: ${audioCount}`);
+    console.log(`  Audio attachments: ${audioAttachments.length}`);
     for (const [i, b] of assistantBubbles.entries()) {
       console.log(`  [assistant ${i}] ${b.text.slice(0, 100)}`);
+    }
+    for (const [i, attachment] of audioAttachments.entries()) {
+      console.log(
+        `  [audio ${i}] filename=${attachment.filename} path=${attachment.path}`,
+      );
     }
 
     // Check for duplicates
     const dupes = findDuplicates(assistantBubbles);
+    const duplicateAudio = findDuplicateAudioAttachments(audioAttachments);
     if (dupes.length > 0) {
       console.log("DUPLICATE DETECTED:");
       for (const d of dupes) {
         console.log(`  "${d.text}" appears ${d.count}x`);
       }
     }
+    if (duplicateAudio.length > 0) {
+      console.log("DUPLICATE AUDIO ATTACHMENT DETECTED:");
+      for (const d of duplicateAudio) {
+        console.log(`  "${d.key}" appears ${d.count}x`);
+      }
+    }
 
     // Assertions
     expect(userBubbles.length).toBe(1); // exactly 1 user message
     expect(dupes).toHaveLength(0); // no duplicate assistant bubbles
+    expect(duplicateAudio).toHaveLength(0); // no duplicate rendered audio cards
+    expect(threadBubbles[0]?.role).toBe("user"); // question must stay before answer
     // Should have at most: 1 response + 1 file player bubble = 2 assistant bubbles
     // (the task completion notification should be filtered)
     expect(assistantBubbles.length).toBeLessThanOrEqual(3);
 
-    // If audio was delivered, verify it's there
-    if (hasAudio) {
-      expect(audioCount).toBeGreaterThan(0);
-    }
+    expect(audioAttachments.length).toBe(1);
   });
 
   test("TTS then weather: messages stay ordered, no duplicates", async ({
@@ -176,8 +201,8 @@ test.describe("TTS duplicate message detection", () => {
     console.log("Step 3: Wait for file delivery (30s)");
     for (let i = 0; i < 10; i++) {
       await page.waitForTimeout(3000);
-      const audioCount = await countAudioPlayers(page);
-      if (audioCount > 0) {
+      const audioAttachments = await getRenderedAudioAttachments(page);
+      if (audioAttachments.length > 0) {
         console.log(`  Audio arrived at ${i * 3}s`);
         break;
       }
@@ -210,6 +235,9 @@ test.describe("TTS duplicate message detection", () => {
       .filter((i) => i >= 0);
     expect(userIndices.length).toBe(2); // TTS question + weather question
 
+    // No assistant bubble should appear before the first user bubble.
+    expect(allBubbles[0]?.role).toBe("user");
+
     // First user message should be before second
     expect(userIndices[0]).toBeLessThan(userIndices[1]);
 
@@ -225,6 +253,69 @@ test.describe("TTS duplicate message detection", () => {
       }
     }
     expect(dupes).toHaveLength(0);
+  });
+
+  test("podcast request: question stays before answer and audio card is unique after reload", async ({
+    page,
+  }) => {
+    const prompt =
+      "不要搜索，直接生成一个简短测试播客并把音频发回会话。脚本： [杨幂 - clone:yangmi, professional] 大家好。 [窦文涛 - clone:douwentao, professional] 这里是测试播客。 [杨幂 - clone:yangmi, professional] 今天只做一次快速验证。 [窦文涛 - clone:douwentao, professional] 感谢收听。";
+
+    console.log("Step 1: Send podcast request");
+    await sendAndWait(page, prompt, {
+      label: "podcast-order-test",
+      maxWait: 90_000,
+    });
+
+    console.log("Step 2: Wait for podcast audio delivery");
+    let audioAttachments = [] as Awaited<
+      ReturnType<typeof getRenderedAudioAttachments>
+    >;
+    for (let i = 0; i < 30; i++) {
+      await page.waitForTimeout(3000);
+      audioAttachments = await getRenderedAudioAttachments(page);
+      console.log(
+        `  ${i * 3}s: ${audioAttachments.length} audio attachment(s)`,
+      );
+      if (audioAttachments.length > 0) {
+        break;
+      }
+    }
+
+    expect(audioAttachments.length).toBeGreaterThan(0);
+
+    console.log("Step 3: Reload and verify final rendered history");
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForSelector(SEL.chatInput, { timeout: 15_000 });
+    await page.waitForTimeout(8000);
+
+    const threadBubbles = await getRenderedThreadBubbles(page);
+    audioAttachments = await getRenderedAudioAttachments(page);
+    const duplicateAudio = findDuplicateAudioAttachments(audioAttachments);
+
+    for (const [i, bubble] of threadBubbles.entries()) {
+      console.log(
+        `  [${i}] ${bubble.role}: ${bubble.text.slice(0, 120)} audio=${bubble.audioAttachments.length}`,
+      );
+    }
+    for (const [i, attachment] of audioAttachments.entries()) {
+      console.log(
+        `  [audio ${i}] filename=${attachment.filename} path=${attachment.path}`,
+      );
+    }
+
+    const promptIndex = threadBubbles.findIndex(
+      (bubble) =>
+        bubble.role === "user" && bubble.text.includes("不要搜索，直接生成一个简短测试播客"),
+    );
+    const firstAssistantIndex = threadBubbles.findIndex(
+      (bubble) => bubble.role === "assistant",
+    );
+
+    expect(promptIndex).toBe(0);
+    expect(firstAssistantIndex).toBeGreaterThan(promptIndex);
+    expect(duplicateAudio).toHaveLength(0);
+    expect(audioAttachments.length).toBe(1);
   });
 
   test("message store has no duplicate historySeq", async ({ page }) => {

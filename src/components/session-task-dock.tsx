@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type { BackgroundTaskInfo as TaskInfo } from "@/api/types";
-import { useTasks } from "@/store/task-store";
+import { useAllTasksBySession } from "@/store/task-store";
 import { useSession } from "@/runtime/session-context";
 
 function isTaskActive(task: TaskInfo): boolean {
@@ -20,7 +20,7 @@ function taskDisplayName(toolName: string): string {
   }
 }
 
-function buildSummary(tasks: TaskInfo[]): {
+function buildSessionSummary(tasks: TaskInfo[]): {
   label: string;
   detail: string;
   active: boolean;
@@ -62,11 +62,45 @@ function buildSummary(tasks: TaskInfo[]): {
 
 export function SessionTaskIndicator() {
   const { currentSessionId } = useSession();
-  const tasks = useTasks(currentSessionId);
+  const taskEntries = useAllTasksBySession();
 
   const summary = useMemo(
-    () => buildSummary(tasks),
-    [tasks],
+    () => {
+      const currentTasks =
+        taskEntries.find(([sessionId]) => sessionId === currentSessionId)?.[1] ?? [];
+      const currentSummary = buildSessionSummary(currentTasks);
+      if (currentSummary) return currentSummary;
+
+      const otherTasks = taskEntries
+        .filter(([sessionId]) => sessionId !== currentSessionId)
+        .flatMap(([, tasks]) => tasks);
+
+      const activeElsewhere = otherTasks.filter(isTaskActive);
+      if (activeElsewhere.length > 0) {
+        return {
+          label:
+            activeElsewhere.length === 1
+              ? `${taskDisplayName(activeElsewhere[0].tool_name)} running elsewhere`
+              : `${activeElsewhere.length} tasks running elsewhere`,
+          detail: "Background work continues in another session.",
+          active: true,
+          failed: false,
+        };
+      }
+
+      const failedElsewhere = otherTasks.find((task) => task.status === "failed");
+      if (failedElsewhere) {
+        return {
+          label: `${taskDisplayName(failedElsewhere.tool_name)} failed elsewhere`,
+          detail: failedElsewhere.error || "Background task needs attention.",
+          active: false,
+          failed: true,
+        };
+      }
+
+      return null;
+    },
+    [currentSessionId, taskEntries],
   );
 
   if (!summary) return null;

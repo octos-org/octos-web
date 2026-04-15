@@ -162,4 +162,8 @@ export type SseEvent =
         session_key?: string;
       };
     }
+  | {
+      type: "session_result";
+      message: MessageInfo;
+    }
   | { type: "other" };
