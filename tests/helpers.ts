@@ -33,9 +33,10 @@ export async function login(page: Page) {
   const profileId = process.env.PROFILE_ID || "dspfac";
   const testEmail = process.env.TEST_EMAIL || "dspfac@gmail.com";
 
-  // Inject test token and profile selection into localStorage
-  await page.goto("/", { waitUntil: "domcontentloaded" });
-  await page.evaluate(
+  // Inject test token and profile selection into localStorage.
+  // On live scoped hosts, "/" often redirects to "/login" before the SPA can
+  // read localStorage, so jump directly to "/chat" after seeding state.
+  await page.addInitScript(
     ({ token, profile }) => {
       localStorage.setItem("octos_session_token", token);
       localStorage.setItem("octos_auth_token", token);
@@ -43,7 +44,7 @@ export async function login(page: Page) {
     },
     { token: AUTH_TOKEN, profile: profileId },
   );
-  await page.reload({ waitUntil: "networkidle" });
+  await page.goto("/chat", { waitUntil: "networkidle" });
 
   // Check if we landed on chat
   const onChat = await page
@@ -145,6 +146,62 @@ export async function getChatThreadText(page: Page): Promise<string> {
     .allTextContents()
     .catch(() => []);
   return texts.join("\n");
+}
+
+export interface RenderedAudioAttachment {
+  filename: string;
+  path: string;
+  text: string;
+}
+
+export interface RenderedThreadBubble {
+  role: "user" | "assistant";
+  text: string;
+  audioAttachments: RenderedAudioAttachment[];
+}
+
+export async function getRenderedAudioAttachments(
+  page: Page,
+): Promise<RenderedAudioAttachment[]> {
+  return page.locator("[data-testid='audio-attachment']").evaluateAll((nodes) =>
+    nodes.map((node) => {
+      const el = node as HTMLElement;
+      return {
+        filename: el.dataset.filename || "",
+        path: el.dataset.filePath || "",
+        text: (el.textContent || "").trim(),
+      };
+    }),
+  );
+}
+
+export async function getRenderedThreadBubbles(
+  page: Page,
+): Promise<RenderedThreadBubble[]> {
+  return page.evaluate(() => {
+    const nodes = document.querySelectorAll(
+      "[data-testid='user-message'], [data-testid='assistant-message']",
+    );
+    return Array.from(nodes).map((node) => {
+      const el = node as HTMLElement;
+      const role = el.dataset.testid?.includes("user") ? "user" : "assistant";
+      const audioAttachments = Array.from(
+        el.querySelectorAll("[data-testid='audio-attachment']"),
+      ).map((attachment) => {
+        const audioEl = attachment as HTMLElement;
+        return {
+          filename: audioEl.dataset.filename || "",
+          path: audioEl.dataset.filePath || "",
+          text: (audioEl.textContent || "").trim(),
+        };
+      });
+      return {
+        role,
+        text: (el.textContent || "").trim(),
+        audioAttachments,
+      };
+    });
+  });
 }
 
 // ── Send and wait ──────────────────────────────────────────────

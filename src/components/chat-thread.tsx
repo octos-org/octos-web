@@ -315,7 +315,12 @@ function AudioAttachment({ file, blobUrl }: { file: MessageFile; blobUrl?: strin
   }, [activated, playing]);
 
   return (
-    <div className="message-attachment-card rounded-[10px] p-2">
+    <div
+      data-testid="audio-attachment"
+      data-file-path={file.path}
+      data-filename={file.filename}
+      className="message-attachment-card rounded-[10px] p-2"
+    >
       {blobUrl ? (
         <div className="flex items-center gap-2">
           <button

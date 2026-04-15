@@ -4,6 +4,7 @@ import type { BackgroundTaskInfo } from "@/api/types";
 const tasksBySession = new Map<string, BackgroundTaskInfo[]>();
 const listeners = new Set<() => void>();
 const snapshots = new Map<string, { version: number; data: BackgroundTaskInfo[] }>();
+let allTasksSnapshot: { version: number; data: ReadonlyArray<readonly [string, BackgroundTaskInfo[]]> } | null = null;
 
 let version = 0;
 
@@ -61,10 +62,30 @@ export function clearTasks(sessionId: string): void {
   notify();
 }
 
+function getAllTasksSnapshot(): ReadonlyArray<readonly [string, BackgroundTaskInfo[]]> {
+  if (allTasksSnapshot && allTasksSnapshot.version === version) {
+    return allTasksSnapshot.data;
+  }
+
+  const data = [...tasksBySession.entries()]
+    .sort(([leftId], [rightId]) => leftId.localeCompare(rightId))
+    .map(([sessionId, tasks]) => [sessionId, tasks] as const);
+  allTasksSnapshot = { version, data };
+  return data;
+}
+
 export function useTasks(sessionId: string): BackgroundTaskInfo[] {
   return useSyncExternalStore(
     subscribe,
     () => getSnapshot(sessionId),
     () => getSnapshot(sessionId),
+  );
+}
+
+export function useAllTasksBySession(): ReadonlyArray<readonly [string, BackgroundTaskInfo[]]> {
+  return useSyncExternalStore(
+    subscribe,
+    getAllTasksSnapshot,
+    getAllTasksSnapshot,
   );
 }

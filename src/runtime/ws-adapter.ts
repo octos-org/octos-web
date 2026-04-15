@@ -14,6 +14,7 @@ import type {
 } from "@assistant-ui/react";
 import { getToken } from "@/api/client";
 import { API_BASE } from "@/lib/constants";
+import { displayFilenameFromPath } from "@/lib/utils";
 import { getSettings } from "@/hooks/use-settings";
 import { createOctosAdapter } from "./octos-adapter";
 import { dispatchCrewFileEvent } from "./file-events";
@@ -489,6 +490,30 @@ export function createWsAdapter(
                     filename,
                     caption,
                   });
+                }
+                break;
+              }
+
+              case "session_result": {
+                const message = event.message as
+                  | {
+                      media?: string[];
+                      content: string;
+                      role: "assistant" | "user" | "system" | "tool";
+                      seq?: number;
+                      timestamp: string;
+                    }
+                  | undefined;
+                if (message) {
+                  MessageStore.appendHistoryMessages(sessionId, [message]);
+                  for (const filePath of message.media ?? []) {
+                    dispatchCrewFileEvent({
+                      sessionId,
+                      path: filePath,
+                      filename: displayFilenameFromPath(filePath),
+                      caption: "",
+                    });
+                  }
                 }
                 break;
               }

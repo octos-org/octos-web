@@ -336,6 +336,21 @@ function bindStreamToAssistant({
         break;
       }
 
+      case "session_result": {
+        if (event.message) {
+          MessageStore.appendHistoryMessages(sessionId, [event.message]);
+          for (const filePath of event.message.media ?? []) {
+            dispatchCrewFileEvent({
+              sessionId,
+              path: filePath,
+              filename: displayFilenameFromPath(filePath),
+              caption: "",
+            });
+          }
+        }
+        break;
+      }
+
       case "done": {
         if (event.content) {
           rawText = event.content;
