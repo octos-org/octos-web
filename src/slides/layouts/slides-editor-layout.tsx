@@ -90,6 +90,7 @@ export function SlidesEditorLayout({
         slug={project.slug}
         title={project.title}
         sessionId={project.id}
+        historyTopic={`slides ${project.slug}`}
         onOpenFile={openProjectFile}
         onRename={(t) => save({ title: t })}
       />

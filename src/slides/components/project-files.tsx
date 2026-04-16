@@ -33,6 +33,7 @@ interface ProjectFilesProps {
   slug: string;
   title?: string;
   sessionId: string;
+  historyTopic?: string;
   onOpenFile: (entry: ContentEntry, allEntries: ContentEntry[]) => void;
   onRename?: (title: string) => void;
 }
@@ -261,7 +262,14 @@ function fileIcon(file: SlidesFileEntry) {
   return File;
 }
 
-export function ProjectFiles({ slug, title, sessionId, onOpenFile, onRename }: ProjectFilesProps) {
+export function ProjectFiles({
+  slug,
+  title,
+  sessionId,
+  historyTopic,
+  onOpenFile,
+  onRename,
+}: ProjectFilesProps) {
   const [files, setFiles] = useState<SlidesFileEntry[]>([]);
   const [manifest, setManifest] = useState<SlidesRenderManifest | null>(null);
   const [contract, setContract] = useState<SlidesWorkspaceContract | null>(null);
@@ -312,12 +320,23 @@ export function ProjectFiles({ slug, title, sessionId, onOpenFile, onRename }: P
 
   useEffect(() => {
     function matchesSession(detail: unknown): boolean {
-      return (
-        !!detail &&
-        typeof detail === "object" &&
-        "sessionId" in detail &&
-        detail.sessionId === sessionId
-      );
+      if (
+        !detail ||
+        typeof detail !== "object" ||
+        !("sessionId" in detail) ||
+        detail.sessionId !== sessionId
+      ) {
+        return false;
+      }
+      if (
+        historyTopic &&
+        "topic" in detail &&
+        typeof detail.topic === "string" &&
+        detail.topic !== historyTopic
+      ) {
+        return false;
+      }
+      return true;
     }
 
     function handleEvent(event: Event) {
@@ -348,7 +367,7 @@ export function ProjectFiles({ slug, title, sessionId, onOpenFile, onRename }: P
       window.removeEventListener("crew:tool_progress", handleEvent);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [sessionId, triggerRefresh]);
+  }, [historyTopic, sessionId, triggerRefresh]);
 
   const entries = useMemo(
     () => files.map((file) => slidesFileToContentEntry(file)),

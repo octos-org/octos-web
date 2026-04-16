@@ -3,7 +3,7 @@ import { Loader2 } from "lucide-react";
 import { useSession } from "@/runtime/session-context";
 
 export function ToolProgressIndicator() {
-  const { currentSessionId } = useSession();
+  const { currentSessionId, historyTopic } = useSession();
   const [progress, setProgress] = useState<{
     tool: string;
     message: string;
@@ -13,6 +13,13 @@ export function ToolProgressIndicator() {
     function onProgress(e: Event) {
       const detail = (e as CustomEvent).detail;
       if (detail.sessionId && detail.sessionId !== currentSessionId) return;
+      if (
+        historyTopic &&
+        typeof detail?.topic === "string" &&
+        detail.topic !== historyTopic
+      ) {
+        return;
+      }
       setProgress(detail);
     }
     function onThinking(e: Event) {
@@ -29,7 +36,7 @@ export function ToolProgressIndicator() {
       window.removeEventListener("crew:tool_progress", onProgress);
       window.removeEventListener("crew:thinking", onThinking);
     };
-  }, [currentSessionId]);
+  }, [currentSessionId, historyTopic]);
 
   if (!progress) return null;
 

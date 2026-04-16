@@ -48,12 +48,26 @@ export function SlidesTaskStatusIndicator({
     function handleBgTasks(event: Event) {
       const detail = (event as CustomEvent).detail;
       if (detail?.sessionId !== sessionId) return;
+      if (
+        historyTopic &&
+        typeof detail?.topic === "string" &&
+        detail.topic !== historyTopic
+      ) {
+        return;
+      }
       poll();
     }
 
     function handleTaskStatus(event: Event) {
       const detail = (event as CustomEvent).detail;
       if (detail?.sessionId !== sessionId) return;
+      if (
+        historyTopic &&
+        typeof detail?.topic === "string" &&
+        detail.topic !== historyTopic
+      ) {
+        return;
+      }
       poll();
     }
 

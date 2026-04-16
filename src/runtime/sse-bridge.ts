@@ -268,7 +268,12 @@ function bindStreamToAssistant({
       case "tool_progress":
         window.dispatchEvent(
           new CustomEvent("crew:tool_progress", {
-            detail: { tool: event.tool, message: event.message, sessionId },
+            detail: {
+              tool: event.tool,
+              message: event.message,
+              sessionId,
+              topic: historyTopic,
+            },
           }),
         );
         break;
@@ -319,6 +324,7 @@ function bindStreamToAssistant({
 
           dispatchCrewFileEvent({
             sessionId,
+            topic: historyTopic,
             path: event.path,
             filename: event.filename,
             caption,
@@ -342,6 +348,7 @@ function bindStreamToAssistant({
           for (const filePath of event.message.media ?? []) {
             dispatchCrewFileEvent({
               sessionId,
+              topic: historyTopic,
               path: filePath,
               filename: displayFilenameFromPath(filePath),
               caption: "",
@@ -398,7 +405,9 @@ function bindStreamToAssistant({
         // and can wipe optimistic messages or create duplicates.
         if (event.has_bg_tasks) {
           window.dispatchEvent(
-            new CustomEvent("crew:bg_tasks", { detail: { sessionId } }),
+            new CustomEvent("crew:bg_tasks", {
+              detail: { sessionId, topic: historyTopic },
+            }),
           );
         }
 

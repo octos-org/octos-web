@@ -2,6 +2,7 @@ import { API_BASE } from "@/lib/constants";
 
 interface CrewFileEventInput {
   sessionId: string;
+  topic?: string;
   path: string;
   filename: string;
   caption?: string;
@@ -10,8 +11,8 @@ interface CrewFileEventInput {
 const seenFileEventKeys = new Set<string>();
 const MAX_TRACKED_FILE_EVENTS = 1024;
 
-function fileEventKey(sessionId: string, path: string): string {
-  return `${sessionId}::${path}`;
+function fileEventKey(sessionId: string, topic: string | undefined, path: string): string {
+  return `${sessionId}::${topic?.trim() || ""}::${path}`;
 }
 
 function trimSeenFileEvents(): void {
@@ -22,11 +23,12 @@ function trimSeenFileEvents(): void {
 
 export function dispatchCrewFileEvent({
   sessionId,
+  topic,
   path,
   filename,
   caption = "",
 }: CrewFileEventInput): void {
-  const key = fileEventKey(sessionId, path);
+  const key = fileEventKey(sessionId, topic, path);
   if (seenFileEventKeys.has(key)) return;
   trimSeenFileEvents();
   seenFileEventKeys.add(key);
@@ -38,6 +40,7 @@ export function dispatchCrewFileEvent({
         filename,
         caption,
         sessionId,
+        topic,
       },
     }),
   );

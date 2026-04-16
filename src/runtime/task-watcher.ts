@@ -110,6 +110,7 @@ function stopPolling(): void {
 
 function emitNewFileEvents(
   sessionId: string,
+  topic: string | undefined,
   messages: MessageInfo[],
   knownPaths: Set<string>,
 ): void {
@@ -119,6 +120,7 @@ function emitNewFileEvents(
       knownPaths.add(filePath);
       dispatchCrewFileEvent({
         sessionId,
+        topic,
         path: filePath,
         filename: displayFilenameFromPath(filePath),
         caption: "",
@@ -137,7 +139,7 @@ function applyCommittedMessages(
     entry.lastCommittedSeq,
     MessageStore.appendHistoryMessages(sessionId, messages),
   );
-  emitNewFileEvents(sessionId, messages, entry.knownPaths);
+  emitNewFileEvents(sessionId, entry.topic, messages, entry.knownPaths);
   void FileStore.loadSessionFiles(sessionId);
 }
 
