@@ -212,7 +212,14 @@ function ensureEventStream(key: string): void {
         headers: buildApiHeaders(),
         signal: abort.signal,
       });
-      if (!response.ok || !response.body) return;
+      const contentType = response.headers.get("content-type") ?? "";
+      if (
+        !response.ok ||
+        !response.body ||
+        !contentType.toLowerCase().includes("text/event-stream")
+      ) {
+        return;
+      }
 
       entry.streamHealthy = true;
       const reader = response.body.getReader();
@@ -302,8 +309,10 @@ async function pollSession(entry: WatchedSession): Promise<void> {
       ensureEventStream(key);
     }
 
-    // Stream is the primary truth path. Poll only while the stream is unavailable.
-    if (!entry.streamHealthy && !entry.eventAbort) {
+    // Stream is the primary truth path. Poll while the stream is unavailable,
+    // even if a connection attempt is currently in flight. This prevents
+    // redirects/HTML fallback responses from starving `/messages` replay.
+    if (!entry.streamHealthy) {
       const [tasks, messages] = await Promise.all([
         getSessionTasks(entry.sessionId, entry.topic).catch(
           () => [] as BackgroundTaskInfo[],

@@ -580,6 +580,8 @@ export function appendHistoryMessages(
       (m) =>
         typeof m.historySeq === "number" &&
         m.role === converted.role &&
+        m.files.length === 0 &&
+        converted.files.length === 0 &&
         normalizeMessageText(m.text) === normalizeMessageText(converted.text) &&
         typeof converted.historySeq === "number" &&
         m.historySeq !== converted.historySeq &&
