@@ -31,6 +31,8 @@ function isTaskActive(task: BackgroundTaskInfo): boolean {
 interface WatchedSession {
   /** Remaining polls after all tasks complete. */
   postCompletionRemaining: number;
+  /** Highest committed history sequence applied to the session. */
+  lastCommittedSeq: number;
   /** Known file paths — used to detect new files and emit events. */
   knownPaths: Set<string>;
   /** Previous task states — used to detect completion transitions. */
@@ -47,6 +49,10 @@ export function watchSession(sessionId: string): void {
   if (watchedSessions.has(sessionId)) {
     // Already watched — reset post-completion counter in case new tasks spawned.
     const entry = watchedSessions.get(sessionId)!;
+    entry.lastCommittedSeq = Math.max(
+      entry.lastCommittedSeq,
+      MessageStore.getMaxHistorySeq(sessionId),
+    );
     entry.postCompletionRemaining = POST_COMPLETION_POLLS;
     void pollSession(sessionId, entry);
     return;
@@ -60,6 +66,7 @@ export function watchSession(sessionId: string): void {
 
   watchedSessions.set(sessionId, {
     postCompletionRemaining: POST_COMPLETION_POLLS,
+    lastCommittedSeq: MessageStore.getMaxHistorySeq(sessionId),
     knownPaths,
     prevActiveIds: new Set(),
   });
@@ -115,7 +122,10 @@ function applyCommittedMessages(
   messages: MessageInfo[],
 ): void {
   if (messages.length === 0) return;
-  MessageStore.appendHistoryMessages(sessionId, messages);
+  entry.lastCommittedSeq = Math.max(
+    entry.lastCommittedSeq,
+    MessageStore.appendHistoryMessages(sessionId, messages),
+  );
   emitNewFileEvents(sessionId, messages, entry.knownPaths);
   void FileStore.loadSessionFiles(sessionId);
 }
@@ -129,8 +139,15 @@ function ensureEventStream(sessionId: string): void {
 
   void (async () => {
     try {
+      const params = new URLSearchParams();
+      if (entry.lastCommittedSeq >= 0) {
+        params.set("since_seq", String(entry.lastCommittedSeq));
+      }
+      const url = `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/events/stream${
+        params.size > 0 ? `?${params.toString()}` : ""
+      }`;
       const response = await fetch(
-        `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/events/stream`,
+        url,
         {
           headers: buildApiHeaders(),
           signal: abort.signal,
@@ -231,7 +248,7 @@ async function pollSession(sessionId: string, entry: WatchedSession): Promise<vo
       sessionId,
       500,
       0,
-      MessageStore.getMaxHistorySeq(sessionId),
+      entry.lastCommittedSeq >= 0 ? entry.lastCommittedSeq : undefined,
     );
 
     applyCommittedMessages(sessionId, entry, messages);
