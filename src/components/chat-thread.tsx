@@ -491,8 +491,8 @@ function isFileOnlyAssistantMessage(message: Message): boolean {
 export function ChatThread({
   hideFileOnlyAssistantMessages = false,
 }: ChatThreadProps = {}) {
-  const { currentSessionId } = useSession();
-  const messages = useMessages(currentSessionId);
+  const { currentSessionId, historyTopic } = useSession();
+  const messages = useMessages(currentSessionId, historyTopic);
   const visibleMessages = useMemo(
     () =>
       hideFileOnlyAssistantMessages
@@ -602,7 +602,7 @@ function Composer() {
     adaptiveMode,
   } =
     useSession();
-  const messages = useMessages(currentSessionId);
+  const messages = useMessages(currentSessionId, historyTopic);
   const isRunning = useMemo(
     () => messages.some((m) => m.status === "streaming"),
     [messages],

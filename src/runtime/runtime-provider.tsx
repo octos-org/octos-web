@@ -76,6 +76,7 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
           MessageStore.ensureStreamingAssistantMessage(
             currentSessionId,
             "Resuming ongoing work...",
+            historyTopic,
           );
           resumeSessionStream(currentSessionId, historyTopic);
           window.dispatchEvent(

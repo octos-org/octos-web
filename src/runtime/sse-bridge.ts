@@ -141,7 +141,7 @@ export function sendMessage(opts: SendOptions): void {
     files: localFiles,
     toolCalls: [],
     status: "complete",
-  });
+  }, historyTopic);
 
   // Notify sidebar
   onSessionActive?.(text);
@@ -164,7 +164,7 @@ export function sendMessage(opts: SendOptions): void {
     files: [],
     toolCalls: [],
     status: "streaming",
-  });
+  }, historyTopic);
 
   // 4. Subscribe to events and route into the store
   bindStreamToAssistant({
@@ -188,6 +188,7 @@ export function resumeSessionStream(
   const assistantMsgId = MessageStore.ensureStreamingAssistantMessage(
     sessionId,
     "Resuming ongoing work...",
+    historyTopic,
   );
 
   bindStreamToAssistant({
@@ -234,14 +235,14 @@ function bindStreamToAssistant({
         rawText += event.text;
         MessageStore.updateMessage(sessionId, assistantMsgId, {
           text: clean(rawText),
-        });
+        }, historyTopic);
         break;
 
       case "replace":
         rawText = event.text;
         MessageStore.updateMessage(sessionId, assistantMsgId, {
           text: clean(rawText),
-        });
+        }, historyTopic);
         break;
 
       case "tool_start": {
@@ -251,7 +252,7 @@ function bindStreamToAssistant({
         activeToolByName.set(event.tool, key);
         MessageStore.updateMessage(sessionId, assistantMsgId, {
           toolCalls: Array.from(toolCalls.values()),
-        });
+        }, historyTopic);
         break;
       }
 
@@ -261,7 +262,7 @@ function bindStreamToAssistant({
         if (tc) tc.status = event.success ? "complete" : "error";
         MessageStore.updateMessage(sessionId, assistantMsgId, {
           toolCalls: Array.from(toolCalls.values()),
-        });
+        }, historyTopic);
         break;
       }
 
@@ -309,7 +310,7 @@ function bindStreamToAssistant({
           // older background tasks and should be attached by authoritative
           // history sync, not to the current streaming bubble.
           if (event.tool_call_id) {
-            const msgs = MessageStore.getMessages(sessionId);
+            const msgs = MessageStore.getMessages(sessionId, historyTopic);
             const match = msgs.find((m) =>
               m.toolCalls.some((tc) => tc.id === event.tool_call_id),
             );
@@ -318,7 +319,7 @@ function bindStreamToAssistant({
                 filename: event.filename,
                 path: event.path,
                 caption,
-              });
+              }, historyTopic);
             }
           }
 
@@ -344,7 +345,7 @@ function bindStreamToAssistant({
 
       case "session_result": {
         if (event.message) {
-          MessageStore.appendHistoryMessages(sessionId, [event.message]);
+          MessageStore.appendHistoryMessages(sessionId, [event.message], historyTopic);
           for (const filePath of event.message.media ?? []) {
             dispatchCrewFileEvent({
               sessionId,
@@ -366,7 +367,7 @@ function bindStreamToAssistant({
         MessageStore.updateMessage(sessionId, assistantMsgId, {
           text: finalText,
           status: "complete",
-        });
+        }, historyTopic);
 
         if (event.model || event.tokens_in || event.tokens_out) {
           MessageStore.setMessageMeta(sessionId, assistantMsgId, {
@@ -374,7 +375,7 @@ function bindStreamToAssistant({
             tokens_in: event.tokens_in || 0,
             tokens_out: event.tokens_out || 0,
             duration_s: event.duration_s || 0,
-          });
+          }, historyTopic);
           window.dispatchEvent(
             new CustomEvent("crew:message_meta", {
               detail: {
@@ -420,7 +421,7 @@ function bindStreamToAssistant({
         MessageStore.updateMessage(sessionId, assistantMsgId, {
           text: `Error: ${errMsg}`,
           status: "error",
-        });
+        }, historyTopic);
         window.dispatchEvent(
           new CustomEvent("crew:thinking", {
             detail: { thinking: false, iteration: 0, sessionId },
@@ -474,13 +475,13 @@ function setupCleanup(
       _unsub();
 
       // If the message is still streaming (no done event received), check if we got content
-      const msgs = MessageStore.getMessages(sessionId);
+      const msgs = MessageStore.getMessages(sessionId, historyTopic);
       const assistantMsg = msgs.find((m) => m.id === assistantMsgId);
       if (assistantMsg && assistantMsg.status === "streaming") {
         if (assistantMsg.text) {
           MessageStore.updateMessage(sessionId, assistantMsgId, {
             status: "complete",
-          });
+          }, historyTopic);
           _onComplete?.();
         } else {
           // No content — poll for response
@@ -538,7 +539,7 @@ async function pollForResponse(
         MessageStore.updateMessage(sessionId, assistantMsgId, {
           text: matchedAssistant.content,
           status: "complete",
-        });
+        }, historyTopic);
         return;
       }
     } catch {
@@ -549,5 +550,5 @@ async function pollForResponse(
   MessageStore.updateMessage(sessionId, assistantMsgId, {
     text: "No response received.",
     status: "error",
-  });
+  }, historyTopic);
 }
