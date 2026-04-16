@@ -1,11 +1,9 @@
 /**
- * Global task watcher — session-independent background task monitor.
+ * Global task watcher — session/topic-scoped background monitor.
  *
- * Tracks sessions with active background tasks and polls for completion.
- * When a task finishes, fetches messages and files for that session to
- * deliver results regardless of which session the user is viewing.
- *
- * This runs outside session context so it survives session switches.
+ * Uses the per-session event stream as the primary truth source for
+ * task/result delivery. Falls back to `/tasks` + incremental `/messages`
+ * polling only while the live stream is unavailable.
  */
 
 import {
@@ -22,7 +20,8 @@ import { dispatchCrewFileEvent } from "./file-events";
 import type { BackgroundTaskInfo, MessageInfo } from "@/api/types";
 
 const POLL_INTERVAL_MS = 2500;
-const POST_COMPLETION_POLLS = 3;
+const STREAM_RETRY_MS = 1000;
+const TERMINAL_GRACE_MS = 10_000;
 
 function watchKey(sessionId: string, topic?: string): string {
   const normalizedTopic = topic?.trim();
@@ -36,75 +35,58 @@ function isTaskActive(task: BackgroundTaskInfo): boolean {
 interface WatchedSession {
   sessionId: string;
   topic?: string;
-  /** Remaining polls after all tasks complete. */
-  postCompletionRemaining: number;
-  /** Highest committed history sequence applied to the session. */
   lastCommittedSeq: number;
-  /** Known file paths — used to detect new files and emit events. */
   knownPaths: Set<string>;
-  /** Previous task states — used to detect completion transitions. */
-  prevActiveIds: Set<string>;
-  /** Dedicated background event stream for this session. */
+  activeIds: Set<string>;
+  replayComplete: boolean;
+  streamHealthy: boolean;
+  terminalSince: number | null;
   eventAbort?: AbortController;
 }
 
 const watchedSessions = new Map<string, WatchedSession>();
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
-/** Register a session for background task monitoring. */
-export function watchSession(sessionId: string, topic?: string): void {
-  const key = watchKey(sessionId, topic);
-  if (watchedSessions.has(key)) {
-    // Already watched — reset post-completion counter in case new tasks spawned.
-    const entry = watchedSessions.get(key)!;
-    entry.lastCommittedSeq = Math.max(
-      entry.lastCommittedSeq,
-      MessageStore.getMaxHistorySeq(sessionId, topic),
-    );
-    entry.postCompletionRemaining = POST_COMPLETION_POLLS;
-    void pollSession(entry);
-    return;
-  }
-
-  const knownPaths = new Set(
-    MessageStore.getMessages(sessionId, topic).flatMap((m) =>
-      m.files.map((f) => f.path),
-    ),
+function dispatchTaskStatusEvent(
+  sessionId: string,
+  topic: string | undefined,
+  task: BackgroundTaskInfo,
+): void {
+  window.dispatchEvent(
+    new CustomEvent("crew:task_status", {
+      detail: { sessionId, topic, task },
+    }),
   );
-
-  watchedSessions.set(key, {
-    sessionId,
-    topic: topic?.trim() || undefined,
-    postCompletionRemaining: POST_COMPLETION_POLLS,
-    lastCommittedSeq: MessageStore.getMaxHistorySeq(sessionId, topic),
-    knownPaths,
-    prevActiveIds: new Set(),
-  });
-
-  ensureEventStream(key);
-  ensurePolling();
 }
 
-/** Stop watching a session (e.g. on session delete). */
-export function unwatchSession(sessionId: string, topic?: string): void {
-  const key = watchKey(sessionId, topic);
-  const entry = watchedSessions.get(key);
-  entry?.eventAbort?.abort();
-  watchedSessions.delete(key);
-  if (watchedSessions.size === 0) stopPolling();
+function dispatchBgTasksEvent(sessionId: string, topic: string | undefined): void {
+  window.dispatchEvent(
+    new CustomEvent("crew:bg_tasks", {
+      detail: { sessionId, topic },
+    }),
+  );
 }
 
-function ensurePolling(): void {
-  if (pollTimer) return;
-  pollTimer = setInterval(pollAll, POLL_INTERVAL_MS);
-  // Run first poll immediately.
-  void pollAll();
+function updateActiveIds(entry: WatchedSession, tasks: BackgroundTaskInfo[]): void {
+  entry.activeIds = new Set(tasks.filter(isTaskActive).map((task) => task.id));
+  if (entry.activeIds.size > 0) {
+    entry.terminalSince = null;
+    dispatchBgTasksEvent(entry.sessionId, entry.topic);
+  } else if (entry.replayComplete && entry.terminalSince == null) {
+    entry.terminalSince = Date.now();
+  }
 }
 
-function stopPolling(): void {
-  if (pollTimer) {
-    clearInterval(pollTimer);
-    pollTimer = null;
+function applyTaskUpdate(entry: WatchedSession, task: BackgroundTaskInfo): void {
+  if (isTaskActive(task)) {
+    entry.activeIds.add(task.id);
+    entry.terminalSince = null;
+    dispatchBgTasksEvent(entry.sessionId, entry.topic);
+  } else {
+    entry.activeIds.delete(task.id);
+    if (entry.replayComplete && entry.activeIds.size === 0) {
+      entry.terminalSince = Date.now();
+    }
   }
 }
 
@@ -141,6 +123,68 @@ function applyCommittedMessages(
   );
   emitNewFileEvents(sessionId, entry.topic, messages, entry.knownPaths);
   void FileStore.loadSessionFiles(sessionId);
+  if (entry.activeIds.size === 0) {
+    entry.terminalSince = Date.now();
+  }
+}
+
+/** Register a session for background monitoring. */
+export function watchSession(sessionId: string, topic?: string): void {
+  const key = watchKey(sessionId, topic);
+  const currentTopic = topic?.trim() || undefined;
+
+  if (watchedSessions.has(key)) {
+    const entry = watchedSessions.get(key)!;
+    entry.lastCommittedSeq = Math.max(
+      entry.lastCommittedSeq,
+      MessageStore.getMaxHistorySeq(sessionId, currentTopic),
+    );
+    entry.terminalSince = null;
+    ensureEventStream(key);
+    ensurePolling();
+    return;
+  }
+
+  const knownPaths = new Set(
+    MessageStore.getMessages(sessionId, currentTopic).flatMap((message) =>
+      message.files.map((file) => file.path),
+    ),
+  );
+
+  watchedSessions.set(key, {
+    sessionId,
+    topic: currentTopic,
+    lastCommittedSeq: MessageStore.getMaxHistorySeq(sessionId, currentTopic),
+    knownPaths,
+    activeIds: new Set(),
+    replayComplete: false,
+    streamHealthy: false,
+    terminalSince: null,
+  });
+
+  ensureEventStream(key);
+  ensurePolling();
+}
+
+/** Stop watching a session/topic. */
+export function unwatchSession(sessionId: string, topic?: string): void {
+  const key = watchKey(sessionId, topic);
+  const entry = watchedSessions.get(key);
+  entry?.eventAbort?.abort();
+  watchedSessions.delete(key);
+  if (watchedSessions.size === 0) stopPolling();
+}
+
+function ensurePolling(): void {
+  if (pollTimer) return;
+  pollTimer = setInterval(pollAll, POLL_INTERVAL_MS);
+  void pollAll();
+}
+
+function stopPolling(): void {
+  if (!pollTimer) return;
+  clearInterval(pollTimer);
+  pollTimer = null;
 }
 
 function ensureEventStream(key: string): void {
@@ -149,6 +193,8 @@ function ensureEventStream(key: string): void {
 
   const abort = new AbortController();
   entry.eventAbort = abort;
+  entry.streamHealthy = false;
+  entry.replayComplete = false;
 
   void (async () => {
     try {
@@ -162,15 +208,13 @@ function ensureEventStream(key: string): void {
       const url = `${API_BASE}/api/sessions/${encodeURIComponent(entry.sessionId)}/events/stream${
         params.size > 0 ? `?${params.toString()}` : ""
       }`;
-      const response = await fetch(
-        url,
-        {
-          headers: buildApiHeaders(),
-          signal: abort.signal,
-        },
-      );
+      const response = await fetch(url, {
+        headers: buildApiHeaders(),
+        signal: abort.signal,
+      });
       if (!response.ok || !response.body) return;
 
+      entry.streamHealthy = true;
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -192,6 +236,7 @@ function ensureEventStream(key: string): void {
             let event:
               | { type: "task_status"; task: BackgroundTaskInfo }
               | { type: "session_result"; message: MessageInfo }
+              | { type: "replay_complete" }
               | { type: string };
             try {
               event = JSON.parse(data);
@@ -203,14 +248,22 @@ function ensureEventStream(key: string): void {
             if (!current) return;
 
             if (event.type === "task_status" && "task" in event) {
-              TaskStore.mergeTask(current.sessionId, event.task);
-              current.postCompletionRemaining = POST_COMPLETION_POLLS;
+              TaskStore.mergeTask(current.sessionId, event.task, current.topic);
+              applyTaskUpdate(current, event.task);
+              dispatchTaskStatusEvent(current.sessionId, current.topic, event.task);
               continue;
             }
 
             if (event.type === "session_result" && "message" in event) {
               applyCommittedMessages(current.sessionId, current, [event.message]);
-              current.postCompletionRemaining = POST_COMPLETION_POLLS;
+              continue;
+            }
+
+            if (event.type === "replay_complete") {
+              current.replayComplete = true;
+              if (current.activeIds.size === 0) {
+                current.terminalSince = Date.now();
+              }
             }
           }
         }
@@ -218,13 +271,14 @@ function ensureEventStream(key: string): void {
         reader.releaseLock();
       }
     } catch {
-      // Polling remains the fallback when the live background stream is unavailable.
+      // Polling becomes the fallback while the stream is unavailable.
     } finally {
       const current = watchedSessions.get(key);
       if (current && current.eventAbort === abort) {
         current.eventAbort = undefined;
-        if (current.prevActiveIds.size > 0 || current.postCompletionRemaining > 0) {
-          setTimeout(() => ensureEventStream(key), 1000);
+        current.streamHealthy = false;
+        if (current.activeIds.size > 0) {
+          setTimeout(() => ensureEventStream(key), STREAM_RETRY_MS);
         }
       }
     }
@@ -244,47 +298,48 @@ async function pollAll(): Promise<void> {
 async function pollSession(entry: WatchedSession): Promise<void> {
   try {
     const key = watchKey(entry.sessionId, entry.topic);
-    ensureEventStream(key);
-    const tasks = await getSessionTasks(entry.sessionId, entry.topic).catch(
-      () => [] as BackgroundTaskInfo[],
-    );
-    TaskStore.replaceTasks(entry.sessionId, tasks);
-
-    const activeIds = new Set(tasks.filter(isTaskActive).map((t) => t.id));
-    const hasActive = activeIds.size > 0;
-
-    // Detect tasks that just completed (were active last poll, not anymore).
-    const justCompleted = [...entry.prevActiveIds].filter((id) => !activeIds.has(id));
-    entry.prevActiveIds = activeIds;
-
-    if (justCompleted.length > 0) {
-      // A task just finished — reset counter to ensure we fetch deliverables.
-      entry.postCompletionRemaining = POST_COMPLETION_POLLS;
+    if (!entry.eventAbort) {
+      ensureEventStream(key);
     }
 
-    // Fetch new messages to pick up delivered files.
-    const messages = await fetchSessionMessages(
-      entry.sessionId,
-      500,
-      0,
-      entry.lastCommittedSeq >= 0 ? entry.lastCommittedSeq : undefined,
-      entry.topic,
-    );
+    // Stream is the primary truth path. Poll only while the stream is unavailable.
+    if (!entry.streamHealthy && !entry.eventAbort) {
+      const [tasks, messages] = await Promise.all([
+        getSessionTasks(entry.sessionId, entry.topic).catch(
+          () => [] as BackgroundTaskInfo[],
+        ),
+        fetchSessionMessages(
+          entry.sessionId,
+          500,
+          0,
+          entry.lastCommittedSeq >= 0 ? entry.lastCommittedSeq : undefined,
+          entry.topic,
+        ),
+      ]);
 
-    applyCommittedMessages(entry.sessionId, entry, messages);
+      TaskStore.replaceTasks(entry.sessionId, tasks, entry.topic);
+      for (const task of tasks) {
+        dispatchTaskStatusEvent(entry.sessionId, entry.topic, task);
+      }
+      updateActiveIds(entry, tasks);
+      applyCommittedMessages(entry.sessionId, entry, messages);
+      entry.replayComplete = true;
+      if (entry.activeIds.size === 0 && entry.terminalSince == null) {
+        entry.terminalSince = Date.now();
+      }
+    }
 
-    // Decide whether to keep watching.
-    if (hasActive) {
-      entry.postCompletionRemaining = POST_COMPLETION_POLLS;
-    } else if (entry.postCompletionRemaining > 0) {
-      entry.postCompletionRemaining--;
-    } else {
-      // All tasks terminal, post-completion syncs done — stop watching.
+    if (
+      entry.replayComplete &&
+      entry.activeIds.size === 0 &&
+      entry.terminalSince != null &&
+      Date.now() - entry.terminalSince >= TERMINAL_GRACE_MS
+    ) {
       entry.eventAbort?.abort();
       watchedSessions.delete(key);
       if (watchedSessions.size === 0) stopPolling();
     }
   } catch {
-    // Network error — keep watching, will retry next interval.
+    // Keep watching; the next poll will retry fallback sync.
   }
 }

@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 import type { BackgroundTaskInfo } from "@/api/types";
 
-const tasksBySession = new Map<string, BackgroundTaskInfo[]>();
+const tasksByKey = new Map<string, BackgroundTaskInfo[]>();
 const listeners = new Set<() => void>();
 const snapshots = new Map<string, { version: number; data: BackgroundTaskInfo[] }>();
 let allTasksSnapshot: { version: number; data: ReadonlyArray<readonly [string, BackgroundTaskInfo[]]> } | null = null;
@@ -28,37 +28,60 @@ function sorted(tasks: BackgroundTaskInfo[]): BackgroundTaskInfo[] {
   });
 }
 
-function getSnapshot(sessionId: string): BackgroundTaskInfo[] {
-  const cached = snapshots.get(sessionId);
+function storeKey(sessionId: string, topic?: string): string {
+  const trimmedTopic = topic?.trim();
+  return trimmedTopic ? `${sessionId}#${trimmedTopic}` : sessionId;
+}
+
+function getSnapshot(sessionId: string, topic?: string): BackgroundTaskInfo[] {
+  const key = storeKey(sessionId, topic);
+  const cached = snapshots.get(key);
   if (cached && cached.version === version) return cached.data;
-  const data = tasksBySession.get(sessionId) ?? [];
-  snapshots.set(sessionId, { version, data });
+  const data = tasksByKey.get(key) ?? [];
+  snapshots.set(key, { version, data });
   return data;
 }
 
-export function getTasks(sessionId: string): BackgroundTaskInfo[] {
-  return tasksBySession.get(sessionId) ?? [];
+export function getTasks(sessionId: string, topic?: string): BackgroundTaskInfo[] {
+  return tasksByKey.get(storeKey(sessionId, topic)) ?? [];
 }
 
-export function replaceTasks(sessionId: string, tasks: BackgroundTaskInfo[]): void {
-  tasksBySession.set(sessionId, sorted(tasks));
+export function replaceTasks(
+  sessionId: string,
+  tasks: BackgroundTaskInfo[],
+  topic?: string,
+): void {
+  tasksByKey.set(storeKey(sessionId, topic), sorted(tasks));
   notify();
 }
 
-export function mergeTask(sessionId: string, task: BackgroundTaskInfo): void {
-  const tasks = [...(tasksBySession.get(sessionId) ?? [])];
+export function mergeTask(
+  sessionId: string,
+  task: BackgroundTaskInfo,
+  topic?: string,
+): void {
+  const key = storeKey(sessionId, topic);
+  const tasks = [...(tasksByKey.get(key) ?? [])];
   const index = tasks.findIndex((existing) => existing.id === task.id);
   if (index === -1) {
     tasks.push(task);
   } else {
     tasks[index] = { ...tasks[index], ...task };
   }
-  tasksBySession.set(sessionId, sorted(tasks));
+  tasksByKey.set(key, sorted(tasks));
   notify();
 }
 
-export function clearTasks(sessionId: string): void {
-  tasksBySession.delete(sessionId);
+export function clearTasks(sessionId: string, topic?: string): void {
+  if (topic?.trim()) {
+    tasksByKey.delete(storeKey(sessionId, topic));
+  } else {
+    for (const key of [...tasksByKey.keys()]) {
+      if (key === sessionId || key.startsWith(`${sessionId}#`)) {
+        tasksByKey.delete(key);
+      }
+    }
+  }
   notify();
 }
 
@@ -67,18 +90,33 @@ function getAllTasksSnapshot(): ReadonlyArray<readonly [string, BackgroundTaskIn
     return allTasksSnapshot.data;
   }
 
-  const data = [...tasksBySession.entries()]
+  const grouped = new Map<string, BackgroundTaskInfo[]>();
+  for (const [key, tasks] of tasksByKey.entries()) {
+    const sessionId = key.split("#")[0];
+    const merged = grouped.get(sessionId) ?? [];
+    for (const task of tasks) {
+      const existingIndex = merged.findIndex((candidate) => candidate.id === task.id);
+      if (existingIndex === -1) {
+        merged.push(task);
+      } else {
+        merged[existingIndex] = { ...merged[existingIndex], ...task };
+      }
+    }
+    grouped.set(sessionId, sorted(merged));
+  }
+
+  const data = [...grouped.entries()]
     .sort(([leftId], [rightId]) => leftId.localeCompare(rightId))
     .map(([sessionId, tasks]) => [sessionId, tasks] as const);
   allTasksSnapshot = { version, data };
   return data;
 }
 
-export function useTasks(sessionId: string): BackgroundTaskInfo[] {
+export function useTasks(sessionId: string, topic?: string): BackgroundTaskInfo[] {
   return useSyncExternalStore(
     subscribe,
-    () => getSnapshot(sessionId),
-    () => getSnapshot(sessionId),
+    () => getSnapshot(sessionId, topic),
+    () => getSnapshot(sessionId, topic),
   );
 }
 

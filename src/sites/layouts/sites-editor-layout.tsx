@@ -168,6 +168,7 @@ export function SitesEditorLayout({
           {project?.id && (
             <SitesTaskStatusIndicator
               sessionId={project.id}
+              historyTopic={project.preset ? `site ${project.preset}` : undefined}
               profileId={project.profileId}
             />
           )}

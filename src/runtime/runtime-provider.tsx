@@ -13,16 +13,11 @@ import { resumeSessionStream } from "./sse-bridge";
 import * as FileStore from "@/store/file-store";
 import * as MessageStore from "@/store/message-store";
 import * as TaskStore from "@/store/task-store";
-import { getSessionStatus, getSessionTasks } from "@/api/sessions";
+import { getSessionStatus } from "@/api/sessions";
 import type { BackgroundTaskInfo } from "@/api/types";
 import { watchSession } from "./task-watcher";
-
 /** Max sessions kept in memory simultaneously. */
 const MAX_CACHED = 5;
-
-function isTaskActive(task: BackgroundTaskInfo): boolean {
-  return task.status === "spawned" || task.status === "running";
-}
 
 /** Tracks which sessions have been mounted so we can evict old ones. */
 function RuntimeWithSession({ children }: { children: ReactNode }) {
@@ -55,20 +50,15 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
 
     async function initSession() {
       try {
-        const [status, tasks] = await Promise.all([
-          getSessionStatus(currentSessionId, historyTopic),
-          getSessionTasks(currentSessionId, historyTopic).catch(() => [] as BackgroundTaskInfo[]),
-        ]);
+        const status = await getSessionStatus(currentSessionId, historyTopic);
         if (cancelled) return;
 
-        TaskStore.replaceTasks(currentSessionId, tasks);
-        const hasActiveTasks = tasks.some(isTaskActive);
         const hasBackgroundWork =
-          status.active || status.has_deferred_files || status.has_bg_tasks || hasActiveTasks;
+          status.active || status.has_deferred_files || status.has_bg_tasks;
 
         setServerTaskActive(
           currentSessionId,
-          hasActiveTasks || status.has_deferred_files || status.has_bg_tasks,
+          status.has_deferred_files || status.has_bg_tasks,
         );
 
         // Resume an active stream the server is still working on.
@@ -117,7 +107,7 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
       if (!sessionId) return;
       const task = detail?.task as BackgroundTaskInfo | undefined;
       if (task) {
-        TaskStore.mergeTask(sessionId, task);
+        TaskStore.mergeTask(sessionId, task, detail?.topic);
         watchSession(sessionId, detail?.topic);
       }
     }

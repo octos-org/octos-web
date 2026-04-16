@@ -1,14 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { getSessionTasks } from "@/api/sessions";
-
-interface TaskInfo {
-  id: string;
-  tool_name: string;
-  status: "spawned" | "running" | "completed" | "failed";
-  started_at: string;
-  error: string | null;
-}
+import { useTasks } from "@/store/task-store";
 
 export function SlidesTaskStatusIndicator({
   sessionId,
@@ -17,71 +9,7 @@ export function SlidesTaskStatusIndicator({
   sessionId: string;
   historyTopic?: string;
 }) {
-  const [tasks, setTasks] = useState<TaskInfo[]>([]);
-
-  useEffect(() => {
-    let stopped = false;
-    let pollTimer: ReturnType<typeof setTimeout> | undefined;
-
-    async function poll() {
-      if (stopped) return;
-      try {
-        const data = (await getSessionTasks(
-          sessionId,
-          historyTopic,
-        )) as TaskInfo[];
-        if (stopped) return;
-        setTasks(data);
-
-        if (
-          data.some(
-            (task) => task.status === "running" || task.status === "spawned",
-          )
-        ) {
-          pollTimer = setTimeout(poll, 2000);
-        }
-      } catch {
-        if (!stopped) pollTimer = setTimeout(poll, 3000);
-      }
-    }
-
-    function handleBgTasks(event: Event) {
-      const detail = (event as CustomEvent).detail;
-      if (detail?.sessionId !== sessionId) return;
-      if (
-        historyTopic &&
-        typeof detail?.topic === "string" &&
-        detail.topic !== historyTopic
-      ) {
-        return;
-      }
-      poll();
-    }
-
-    function handleTaskStatus(event: Event) {
-      const detail = (event as CustomEvent).detail;
-      if (detail?.sessionId !== sessionId) return;
-      if (
-        historyTopic &&
-        typeof detail?.topic === "string" &&
-        detail.topic !== historyTopic
-      ) {
-        return;
-      }
-      poll();
-    }
-
-    window.addEventListener("crew:bg_tasks", handleBgTasks);
-    window.addEventListener("crew:task_status", handleTaskStatus);
-    void poll();
-
-    return () => {
-      stopped = true;
-      if (pollTimer) clearTimeout(pollTimer);
-      window.removeEventListener("crew:bg_tasks", handleBgTasks);
-      window.removeEventListener("crew:task_status", handleTaskStatus);
-    };
-  }, [historyTopic, sessionId]);
+  const tasks = useTasks(sessionId, historyTopic);
 
   if (tasks.length === 0) return null;
 
@@ -94,7 +22,11 @@ export function SlidesTaskStatusIndicator({
   );
 }
 
-function TaskStatusPill({ task }: { task: TaskInfo }) {
+function TaskStatusPill({
+  task,
+}: {
+  task: ReturnType<typeof useTasks>[number];
+}) {
   const [, setTick] = useState(0);
   const isActive = task.status === "running" || task.status === "spawned";
 
