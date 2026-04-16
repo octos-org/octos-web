@@ -60,7 +60,7 @@ test.describe("Session recovery", () => {
 
     const marker = `RECONNECT-${Date.now()}`;
     await getInput(page).fill(
-      `Write a detailed memo about reconnect storms and session recovery. Include ${marker} exactly once near the end and keep the answer long enough to survive a couple of reloads.`,
+      `Write exactly 12 numbered bullets about reconnect storms and session recovery. Each bullet must be one short sentence. Include ${marker} exactly once in bullet 12. Keep the total answer between 220 and 320 words so it streams long enough to survive two reloads without turning into an unbounded memo.`,
     );
     await getSendButton(page).click();
 
