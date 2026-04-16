@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "test": "npx playwright test",
     "test:live:long": "npx playwright test tests/deep-research.spec.ts tests/tts-no-duplicates.spec.ts",
+    "test:live:smoke": "npx playwright test tests/live-long-smoke.spec.ts",
     "test:headed": "npx playwright test --headed",
     "test:debug": "npx playwright test --debug",
     "test:report": "npx playwright show-report"
