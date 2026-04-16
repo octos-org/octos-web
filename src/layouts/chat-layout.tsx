@@ -17,7 +17,8 @@ import { useFileStore } from "@/store/file-store";
 
 export function ChatLayout({ children }: { children: ReactNode }) {
   const { user, portal, logout } = useAuth();
-  const { currentSessionId, currentSessionTitle, renameSession } = useSession();
+  const { currentSessionId, currentSessionTitle, historyTopic, renameSession } =
+    useSession();
   const status = useOctosStatus();
   const { theme, toggleTheme } = useTheme();
   const [mediaPanelOpen, setMediaPanelOpen] = useState(false);
@@ -54,6 +55,14 @@ export function ChatLayout({ children }: { children: ReactNode }) {
     let toastTimer: ReturnType<typeof setTimeout> | null = null;
     function onFile(e: Event) {
       const detail = (e as CustomEvent).detail;
+      if (detail?.sessionId && detail.sessionId !== currentSessionId) return;
+      if (
+        historyTopic &&
+        typeof detail?.topic === "string" &&
+        detail.topic !== historyTopic
+      ) {
+        return;
+      }
       const filename = detail?.filename || "file";
       const isAudio = /\.(mp3|wav|ogg|m4a|opus|flac|aac)$/i.test(filename);
       setToast(isAudio ? `🎵 Audio ready: ${filename}` : `📄 File ready: ${filename}`);
@@ -65,7 +74,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
       window.removeEventListener("crew:file", onFile);
       if (toastTimer) clearTimeout(toastTimer);
     };
-  }, []);
+  }, [currentSessionId, historyTopic]);
 
   return (
     <div className="chat-shell flex h-screen gap-3 p-3">
