@@ -12,6 +12,7 @@ import { getMessages as fetchMessages } from "@/api/sessions";
 import type { MessageInfo } from "@/api/types";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { addFile as addToFileStore } from "@/store/file-store";
+import { recordRuntimeCounter } from "@/runtime/observability";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -545,6 +546,10 @@ export function appendHistoryMessages(
       typeof converted.historySeq === "number" &&
       list.some((message) => message.historySeq === converted.historySeq)
     ) {
+      recordRuntimeCounter("octos_result_duplicate_suppressed_total", {
+        kind: converted.role,
+        reason: "history_seq",
+      });
       maxSeq = Math.max(maxSeq, converted.historySeq);
       continue;
     }
@@ -591,6 +596,10 @@ export function appendHistoryMessages(
       // Already have a confirmed message with same content — this is likely
       // the correct instance. Skip adding a duplicate; the existing one is
       // close enough (authoritative seq may differ but UI position is right).
+      recordRuntimeCounter("octos_result_duplicate_suppressed_total", {
+        kind: converted.role,
+        reason: "confirmed_text_match",
+      });
       if (typeof converted.historySeq === "number") {
         maxSeq = Math.max(maxSeq, converted.historySeq);
       }

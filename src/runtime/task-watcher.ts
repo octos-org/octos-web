@@ -17,6 +17,7 @@ import * as TaskStore from "@/store/task-store";
 import * as FileStore from "@/store/file-store";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { dispatchCrewFileEvent } from "./file-events";
+import { recordRuntimeCounter } from "./observability";
 import type { BackgroundTaskInfo, MessageInfo } from "@/api/types";
 
 const POLL_INTERVAL_MS = 2500;
@@ -218,6 +219,14 @@ function ensureEventStream(key: string): void {
         !response.body ||
         !contentType.toLowerCase().includes("text/event-stream")
       ) {
+        recordRuntimeCounter("octos_replay_fallback_total", {
+          mode: "task_watcher_stream",
+          reason: !response.ok
+            ? `http_${response.status}`
+            : !response.body
+              ? "missing_body"
+              : "invalid_content_type",
+        });
         return;
       }
 
@@ -278,6 +287,10 @@ function ensureEventStream(key: string): void {
         reader.releaseLock();
       }
     } catch {
+      recordRuntimeCounter("octos_replay_fallback_total", {
+        mode: "task_watcher_stream",
+        reason: "stream_error",
+      });
       // Polling becomes the fallback while the stream is unavailable.
     } finally {
       const current = watchedSessions.get(key);
@@ -349,6 +362,10 @@ async function pollSession(entry: WatchedSession): Promise<void> {
       if (watchedSessions.size === 0) stopPolling();
     }
   } catch {
+    recordRuntimeCounter("octos_replay_fallback_total", {
+      mode: "task_watcher_poll",
+      reason: "poll_error",
+    });
     // Keep watching; the next poll will retry fallback sync.
   }
 }

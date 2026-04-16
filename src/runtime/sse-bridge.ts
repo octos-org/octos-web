@@ -13,6 +13,7 @@ import * as MessageStore from "@/store/message-store";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { getMessages as fetchSessionMessages } from "@/api/sessions";
 import { dispatchCrewFileEvent } from "./file-events";
+import { recordRuntimeCounter } from "./observability";
 
 // ---------------------------------------------------------------------------
 // Helpers (shared with the old adapter, kept local)
@@ -226,9 +227,19 @@ function bindStreamToAssistant({
   >();
   /** Maps tool name to the most recent toolCall key (for tool_end matching). */
   const activeToolByName = new Map<string, string>();
+  const normalizedHistoryTopic = historyTopic?.trim() || undefined;
 
   const handleEvent = (evt: StreamManager.StreamEvent) => {
     const event = evt.raw;
+    const eventTopic =
+      typeof (event as { topic?: unknown }).topic === "string"
+        ? ((event as { topic?: string }).topic?.trim() || undefined)
+        : undefined;
+    if (eventTopic !== undefined && eventTopic !== normalizedHistoryTopic) {
+      recordRuntimeCounter("octos_topic_mismatch_total", {
+        surface: "sse_bridge",
+      });
+    }
 
     switch (event.type) {
       case "token":
