@@ -242,7 +242,13 @@ function findOptimisticMatchIndex(list: Message[], authoritative: Message): numb
     // via SSE and may differ from the API version.
 
     const timeDelta = Math.abs(candidate.timestamp - authoritativeTime);
-    if (timeDelta > 60_000) continue;
+    // Resumed assistant turns can stay alive for several minutes before the
+    // committed session_result arrives. Keep a wider merge window for those
+    // optimistic assistant bubbles so the final committed result replaces the
+    // bubble instead of appending a duplicate turn after reload recovery.
+    const optimisticWindowMs =
+      candidate.role === "assistant" ? 15 * 60_000 : 60_000;
+    if (timeDelta > optimisticWindowMs) continue;
     if (timeDelta >= bestTimeDelta) continue;
 
     bestIndex = index;
