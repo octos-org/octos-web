@@ -59,7 +59,7 @@ export function watchSession(sessionId: string, topic?: string): void {
     const entry = watchedSessions.get(key)!;
     entry.lastCommittedSeq = Math.max(
       entry.lastCommittedSeq,
-      MessageStore.getMaxHistorySeq(sessionId),
+      MessageStore.getMaxHistorySeq(sessionId, topic),
     );
     entry.postCompletionRemaining = POST_COMPLETION_POLLS;
     void pollSession(entry);
@@ -67,7 +67,7 @@ export function watchSession(sessionId: string, topic?: string): void {
   }
 
   const knownPaths = new Set(
-    MessageStore.getMessages(sessionId).flatMap((m) =>
+    MessageStore.getMessages(sessionId, topic).flatMap((m) =>
       m.files.map((f) => f.path),
     ),
   );
@@ -76,7 +76,7 @@ export function watchSession(sessionId: string, topic?: string): void {
     sessionId,
     topic: topic?.trim() || undefined,
     postCompletionRemaining: POST_COMPLETION_POLLS,
-    lastCommittedSeq: MessageStore.getMaxHistorySeq(sessionId),
+    lastCommittedSeq: MessageStore.getMaxHistorySeq(sessionId, topic),
     knownPaths,
     prevActiveIds: new Set(),
   });
@@ -137,7 +137,7 @@ function applyCommittedMessages(
   if (messages.length === 0) return;
   entry.lastCommittedSeq = Math.max(
     entry.lastCommittedSeq,
-    MessageStore.appendHistoryMessages(sessionId, messages),
+    MessageStore.appendHistoryMessages(sessionId, messages, entry.topic),
   );
   emitNewFileEvents(sessionId, entry.topic, messages, entry.knownPaths);
   void FileStore.loadSessionFiles(sessionId);

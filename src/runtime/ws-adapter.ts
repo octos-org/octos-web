@@ -198,6 +198,7 @@ export function createWsAdapter(
   onMessageComplete?: () => void,
   getPendingMedia?: () => string[],
   onMessageSent?: (firstMessage: string) => void,
+  getHistoryTopic?: () => string | undefined,
 ): ChatModelAdapter {
   // Keep the SSE adapter as a fallback
   const sseAdapter = createOctosAdapter(
@@ -214,6 +215,7 @@ export function createWsAdapter(
   return {
     async *run(options) {
       const sessionId = getSessionId();
+      const historyTopic = getHistoryTopic?.();
       const lastMsg = options.messages[options.messages.length - 1];
       const userText = extractText(lastMsg);
       const media = getPendingMedia?.() ?? [];
@@ -264,7 +266,7 @@ export function createWsAdapter(
         files: [],
         toolCalls: [],
         status: "complete",
-      });
+      }, historyTopic);
 
       // Send via WebSocket
       const settings = getSettings();
@@ -285,7 +287,7 @@ export function createWsAdapter(
         files: [],
         toolCalls: [],
         status: "streaming",
-      });
+      }, historyTopic);
 
       // Consume WS events via an async queue
       let text = "";
@@ -359,6 +361,7 @@ export function createWsAdapter(
                   sessionId,
                   assistantMsgId,
                   event.text as string,
+                  historyTopic,
                 );
                 yield buildResult(
                   stripToolProgress(stripThink(text)),
@@ -370,7 +373,7 @@ export function createWsAdapter(
                 text = event.text as string;
                 MessageStore.updateMessage(sessionId, assistantMsgId, {
                   text,
-                });
+                }, historyTopic);
                 yield buildResult(
                   stripToolProgress(stripThink(text)),
                   toolCalls,
@@ -393,7 +396,7 @@ export function createWsAdapter(
                     name: tc.toolName,
                     status: tc.status as "running" | "complete" | "error",
                   })),
-                });
+                }, historyTopic);
                 yield buildResult(text, toolCalls);
                 break;
               }
@@ -411,7 +414,7 @@ export function createWsAdapter(
                     name: t.toolName,
                     status: t.status as "running" | "complete" | "error",
                   })),
-                });
+                }, historyTopic);
                 yield buildResult(text, toolCalls);
                 break;
               }
@@ -423,6 +426,7 @@ export function createWsAdapter(
                       tool: event.tool,
                       message: event.message,
                       sessionId,
+                      topic: historyTopic,
                     },
                   }),
                 );
@@ -471,7 +475,7 @@ export function createWsAdapter(
                   let targetMsgId = assistantMsgId;
                   if (toolCallId) {
                     // Find the message that has a tool call with this id
-                    const msgs = MessageStore.getMessages(sessionId);
+                    const msgs = MessageStore.getMessages(sessionId, historyTopic);
                     const match = msgs.find((m) =>
                       m.toolCalls.some((tc) => tc.id === toolCallId),
                     );
@@ -482,10 +486,11 @@ export function createWsAdapter(
                     filename,
                     path: filePath,
                     caption,
-                  });
+                  }, historyTopic);
 
                   dispatchCrewFileEvent({
                     sessionId,
+                    topic: historyTopic,
                     path: filePath,
                     filename,
                     caption,
@@ -505,10 +510,11 @@ export function createWsAdapter(
                     }
                   | undefined;
                 if (message) {
-                  MessageStore.appendHistoryMessages(sessionId, [message]);
+                  MessageStore.appendHistoryMessages(sessionId, [message], historyTopic);
                   for (const filePath of message.media ?? []) {
                     dispatchCrewFileEvent({
                       sessionId,
+                      topic: historyTopic,
                       path: filePath,
                       filename: displayFilenameFromPath(filePath),
                       caption: "",
@@ -526,7 +532,7 @@ export function createWsAdapter(
                 MessageStore.updateMessage(sessionId, assistantMsgId, {
                   text,
                   status: "complete",
-                });
+                }, historyTopic);
 
                 if (event.model || event.tokens_in || event.tokens_out) {
                   window.dispatchEvent(
@@ -554,7 +560,7 @@ export function createWsAdapter(
                 MessageStore.updateMessage(sessionId, assistantMsgId, {
                   text,
                   status: "error",
-                });
+                }, historyTopic);
                 yield buildResult(text, toolCalls);
                 done = true;
                 break;
@@ -567,12 +573,12 @@ export function createWsAdapter(
                   if (text) {
                     MessageStore.updateMessage(sessionId, assistantMsgId, {
                       status: "complete",
-                    });
+                    }, historyTopic);
                   } else {
                     MessageStore.updateMessage(sessionId, assistantMsgId, {
                       text: "⚠️ Connection lost",
                       status: "error",
-                    });
+                    }, historyTopic);
                   }
                   done = true;
                 }
@@ -594,7 +600,10 @@ export function createWsAdapter(
           try {
             const freshToken = getToken();
             const pollResp = await fetch(
-              `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/messages?limit=3`,
+              `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/messages?${new URLSearchParams({
+                limit: "3",
+                ...(historyTopic?.trim() ? { topic: historyTopic.trim() } : {}),
+              }).toString()}`,
               {
                 headers: freshToken ? { Authorization: `Bearer ${freshToken}` } : {},
               },
@@ -614,7 +623,7 @@ export function createWsAdapter(
                 MessageStore.updateMessage(sessionId, assistantMsgId, {
                   text,
                   status: "complete",
-                });
+                }, historyTopic);
                 yield buildResult(text, toolCalls);
                 break;
               }

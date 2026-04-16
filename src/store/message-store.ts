@@ -1,9 +1,10 @@
 /**
- * Message store — session-scoped message state with React integration.
+ * Message store — session/topic-scoped message state with React integration.
  *
  * Follows the same useSyncExternalStore pattern as file-store.ts.
- * Messages are keyed by sessionId. History is loaded from the API
- * on first access; streaming updates arrive via the WS adapter.
+ * Messages are keyed by sessionId plus optional history topic. History is
+ * loaded from the API on first access; streaming updates arrive via the
+ * runtime bridges.
  */
 
 import { useSyncExternalStore } from "react";
@@ -53,7 +54,7 @@ export interface Message {
 // Internal state
 // ---------------------------------------------------------------------------
 
-const messagesBySession = new Map<string, Message[]>();
+const messagesByKey = new Map<string, Message[]>();
 const listeners = new Set<() => void>();
 /** Track which sessions have already loaded history from the API. */
 const loadedSessions = new Set<string>();
@@ -61,7 +62,7 @@ const loadedSessions = new Set<string>();
 const loadingPromises = new Map<string, Promise<void>>();
 
 let version = 0;
-// Snapshot cache keyed by sessionId — invalidated on every notify().
+// Snapshot cache keyed by session/topic key — invalidated on every notify().
 const messageSnapshots = new Map<string, { version: number; data: Message[] }>();
 
 function notify() {
@@ -75,11 +76,17 @@ function subscribe(cb: () => void): () => void {
   return () => listeners.delete(cb);
 }
 
-function getMessageSnapshot(sessionId: string): Message[] {
-  const cached = messageSnapshots.get(sessionId);
+function storeKey(sessionId: string, topic?: string): string {
+  const trimmedTopic = topic?.trim();
+  return trimmedTopic ? `${sessionId}#${trimmedTopic}` : sessionId;
+}
+
+function getMessageSnapshot(sessionId: string, topic?: string): Message[] {
+  const key = storeKey(sessionId, topic);
+  const cached = messageSnapshots.get(key);
   if (cached && cached.version === version) return cached.data;
-  const data = messagesBySession.get(sessionId) ?? [];
-  messageSnapshots.set(sessionId, { version, data });
+  const data = messagesByKey.get(key) ?? [];
+  messageSnapshots.set(key, { version, data });
   return data;
 }
 
@@ -93,18 +100,18 @@ function nextId(): string {
   return `msg-${Date.now()}-${++idCounter}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
-function getList(sessionId: string): Message[] {
-  let list = messagesBySession.get(sessionId);
+function getList(sessionId: string, topic?: string): Message[] {
+  const key = storeKey(sessionId, topic);
+  let list = messagesByKey.get(key);
   if (!list) {
     list = [];
-    messagesBySession.set(sessionId, list);
+    messagesByKey.set(key, list);
   }
   return list;
 }
 
 function historyLoadKey(sessionId: string, topic?: string): string {
-  const trimmedTopic = topic?.trim();
-  return trimmedTopic ? `${sessionId}#${trimmedTopic}` : sessionId;
+  return storeKey(sessionId, topic);
 }
 
 function parseLegacyFileLine(line: string): MessageFile | null {
@@ -299,8 +306,13 @@ function indexFilesForSession(sessionId: string, messages: Message[]): void {
   }
 }
 
-function replaceHistoryFromApi(sessionId: string, apiMessages: MessageInfo[]): void {
-  const existing = messagesBySession.get(sessionId) ?? [];
+function replaceHistoryFromApi(
+  sessionId: string,
+  apiMessages: MessageInfo[],
+  topic?: string,
+): void {
+  const key = storeKey(sessionId, topic);
+  const existing = messagesByKey.get(key) ?? [];
   const consumedOptimisticIndices = new Set<number>();
 
   // Phase 1: Convert API messages to local format, merging with optimistic
@@ -375,9 +387,9 @@ function replaceHistoryFromApi(sessionId: string, apiMessages: MessageInfo[]): v
     return a.timestamp - b.timestamp;
   });
 
-  messagesBySession.set(sessionId, merged);
+  messagesByKey.set(key, merged);
   indexFilesForSession(sessionId, merged);
-  loadedSessions.add(sessionId);
+  loadedSessions.add(key);
   notify();
 }
 
@@ -389,12 +401,14 @@ function replaceHistoryFromApi(sessionId: string, apiMessages: MessageInfo[]): v
 export function addMessage(
   sessionId: string,
   msg: Omit<Message, "id" | "timestamp">,
+  topic?: string,
 ): string {
   const id = nextId();
-  const list = getList(sessionId);
+  const key = storeKey(sessionId, topic);
+  const list = getList(sessionId, topic);
   list.push({ ...msg, id, timestamp: Date.now() });
   // Replace the array reference so React picks up the change
-  messagesBySession.set(sessionId, [...list]);
+  messagesByKey.set(key, [...list]);
   notify();
   return id;
 }
@@ -404,13 +418,15 @@ export function updateMessage(
   sessionId: string,
   messageId: string,
   updates: Partial<Pick<Message, "text" | "status" | "files" | "toolCalls" | "meta">>,
+  topic?: string,
 ): void {
-  const list = messagesBySession.get(sessionId);
+  const key = storeKey(sessionId, topic);
+  const list = messagesByKey.get(key);
   if (!list) return;
   const idx = list.findIndex((m) => m.id === messageId);
   if (idx === -1) return;
   list[idx] = { ...list[idx], ...updates };
-  messagesBySession.set(sessionId, [...list]);
+  messagesByKey.set(key, [...list]);
   notify();
 }
 
@@ -418,8 +434,9 @@ export function setMessageMeta(
   sessionId: string,
   messageId: string,
   meta: MessageMeta,
+  topic?: string,
 ): void {
-  updateMessage(sessionId, messageId, { meta });
+  updateMessage(sessionId, messageId, { meta }, topic);
 }
 
 /** Append text to a streaming message. */
@@ -427,13 +444,15 @@ export function appendText(
   sessionId: string,
   messageId: string,
   chunk: string,
+  topic?: string,
 ): void {
-  const list = messagesBySession.get(sessionId);
+  const key = storeKey(sessionId, topic);
+  const list = messagesByKey.get(key);
   if (!list) return;
   const idx = list.findIndex((m) => m.id === messageId);
   if (idx === -1) return;
   list[idx] = { ...list[idx], text: list[idx].text + chunk };
-  messagesBySession.set(sessionId, [...list]);
+  messagesByKey.set(key, [...list]);
   notify();
 }
 
@@ -442,15 +461,17 @@ export function appendFile(
   sessionId: string,
   messageId: string,
   file: MessageFile,
+  topic?: string,
 ): void {
-  const list = messagesBySession.get(sessionId);
+  const key = storeKey(sessionId, topic);
+  const list = messagesByKey.get(key);
   if (!list) return;
   const idx = list.findIndex((m) => m.id === messageId);
   if (idx === -1) return;
   const msg = list[idx];
   if (msg.files.some((f) => f.path === file.path)) return;
   list[idx] = { ...msg, files: [...msg.files, file] };
-  messagesBySession.set(sessionId, [...list]);
+  messagesByKey.set(key, [...list]);
   addToFileStore({
     sessionId,
     filename: file.filename,
@@ -461,43 +482,61 @@ export function appendFile(
 }
 
 /** Get messages for a session (snapshot, not reactive). */
-export function getMessages(sessionId: string): Message[] {
-  return messagesBySession.get(sessionId) ?? [];
+export function getMessages(sessionId: string, topic?: string): Message[] {
+  return messagesByKey.get(storeKey(sessionId, topic)) ?? [];
 }
 
 /** Clear all messages for a session (e.g. on session delete). */
-export function clearMessages(sessionId: string): void {
-  messagesBySession.delete(sessionId);
-  for (const key of [...loadedSessions]) {
-    if (key === sessionId || key.startsWith(`${sessionId}#`)) {
-      loadedSessions.delete(key);
+export function clearMessages(sessionId: string, topic?: string): void {
+  const key = storeKey(sessionId, topic);
+  if (topic?.trim()) {
+    messagesByKey.delete(key);
+  } else {
+    for (const messageKey of [...messagesByKey.keys()]) {
+      if (messageKey === sessionId || messageKey.startsWith(`${sessionId}#`)) {
+        messagesByKey.delete(messageKey);
+      }
     }
   }
-  for (const key of [...loadingPromises.keys()]) {
-    if (key === sessionId || key.startsWith(`${sessionId}#`)) {
-      loadingPromises.delete(key);
+  for (const loadedKey of [...loadedSessions]) {
+    if (loadedKey === key || (!topic && loadedKey.startsWith(`${sessionId}#`))) {
+      loadedSessions.delete(loadedKey);
+    }
+  }
+  for (const loadingKey of [...loadingPromises.keys()]) {
+    if (loadingKey === key || (!topic && loadingKey.startsWith(`${sessionId}#`))) {
+      loadingPromises.delete(loadingKey);
     }
   }
   notify();
 }
 
-export function getMaxHistorySeq(sessionId: string): number {
-  return getMessages(sessionId).reduce((maxSeq, message) => {
+export function getMaxHistorySeq(sessionId: string, topic?: string): number {
+  return getMessages(sessionId, topic).reduce((maxSeq, message) => {
     if (typeof message.historySeq !== "number") return maxSeq;
     return Math.max(maxSeq, message.historySeq);
   }, -1);
 }
 
-export function replaceHistory(sessionId: string, apiMessages: MessageInfo[]): void {
-  replaceHistoryFromApi(sessionId, apiMessages);
+export function replaceHistory(
+  sessionId: string,
+  apiMessages: MessageInfo[],
+  topic?: string,
+): void {
+  replaceHistoryFromApi(sessionId, apiMessages, topic);
 }
 
-export function appendHistoryMessages(sessionId: string, apiMessages: MessageInfo[]): number {
-  if (apiMessages.length === 0) return getMaxHistorySeq(sessionId);
+export function appendHistoryMessages(
+  sessionId: string,
+  apiMessages: MessageInfo[],
+  topic?: string,
+): number {
+  if (apiMessages.length === 0) return getMaxHistorySeq(sessionId, topic);
 
-  const list = getList(sessionId);
+  const key = storeKey(sessionId, topic);
+  const list = getList(sessionId, topic);
   let changed = false;
-  let maxSeq = getMaxHistorySeq(sessionId);
+  let maxSeq = getMaxHistorySeq(sessionId, topic);
 
   for (const apiMessage of apiMessages) {
     const converted = convertApiMessage(apiMessage);
@@ -570,9 +609,9 @@ export function appendHistoryMessages(sessionId: string, apiMessages: MessageInf
       if (aSeq !== bSeq) return aSeq - bSeq;
       return a.timestamp - b.timestamp;
     });
-    messagesBySession.set(sessionId, [...list]);
+    messagesByKey.set(key, [...list]);
     indexFilesForSession(sessionId, list);
-    loadedSessions.add(sessionId);
+    loadedSessions.add(key);
     notify();
   }
 
@@ -588,8 +627,10 @@ export function appendHistoryMessages(sessionId: string, apiMessages: MessageInf
 export function ensureStreamingAssistantMessage(
   sessionId: string,
   text = "Resuming ongoing work...",
+  topic?: string,
 ): string {
-  const list = getList(sessionId);
+  const key = storeKey(sessionId, topic);
+  const list = getList(sessionId, topic);
   const existing = [...list]
     .reverse()
     .find((message) => message.role === "assistant" && message.status === "streaming");
@@ -597,7 +638,7 @@ export function ensureStreamingAssistantMessage(
   if (existing) {
     if (!existing.text && text) {
       existing.text = text;
-      messagesBySession.set(sessionId, [...list]);
+      messagesByKey.set(key, [...list]);
       notify();
     }
     return existing.id;
@@ -613,7 +654,7 @@ export function ensureStreamingAssistantMessage(
     status: "streaming",
     timestamp: Date.now(),
   });
-  messagesBySession.set(sessionId, [...list]);
+  messagesByKey.set(key, [...list]);
   notify();
   return id;
 }
@@ -640,9 +681,12 @@ export function loadHistory(sessionId: string, topic?: string): Promise<void> {
       // authoritative topic history. Generic chat sessions keep the older
       // "only if empty" behavior to avoid clobbering active optimistic state.
       if (topic?.trim()) {
-        replaceHistoryFromApi(sessionId, apiMessages);
-      } else if (!messagesBySession.has(sessionId) || messagesBySession.get(sessionId)!.length === 0) {
-        replaceHistoryFromApi(sessionId, apiMessages);
+        replaceHistoryFromApi(sessionId, apiMessages, topic);
+      } else if (
+        !messagesByKey.has(loadKey) ||
+        messagesByKey.get(loadKey)!.length === 0
+      ) {
+        replaceHistoryFromApi(sessionId, apiMessages, topic);
       }
     } catch {
       // API unavailable — not fatal, store stays empty
@@ -661,10 +705,10 @@ export function loadHistory(sessionId: string, topic?: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /** Subscribe to messages for a specific session. */
-export function useMessages(sessionId: string): Message[] {
+export function useMessages(sessionId: string, topic?: string): Message[] {
   return useSyncExternalStore(
     subscribe,
-    () => getMessageSnapshot(sessionId),
-    () => getMessageSnapshot(sessionId),
+    () => getMessageSnapshot(sessionId, topic),
+    () => getMessageSnapshot(sessionId, topic),
   );
 }

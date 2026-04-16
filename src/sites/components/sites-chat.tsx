@@ -70,11 +70,12 @@ export function SitesChat({ sessionId }: Props) {
   const projectId = project?.id;
   const projectTitle = project?.title;
   const projectScaffolded = project?.scaffolded;
-  const messages = useMessages(sessionId);
+  const historyTopic = project?.preset ? `site ${project.preset}` : undefined;
+  const messages = useMessages(sessionId, historyTopic);
 
   useEffect(() => {
-    MessageStore.loadHistory(sessionId);
-  }, [sessionId]);
+    void MessageStore.loadHistory(sessionId, historyTopic);
+  }, [historyTopic, sessionId]);
 
   const ensureSiteScaffolded = useCallback(
     async (request?: SessionSendRequest) => {
@@ -223,6 +224,7 @@ export function SitesChat({ sessionId }: Props) {
     () => ({
       sessions: [],
       currentSessionId: sessionId,
+      historyTopic,
       currentSessionTitle: projectTitle || "Site Agent",
       currentSessionStats: null,
       initialMessages: [] as never[],
@@ -240,7 +242,7 @@ export function SitesChat({ sessionId }: Props) {
       markSessionActive: () => {},
       beforeSend,
     }),
-    [adaptiveMode, beforeSend, projectTitle, queueMode, sessionId],
+    [adaptiveMode, beforeSend, historyTopic, projectTitle, queueMode, sessionId],
   );
 
   return (
