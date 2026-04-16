@@ -90,8 +90,6 @@ test.describe("TTS duplicate message detection", () => {
   test("fresh session: TTS request produces no duplicate bubbles", async ({
     page,
   }) => {
-    const logMark = await markLogPosition();
-
     // Send TTS request
     console.log("Step 1: Send TTS request");
     const result = await sendAndWait(page, "用杨幂声音说：你好世界", {
