@@ -1,68 +1,17 @@
 import { useEffect, useState } from "react";
 
-import { getSessionTasks } from "@/api/sessions";
-
-interface TaskInfo {
-  id: string;
-  tool_name: string;
-  status: "spawned" | "running" | "completed" | "failed";
-  started_at: string;
-  error: string | null;
-}
+import { useTasks } from "@/store/task-store";
 
 export function SitesTaskStatusIndicator({
   sessionId,
+  historyTopic,
   profileId: _profileId,
 }: {
   sessionId: string;
+  historyTopic?: string;
   profileId?: string;
 }) {
-  const [tasks, setTasks] = useState<TaskInfo[]>([]);
-
-  useEffect(() => {
-    let stopped = false;
-    let pollTimer: ReturnType<typeof setTimeout> | undefined;
-
-    async function poll() {
-      if (stopped) return;
-      try {
-        const data = (await getSessionTasks(sessionId)) as TaskInfo[];
-        if (stopped) return;
-        setTasks(data);
-
-        if (data.some((task) => task.status === "running" || task.status === "spawned")) {
-          pollTimer = setTimeout(poll, 2000);
-        }
-      } catch {
-        if (!stopped) pollTimer = setTimeout(poll, 3000);
-      }
-    }
-
-    function handleEvent(event: Event) {
-      const detail =
-        event instanceof CustomEvent ? (event.detail as unknown) : undefined;
-      if (
-        !detail ||
-        typeof detail !== "object" ||
-        !("sessionId" in detail) ||
-        detail.sessionId !== sessionId
-      ) {
-        return;
-      }
-      void poll();
-    }
-
-    void poll();
-    window.addEventListener("crew:bg_tasks", handleEvent);
-    window.addEventListener("crew:task_status", handleEvent);
-
-    return () => {
-      stopped = true;
-      if (pollTimer) clearTimeout(pollTimer);
-      window.removeEventListener("crew:bg_tasks", handleEvent);
-      window.removeEventListener("crew:task_status", handleEvent);
-    };
-  }, [sessionId]);
+  const tasks = useTasks(sessionId, historyTopic);
 
   if (tasks.length === 0) return null;
 
@@ -75,7 +24,11 @@ export function SitesTaskStatusIndicator({
   );
 }
 
-function TaskStatusPill({ task }: { task: TaskInfo }) {
+function TaskStatusPill({
+  task,
+}: {
+  task: ReturnType<typeof useTasks>[number];
+}) {
   const [, setTick] = useState(0);
   const isActive = task.status === "running" || task.status === "spawned";
 
