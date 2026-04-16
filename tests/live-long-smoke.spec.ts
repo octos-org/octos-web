@@ -31,6 +31,39 @@ test.describe("Live long-task smoke", () => {
     await createNewSession(page);
   });
 
+  test("short TTS success renders exactly one audio attachment", async ({
+    page,
+  }) => {
+    await sendAndWait(page, "用杨幂声音说：你好世界", {
+      label: "live-short-tts-smoke",
+      maxWait: 60_000,
+    });
+
+    let audioAttachments = [] as Awaited<
+      ReturnType<typeof getRenderedAudioAttachments>
+    >;
+    for (let i = 0; i < 15; i++) {
+      await page.waitForTimeout(3_000);
+      audioAttachments = await getRenderedAudioAttachments(page);
+      if (audioAttachments.length > 0) {
+        break;
+      }
+    }
+
+    const threadBubbles = await getRenderedThreadBubbles(page);
+    const userBubbles = threadBubbles.filter((bubble) => bubble.role === "user");
+    const duplicateAudio = findDuplicateAudioAttachments(audioAttachments);
+    const firstAssistantIndex = threadBubbles.findIndex(
+      (bubble) => bubble.role === "assistant",
+    );
+
+    expect(userBubbles).toHaveLength(1);
+    expect(threadBubbles[0]?.role).toBe("user");
+    expect(firstAssistantIndex).toBeGreaterThan(0);
+    expect(duplicateAudio).toHaveLength(0);
+    expect(audioAttachments).toHaveLength(1);
+  });
+
   test("deep research survives reload without ghost turns", async ({ page }) => {
     const prompt =
       "Do a deep research on the latest Rust programming language developments in 2026. Run the pipeline directly, don't ask me to choose.";
