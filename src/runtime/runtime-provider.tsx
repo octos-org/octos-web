@@ -26,12 +26,12 @@ function isTaskActive(task: BackgroundTaskInfo): boolean {
 
 /** Tracks which sessions have been mounted so we can evict old ones. */
 function RuntimeWithSession({ children }: { children: ReactNode }) {
-  const { currentSessionId, setServerTaskActive } = useSession();
+  const { currentSessionId, historyTopic, setServerTaskActive } = useSession();
   const mountedRef = useRef(new Set<string>());
 
   // Load message history into the store when a session is activated
   useEffect(() => {
-    MessageStore.loadHistory(currentSessionId);
+    MessageStore.loadHistory(currentSessionId, historyTopic);
     void FileStore.loadSessionFiles(currentSessionId);
     mountedRef.current.add(currentSessionId);
 
@@ -46,7 +46,7 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
         }
       }
     }
-  }, [currentSessionId]);
+  }, [currentSessionId, historyTopic]);
 
   // Check for active background work on session mount and register with
   // the global task watcher if needed. Also handle stream resumption.
@@ -56,8 +56,8 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
     async function initSession() {
       try {
         const [status, tasks] = await Promise.all([
-          getSessionStatus(currentSessionId),
-          getSessionTasks(currentSessionId).catch(() => [] as BackgroundTaskInfo[]),
+          getSessionStatus(currentSessionId, historyTopic),
+          getSessionTasks(currentSessionId, historyTopic).catch(() => [] as BackgroundTaskInfo[]),
         ]);
         if (cancelled) return;
 
@@ -77,17 +77,22 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
             currentSessionId,
             "Resuming ongoing work...",
           );
-          resumeSessionStream(currentSessionId);
+          resumeSessionStream(currentSessionId, historyTopic);
           window.dispatchEvent(
             new CustomEvent("crew:thinking", {
-              detail: { thinking: true, iteration: 0, sessionId: currentSessionId },
+              detail: {
+                thinking: true,
+                iteration: 0,
+                sessionId: currentSessionId,
+                topic: historyTopic,
+              },
             }),
           );
         }
 
         // Register with the global task watcher for background work.
         if (hasBackgroundWork) {
-          watchSession(currentSessionId);
+          watchSession(currentSessionId, historyTopic);
         }
       } catch {
         // Non-fatal — session will still work for new messages.
@@ -102,7 +107,7 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
       const sessionId = detail?.sessionId;
       if (!sessionId) return;
       // Register ANY session with bg tasks, not just the current one.
-      watchSession(sessionId);
+      watchSession(sessionId, detail?.topic);
     }
 
     function handleTaskStatus(event: Event) {
@@ -112,7 +117,7 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
       const task = detail?.task as BackgroundTaskInfo | undefined;
       if (task) {
         TaskStore.mergeTask(sessionId, task);
-        watchSession(sessionId);
+        watchSession(sessionId, detail?.topic);
       }
     }
 
@@ -124,7 +129,7 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
       window.removeEventListener("crew:bg_tasks", handleBgTasks);
       window.removeEventListener("crew:task_status", handleTaskStatus);
     };
-  }, [currentSessionId, setServerTaskActive]);
+  }, [currentSessionId, historyTopic, setServerTaskActive]);
 
   return <>{children}</>;
 }

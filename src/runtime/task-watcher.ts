@@ -24,11 +24,18 @@ import type { BackgroundTaskInfo, MessageInfo } from "@/api/types";
 const POLL_INTERVAL_MS = 2500;
 const POST_COMPLETION_POLLS = 3;
 
+function watchKey(sessionId: string, topic?: string): string {
+  const normalizedTopic = topic?.trim();
+  return normalizedTopic ? `${sessionId}::${normalizedTopic}` : sessionId;
+}
+
 function isTaskActive(task: BackgroundTaskInfo): boolean {
   return task.status === "spawned" || task.status === "running";
 }
 
 interface WatchedSession {
+  sessionId: string;
+  topic?: string;
   /** Remaining polls after all tasks complete. */
   postCompletionRemaining: number;
   /** Highest committed history sequence applied to the session. */
@@ -45,16 +52,17 @@ const watchedSessions = new Map<string, WatchedSession>();
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 /** Register a session for background task monitoring. */
-export function watchSession(sessionId: string): void {
-  if (watchedSessions.has(sessionId)) {
+export function watchSession(sessionId: string, topic?: string): void {
+  const key = watchKey(sessionId, topic);
+  if (watchedSessions.has(key)) {
     // Already watched — reset post-completion counter in case new tasks spawned.
-    const entry = watchedSessions.get(sessionId)!;
+    const entry = watchedSessions.get(key)!;
     entry.lastCommittedSeq = Math.max(
       entry.lastCommittedSeq,
       MessageStore.getMaxHistorySeq(sessionId),
     );
     entry.postCompletionRemaining = POST_COMPLETION_POLLS;
-    void pollSession(sessionId, entry);
+    void pollSession(entry);
     return;
   }
 
@@ -64,22 +72,25 @@ export function watchSession(sessionId: string): void {
     ),
   );
 
-  watchedSessions.set(sessionId, {
+  watchedSessions.set(key, {
+    sessionId,
+    topic: topic?.trim() || undefined,
     postCompletionRemaining: POST_COMPLETION_POLLS,
     lastCommittedSeq: MessageStore.getMaxHistorySeq(sessionId),
     knownPaths,
     prevActiveIds: new Set(),
   });
 
-  ensureEventStream(sessionId);
+  ensureEventStream(key);
   ensurePolling();
 }
 
 /** Stop watching a session (e.g. on session delete). */
-export function unwatchSession(sessionId: string): void {
-  const entry = watchedSessions.get(sessionId);
+export function unwatchSession(sessionId: string, topic?: string): void {
+  const key = watchKey(sessionId, topic);
+  const entry = watchedSessions.get(key);
   entry?.eventAbort?.abort();
-  watchedSessions.delete(sessionId);
+  watchedSessions.delete(key);
   if (watchedSessions.size === 0) stopPolling();
 }
 
@@ -130,8 +141,8 @@ function applyCommittedMessages(
   void FileStore.loadSessionFiles(sessionId);
 }
 
-function ensureEventStream(sessionId: string): void {
-  const entry = watchedSessions.get(sessionId);
+function ensureEventStream(key: string): void {
+  const entry = watchedSessions.get(key);
   if (!entry || entry.eventAbort) return;
 
   const abort = new AbortController();
@@ -143,7 +154,10 @@ function ensureEventStream(sessionId: string): void {
       if (entry.lastCommittedSeq >= 0) {
         params.set("since_seq", String(entry.lastCommittedSeq));
       }
-      const url = `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/events/stream${
+      if (entry.topic) {
+        params.set("topic", entry.topic);
+      }
+      const url = `${API_BASE}/api/sessions/${encodeURIComponent(entry.sessionId)}/events/stream${
         params.size > 0 ? `?${params.toString()}` : ""
       }`;
       const response = await fetch(
@@ -183,17 +197,17 @@ function ensureEventStream(sessionId: string): void {
               continue;
             }
 
-            const current = watchedSessions.get(sessionId);
+            const current = watchedSessions.get(key);
             if (!current) return;
 
             if (event.type === "task_status" && "task" in event) {
-              TaskStore.mergeTask(sessionId, event.task);
+              TaskStore.mergeTask(current.sessionId, event.task);
               current.postCompletionRemaining = POST_COMPLETION_POLLS;
               continue;
             }
 
             if (event.type === "session_result" && "message" in event) {
-              applyCommittedMessages(sessionId, current, [event.message]);
+              applyCommittedMessages(current.sessionId, current, [event.message]);
               current.postCompletionRemaining = POST_COMPLETION_POLLS;
             }
           }
@@ -204,11 +218,11 @@ function ensureEventStream(sessionId: string): void {
     } catch {
       // Polling remains the fallback when the live background stream is unavailable.
     } finally {
-      const current = watchedSessions.get(sessionId);
+      const current = watchedSessions.get(key);
       if (current && current.eventAbort === abort) {
         current.eventAbort = undefined;
         if (current.prevActiveIds.size > 0 || current.postCompletionRemaining > 0) {
-          setTimeout(() => ensureEventStream(sessionId), 1000);
+          setTimeout(() => ensureEventStream(key), 1000);
         }
       }
     }
@@ -222,14 +236,17 @@ async function pollAll(): Promise<void> {
     return;
   }
 
-  await Promise.all(entries.map(([sessionId, entry]) => pollSession(sessionId, entry)));
+  await Promise.all(entries.map(([, entry]) => pollSession(entry)));
 }
 
-async function pollSession(sessionId: string, entry: WatchedSession): Promise<void> {
+async function pollSession(entry: WatchedSession): Promise<void> {
   try {
-    ensureEventStream(sessionId);
-    const tasks = await getSessionTasks(sessionId).catch(() => [] as BackgroundTaskInfo[]);
-    TaskStore.replaceTasks(sessionId, tasks);
+    const key = watchKey(entry.sessionId, entry.topic);
+    ensureEventStream(key);
+    const tasks = await getSessionTasks(entry.sessionId, entry.topic).catch(
+      () => [] as BackgroundTaskInfo[],
+    );
+    TaskStore.replaceTasks(entry.sessionId, tasks);
 
     const activeIds = new Set(tasks.filter(isTaskActive).map((t) => t.id));
     const hasActive = activeIds.size > 0;
@@ -245,13 +262,14 @@ async function pollSession(sessionId: string, entry: WatchedSession): Promise<vo
 
     // Fetch new messages to pick up delivered files.
     const messages = await fetchSessionMessages(
-      sessionId,
+      entry.sessionId,
       500,
       0,
       entry.lastCommittedSeq >= 0 ? entry.lastCommittedSeq : undefined,
+      entry.topic,
     );
 
-    applyCommittedMessages(sessionId, entry, messages);
+    applyCommittedMessages(entry.sessionId, entry, messages);
 
     // Decide whether to keep watching.
     if (hasActive) {
@@ -261,7 +279,7 @@ async function pollSession(sessionId: string, entry: WatchedSession): Promise<vo
     } else {
       // All tasks terminal, post-completion syncs done — stop watching.
       entry.eventAbort?.abort();
-      watchedSessions.delete(sessionId);
+      watchedSessions.delete(key);
       if (watchedSessions.size === 0) stopPolling();
     }
   } catch {

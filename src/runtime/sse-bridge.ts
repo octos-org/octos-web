@@ -330,7 +330,7 @@ function bindStreamToAssistant({
       case "task_status": {
         window.dispatchEvent(
           new CustomEvent("crew:task_status", {
-            detail: { task: event.task, sessionId },
+            detail: { task: event.task, sessionId, topic: historyTopic },
           }),
         );
         break;
