@@ -227,6 +227,23 @@ function findOptimisticMatchIndex(list: Message[], authoritative: Message): numb
     if (responseMatchIndex !== -1) return responseMatchIndex;
   }
 
+  if (authoritative.role === "assistant") {
+    for (let index = list.length - 1; index >= 0; index -= 1) {
+      const candidate = list[index];
+      if (typeof candidate.historySeq === "number") continue;
+      if (candidate.role !== "assistant" || candidate.status !== "streaming") continue;
+
+      const timeDelta = Math.abs(candidate.timestamp - authoritative.timestamp);
+      if (timeDelta > 15 * 60_000) continue;
+
+      // Recovery can replay the committed session_result before the resumed
+      // streaming bubble receives its final `done` payload. In that window the
+      // texts differ ("Resuming..." vs final answer), but they still represent
+      // the same assistant turn and must collapse into one message.
+      return index;
+    }
+  }
+
   const authoritativeText = normalizeMessageText(authoritative.text);
   const authoritativeTime = authoritative.timestamp;
 
@@ -242,10 +259,10 @@ function findOptimisticMatchIndex(list: Message[], authoritative: Message): numb
     // via SSE and may differ from the API version.
 
     const timeDelta = Math.abs(candidate.timestamp - authoritativeTime);
-    // Resumed assistant turns can stay alive for several minutes before the
-    // committed session_result arrives. Keep a wider merge window for those
-    // optimistic assistant bubbles so the final committed result replaces the
-    // bubble instead of appending a duplicate turn after reload recovery.
+    // Recovery can recreate an optimistic assistant bubble and then replay the
+    // committed session_result much later. Keep a wider assistant merge window
+    // so resumed turns are replaced in place instead of appending a duplicate
+    // assistant bubble after one or more reloads.
     const optimisticWindowMs =
       candidate.role === "assistant" ? 15 * 60_000 : 60_000;
     if (timeDelta > optimisticWindowMs) continue;
@@ -256,6 +273,26 @@ function findOptimisticMatchIndex(list: Message[], authoritative: Message): numb
   }
 
   return bestIndex;
+}
+
+function mergeAuthoritativeIntoMessage(
+  existing: Message,
+  authoritative: Message,
+): Message {
+  return {
+    ...existing,
+    text: authoritative.text,
+    clientMessageId: authoritative.clientMessageId ?? existing.clientMessageId,
+    responseToClientMessageId:
+      authoritative.responseToClientMessageId ?? existing.responseToClientMessageId,
+    files: mergeMessageFiles(authoritative.files, existing.files),
+    toolCalls:
+      authoritative.toolCalls.length > 0 ? authoritative.toolCalls : existing.toolCalls,
+    status: "complete",
+    timestamp: authoritative.timestamp,
+    historySeq: authoritative.historySeq,
+    meta: existing.meta,
+  };
 }
 
 /** Task completion notifications are status messages, not real responses. */
@@ -633,6 +670,58 @@ export function appendHistoryMessages(
   }
 
   return maxSeq;
+}
+
+export function mergeHistoryMessageIntoMessage(
+  sessionId: string,
+  messageId: string,
+  apiMessage: MessageInfo,
+  topic?: string,
+): boolean {
+  const converted = convertApiMessage(apiMessage);
+  if (!converted) return false;
+
+  const key = storeKey(sessionId, topic);
+  const list = messagesByKey.get(key);
+  if (!list) return false;
+
+  const targetIndex = list.findIndex((message) => message.id === messageId);
+  if (targetIndex === -1) return false;
+
+  const target = list[targetIndex];
+  if (target.role !== converted.role) return false;
+
+  if (
+    typeof converted.historySeq === "number" &&
+    typeof target.historySeq === "number" &&
+    target.historySeq === converted.historySeq
+  ) {
+    return true;
+  }
+
+  list[targetIndex] = mergeAuthoritativeIntoMessage(target, converted);
+
+  if (typeof converted.historySeq === "number") {
+    for (let index = list.length - 1; index >= 0; index -= 1) {
+      if (index === targetIndex) continue;
+      if (list[index].historySeq === converted.historySeq) {
+        list.splice(index, 1);
+      }
+    }
+  }
+
+  list.sort((a, b) => {
+    const aSeq = typeof a.historySeq === "number" ? a.historySeq : Number.MAX_SAFE_INTEGER;
+    const bSeq = typeof b.historySeq === "number" ? b.historySeq : Number.MAX_SAFE_INTEGER;
+    if (aSeq !== bSeq) return aSeq - bSeq;
+    return a.timestamp - b.timestamp;
+  });
+
+  messagesByKey.set(key, [...list]);
+  indexFilesForSession(sessionId, list);
+  loadedSessions.add(key);
+  notify();
+  return true;
 }
 
 /**

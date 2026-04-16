@@ -356,7 +356,15 @@ function bindStreamToAssistant({
 
       case "session_result": {
         if (event.message) {
-          MessageStore.appendHistoryMessages(sessionId, [event.message], historyTopic);
+          const merged = MessageStore.mergeHistoryMessageIntoMessage(
+            sessionId,
+            assistantMsgId,
+            event.message,
+            historyTopic,
+          );
+          if (!merged) {
+            MessageStore.appendHistoryMessages(sessionId, [event.message], historyTopic);
+          }
           for (const filePath of event.message.media ?? []) {
             dispatchCrewFileEvent({
               sessionId,

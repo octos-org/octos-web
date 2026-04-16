@@ -510,7 +510,15 @@ export function createWsAdapter(
                     }
                   | undefined;
                 if (message) {
-                  MessageStore.appendHistoryMessages(sessionId, [message], historyTopic);
+                  const merged = MessageStore.mergeHistoryMessageIntoMessage(
+                    sessionId,
+                    assistantMsgId,
+                    message,
+                    historyTopic,
+                  );
+                  if (!merged) {
+                    MessageStore.appendHistoryMessages(sessionId, [message], historyTopic);
+                  }
                   for (const filePath of message.media ?? []) {
                     dispatchCrewFileEvent({
                       sessionId,
