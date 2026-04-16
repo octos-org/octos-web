@@ -4,6 +4,7 @@ import { MarkdownContent } from "@/components/markdown-renderer";
 import { buildApiHeaders } from "@/api/client";
 import { buildFileUrl } from "@/api/files";
 import type { ContentEntry } from "@/api/content";
+import { useSession } from "@/runtime/session-context";
 
 interface MarkdownViewerProps {
   entry: ContentEntry;
@@ -11,6 +12,7 @@ interface MarkdownViewerProps {
 }
 
 export function MarkdownViewer({ entry, onClose }: MarkdownViewerProps) {
+  const { currentSessionId, historyTopic } = useSession();
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [maximized, setMaximized] = useState(false);
@@ -41,12 +43,24 @@ export function MarkdownViewer({ entry, onClose }: MarkdownViewerProps) {
     let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 
     function matchesSession(detail: unknown): boolean {
-      return (
-        !!detail &&
-        typeof detail === "object" &&
-        "sessionId" in detail &&
-        detail.sessionId === sessionId
-      );
+      if (
+        !detail ||
+        typeof detail !== "object" ||
+        !("sessionId" in detail) ||
+        detail.sessionId !== sessionId
+      ) {
+        return false;
+      }
+      if (
+        sessionId === currentSessionId &&
+        historyTopic &&
+        "topic" in detail &&
+        typeof detail.topic === "string" &&
+        detail.topic !== historyTopic
+      ) {
+        return false;
+      }
+      return true;
     }
 
     function scheduleRefresh() {
@@ -85,7 +99,7 @@ export function MarkdownViewer({ entry, onClose }: MarkdownViewerProps) {
       window.removeEventListener("crew:tool_progress", handleEvent);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [entry.session_id, loadContent]);
+  }, [currentSessionId, entry.session_id, historyTopic, loadContent]);
 
   // Escape key closes
   useEffect(() => {
