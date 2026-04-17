@@ -14,6 +14,7 @@ import {
   deleteSession as apiDeleteSession,
 } from "@/api/sessions";
 import type { BackgroundTaskInfo, SessionInfo, MessageInfo } from "@/api/types";
+import * as MessageStore from "@/store/message-store";
 
 const SESSION_TITLE_STORAGE_KEY = "octos_session_titles";
 const SESSION_STATS_STORAGE_KEY = "octos_session_stats";
@@ -207,7 +208,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const saved = localStorage.getItem("octos_current_session");
     if (saved && saved.startsWith("web-")) {
       getMessages(saved).then((msgs) => {
-        if (msgs.length > 0) setInitialMessages(msgs);
+        if (msgs.length > 0) {
+          setInitialMessages(msgs);
+          MessageStore.replaceHistory(saved, msgs);
+        }
       }).catch(() => {});
       getSessionTasks(saved)
         .then((tasks) => {
@@ -361,6 +365,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         getSessionTasks(id).catch(() => [] as BackgroundTaskInfo[]),
       ]);
       if (switchRequestRef.current !== requestId) return; // stale
+      MessageStore.replaceHistory(id, messages);
       setInitialMessages(messages);
       setActiveTaskOnServer(tasks.some(isTaskActive));
     } catch {

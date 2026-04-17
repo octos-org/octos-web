@@ -783,25 +783,34 @@ export function loadHistory(sessionId: string, topic?: string): Promise<void> {
   const promise = (async () => {
     try {
       const apiMessages = await fetchMessages(sessionId, 500, 0, undefined, topic);
+      const existingMessages = messagesByKey.get(loadKey) ?? [];
+      const hasAuthoritativeHistory = existingMessages.some(
+        (message) => typeof message.historySeq === "number",
+      );
       // Topic-scoped surfaces like slides/site should always replace with
-      // authoritative topic history. Generic chat sessions keep the older
-      // "only if empty" behavior to avoid clobbering active optimistic state.
+      // authoritative topic history. Generic chat also needs authoritative
+      // hydration after reload if the only local state is an optimistic resume
+      // placeholder or transient stream error bubble.
       if (topic?.trim()) {
         replaceHistoryFromApi(sessionId, apiMessages, topic);
       } else if (
         !messagesByKey.has(loadKey) ||
-        messagesByKey.get(loadKey)!.length === 0
+        existingMessages.length === 0 ||
+        !hasAuthoritativeHistory
       ) {
         replaceHistoryFromApi(sessionId, apiMessages, topic);
       }
+      loadedSessions.add(loadKey);
     } catch {
-      // API unavailable — not fatal, store stays empty
+      // API unavailable — not fatal, store stays empty. Leave the key
+      // reloadable so a transient fetch failure does not permanently pin the
+      // session to an empty message store for the rest of the tab lifetime.
+      loadedSessions.delete(loadKey);
     } finally {
       loadingPromises.delete(loadKey);
     }
   })();
 
-  loadedSessions.add(loadKey);
   loadingPromises.set(loadKey, promise);
   return promise;
 }
