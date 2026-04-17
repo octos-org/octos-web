@@ -17,6 +17,7 @@ import type { BackgroundTaskInfo, SessionInfo, MessageInfo } from "@/api/types";
 
 const SESSION_TITLE_STORAGE_KEY = "octos_session_titles";
 const SESSION_STATS_STORAGE_KEY = "octos_session_stats";
+const SESSION_TOPIC_STORAGE_KEY = "octos_session_topics";
 
 function isTaskActive(task: BackgroundTaskInfo): boolean {
   return task.status === "spawned" || task.status === "running";
@@ -90,6 +91,7 @@ interface SessionContextValue {
   sessions: SessionWithTitle[];
   currentSessionId: string;
   historyTopic?: string;
+  setHistoryTopic: (topic?: string) => void;
   currentSessionTitle: string;
   currentSessionStats: SessionRunStats | null;
   initialMessages: MessageInfo[];
@@ -161,6 +163,47 @@ function persistStoredStats(stats: Record<string, SessionRunStats>) {
   localStorage.setItem(SESSION_STATS_STORAGE_KEY, JSON.stringify(stats));
 }
 
+function loadStoredTopics(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = localStorage.getItem(SESSION_TOPIC_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") return {};
+    const topics: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof key !== "string" || typeof value !== "string") continue;
+      const trimmed = value.trim();
+      if (!trimmed) continue;
+      topics[key] = trimmed;
+    }
+    return topics;
+  } catch {
+    return {};
+  }
+}
+
+function persistStoredTopics(topics: Record<string, string>) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(SESSION_TOPIC_STORAGE_KEY, JSON.stringify(topics));
+}
+
+function splitSessionAddress(id: string): { sessionId: string; topic?: string } {
+  const separator = id.indexOf("#");
+  if (separator === -1) return { sessionId: id };
+  const sessionId = id.slice(0, separator);
+  const topic = id.slice(separator + 1).trim();
+  return {
+    sessionId,
+    topic: topic || undefined,
+  };
+}
+
+function sessionAddress(sessionId: string, topic?: string): string {
+  const trimmedTopic = topic?.trim();
+  return trimmedTopic ? `${sessionId}#${trimmedTopic}` : sessionId;
+}
+
 /** Extract a sortable timestamp from a session ID.
  *  Handles both formats:
  *    web-{timestamp}-{random}  → timestamp directly (milliseconds)
@@ -183,9 +226,20 @@ function sessionTimestamp(s: SessionInfo): number {
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [sessions, setSessions] = useState<SessionWithTitle[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState(() => {
-    // Restore last session on refresh, or generate a new one
     const saved = localStorage.getItem("octos_current_session");
-    return saved || generateSessionId();
+    if (!saved) return generateSessionId();
+    return splitSessionAddress(saved).sessionId || generateSessionId();
+  });
+  const [historyTopic, setHistoryTopicState] = useState<string | undefined>(() => {
+    const saved = localStorage.getItem("octos_current_session");
+    if (saved) {
+      const parsed = splitSessionAddress(saved);
+      if (parsed.topic) return parsed.topic;
+      const storedTopics = loadStoredTopics();
+      const remembered = storedTopics[parsed.sessionId];
+      if (remembered?.trim()) return remembered.trim();
+    }
+    return undefined;
   });
   const [initialMessages, setInitialMessages] = useState<MessageInfo[]>([]);
   const [activeTaskOnServer, setActiveTaskOnServer] = useState(false);
@@ -193,11 +247,22 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const previousSessionIdRef = useRef<string | null>(null);
   const titleCache = useRef<Record<string, string>>(loadStoredTitles());
   const statsCache = useRef<Record<string, SessionRunStats>>(loadStoredStats());
+  const topicCache = useRef<Record<string, string>>(loadStoredTopics());
 
-  // Persist current session ID for refresh recovery
+  // Persist current session ID/topic for refresh recovery.
   useEffect(() => {
-    localStorage.setItem("octos_current_session", currentSessionId);
-  }, [currentSessionId]);
+    const trimmedTopic = historyTopic?.trim();
+    if (trimmedTopic) {
+      topicCache.current[currentSessionId] = trimmedTopic;
+    } else {
+      delete topicCache.current[currentSessionId];
+    }
+    persistStoredTopics(topicCache.current);
+    localStorage.setItem(
+      "octos_current_session",
+      sessionAddress(currentSessionId, trimmedTopic),
+    );
+  }, [currentSessionId, historyTopic]);
 
   // Load history for restored session on mount
   const restoredRef = useRef(false);
@@ -206,10 +271,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     restoredRef.current = true;
     const saved = localStorage.getItem("octos_current_session");
     if (saved && saved.startsWith("web-")) {
-      getMessages(saved).then((msgs) => {
+      const parsed = splitSessionAddress(saved);
+      const restoredTopic = parsed.topic || topicCache.current[parsed.sessionId];
+      getMessages(parsed.sessionId, 500, 0, undefined, restoredTopic).then((msgs) => {
         if (msgs.length > 0) setInitialMessages(msgs);
       }).catch(() => {});
-      getSessionTasks(saved)
+      getSessionTasks(parsed.sessionId, restoredTopic)
         .then((tasks) => {
           setActiveTaskOnServer(tasks.some(isTaskActive));
         })
@@ -230,7 +297,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       await Promise.all(
         needTitle.slice(0, 10).map(async (s) => {
           try {
-            const msgs = await getMessages(s.id, 10);
+            const parsed = splitSessionAddress(s.id);
+            const msgs = await getMessages(
+              parsed.sessionId,
+              10,
+              0,
+              undefined,
+              parsed.topic,
+            );
             const firstUser = msgs.find((m) => m.role === "user" && m.content?.trim());
             if (firstUser) {
               titleCache.current[s.id] = extractTitle(firstUser.content);
@@ -309,6 +383,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const switchRequestRef = useRef(0);
+  const setHistoryTopic = useCallback((topic?: string) => {
+    const trimmed = topic?.trim();
+    setHistoryTopicState(trimmed || undefined);
+  }, []);
   const setServerTaskActive = useCallback(
     (sessionId: string, active: boolean) => {
       setActiveTaskOnServer((prev) => {
@@ -350,15 +428,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   );
 
   const switchSession = useCallback(async (id: string) => {
-    if (id !== currentSessionId) {
-      previousSessionIdRef.current = currentSessionId;
+    const parsed = splitSessionAddress(id);
+    const nextTopic = parsed.topic ?? topicCache.current[parsed.sessionId];
+
+    if (parsed.sessionId !== currentSessionId || nextTopic !== historyTopic) {
+      previousSessionIdRef.current = sessionAddress(currentSessionId, historyTopic);
     }
     // Guard against race: only the latest switch request wins
     const requestId = ++switchRequestRef.current;
     try {
       const [messages, tasks] = await Promise.all([
-        getMessages(id),
-        getSessionTasks(id).catch(() => [] as BackgroundTaskInfo[]),
+        getMessages(parsed.sessionId, 500, 0, undefined, nextTopic),
+        getSessionTasks(parsed.sessionId, nextTopic).catch(() => [] as BackgroundTaskInfo[]),
       ]);
       if (switchRequestRef.current !== requestId) return; // stale
       setInitialMessages(messages);
@@ -368,12 +449,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setInitialMessages([]);
       setActiveTaskOnServer(false);
     }
-    setCurrentSessionId(id);
-  }, []);
+    setCurrentSessionId(parsed.sessionId);
+    setHistoryTopicState(nextTopic?.trim() || undefined);
+  }, [currentSessionId, historyTopic]);
 
   const createSession = useCallback((title?: string) => {
     const nextId = generateSessionId();
-    previousSessionIdRef.current = currentSessionId;
+    previousSessionIdRef.current = sessionAddress(currentSessionId, historyTopic);
     const trimmedTitle = title?.trim();
     if (trimmedTitle) {
       titleCache.current[nextId] = trimmedTitle;
@@ -384,9 +466,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       ]);
     }
     setInitialMessages([]);
+    setHistoryTopicState(undefined);
     setCurrentSessionId(nextId);
     return nextId;
-  }, [currentSessionId]);
+  }, [currentSessionId, historyTopic]);
 
   const goBack = useCallback(async () => {
     const previous = previousSessionIdRef.current;
@@ -426,18 +509,30 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const removeSession = useCallback(async (id: string) => {
     try {
-      await apiDeleteSession(id);
+      const parsed = splitSessionAddress(id);
+      await apiDeleteSession(parsed.sessionId);
       if (titleCache.current[id]) {
         delete titleCache.current[id];
         persistStoredTitles(titleCache.current);
       }
-      if (statsCache.current[id]) {
-        delete statsCache.current[id];
+      if (titleCache.current[parsed.sessionId]) {
+        delete titleCache.current[parsed.sessionId];
+        persistStoredTitles(titleCache.current);
+      }
+      if (statsCache.current[parsed.sessionId]) {
+        delete statsCache.current[parsed.sessionId];
         persistStoredStats(statsCache.current);
       }
-      setSessions((prev) => prev.filter((s) => s.id !== id));
-      if (id === currentSessionId) {
+      delete topicCache.current[parsed.sessionId];
+      persistStoredTopics(topicCache.current);
+      setSessions((prev) =>
+        prev.filter(
+          (s) => s.id !== id && s.id !== parsed.sessionId && !s.id.startsWith(`${parsed.sessionId}#`),
+        ),
+      );
+      if (parsed.sessionId === currentSessionId) {
         setInitialMessages([]);
+        setHistoryTopicState(undefined);
         setCurrentSessionId(generateSessionId());
       }
     } catch {
@@ -445,7 +540,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
   }, [currentSessionId]);
 
+  const currentSessionLookupKey = sessionAddress(currentSessionId, historyTopic);
   const currentSessionTitle =
+    sessions.find((s) => s.id === currentSessionLookupKey)?.title ||
+    titleCache.current[currentSessionLookupKey] ||
     sessions.find((s) => s.id === currentSessionId)?.title ||
     titleCache.current[currentSessionId] ||
     formatSessionName(currentSessionId);
@@ -456,7 +554,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       value={{
         sessions,
         currentSessionId,
-        historyTopic: undefined,
+        historyTopic,
+        setHistoryTopic,
         currentSessionTitle,
         currentSessionStats,
         initialMessages,

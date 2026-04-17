@@ -79,6 +79,7 @@ export function SlidesChat({ sessionId }: Props) {
       sessions: [],
       currentSessionId: sessionId,
       historyTopic,
+      setHistoryTopic: () => {},
       currentSessionTitle: project?.title || "Slides Agent",
       currentSessionStats: null,
       initialMessages: [] as never[],
