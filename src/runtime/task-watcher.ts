@@ -23,6 +23,8 @@ import type { BackgroundTaskInfo, MessageInfo } from "@/api/types";
 const POLL_INTERVAL_MS = 2500;
 const STREAM_RETRY_MS = 1000;
 const TERMINAL_GRACE_MS = 10_000;
+const WATCH_PERSISTENCE_KEY = "octos_task_watcher_sessions_v1";
+const WATCH_PERSISTENCE_TTL_MS = 12 * 60 * 60 * 1000;
 
 function watchKey(sessionId: string, topic?: string): string {
   const normalizedTopic = topic?.trim();
@@ -45,8 +47,106 @@ interface WatchedSession {
   eventAbort?: AbortController;
 }
 
+interface PersistedWatchedSession {
+  sessionId: string;
+  topic?: string;
+  lastCommittedSeq: number;
+  updatedAt: number;
+}
+
 const watchedSessions = new Map<string, WatchedSession>();
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+function canPersistWatchState(): boolean {
+  return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
+}
+
+function readPersistedSessions(): PersistedWatchedSession[] {
+  if (!canPersistWatchState()) return [];
+  try {
+    const raw = window.localStorage.getItem(WATCH_PERSISTENCE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const cutoff = Date.now() - WATCH_PERSISTENCE_TTL_MS;
+    return parsed.filter((entry): entry is PersistedWatchedSession => {
+      if (!entry || typeof entry !== "object") return false;
+      if (typeof entry.sessionId !== "string" || !entry.sessionId) return false;
+      if (
+        typeof entry.lastCommittedSeq !== "number" ||
+        !Number.isFinite(entry.lastCommittedSeq)
+      ) {
+        return false;
+      }
+      if (typeof entry.updatedAt !== "number" || entry.updatedAt < cutoff) {
+        return false;
+      }
+      return true;
+    });
+  } catch {
+    return [];
+  }
+}
+
+function persistWatchedSessions(): void {
+  if (!canPersistWatchState()) return;
+  try {
+    const next: PersistedWatchedSession[] = [...watchedSessions.values()].map((entry) => ({
+      sessionId: entry.sessionId,
+      topic: entry.topic,
+      lastCommittedSeq: Math.max(
+        entry.lastCommittedSeq,
+        MessageStore.getMaxHistorySeq(entry.sessionId, entry.topic),
+      ),
+      updatedAt: Date.now(),
+    }));
+    if (next.length === 0) {
+      window.localStorage.removeItem(WATCH_PERSISTENCE_KEY);
+      return;
+    }
+    window.localStorage.setItem(WATCH_PERSISTENCE_KEY, JSON.stringify(next));
+  } catch {
+    // localStorage unavailable or full; keep runtime watcher in memory.
+  }
+}
+
+function seedWatchedSession(entry: {
+  sessionId: string;
+  topic?: string;
+  lastCommittedSeq: number;
+}): void {
+  const key = watchKey(entry.sessionId, entry.topic);
+  if (watchedSessions.has(key)) return;
+
+  const topic = entry.topic?.trim() || undefined;
+  const knownPaths = new Set(
+    MessageStore.getMessages(entry.sessionId, topic).flatMap((message) =>
+      message.files.map((file) => file.path),
+    ),
+  );
+
+  watchedSessions.set(key, {
+    sessionId: entry.sessionId,
+    topic,
+    lastCommittedSeq: Math.max(
+      entry.lastCommittedSeq,
+      MessageStore.getMaxHistorySeq(entry.sessionId, topic),
+    ),
+    knownPaths,
+    activeIds: new Set(),
+    replayComplete: false,
+    streamHealthy: false,
+    terminalSince: null,
+  });
+}
+
+function removeWatchedSession(key: string): void {
+  const entry = watchedSessions.get(key);
+  entry?.eventAbort?.abort();
+  watchedSessions.delete(key);
+  persistWatchedSessions();
+  if (watchedSessions.size === 0) stopPolling();
+}
 
 function dispatchTaskStatusEvent(
   sessionId: string,
@@ -127,6 +227,7 @@ function applyCommittedMessages(
   if (entry.activeIds.size === 0) {
     entry.terminalSince = Date.now();
   }
+  persistWatchedSessions();
 }
 
 /** Register a session for background monitoring. */
@@ -141,28 +242,18 @@ export function watchSession(sessionId: string, topic?: string): void {
       MessageStore.getMaxHistorySeq(sessionId, currentTopic),
     );
     entry.terminalSince = null;
+    persistWatchedSessions();
     ensureEventStream(key);
     ensurePolling();
     return;
   }
 
-  const knownPaths = new Set(
-    MessageStore.getMessages(sessionId, currentTopic).flatMap((message) =>
-      message.files.map((file) => file.path),
-    ),
-  );
-
-  watchedSessions.set(key, {
+  seedWatchedSession({
     sessionId,
     topic: currentTopic,
     lastCommittedSeq: MessageStore.getMaxHistorySeq(sessionId, currentTopic),
-    knownPaths,
-    activeIds: new Set(),
-    replayComplete: false,
-    streamHealthy: false,
-    terminalSince: null,
   });
-
+  persistWatchedSessions();
   ensureEventStream(key);
   ensurePolling();
 }
@@ -170,10 +261,18 @@ export function watchSession(sessionId: string, topic?: string): void {
 /** Stop watching a session/topic. */
 export function unwatchSession(sessionId: string, topic?: string): void {
   const key = watchKey(sessionId, topic);
-  const entry = watchedSessions.get(key);
-  entry?.eventAbort?.abort();
-  watchedSessions.delete(key);
-  if (watchedSessions.size === 0) stopPolling();
+  removeWatchedSession(key);
+}
+
+export function restoreWatchedSessions(): void {
+  const persisted = readPersistedSessions();
+  if (persisted.length === 0) return;
+
+  for (const entry of persisted) {
+    seedWatchedSession(entry);
+  }
+  persistWatchedSessions();
+  ensurePolling();
 }
 
 function ensurePolling(): void {
@@ -297,6 +396,7 @@ function ensureEventStream(key: string): void {
       if (current && current.eventAbort === abort) {
         current.eventAbort = undefined;
         current.streamHealthy = false;
+        persistWatchedSessions();
         if (current.activeIds.size > 0) {
           setTimeout(() => ensureEventStream(key), STREAM_RETRY_MS);
         }
@@ -357,9 +457,7 @@ async function pollSession(entry: WatchedSession): Promise<void> {
       entry.terminalSince != null &&
       Date.now() - entry.terminalSince >= TERMINAL_GRACE_MS
     ) {
-      entry.eventAbort?.abort();
-      watchedSessions.delete(key);
-      if (watchedSessions.size === 0) stopPolling();
+      removeWatchedSession(key);
     }
   } catch {
     recordRuntimeCounter("octos_replay_fallback_total", {

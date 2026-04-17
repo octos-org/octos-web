@@ -15,7 +15,7 @@ import * as MessageStore from "@/store/message-store";
 import * as TaskStore from "@/store/task-store";
 import { getSessionStatus } from "@/api/sessions";
 import type { BackgroundTaskInfo } from "@/api/types";
-import { watchSession } from "./task-watcher";
+import { restoreWatchedSessions, unwatchSession, watchSession } from "./task-watcher";
 /** Max sessions kept in memory simultaneously. */
 const MAX_CACHED = 5;
 
@@ -23,6 +23,13 @@ const MAX_CACHED = 5;
 function RuntimeWithSession({ children }: { children: ReactNode }) {
   const { currentSessionId, historyTopic, setServerTaskActive } = useSession();
   const mountedRef = useRef(new Set<string>());
+  const restoredWatchersRef = useRef(false);
+
+  useEffect(() => {
+    if (restoredWatchersRef.current) return;
+    restoredWatchersRef.current = true;
+    restoreWatchedSessions();
+  }, []);
 
   // Load message history into the store when a session is activated
   useEffect(() => {
@@ -81,9 +88,17 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
           );
         }
 
+        MessageStore.reconcileRecoveredStreamingMessages(
+          currentSessionId,
+          historyTopic,
+          { streamActive: status.active },
+        );
+
         // Register with the global task watcher for background work.
         if (hasBackgroundWork) {
           watchSession(currentSessionId, historyTopic);
+        } else {
+          unwatchSession(currentSessionId, historyTopic);
         }
       } catch {
         // Non-fatal — session will still work for new messages.

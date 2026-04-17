@@ -185,7 +185,7 @@ export function resumeSessionStream(
   onComplete?: () => void,
 ): void {
   const abortController = new AbortController();
-  StreamManager.attachStream(sessionId);
+  StreamManager.attachStream(sessionId, historyTopic);
   const assistantMsgId = MessageStore.ensureStreamingAssistantMessage(
     sessionId,
     "Resuming ongoing work...",
