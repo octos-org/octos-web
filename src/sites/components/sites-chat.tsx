@@ -225,6 +225,7 @@ export function SitesChat({ sessionId }: Props) {
       sessions: [],
       currentSessionId: sessionId,
       historyTopic,
+      setHistoryTopic: () => {},
       currentSessionTitle: projectTitle || "Site Agent",
       currentSessionStats: null,
       initialMessages: [] as never[],

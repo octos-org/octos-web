@@ -595,6 +595,7 @@ function Composer() {
   const {
     currentSessionId,
     historyTopic,
+    setHistoryTopic,
     refreshSessions,
     markSessionActive,
     beforeSend,
@@ -812,9 +813,32 @@ function Composer() {
   const sendingRef = useRef(false);
   const isEmpty = text.trim().length === 0;
 
+  const resolveTopicCommand = useCallback(
+    (input: string): string | undefined | null => {
+      const trimmed = input.trim();
+      if (!trimmed.startsWith("/")) return null;
+
+      const switchMatch = trimmed.match(/^\/(?:s|switch)(?:\s+(.*))?$/u);
+      if (switchMatch) {
+        return switchMatch[1]?.trim() || undefined;
+      }
+
+      const newMatch = trimmed.match(/^\/new(?:\s+(.*))?$/u);
+      if (newMatch) {
+        return newMatch[1]?.trim() || undefined;
+      }
+
+      return null;
+    },
+    [],
+  );
+
   const handleSend = useCallback(async () => {
     if (isEmpty && pendingFiles.length === 0) return;
     const input = text.trim();
+    const nextHistoryTopic = resolveTopicCommand(input);
+    const effectiveHistoryTopic =
+      nextHistoryTopic === null ? historyTopic : nextHistoryTopic;
 
     let mediaPaths: string[] = [];
     let audioUploadMode: "recording" | "upload" | undefined;
@@ -930,10 +954,14 @@ function Composer() {
       return;
     }
 
+    if (nextHistoryTopic !== null) {
+      setHistoryTopic(nextHistoryTopic);
+    }
+
     // Send via SSE bridge (StreamManager queues if a stream is already active)
     bridgeSend({
       ...finalPayload,
-      historyTopic,
+      historyTopic: effectiveHistoryTopic,
       onSessionActive: (firstMsg) => markSessionActive(firstMsg),
       onComplete: () => {
         sendingRef.current = false;
@@ -948,9 +976,11 @@ function Composer() {
     pendingFiles,
     currentSessionId,
     historyTopic,
+    setHistoryTopic,
     refreshSessions,
     markSessionActive,
     beforeSend,
+    resolveTopicCommand,
   ]);
 
   const handleCancel = useCallback(() => {
