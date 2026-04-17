@@ -28,6 +28,7 @@ dist-ssr
 crawl-*/
 research/
 *.md
+!.octos/AGENTS.md
 !README.md
 !book/**/*.md
 book/build/
