@@ -18,6 +18,7 @@ import * as MessageStore from "@/store/message-store";
 
 const SESSION_TITLE_STORAGE_KEY = "octos_session_titles";
 const SESSION_STATS_STORAGE_KEY = "octos_session_stats";
+const SESSION_TOPIC_STORAGE_KEY = "octos_session_topics";
 
 function isTaskActive(task: BackgroundTaskInfo): boolean {
   return task.status === "spawned" || task.status === "running";
@@ -162,6 +163,54 @@ function persistStoredStats(stats: Record<string, SessionRunStats>) {
   localStorage.setItem(SESSION_STATS_STORAGE_KEY, JSON.stringify(stats));
 }
 
+function loadStoredTopics(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = localStorage.getItem(SESSION_TOPIC_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistStoredTopics(topics: Record<string, string>) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(SESSION_TOPIC_STORAGE_KEY, JSON.stringify(topics));
+}
+
+function nextTopicForCommand(message: string): string | null | undefined {
+  const trimmed = message.trim();
+  if (!trimmed.startsWith("/")) return undefined;
+
+  const siteMatch = trimmed.match(/^\/new\s+site\s+(.+)$/i);
+  if (siteMatch) {
+    const preset = siteMatch[1]?.trim();
+    return preset ? `site ${preset}` : undefined;
+  }
+
+  const slidesMatch = trimmed.match(/^\/new\s+slides\s+(.+)$/i);
+  if (slidesMatch) {
+    const slug = slidesMatch[1]?.trim();
+    return slug ? `slides ${slug}` : undefined;
+  }
+
+  const switchMatch = trimmed.match(/^\/s\s+(.+)$/i);
+  if (switchMatch) {
+    const topic = switchMatch[1]?.trim();
+    if (!topic) return undefined;
+    if (topic === "default") return null;
+    return topic;
+  }
+
+  if (/^\/back(?:\s|$)/i.test(trimmed)) {
+    return null;
+  }
+
+  return undefined;
+}
+
 /** Extract a sortable timestamp from a session ID.
  *  Handles both formats:
  *    web-{timestamp}-{random}  → timestamp directly (milliseconds)
@@ -194,6 +243,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const previousSessionIdRef = useRef<string | null>(null);
   const titleCache = useRef<Record<string, string>>(loadStoredTitles());
   const statsCache = useRef<Record<string, SessionRunStats>>(loadStoredStats());
+  const [sessionTopics, setSessionTopics] = useState<Record<string, string>>(
+    () => loadStoredTopics(),
+  );
+  const currentHistoryTopic = sessionTopics[currentSessionId];
 
   // Persist current session ID for refresh recovery
   useEffect(() => {
@@ -207,19 +260,20 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     restoredRef.current = true;
     const saved = localStorage.getItem("octos_current_session");
     if (saved && saved.startsWith("web-")) {
-      getMessages(saved).then((msgs) => {
+      const restoredTopic = sessionTopics[saved];
+      getMessages(saved, 500, 0, undefined, restoredTopic).then((msgs) => {
         if (msgs.length > 0) {
           setInitialMessages(msgs);
-          MessageStore.replaceHistory(saved, msgs);
+          MessageStore.replaceHistory(saved, msgs, restoredTopic);
         }
       }).catch(() => {});
-      getSessionTasks(saved)
+      getSessionTasks(saved, restoredTopic)
         .then((tasks) => {
           setActiveTaskOnServer(tasks.some(isTaskActive));
         })
         .catch(() => {});
     }
-  }, []);
+  }, [sessionTopics]);
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -359,13 +413,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
     // Guard against race: only the latest switch request wins
     const requestId = ++switchRequestRef.current;
+    const topic = sessionTopics[id];
     try {
       const [messages, tasks] = await Promise.all([
-        getMessages(id),
-        getSessionTasks(id).catch(() => [] as BackgroundTaskInfo[]),
+        getMessages(id, 500, 0, undefined, topic),
+        getSessionTasks(id, topic).catch(() => [] as BackgroundTaskInfo[]),
       ]);
       if (switchRequestRef.current !== requestId) return; // stale
-      MessageStore.replaceHistory(id, messages);
+      MessageStore.replaceHistory(id, messages, topic);
       setInitialMessages(messages);
       setActiveTaskOnServer(tasks.some(isTaskActive));
     } catch {
@@ -374,7 +429,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setActiveTaskOnServer(false);
     }
     setCurrentSessionId(id);
-  }, []);
+  }, [currentSessionId, sessionTopics]);
 
   const createSession = useCallback((title?: string) => {
     const nextId = generateSessionId();
@@ -405,6 +460,23 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       const existingTitle = titleCache.current[currentSessionId];
       const title =
         !existingTitle && firstMessage ? extractTitle(firstMessage) : existingTitle;
+      const nextTopic = firstMessage ? nextTopicForCommand(firstMessage) : undefined;
+      if (nextTopic !== undefined) {
+        setSessionTopics((prev) => {
+          const current = prev[currentSessionId];
+          const normalizedNext = nextTopic?.trim() || "";
+          if (!normalizedNext && !current) return prev;
+          if (normalizedNext && current === normalizedNext) return prev;
+          const next = { ...prev };
+          if (normalizedNext) {
+            next[currentSessionId] = normalizedNext;
+          } else {
+            delete next[currentSessionId];
+          }
+          persistStoredTopics(next);
+          return next;
+        });
+      }
       if (title && !existingTitle) {
         titleCache.current[currentSessionId] = title;
         persistStoredTitles(titleCache.current);
@@ -440,6 +512,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         delete statsCache.current[id];
         persistStoredStats(statsCache.current);
       }
+      setSessionTopics((prev) => {
+        if (!prev[id]) return prev;
+        const next = { ...prev };
+        delete next[id];
+        persistStoredTopics(next);
+        return next;
+      });
       setSessions((prev) => prev.filter((s) => s.id !== id));
       if (id === currentSessionId) {
         setInitialMessages([]);
@@ -461,7 +540,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       value={{
         sessions,
         currentSessionId,
-        historyTopic: undefined,
+        historyTopic: currentHistoryTopic,
         currentSessionTitle,
         currentSessionStats,
         initialMessages,
