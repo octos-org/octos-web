@@ -9,6 +9,8 @@ import {
   countAssistantBubbles,
   countUserBubbles,
   getChatThreadText,
+  getRenderedAudioAttachments,
+  getRenderedThreadBubbles,
 } from "./helpers";
 
 async function resetChat(page: Page) {
@@ -50,6 +52,20 @@ async function waitForRecoveredTurn(page: Page, timeoutMs = 150_000) {
   }
 
   throw new Error("Timed out waiting for the recovered turn to settle");
+}
+
+async function waitForAudioRecovery(page: Page, timeoutMs = 180_000) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const attachments = await getRenderedAudioAttachments(page);
+    if (attachments.length > 0) {
+      return attachments;
+    }
+    await page.waitForTimeout(3_000);
+  }
+
+  throw new Error("Timed out waiting for recovered audio attachment delivery");
 }
 
 test.describe("Session recovery", () => {
@@ -192,6 +208,54 @@ test.describe("Session recovery", () => {
     const restoredText = await getChatThreadText(page);
     expect(restoredText).toContain(alpha);
     expect(restoredText).not.toContain(beta);
+    expect(await countUserBubbles(page)).toBe(1);
+    expect(await countAssistantBubbles(page)).toBe(1);
+  });
+
+  test("reloading during deferred artifact delivery preserves one recovered turn", async ({
+    page,
+  }) => {
+    await resetChat(page);
+
+    const prompt =
+      "不要搜索，直接生成一个简短测试播客并把音频发回会话。脚本： [杨幂 - clone:yangmi, professional] 大家好。 [窦文涛 - clone:douwentao, professional] 这里是恢复测试。 [杨幂 - clone:yangmi, professional] 这次重点验证刷新后的持久化。 [窦文涛 - clone:douwentao, professional] 感谢收听。";
+
+    const result = await sendAndWait(page, prompt, {
+      label: "phase3-podcast-recovery",
+      maxWait: 90_000,
+    });
+    expect(result.responseLen).toBeGreaterThan(0);
+    expect(await countUserBubbles(page)).toBe(1);
+    expect(await countAssistantBubbles(page)).toBe(1);
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector(SEL.chatInput, { timeout: 15_000 });
+    await page.waitForTimeout(2_000);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector(SEL.chatInput, { timeout: 15_000 });
+
+    let audioAttachments = await waitForAudioRecovery(page);
+    expect(audioAttachments).toHaveLength(1);
+
+    const threadBubbles = await getRenderedThreadBubbles(page);
+    const promptIndex = threadBubbles.findIndex(
+      (bubble) => bubble.role === "user" && bubble.text.includes("不要搜索，直接生成一个简短测试播客"),
+    );
+    const assistantIndex = threadBubbles.findIndex(
+      (bubble) => bubble.role === "assistant",
+    );
+
+    expect(promptIndex).toBe(0);
+    expect(assistantIndex).toBeGreaterThan(promptIndex);
+    expect(await countUserBubbles(page)).toBe(1);
+    expect(await countAssistantBubbles(page)).toBe(1);
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector(SEL.chatInput, { timeout: 15_000 });
+    await page.waitForTimeout(5_000);
+
+    audioAttachments = await getRenderedAudioAttachments(page);
+    expect(audioAttachments).toHaveLength(1);
     expect(await countUserBubbles(page)).toBe(1);
     expect(await countAssistantBubbles(page)).toBe(1);
   });

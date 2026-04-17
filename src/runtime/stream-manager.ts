@@ -227,7 +227,10 @@ export function startStream(
 /**
  * Reattach to an existing server-side stream for a session after refresh.
  */
-export function attachStream(sessionId: string): "attached" | "busy" {
+export function attachStream(
+  sessionId: string,
+  topic?: string,
+): "attached" | "busy" {
   const existing = streams.get(sessionId);
   if (existing?.active) return "busy";
 
@@ -243,6 +246,7 @@ export function attachStream(sessionId: string): "attached" | "busy" {
       body: JSON.stringify({
         message: "",
         session_id: sessionId,
+        ...(topic?.trim() ? { topic: topic.trim() } : {}),
         stream: true,
         media: [],
         attach_only: true,
