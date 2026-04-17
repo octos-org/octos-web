@@ -237,16 +237,20 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const saved = localStorage.getItem("octos_current_session");
     return saved || generateSessionId();
   });
+  const [activeHistoryTopic, setActiveHistoryTopic] = useState<string | undefined>(() => {
+    const saved = localStorage.getItem("octos_current_session");
+    const topics = loadStoredTopics();
+    return saved ? topics[saved] : undefined;
+  });
   const [initialMessages, setInitialMessages] = useState<MessageInfo[]>([]);
   const [activeTaskOnServer, setActiveTaskOnServer] = useState(false);
   const { queueMode, adaptiveMode } = useModeState();
   const previousSessionIdRef = useRef<string | null>(null);
   const titleCache = useRef<Record<string, string>>(loadStoredTitles());
   const statsCache = useRef<Record<string, SessionRunStats>>(loadStoredStats());
-  const [sessionTopics, setSessionTopics] = useState<Record<string, string>>(
-    () => loadStoredTopics(),
+  const [sessionTopics, setSessionTopics] = useState<Record<string, string>>(() =>
+    loadStoredTopics(),
   );
-  const currentHistoryTopic = sessionTopics[currentSessionId];
 
   // Persist current session ID for refresh recovery
   useEffect(() => {
@@ -272,6 +276,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           setActiveTaskOnServer(tasks.some(isTaskActive));
         })
         .catch(() => {});
+      setActiveHistoryTopic(restoredTopic);
     }
   }, [sessionTopics]);
 
@@ -423,10 +428,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       MessageStore.replaceHistory(id, messages, topic);
       setInitialMessages(messages);
       setActiveTaskOnServer(tasks.some(isTaskActive));
+      setActiveHistoryTopic(topic);
     } catch {
       if (switchRequestRef.current !== requestId) return;
       setInitialMessages([]);
       setActiveTaskOnServer(false);
+      setActiveHistoryTopic(topic);
     }
     setCurrentSessionId(id);
   }, [currentSessionId, sessionTopics]);
@@ -444,6 +451,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       ]);
     }
     setInitialMessages([]);
+    setActiveHistoryTopic(undefined);
     setCurrentSessionId(nextId);
     return nextId;
   }, [currentSessionId]);
@@ -522,6 +530,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setSessions((prev) => prev.filter((s) => s.id !== id));
       if (id === currentSessionId) {
         setInitialMessages([]);
+        setActiveHistoryTopic(undefined);
         setCurrentSessionId(generateSessionId());
       }
     } catch {
@@ -540,7 +549,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       value={{
         sessions,
         currentSessionId,
-        historyTopic: currentHistoryTopic,
+        historyTopic: activeHistoryTopic,
         currentSessionTitle,
         currentSessionStats,
         initialMessages,
