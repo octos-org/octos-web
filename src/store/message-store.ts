@@ -233,13 +233,11 @@ function findOptimisticMatchIndex(list: Message[], authoritative: Message): numb
       if (typeof candidate.historySeq === "number") continue;
       if (candidate.role !== "assistant" || candidate.status !== "streaming") continue;
 
-      const timeDelta = Math.abs(candidate.timestamp - authoritative.timestamp);
-      if (timeDelta > 15 * 60_000) continue;
-
-      // Recovery can replay the committed session_result before the resumed
-      // streaming bubble receives its final `done` payload. In that window the
-      // texts differ ("Resuming..." vs final answer), but they still represent
-      // the same assistant turn and must collapse into one message.
+      // Recovery can replay the committed session_result long after the local
+      // streaming placeholder was recreated on reconnect. Long-running coding
+      // turns can legitimately exceed the old 15-minute merge window, so any
+      // unresolved optimistic assistant stream should collapse into the next
+      // authoritative assistant turn instead of appending a duplicate bubble.
       return index;
     }
   }
