@@ -221,6 +221,7 @@ function bindStreamToAssistant({
 }): void {
   let rawText = "";
   let toolCallCounter = 0;
+  const pendingStreamError = { current: null as string | null };
   const toolCalls = new Map<
     string,
     { id: string; name: string; status: "running" | "complete" | "error" }
@@ -356,6 +357,7 @@ function bindStreamToAssistant({
 
       case "session_result": {
         if (event.message) {
+          const previousSeq = MessageStore.getMaxHistorySeq(sessionId, historyTopic);
           const merged = MessageStore.mergeHistoryMessageIntoMessage(
             sessionId,
             assistantMsgId,
@@ -364,6 +366,23 @@ function bindStreamToAssistant({
           );
           if (!merged) {
             MessageStore.appendHistoryMessages(sessionId, [event.message], historyTopic);
+          }
+          const observedSeq =
+            typeof event.message.seq === "number"
+              ? event.message.seq
+              : MessageStore.getMaxHistorySeq(sessionId, historyTopic);
+          if (observedSeq > previousSeq + 1) {
+            void fetchSessionMessages(
+              sessionId,
+              500,
+              0,
+              previousSeq >= 0 ? previousSeq : undefined,
+              historyTopic,
+            )
+              .then((messages) => {
+                MessageStore.appendHistoryMessages(sessionId, messages, historyTopic);
+              })
+              .catch(() => {});
           }
           for (const filePath of event.message.media ?? []) {
             dispatchCrewFileEvent({
@@ -437,16 +456,12 @@ function bindStreamToAssistant({
 
       case "error": {
         const errMsg = event.message || "Agent error";
-        MessageStore.updateMessage(sessionId, assistantMsgId, {
-          text: `Error: ${errMsg}`,
-          status: "error",
-        }, historyTopic);
+        pendingStreamError.current = errMsg;
         window.dispatchEvent(
           new CustomEvent("crew:thinking", {
             detail: { thinking: false, iteration: 0, sessionId },
           }),
         );
-        onComplete?.();
         break;
       }
 
@@ -468,6 +483,7 @@ function bindStreamToAssistant({
       abortController,
       clientMessageId,
       sentAt,
+      pendingStreamError,
     );
   }
 }
@@ -483,6 +499,7 @@ function setupCleanup(
   _abortController?: AbortController,
   clientMessageId?: string,
   sentAt?: number,
+  pendingStreamError?: { current: string | null },
 ): void {
   // The subscriber is automatically cleaned up when the stream ends
   // (StreamManager clears subscribers). We also listen for stream_state
@@ -497,7 +514,21 @@ function setupCleanup(
       const msgs = MessageStore.getMessages(sessionId, historyTopic);
       const assistantMsg = msgs.find((m) => m.id === assistantMsgId);
       if (assistantMsg && assistantMsg.status === "streaming") {
-        if (assistantMsg.text) {
+        if (pendingStreamError?.current) {
+          pollForResponse(
+            sessionId,
+            assistantMsgId,
+            clientMessageId,
+            sentAt,
+            historyTopic,
+            _abortController?.signal,
+            {
+              maxAttempts: 12,
+              intervalMs: 1000,
+              errorMessage: pendingStreamError.current,
+            },
+          ).then(() => _onComplete?.());
+        } else if (assistantMsg.text) {
           MessageStore.updateMessage(sessionId, assistantMsgId, {
             status: "complete",
           }, historyTopic);
@@ -527,10 +558,17 @@ async function pollForResponse(
   sentAt?: number,
   historyTopic?: string,
   abortSignal?: AbortSignal,
-): Promise<void> {
-  for (let i = 0; i < 180; i++) {
-    if (abortSignal?.aborted) return;
-    await new Promise((r) => setTimeout(r, 5000));
+  options?: {
+    maxAttempts?: number;
+    intervalMs?: number;
+    errorMessage?: string;
+  },
+): Promise<boolean> {
+  const maxAttempts = options?.maxAttempts ?? 180;
+  const intervalMs = options?.intervalMs ?? 5000;
+  for (let i = 0; i < maxAttempts; i++) {
+    if (abortSignal?.aborted) return false;
+    await new Promise((r) => setTimeout(r, intervalMs));
     try {
       const msgs = await fetchSessionMessages(
         sessionId,
@@ -555,19 +593,36 @@ async function pollForResponse(
       });
 
       if (matchedAssistant) {
-        MessageStore.updateMessage(sessionId, assistantMsgId, {
-          text: matchedAssistant.content,
-          status: "complete",
-        }, historyTopic);
-        return;
+        const merged = MessageStore.mergeHistoryMessageIntoMessage(
+          sessionId,
+          assistantMsgId,
+          matchedAssistant,
+          historyTopic,
+        );
+        if (!merged) {
+          MessageStore.appendHistoryMessages(sessionId, [matchedAssistant], historyTopic);
+          MessageStore.updateMessage(sessionId, assistantMsgId, {
+            text: matchedAssistant.content,
+            status: "complete",
+          }, historyTopic);
+        }
+        return true;
       }
     } catch {
       // keep polling
     }
   }
-  // Give up
+  if (!options?.errorMessage) {
+    MessageStore.updateMessage(sessionId, assistantMsgId, {
+      text: "No response received.",
+      status: "error",
+    }, historyTopic);
+    return false;
+  }
+
   MessageStore.updateMessage(sessionId, assistantMsgId, {
-    text: "No response received.",
+    text: `Error: ${options.errorMessage}`,
     status: "error",
   }, historyTopic);
+  return false;
 }

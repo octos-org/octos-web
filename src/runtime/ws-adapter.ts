@@ -13,6 +13,7 @@ import type {
   ChatModelRunResult,
 } from "@assistant-ui/react";
 import { getToken } from "@/api/client";
+import { getMessages as fetchSessionMessages } from "@/api/sessions";
 import { API_BASE } from "@/lib/constants";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { getSettings } from "@/hooks/use-settings";
@@ -510,6 +511,7 @@ export function createWsAdapter(
                     }
                   | undefined;
                 if (message) {
+                  const previousSeq = MessageStore.getMaxHistorySeq(sessionId, historyTopic);
                   const merged = MessageStore.mergeHistoryMessageIntoMessage(
                     sessionId,
                     assistantMsgId,
@@ -518,6 +520,23 @@ export function createWsAdapter(
                   );
                   if (!merged) {
                     MessageStore.appendHistoryMessages(sessionId, [message], historyTopic);
+                  }
+                  const observedSeq =
+                    typeof message.seq === "number"
+                      ? message.seq
+                      : MessageStore.getMaxHistorySeq(sessionId, historyTopic);
+                  if (observedSeq > previousSeq + 1) {
+                    void fetchSessionMessages(
+                      sessionId,
+                      500,
+                      0,
+                      previousSeq >= 0 ? previousSeq : undefined,
+                      historyTopic,
+                    )
+                      .then((messages) => {
+                        MessageStore.appendHistoryMessages(sessionId, messages, historyTopic);
+                      })
+                      .catch(() => {});
                   }
                   for (const filePath of message.media ?? []) {
                     dispatchCrewFileEvent({

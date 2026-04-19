@@ -208,10 +208,51 @@ function normalizeMessageText(text: string): string {
   return lines.join(" ").replace(/\s+/gu, " ").trim();
 }
 
+function shouldCollapseAuthoritativeDuplicate(
+  candidate: Message,
+  authoritative: Message,
+): boolean {
+  if (candidate.role !== authoritative.role) return false;
+
+  if (
+    typeof candidate.historySeq === "number" &&
+    typeof authoritative.historySeq === "number" &&
+    candidate.historySeq === authoritative.historySeq
+  ) {
+    return true;
+  }
+
+  if (
+    authoritative.clientMessageId &&
+    candidate.clientMessageId === authoritative.clientMessageId
+  ) {
+    return true;
+  }
+
+  if (
+    authoritative.responseToClientMessageId &&
+    candidate.responseToClientMessageId === authoritative.responseToClientMessageId
+  ) {
+    return true;
+  }
+
+  if (candidate.role !== "assistant") return false;
+
+  const timeDelta = Math.abs(candidate.timestamp - authoritative.timestamp);
+  if (timeDelta > 15 * 60_000) return false;
+
+  if (candidate.status === "streaming") return true;
+
+  const candidateText = normalizeMessageText(candidate.text);
+  const authoritativeText = normalizeMessageText(authoritative.text);
+  return candidateText.length > 0 && candidateText === authoritativeText;
+}
+
 function findOptimisticMatchIndex(list: Message[], authoritative: Message): number {
   if (authoritative.clientMessageId) {
     const directMatchIndex = list.findIndex(
       (candidate) =>
+        typeof candidate.historySeq !== "number" &&
         candidate.role === authoritative.role &&
         candidate.clientMessageId === authoritative.clientMessageId,
     );
@@ -221,6 +262,7 @@ function findOptimisticMatchIndex(list: Message[], authoritative: Message): numb
   if (authoritative.responseToClientMessageId) {
     const responseMatchIndex = list.findIndex(
       (candidate) =>
+        typeof candidate.historySeq !== "number" &&
         candidate.role === authoritative.role &&
         candidate.responseToClientMessageId === authoritative.responseToClientMessageId,
     );
@@ -375,16 +417,7 @@ function replaceHistoryFromApi(
 
       consumedOptimisticIndices.add(optimisticMatchIndex);
       const optimistic = existing[optimisticMatchIndex];
-      return {
-        ...message,
-        id: optimistic.id,
-        clientMessageId: message.clientMessageId ?? optimistic.clientMessageId,
-        responseToClientMessageId:
-          message.responseToClientMessageId ?? optimistic.responseToClientMessageId,
-        files: mergeMessageFiles(message.files, optimistic.files),
-        toolCalls: message.toolCalls.length > 0 ? message.toolCalls : optimistic.toolCalls,
-        meta: optimistic.meta,
-      };
+      return mergeAuthoritativeIntoMessage(optimistic, message);
     });
 
   // Phase 2: Collect unconsumed optimistic messages — these are local-only
@@ -600,19 +633,7 @@ export function appendHistoryMessages(
     const optimisticMatchIndex = findOptimisticMatchIndex(list, converted);
     if (optimisticMatchIndex !== -1) {
       const optimistic = list[optimisticMatchIndex];
-      list[optimisticMatchIndex] = {
-        ...optimistic,
-        text: converted.text,
-        clientMessageId: converted.clientMessageId ?? optimistic.clientMessageId,
-        responseToClientMessageId:
-          converted.responseToClientMessageId ?? optimistic.responseToClientMessageId,
-        files: mergeMessageFiles(converted.files, optimistic.files),
-        toolCalls: converted.toolCalls.length > 0 ? converted.toolCalls : optimistic.toolCalls,
-        status: "complete",
-        timestamp: converted.timestamp,
-        historySeq: converted.historySeq,
-        meta: optimistic.meta,
-      };
+      list[optimisticMatchIndex] = mergeAuthoritativeIntoMessage(optimistic, converted);
       if (typeof converted.historySeq === "number") {
         maxSeq = Math.max(maxSeq, converted.historySeq);
       }
@@ -685,7 +706,7 @@ export function mergeHistoryMessageIntoMessage(
   const list = messagesByKey.get(key);
   if (!list) return false;
 
-  const targetIndex = list.findIndex((message) => message.id === messageId);
+  let targetIndex = list.findIndex((message) => message.id === messageId);
   if (targetIndex === -1) return false;
 
   const target = list[targetIndex];
@@ -701,12 +722,27 @@ export function mergeHistoryMessageIntoMessage(
 
   list[targetIndex] = mergeAuthoritativeIntoMessage(target, converted);
 
-  if (typeof converted.historySeq === "number") {
-    for (let index = list.length - 1; index >= 0; index -= 1) {
-      if (index === targetIndex) continue;
-      if (list[index].historySeq === converted.historySeq) {
-        list.splice(index, 1);
-      }
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    if (index === targetIndex) continue;
+    const candidate = list[index];
+    if (!shouldCollapseAuthoritativeDuplicate(candidate, list[targetIndex])) continue;
+
+    list[targetIndex] = {
+      ...list[targetIndex],
+      files: mergeMessageFiles(list[targetIndex].files, candidate.files),
+      toolCalls:
+        list[targetIndex].toolCalls.length > 0
+          ? list[targetIndex].toolCalls
+          : candidate.toolCalls,
+      meta: list[targetIndex].meta ?? candidate.meta,
+    };
+    list.splice(index, 1);
+    recordRuntimeCounter("octos_result_duplicate_suppressed_total", {
+      kind: converted.role,
+      reason: "merge_history_duplicate",
+    });
+    if (index < targetIndex) {
+      targetIndex -= 1;
     }
   }
 
