@@ -470,14 +470,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         !existingTitle && firstMessage ? extractTitle(firstMessage) : existingTitle;
       const nextTopic = firstMessage ? nextTopicForCommand(firstMessage) : undefined;
       if (nextTopic !== undefined) {
+        const normalizedNext = nextTopic?.trim() || undefined;
+        setActiveHistoryTopic(normalizedNext);
         setSessionTopics((prev) => {
           const current = prev[currentSessionId];
-          const normalizedNext = nextTopic?.trim() || "";
-          if (!normalizedNext && !current) return prev;
-          if (normalizedNext && current === normalizedNext) return prev;
+          const normalizedStored = normalizedNext || "";
+          if (!normalizedStored && !current) return prev;
+          if (normalizedStored && current === normalizedStored) return prev;
           const next = { ...prev };
-          if (normalizedNext) {
-            next[currentSessionId] = normalizedNext;
+          if (normalizedStored) {
+            next[currentSessionId] = normalizedStored;
           } else {
             delete next[currentSessionId];
           }

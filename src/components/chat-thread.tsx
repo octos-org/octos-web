@@ -71,6 +71,25 @@ function visibleAttachmentCaption(caption?: string): string {
   return caption;
 }
 
+function deriveRequestedTopic(message: string): string | undefined {
+  const trimmed = message.trim();
+  if (!trimmed.startsWith("/")) return undefined;
+
+  const siteMatch = trimmed.match(/^\/new\s+site\s+(.+)$/i);
+  if (siteMatch) {
+    const preset = siteMatch[1]?.trim();
+    return preset ? `site ${preset}` : undefined;
+  }
+
+  const slidesMatch = trimmed.match(/^\/new\s+slides\s+(.+)$/i);
+  if (slidesMatch) {
+    const slug = slidesMatch[1]?.trim();
+    return slug ? `slides ${slug}` : undefined;
+  }
+
+  return undefined;
+}
+
 const UserBubble = memo(function UserBubble({ message }: { message: Message }) {
   const visibleText = userBubbleVisibleText(message);
   return (
@@ -898,6 +917,7 @@ function Composer() {
       (audioUploadMode === "recording" ? "[Voice message]" : attachedText);
     const requestText =
       !input && audioUploadMode ? "" : messageText;
+    const requestedTopic = historyTopic || deriveRequestedTopic(requestText || messageText);
 
     let finalPayload = {
       sessionId: currentSessionId,
@@ -933,7 +953,7 @@ function Composer() {
     // Send via SSE bridge (StreamManager queues if a stream is already active)
     bridgeSend({
       ...finalPayload,
-      historyTopic,
+      historyTopic: requestedTopic,
       onSessionActive: (firstMsg) => markSessionActive(firstMsg),
       onComplete: () => {
         sendingRef.current = false;
