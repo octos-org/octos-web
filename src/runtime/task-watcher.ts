@@ -129,6 +129,23 @@ function applyCommittedMessages(
   }
 }
 
+async function backfillCommittedGap(
+  entry: WatchedSession,
+  previousSeq: number,
+  observedSeq: number,
+): Promise<void> {
+  if (observedSeq <= previousSeq + 1) return;
+
+  const backfill = await fetchSessionMessages(
+    entry.sessionId,
+    500,
+    0,
+    previousSeq >= 0 ? previousSeq : undefined,
+    entry.topic,
+  );
+  applyCommittedMessages(entry.sessionId, entry, backfill);
+}
+
 /** Register a session for background monitoring. */
 export function watchSession(sessionId: string, topic?: string): void {
   const key = watchKey(sessionId, topic);
@@ -271,7 +288,13 @@ function ensureEventStream(key: string): void {
             }
 
             if (event.type === "session_result" && "message" in event) {
+              const previousSeq = current.lastCommittedSeq;
               applyCommittedMessages(current.sessionId, current, [event.message]);
+              const observedSeq =
+                typeof event.message.seq === "number"
+                  ? event.message.seq
+                  : current.lastCommittedSeq;
+              await backfillCommittedGap(current, previousSeq, observedSeq);
               continue;
             }
 
