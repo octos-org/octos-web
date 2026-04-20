@@ -526,15 +526,10 @@ function setupCleanup(
               maxAttempts: 12,
               intervalMs: 1000,
               errorMessage: pendingStreamError.current,
+              fallbackText: assistantMsg.text,
             },
           ).then(() => _onComplete?.());
-        } else if (assistantMsg.text) {
-          MessageStore.updateMessage(sessionId, assistantMsgId, {
-            status: "complete",
-          }, historyTopic);
-          _onComplete?.();
         } else {
-          // No content — poll for response
           pollForResponse(
             sessionId,
             assistantMsgId,
@@ -542,6 +537,11 @@ function setupCleanup(
             sentAt,
             historyTopic,
             _abortController?.signal,
+            assistantMsg.text
+              ? {
+                  fallbackText: assistantMsg.text,
+                }
+              : undefined,
           ).then(() => _onComplete?.());
         }
       }
@@ -562,6 +562,7 @@ async function pollForResponse(
     maxAttempts?: number;
     intervalMs?: number;
     errorMessage?: string;
+    fallbackText?: string;
   },
 ): Promise<boolean> {
   const maxAttempts = options?.maxAttempts ?? 180;
@@ -613,9 +614,24 @@ async function pollForResponse(
     }
   }
   if (!options?.errorMessage) {
+    if (options?.fallbackText?.trim()) {
+      MessageStore.updateMessage(sessionId, assistantMsgId, {
+        text: options.fallbackText,
+        status: "complete",
+      }, historyTopic);
+      return false;
+    }
     MessageStore.updateMessage(sessionId, assistantMsgId, {
       text: "No response received.",
       status: "error",
+    }, historyTopic);
+    return false;
+  }
+
+  if (options?.fallbackText?.trim()) {
+    MessageStore.updateMessage(sessionId, assistantMsgId, {
+      text: options.fallbackText,
+      status: "complete",
     }, historyTopic);
     return false;
   }

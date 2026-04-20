@@ -96,6 +96,31 @@ function buildResult(
   return { content };
 }
 
+async function backfillCommittedAssistantTurn(
+  sessionId: string,
+  assistantMsgId: string,
+  topic?: string,
+): Promise<void> {
+  const target = MessageStore.getMessages(sessionId, topic).find(
+    (message) => message.id === assistantMsgId,
+  );
+  if (!target || target.role !== "assistant" || typeof target.historySeq === "number") {
+    return;
+  }
+
+  const previousSeq = MessageStore.getMaxHistorySeq(sessionId, topic);
+  const messages = await fetchSessionMessages(
+    sessionId,
+    500,
+    0,
+    previousSeq >= 0 ? previousSeq : undefined,
+    topic,
+  );
+  if (messages.length === 0) return;
+
+  MessageStore.appendHistoryMessages(sessionId, messages, topic);
+}
+
 // ---------------------------------------------------------------------------
 // WebSocket connection management
 // ---------------------------------------------------------------------------
@@ -560,6 +585,16 @@ export function createWsAdapter(
                   text,
                   status: "complete",
                 }, historyTopic);
+                try {
+                  await backfillCommittedAssistantTurn(
+                    sessionId,
+                    assistantMsgId,
+                    historyTopic,
+                  );
+                } catch {
+                  // Non-fatal — the optimistic bubble remains visible and
+                  // later history loads can still reconcile it.
+                }
 
                 if (event.model || event.tokens_in || event.tokens_out) {
                   window.dispatchEvent(
