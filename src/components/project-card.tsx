@@ -1,4 +1,3 @@
-import { useNavigate } from "react-router-dom";
 import { FolderOpen, Trash2, FileText, Headphones, Presentation, Image } from "lucide-react";
 import type { StudioProject, OutputType } from "@/studio/types";
 
@@ -29,13 +28,10 @@ export function ProjectCard({
   project: StudioProject;
   onDelete: (id: string) => void;
 }) {
-  const navigate = useNavigate();
-
   const outputTypes = [...new Set(project.outputs.map((o) => o.type))];
 
   return (
-    <button
-      onClick={() => navigate(`/studio/${project.id}`)}
+    <div
       className="group relative flex flex-col rounded-2xl bg-surface-container p-5 text-left elevation-1 hover:elevation-2 hover:bg-surface-elevated transition-all"
     >
       <div className="flex items-start gap-3">
@@ -82,6 +78,6 @@ export function ProjectCard({
       >
         <Trash2 size={14} />
       </button>
-    </button>
+    </div>
   );
 }
