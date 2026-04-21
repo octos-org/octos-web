@@ -4,6 +4,7 @@ import { buildFileUrl } from "@/api/files";
 import { getSessionFiles } from "@/api/sessions";
 import { API_BASE } from "@/lib/constants";
 import { displayFilenameFromPath } from "@/lib/utils";
+import { eventSessionId } from "@/runtime/event-scope";
 
 export interface FileEntry {
   id: string;
@@ -185,18 +186,20 @@ if (typeof window !== "undefined") {
       caption?: string;
       sessionId?: string;
     };
+    const sessionId = eventSessionId(detail);
+    if (!sessionId) return;
     const pathMatch = detail.fileUrl?.match(/\/api\/files\/(.+)/);
     const filePath = pathMatch ? decodeURIComponent(pathMatch[1]) : detail.fileUrl ?? "";
     if (filePath && detail.filename) {
       addFile({
-        sessionId: detail.sessionId ?? "",
+        sessionId,
         filename: detail.filename,
         filePath,
         caption: detail.caption ?? "",
       });
       window.dispatchEvent(
         new CustomEvent("crew:file_notification", {
-          detail: { filename: detail.filename, sessionId: detail.sessionId },
+          detail: { filename: detail.filename, sessionId },
         }),
       );
     }

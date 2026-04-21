@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { getToken } from "@/api/client";
 import { buildFileUrl } from "@/api/files";
+import { eventSessionId } from "@/runtime/event-scope";
 
 interface DeliveredFile {
   filePath: string;
@@ -56,11 +57,14 @@ async function addFile(file: DeliveredFile) {
 
 if (typeof window !== "undefined") {
   window.addEventListener("crew:file", (e: Event) => {
-    const { fileUrl, filename, caption, sessionId } = (e as CustomEvent).detail;
+    const detail = (e as CustomEvent).detail;
+    const { fileUrl, filename, caption } = detail;
+    const sessionId = eventSessionId(detail);
+    if (!sessionId) return;
     const pathMatch = fileUrl?.match(/\/api\/files\/(.+)/);
     const filePath = pathMatch ? decodeURIComponent(pathMatch[1]) : fileUrl;
     if (filePath && filename) {
-      addFile({ filePath, filename, caption: caption || "", sessionId: sessionId || "", messageEpoch: currentEpoch });
+      addFile({ filePath, filename, caption: caption || "", sessionId, messageEpoch: currentEpoch });
     }
   });
 }

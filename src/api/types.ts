@@ -25,6 +25,7 @@ export interface MessageInfo {
   content: string;
   client_message_id?: string;
   response_to_client_message_id?: string;
+  tool_call_id?: string;
   timestamp: string;
   media?: string[];
   tool_calls?: { id?: string; name?: string }[];
@@ -119,8 +120,8 @@ export interface AuthMeResponse {
 export type SseEvent =
   | { type: "token"; text: string }
   | { type: "replace"; text: string }
-  | { type: "tool_start"; tool: string }
-  | { type: "tool_end"; tool: string; success: boolean }
+  | { type: "tool_start"; tool: string; tool_call_id?: string; tool_id?: string }
+  | { type: "tool_end"; tool: string; success: boolean; tool_call_id?: string; tool_id?: string }
   | { type: "tool_progress"; tool: string; message: string }
   | { type: "stream_end" }
   | {

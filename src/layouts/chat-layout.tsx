@@ -8,6 +8,7 @@ import { SessionList } from "@/components/session-list";
 import { ContentBrowser } from "@/components/content-browser";
 import { SessionTaskIndicator } from "@/components/session-task-dock";
 import { useSession } from "@/runtime/session-context";
+import { eventMatchesScope } from "@/runtime/event-scope";
 import {
   useContentViewer,
   ContentViewerOverlay,
@@ -55,14 +56,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
     let toastTimer: ReturnType<typeof setTimeout> | null = null;
     function onFile(e: Event) {
       const detail = (e as CustomEvent).detail;
-      if (detail?.sessionId && detail.sessionId !== currentSessionId) return;
-      if (
-        historyTopic &&
-        typeof detail?.topic === "string" &&
-        detail.topic !== historyTopic
-      ) {
-        return;
-      }
+      if (!eventMatchesScope(detail, currentSessionId, historyTopic)) return;
       const filename = detail?.filename || "file";
       const isAudio = /\.(mp3|wav|ogg|m4a|opus|flac|aac)$/i.test(filename);
       setToast(isAudio ? `🎵 Audio ready: ${filename}` : `📄 File ready: ${filename}`);

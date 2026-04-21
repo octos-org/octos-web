@@ -20,6 +20,8 @@ import { getSettings } from "@/hooks/use-settings";
 import { createOctosAdapter } from "./octos-adapter";
 import { dispatchCrewFileEvent } from "./file-events";
 import * as MessageStore from "@/store/message-store";
+import { eventSessionId, eventTopic } from "./event-scope";
+import { recordRuntimeCounter } from "./observability";
 
 
 // ---------------------------------------------------------------------------
@@ -217,6 +219,7 @@ export function createWsAdapter(
     async *run(options) {
       const sessionId = getSessionId();
       const historyTopic = getHistoryTopic?.();
+      const normalizedHistoryTopic = historyTopic?.trim() || undefined;
       const lastMsg = options.messages[options.messages.length - 1];
       const userText = extractText(lastMsg);
       const media = getPendingMedia?.() ?? [];
@@ -256,7 +259,7 @@ export function createWsAdapter(
       // Dispatch stream_state so other UI bits know we're active
       window.dispatchEvent(
         new CustomEvent("crew:stream_state", {
-          detail: { sessionId, active: true },
+          detail: { sessionId, topic: normalizedHistoryTopic, active: true },
         }),
       );
 
@@ -354,6 +357,21 @@ export function createWsAdapter(
 
           while (queue.length > 0) {
             const event = queue.shift()!;
+            const scopedSessionId = eventSessionId(event);
+            if (scopedSessionId !== undefined && scopedSessionId !== sessionId) {
+              recordRuntimeCounter("octos_session_mismatch_total", {
+                surface: "ws_adapter",
+              });
+              continue;
+            }
+
+            const scopedTopic = eventTopic(event);
+            if (scopedTopic !== undefined && scopedTopic !== normalizedHistoryTopic) {
+              recordRuntimeCounter("octos_topic_mismatch_total", {
+                surface: "ws_adapter",
+              });
+              continue;
+            }
 
             switch (event.type) {
               case "token":
@@ -384,7 +402,10 @@ export function createWsAdapter(
               case "tool_start": {
                 const toolName = event.tool as string;
                 const key = `tc_${++toolCallCounter}`;
-                const tcId = `tc_${toolName}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+                const tcId =
+                  (event.tool_call_id as string | undefined) ||
+                  (event.tool_id as string | undefined) ||
+                  `tc_${toolName}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
                 toolCalls.set(key, {
                   toolCallId: tcId,
                   toolName,
@@ -440,6 +461,7 @@ export function createWsAdapter(
                       thinking: true,
                       iteration: event.iteration,
                       sessionId,
+                      topic: normalizedHistoryTopic,
                     },
                   }),
                 );
@@ -452,6 +474,7 @@ export function createWsAdapter(
                       thinking: false,
                       iteration: event.iteration,
                       sessionId,
+                      topic: normalizedHistoryTopic,
                     },
                   }),
                 );
@@ -465,6 +488,21 @@ export function createWsAdapter(
                 );
                 break;
 
+              case "task_status": {
+                const task = event.task as Parameters<
+                  typeof MessageStore.bindBackgroundTask
+                >[1] | undefined;
+                if (task) {
+                  MessageStore.bindBackgroundTask(sessionId, task, historyTopic);
+                  window.dispatchEvent(
+                    new CustomEvent("crew:task_status", {
+                      detail: { task, sessionId, topic: historyTopic },
+                    }),
+                  );
+                }
+                break;
+              }
+
               case "file": {
                 const filePath = event.path as string | undefined;
                 const filename = event.filename as string | undefined;
@@ -472,22 +510,24 @@ export function createWsAdapter(
                 const toolCallId = event.tool_call_id as string | undefined;
 
                 if (filePath && filename) {
-                  // Append file to the correct message (by tool_call_id or current assistant msg)
-                  let targetMsgId = assistantMsgId;
-                  if (toolCallId) {
-                    // Find the message that has a tool call with this id
-                    const msgs = MessageStore.getMessages(sessionId, historyTopic);
-                    const match = msgs.find((m) =>
-                      m.toolCalls.some((tc) => tc.id === toolCallId),
-                    );
-                    if (match) targetMsgId = match.id;
-                  }
-
-                  MessageStore.appendFile(sessionId, targetMsgId, {
+                  const file = {
                     filename,
                     path: filePath,
                     caption,
-                  }, historyTopic);
+                  };
+                  const attached = MessageStore.appendFileByToolCallId(
+                    sessionId,
+                    toolCallId,
+                    file,
+                    historyTopic,
+                  );
+                  if (!attached) {
+                    MessageStore.appendFileToBackgroundAnchor(
+                      sessionId,
+                      file,
+                      historyTopic,
+                    );
+                  }
 
                   dispatchCrewFileEvent({
                     sessionId,
@@ -571,7 +611,22 @@ export function createWsAdapter(
                         session_cost: event.session_cost,
                         duration_s: event.duration_s || 0,
                         sessionId,
+                        topic: normalizedHistoryTopic,
                       },
+                    }),
+                  );
+                }
+
+                if (event.has_bg_tasks) {
+                  MessageStore.registerBackgroundAnchor(
+                    sessionId,
+                    assistantMsgId,
+                    historyTopic,
+                    Array.from(toolCalls.values()).map((toolCall) => toolCall.toolName),
+                  );
+                  window.dispatchEvent(
+                    new CustomEvent("crew:bg_tasks", {
+                      detail: { sessionId, topic: historyTopic },
                     }),
                   );
                 }
@@ -665,13 +720,18 @@ export function createWsAdapter(
       // Clear thinking state
       window.dispatchEvent(
         new CustomEvent("crew:thinking", {
-          detail: { thinking: false, iteration: 0, sessionId },
+          detail: {
+            thinking: false,
+            iteration: 0,
+            sessionId,
+            topic: normalizedHistoryTopic,
+          },
         }),
       );
 
       window.dispatchEvent(
         new CustomEvent("crew:stream_state", {
-          detail: { sessionId, active: false },
+          detail: { sessionId, topic: normalizedHistoryTopic, active: false },
         }),
       );
 
