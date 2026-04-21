@@ -138,6 +138,18 @@ export function getFilesForSession(sessionId: string): FileEntry[] {
   return allFiles.filter((f) => f.sessionId === sessionId);
 }
 
+export function clearSessionFiles(sessionId: string): void {
+  let changed = false;
+  for (let i = allFiles.length - 1; i >= 0; i--) {
+    const file = allFiles[i];
+    if (file.sessionId !== sessionId) continue;
+    if (file.blobUrl) URL.revokeObjectURL(file.blobUrl);
+    allFiles.splice(i, 1);
+    changed = true;
+  }
+  if (changed) notify();
+}
+
 async function fetchBlob(file: FileEntry) {
   try {
     const url = buildFileUrl(file.filePath);
