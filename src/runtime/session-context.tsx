@@ -16,14 +16,64 @@ import {
 import type { BackgroundTaskInfo, SessionInfo, MessageInfo } from "@/api/types";
 import { nextTopicForCommand } from "@/lib/slash-commands";
 import * as MessageStore from "@/store/message-store";
+import * as TaskStore from "@/store/task-store";
+import * as FileStore from "@/store/file-store";
 
 const SESSION_TITLE_STORAGE_KEY = "octos_session_titles";
 const SESSION_STATS_STORAGE_KEY = "octos_session_stats";
 const SESSION_TOPIC_STORAGE_KEY = "octos_session_topics";
 const SESSION_SYNC_STORAGE_KEY = "octos_sessions_sync";
+const SESSION_DELETED_STORAGE_KEY = "octos_deleted_sessions";
+const MAX_DELETED_SESSION_TOMBSTONES = 200;
 
 function isTaskActive(task: BackgroundTaskInfo): boolean {
   return task.status === "spawned" || task.status === "running";
+}
+
+function loadDeletedSessionIds(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const parsed = JSON.parse(
+      localStorage.getItem(SESSION_DELETED_STORAGE_KEY) || "[]",
+    );
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((id): id is string => typeof id === "string"));
+  } catch {
+    return new Set();
+  }
+}
+
+function persistDeletedSessionIds(ids: Set<string>) {
+  if (typeof window === "undefined") return;
+  const bounded = [...ids].slice(-MAX_DELETED_SESSION_TOMBSTONES);
+  localStorage.setItem(SESSION_DELETED_STORAGE_KEY, JSON.stringify(bounded));
+}
+
+function rememberDeletedSession(sessionId: string) {
+  const ids = loadDeletedSessionIds();
+  ids.delete(sessionId);
+  ids.add(sessionId);
+  persistDeletedSessionIds(ids);
+}
+
+function publishSessionDeleted(sessionId: string) {
+  localStorage.setItem(
+    SESSION_SYNC_STORAGE_KEY,
+    JSON.stringify({ type: "deleted", sessionId, ts: Date.now() }),
+  );
+}
+
+function parseDeletedSessionSync(value: string | null): string | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as { type?: unknown; sessionId?: unknown };
+    if (parsed.type === "deleted" && typeof parsed.sessionId === "string") {
+      return parsed.sessionId;
+    }
+  } catch {
+    // Older clients wrote a timestamp only; keep refresh compatibility below.
+  }
+  return null;
 }
 
 /** Extract a short title from message content, handling JSON content parts. */
@@ -264,6 +314,31 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     [currentSessionId],
   );
 
+  const forgetSessionLocalState = useCallback((sessionId: string) => {
+    if (titleCache.current[sessionId]) {
+      delete titleCache.current[sessionId];
+      persistStoredTitles(titleCache.current);
+    }
+    if (statsCache.current[sessionId]) {
+      delete statsCache.current[sessionId];
+      persistStoredStats(statsCache.current);
+    }
+    setSessionTopics((prev) => {
+      if (!prev[sessionId]) return prev;
+      const next = { ...prev };
+      delete next[sessionId];
+      persistStoredTopics(next);
+      return next;
+    });
+    setServerTaskActiveBySession((prev) =>
+      setSessionActiveFlag(prev, sessionId, false),
+    );
+    MessageStore.clearMessages(sessionId);
+    TaskStore.clearTasks(sessionId);
+    FileStore.clearSessionFiles(sessionId);
+    setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+  }, []);
+
   // Persist current session ID for refresh recovery
   useEffect(() => {
     localStorage.setItem("octos_current_session", currentSessionId);
@@ -296,9 +371,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const refreshSessions = useCallback(async () => {
     try {
+      const deletedIds = loadDeletedSessionIds();
       const list = await listSessions();
       const webSessions = list
-        .filter((s) => s.id.startsWith("web-") && (s.message_count ?? 0) > 0)
+        .filter(
+          (s) =>
+            s.id.startsWith("web-") &&
+            (s.message_count ?? 0) > 0 &&
+            !deletedIds.has(s.id),
+        )
         .sort((a, b) => sessionTimestamp(b) - sessionTimestamp(a))
         .slice(0, 20);
 
@@ -327,7 +408,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         // Preserve any locally-tracked sessions that aren't in the API yet
         const apiIds = new Set(fromApi.map((s) => s.id));
         const localOnly = prev.filter(
-          (s) => s._local && !apiIds.has(s.id),
+          (s) => s._local && !apiIds.has(s.id) && !deletedIds.has(s.id),
         );
         return [...localOnly, ...fromApi];
       });
@@ -351,6 +432,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
     const onStorage = (event: StorageEvent) => {
       if (event.key === SESSION_SYNC_STORAGE_KEY) {
+        const deletedSessionId = parseDeletedSessionSync(event.newValue);
+        if (deletedSessionId) {
+          rememberDeletedSession(deletedSessionId);
+          forgetSessionLocalState(deletedSessionId);
+          if (deletedSessionId === currentSessionId) {
+            setInitialMessages([]);
+            setActiveHistoryTopic(undefined);
+            setCurrentSessionId(generateSessionId());
+          }
+        }
         void refreshSessions();
       }
     };
@@ -365,7 +456,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       document.removeEventListener("visibilitychange", refreshIfVisible);
       window.removeEventListener("storage", onStorage);
     };
-  }, [refreshSessions]);
+  }, [currentSessionId, forgetSessionLocalState, refreshSessions]);
 
   useEffect(() => {
     function handleCost(e: Event) {
@@ -550,36 +641,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   );
 
   const removeSession = useCallback(async (id: string) => {
-    try {
-      await apiDeleteSession(id);
-      if (titleCache.current[id]) {
-        delete titleCache.current[id];
-        persistStoredTitles(titleCache.current);
-      }
-      if (statsCache.current[id]) {
-        delete statsCache.current[id];
-        persistStoredStats(statsCache.current);
-      }
-      setSessionTopics((prev) => {
-        if (!prev[id]) return prev;
-        const next = { ...prev };
-        delete next[id];
-        persistStoredTopics(next);
-        return next;
-      });
-      setServerTaskActive(id, false);
-      setSessions((prev) => prev.filter((s) => s.id !== id));
-      if (id === currentSessionId) {
-        setInitialMessages([]);
-        setActiveHistoryTopic(undefined);
-        setCurrentSessionId(generateSessionId());
-      }
-      localStorage.setItem(SESSION_SYNC_STORAGE_KEY, String(Date.now()));
-      await refreshSessions();
-    } catch {
-      // ignore
+    await apiDeleteSession(id);
+    rememberDeletedSession(id);
+    forgetSessionLocalState(id);
+    if (id === currentSessionId) {
+      setInitialMessages([]);
+      setActiveHistoryTopic(undefined);
+      setCurrentSessionId(generateSessionId());
     }
-  }, [currentSessionId, refreshSessions, setServerTaskActive]);
+    publishSessionDeleted(id);
+    await refreshSessions();
+  }, [currentSessionId, forgetSessionLocalState, refreshSessions]);
 
   const currentSessionTitle =
     sessions.find((s) => s.id === currentSessionId)?.title ||
