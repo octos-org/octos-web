@@ -199,7 +199,7 @@ function normalizeMessageText(text: string): string {
   const lines = text.split("\n").filter((line) => {
     const t = line.trim();
     if (!t) return false;
-    if (/^[✓✗⚙📄✦]\s*[`\[]/u.test(t)) return false; // tool badges
+    if (/^[✓✗⚙📄✦]\s*[`[]/u.test(t)) return false; // tool badges
     if (/^via\s+\S+\s+\(/u.test(t)) return false; // provider info
     if (/^\d+s(\s*·\s*[\d.]+k?[↑↓].*)?$/u.test(t)) return false; // streaming stats
     if (t === "Processing") return false;
@@ -799,6 +799,93 @@ export function ensureStreamingAssistantMessage(
   messagesByKey.set(key, [...list]);
   notify();
   return id;
+}
+
+function isResumePlaceholderText(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed === "" || trimmed === "Resuming ongoing work...";
+}
+
+/**
+ * Cleanup helper for reload recovery.
+ *
+ * When the browser reloads during an active turn, we may recreate a transient
+ * streaming assistant bubble before the authoritative session state finishes
+ * hydrating. Once the runtime knows whether the server is still actively
+ * streaming, reconcile those local-only bubbles so they do not linger as
+ * ghost turns indefinitely.
+ */
+export function reconcileRecoveredStreamingMessages(
+  sessionId: string,
+  topic?: string,
+  options?: {
+    streamActive?: boolean;
+  },
+): void {
+  const key = storeKey(sessionId, topic);
+  const list = messagesByKey.get(key);
+  if (!list || list.length === 0) return;
+
+  const keepStreamingId = options?.streamActive
+    ? [...list]
+        .reverse()
+        .find(
+          (message) =>
+            message.role === "assistant" &&
+            message.status === "streaming" &&
+            typeof message.historySeq !== "number",
+        )?.id
+    : undefined;
+
+  let changed = false;
+  const next: Message[] = [];
+
+  for (const message of list) {
+    if (
+      message.role !== "assistant" ||
+      message.status !== "streaming" ||
+      typeof message.historySeq === "number"
+    ) {
+      next.push(message);
+      continue;
+    }
+
+    if (keepStreamingId && message.id === keepStreamingId) {
+      next.push(message);
+      continue;
+    }
+
+    const hasMeaningfulState =
+      !isResumePlaceholderText(message.text) ||
+      message.files.length > 0 ||
+      message.toolCalls.length > 0;
+
+    if (!options?.streamActive && !hasMeaningfulState) {
+      changed = true;
+      recordRuntimeCounter("octos_recovery_stream_cleanup_total", {
+        action: "drop_placeholder",
+      });
+      continue;
+    }
+
+    next.push({
+      ...message,
+      text:
+        !options?.streamActive && isResumePlaceholderText(message.text)
+          ? ""
+          : message.text,
+      status: "complete",
+    });
+    changed = true;
+    recordRuntimeCounter("octos_recovery_stream_cleanup_total", {
+      action: "finalize_orphan",
+    });
+  }
+
+  if (!changed) return;
+
+  messagesByKey.set(key, next);
+  notify();
 }
 
 // ---------------------------------------------------------------------------
