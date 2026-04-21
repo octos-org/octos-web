@@ -10,7 +10,14 @@ export function HomeNav({ onNewProject }: { onNewProject: () => void }) {
 
   return (
     <nav className="flex items-center gap-4 px-6 py-4">
-      <span className="text-xl font-semibold tracking-tight text-text-strong">octos</span>
+      <div className="flex items-center gap-2.5">
+        <img
+          src="/images/octos-logo-color.svg"
+          alt="Octos"
+          className="h-7 w-auto select-none"
+        />
+        <span className="text-xl font-semibold tracking-tight text-text-strong">octos</span>
+      </div>
 
       <div className="flex-1" />
 
