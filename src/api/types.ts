@@ -144,6 +144,7 @@ export type SseEvent =
       model?: string;
       tokens_in?: number;
       tokens_out?: number;
+      session_cost?: number | null;
       duration_s?: number;
       has_bg_tasks?: boolean;
     }

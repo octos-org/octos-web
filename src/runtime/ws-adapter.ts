@@ -568,6 +568,7 @@ export function createWsAdapter(
                         model: event.model || "",
                         tokens_in: event.tokens_in || 0,
                         tokens_out: event.tokens_out || 0,
+                        session_cost: event.session_cost,
                         duration_s: event.duration_s || 0,
                         sessionId,
                       },

@@ -14,6 +14,7 @@ import {
   deleteSession as apiDeleteSession,
 } from "@/api/sessions";
 import type { BackgroundTaskInfo, SessionInfo, MessageInfo } from "@/api/types";
+import { nextTopicForCommand } from "@/lib/slash-commands";
 import * as MessageStore from "@/store/message-store";
 
 const SESSION_TITLE_STORAGE_KEY = "octos_session_titles";
@@ -180,35 +181,11 @@ function persistStoredTopics(topics: Record<string, string>) {
   localStorage.setItem(SESSION_TOPIC_STORAGE_KEY, JSON.stringify(topics));
 }
 
-function nextTopicForCommand(message: string): string | null | undefined {
-  const trimmed = message.trim();
-  if (!trimmed.startsWith("/")) return undefined;
-
-  const siteMatch = trimmed.match(/^\/new\s+site\s+(.+)$/i);
-  if (siteMatch) {
-    const preset = siteMatch[1]?.trim();
-    return preset ? `site ${preset}` : undefined;
-  }
-
-  const slidesMatch = trimmed.match(/^\/new\s+slides\s+(.+)$/i);
-  if (slidesMatch) {
-    const slug = slidesMatch[1]?.trim();
-    return slug ? `slides ${slug}` : undefined;
-  }
-
-  const switchMatch = trimmed.match(/^\/s\s+(.+)$/i);
-  if (switchMatch) {
-    const topic = switchMatch[1]?.trim();
-    if (!topic) return undefined;
-    if (topic === "default") return null;
-    return topic;
-  }
-
-  if (/^\/back(?:\s|$)/i.test(trimmed)) {
-    return null;
-  }
-
-  return undefined;
+function mergeNullableCost(
+  nextCost: number | null | undefined,
+  currentCost: number | null,
+): number | null {
+  return nextCost === undefined ? currentCost : nextCost;
 }
 
 /** Extract a sortable timestamp from a session ID.
@@ -248,8 +225,25 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const previousSessionIdRef = useRef<string | null>(null);
   const titleCache = useRef<Record<string, string>>(loadStoredTitles());
   const statsCache = useRef<Record<string, SessionRunStats>>(loadStoredStats());
+  const [currentSessionStatsState, setCurrentSessionStatsState] =
+    useState<SessionRunStats | null>(() => statsCache.current[currentSessionId] ?? null);
   const [sessionTopics, setSessionTopics] = useState<Record<string, string>>(() =>
     loadStoredTopics(),
+  );
+
+  useEffect(() => {
+    setCurrentSessionStatsState(statsCache.current[currentSessionId] ?? null);
+  }, [currentSessionId]);
+
+  const storeSessionStats = useCallback(
+    (sessionId: string, stats: SessionRunStats) => {
+      statsCache.current[sessionId] = stats;
+      persistStoredStats(statsCache.current);
+      if (sessionId === currentSessionId) {
+        setCurrentSessionStatsState(stats);
+      }
+    },
+    [currentSessionId],
   );
 
   // Persist current session ID for refresh recovery
@@ -336,13 +330,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         outputTokens: 0,
         cost: null,
       };
-      statsCache.current[sessionId] = {
+      storeSessionStats(sessionId, {
         ...current,
         inputTokens: detail.input_tokens ?? current.inputTokens,
         outputTokens: detail.output_tokens ?? current.outputTokens,
-        cost: detail.session_cost ?? current.cost,
-      };
-      persistStoredStats(statsCache.current);
+        cost: mergeNullableCost(detail.session_cost, current.cost),
+      });
     }
 
     function handleMeta(e: Event) {
@@ -354,13 +347,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         outputTokens: 0,
         cost: null,
       };
-      statsCache.current[sessionId] = {
+      storeSessionStats(sessionId, {
         ...current,
         model: detail.model || current.model,
         inputTokens: detail.tokens_in ?? current.inputTokens,
         outputTokens: detail.tokens_out ?? current.outputTokens,
-      };
-      persistStoredStats(statsCache.current);
+        cost: mergeNullableCost(detail.session_cost, current.cost),
+      });
     }
 
     window.addEventListener("crew:cost", handleCost);
@@ -369,7 +362,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       window.removeEventListener("crew:cost", handleCost);
       window.removeEventListener("crew:message_meta", handleMeta);
     };
-  }, []);
+  }, [storeSessionStats]);
 
   const switchRequestRef = useRef(0);
   const setServerTaskActive = useCallback(
@@ -403,13 +396,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         outputTokens: 0,
         cost: null,
       };
-      statsCache.current[sessionId] = {
+      storeSessionStats(sessionId, {
         ...current,
         ...stats,
-      };
-      persistStoredStats(statsCache.current);
+      });
     },
-    [],
+    [storeSessionStats],
   );
 
   const switchSession = useCallback(async (id: string) => {
@@ -544,7 +536,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     sessions.find((s) => s.id === currentSessionId)?.title ||
     titleCache.current[currentSessionId] ||
     formatSessionName(currentSessionId);
-  const currentSessionStats = statsCache.current[currentSessionId] ?? null;
+  const currentSessionStats = currentSessionStatsState;
 
   return (
     <SessionContext.Provider
