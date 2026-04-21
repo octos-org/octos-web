@@ -20,6 +20,7 @@ import * as MessageStore from "@/store/message-store";
 const SESSION_TITLE_STORAGE_KEY = "octos_session_titles";
 const SESSION_STATS_STORAGE_KEY = "octos_session_stats";
 const SESSION_TOPIC_STORAGE_KEY = "octos_session_topics";
+const SESSION_SYNC_STORAGE_KEY = "octos_sessions_sync";
 
 function isTaskActive(task: BackgroundTaskInfo): boolean {
   return task.status === "spawned" || task.status === "running";
@@ -321,6 +322,33 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [refreshSessions]);
 
   useEffect(() => {
+    const refreshIfVisible = () => {
+      if (document.visibilityState === "visible") {
+        void refreshSessions();
+      }
+    };
+    const refreshOnFocus = () => {
+      void refreshSessions();
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === SESSION_SYNC_STORAGE_KEY) {
+        void refreshSessions();
+      }
+    };
+
+    const interval = window.setInterval(refreshIfVisible, 15_000);
+    window.addEventListener("focus", refreshOnFocus);
+    document.addEventListener("visibilitychange", refreshIfVisible);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshOnFocus);
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, [refreshSessions]);
+
+  useEffect(() => {
     function handleCost(e: Event) {
       const detail = (e as CustomEvent).detail;
       const sessionId = detail?.sessionId;
@@ -527,10 +555,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setActiveHistoryTopic(undefined);
         setCurrentSessionId(generateSessionId());
       }
+      localStorage.setItem(SESSION_SYNC_STORAGE_KEY, String(Date.now()));
+      await refreshSessions();
     } catch {
       // ignore
     }
-  }, [currentSessionId]);
+  }, [currentSessionId, refreshSessions]);
 
   const currentSessionTitle =
     sessions.find((s) => s.id === currentSessionId)?.title ||
