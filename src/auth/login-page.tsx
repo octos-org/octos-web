@@ -91,6 +91,11 @@ export function LoginPage() {
   return (
     <div className="flex h-screen items-center justify-center bg-surface-dark">
       <div className="w-full max-w-sm rounded-xl bg-surface p-8">
+        <img
+          src="/images/octos-logo-color.svg"
+          alt="Octos"
+          className="mb-4 h-9 w-auto select-none"
+        />
         <h1 className="text-2xl font-bold text-text-strong">
           {scopedProfile ? `Sign in to ${scopedProfile.name}` : "octos"}
         </h1>
