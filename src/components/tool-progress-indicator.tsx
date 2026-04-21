@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { useSession } from "@/runtime/session-context";
+import { eventMatchesScope } from "@/runtime/event-scope";
 
 export function ToolProgressIndicator() {
   const { currentSessionId, historyTopic } = useSession();
@@ -12,19 +13,12 @@ export function ToolProgressIndicator() {
   useEffect(() => {
     function onProgress(e: Event) {
       const detail = (e as CustomEvent).detail;
-      if (detail.sessionId && detail.sessionId !== currentSessionId) return;
-      if (
-        historyTopic &&
-        typeof detail?.topic === "string" &&
-        detail.topic !== historyTopic
-      ) {
-        return;
-      }
+      if (!eventMatchesScope(detail, currentSessionId, historyTopic)) return;
       setProgress(detail);
     }
     function onThinking(e: Event) {
       const detail = (e as CustomEvent).detail;
-      if (detail.sessionId && detail.sessionId !== currentSessionId) return;
+      if (!eventMatchesScope(detail, currentSessionId, historyTopic)) return;
       // Clear progress when thinking stops (response received or stream done)
       if (!detail.thinking) {
         setProgress(null);

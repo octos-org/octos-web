@@ -189,6 +189,21 @@ function mergeNullableCost(
   return nextCost === undefined ? currentCost : nextCost;
 }
 
+function setSessionActiveFlag(
+  current: Record<string, boolean>,
+  sessionId: string,
+  active: boolean,
+): Record<string, boolean> {
+  if (current[sessionId] === active) return current;
+  const next = { ...current };
+  if (active) {
+    next[sessionId] = true;
+  } else {
+    delete next[sessionId];
+  }
+  return next;
+}
+
 /** Extract a sortable timestamp from a session ID.
  *  Handles both formats:
  *    web-{timestamp}-{random}  → timestamp directly (milliseconds)
@@ -221,7 +236,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return saved ? topics[saved] : undefined;
   });
   const [initialMessages, setInitialMessages] = useState<MessageInfo[]>([]);
-  const [activeTaskOnServer, setActiveTaskOnServer] = useState(false);
+  const [serverTaskActiveBySession, setServerTaskActiveBySession] = useState<
+    Record<string, boolean>
+  >({});
   const { queueMode, adaptiveMode } = useModeState();
   const previousSessionIdRef = useRef<string | null>(null);
   const titleCache = useRef<Record<string, string>>(loadStoredTitles());
@@ -268,7 +285,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       }).catch(() => {});
       getSessionTasks(saved, restoredTopic)
         .then((tasks) => {
-          setActiveTaskOnServer(tasks.some(isTaskActive));
+          setServerTaskActiveBySession((prev) =>
+            setSessionActiveFlag(prev, saved, tasks.some(isTaskActive)),
+          );
         })
         .catch(() => {});
       setActiveHistoryTopic(restoredTopic);
@@ -395,12 +414,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const switchRequestRef = useRef(0);
   const setServerTaskActive = useCallback(
     (sessionId: string, active: boolean) => {
-      setActiveTaskOnServer((prev) => {
-        if (sessionId !== currentSessionId) return prev;
-        return active;
-      });
+      setServerTaskActiveBySession((prev) =>
+        setSessionActiveFlag(prev, sessionId, active),
+      );
     },
-    [currentSessionId],
+    [],
   );
 
   const renameSession = useCallback((sessionId: string, title: string) => {
@@ -447,16 +465,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       if (switchRequestRef.current !== requestId) return; // stale
       MessageStore.replaceHistory(id, messages, topic);
       setInitialMessages(messages);
-      setActiveTaskOnServer(tasks.some(isTaskActive));
+      setServerTaskActive(id, tasks.some(isTaskActive));
       setActiveHistoryTopic(topic);
     } catch {
       if (switchRequestRef.current !== requestId) return;
       setInitialMessages([]);
-      setActiveTaskOnServer(false);
+      setServerTaskActive(id, false);
       setActiveHistoryTopic(topic);
     }
     setCurrentSessionId(id);
-  }, [currentSessionId, sessionTopics]);
+  }, [currentSessionId, sessionTopics, setServerTaskActive]);
 
   const createSession = useCallback((title?: string) => {
     const nextId = generateSessionId();
@@ -549,6 +567,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         persistStoredTopics(next);
         return next;
       });
+      setServerTaskActive(id, false);
       setSessions((prev) => prev.filter((s) => s.id !== id));
       if (id === currentSessionId) {
         setInitialMessages([]);
@@ -560,13 +579,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     } catch {
       // ignore
     }
-  }, [currentSessionId, refreshSessions]);
+  }, [currentSessionId, refreshSessions, setServerTaskActive]);
 
   const currentSessionTitle =
     sessions.find((s) => s.id === currentSessionId)?.title ||
     titleCache.current[currentSessionId] ||
     formatSessionName(currentSessionId);
   const currentSessionStats = currentSessionStatsState;
+  const activeTaskOnServer = serverTaskActiveBySession[currentSessionId] ?? false;
 
   return (
     <SessionContext.Provider

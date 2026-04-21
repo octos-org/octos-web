@@ -18,6 +18,7 @@ import * as FileStore from "@/store/file-store";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { dispatchCrewFileEvent } from "./file-events";
 import { recordRuntimeCounter } from "./observability";
+import { eventSessionId, eventTopic } from "./event-scope";
 import type { BackgroundTaskInfo, MessageInfo } from "@/api/types";
 
 const POLL_INTERVAL_MS = 2500;
@@ -378,6 +379,22 @@ function ensureEventStream(key: string): void {
 
             const current = watchedSessions.get(key);
             if (!current) return;
+
+            const scopedSessionId = eventSessionId(event);
+            if (scopedSessionId !== undefined && scopedSessionId !== current.sessionId) {
+              recordRuntimeCounter("octos_session_mismatch_total", {
+                surface: "task_watcher_stream",
+              });
+              continue;
+            }
+
+            const scopedTopic = eventTopic(event);
+            if (scopedTopic !== undefined && scopedTopic !== current.topic) {
+              recordRuntimeCounter("octos_topic_mismatch_total", {
+                surface: "task_watcher_stream",
+              });
+              continue;
+            }
 
             if (event.type === "task_status" && "task" in event) {
               TaskStore.mergeTask(current.sessionId, event.task, current.topic);

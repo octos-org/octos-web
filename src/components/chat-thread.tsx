@@ -43,6 +43,7 @@ import { ThinkingIndicator } from "./thinking-indicator";
 import { ToolProgressIndicator } from "./tool-progress-indicator";
 import { buildFileUrl } from "@/api/files";
 import { displayFilenameFromPath } from "@/lib/utils";
+import { nextTopicForCommand } from "@/lib/slash-commands";
 import { getToken } from "@/api/client";
 
 // ---------------------------------------------------------------------------
@@ -69,25 +70,6 @@ function visibleAttachmentCaption(caption?: string): string {
     return "";
   }
   return caption;
-}
-
-function deriveRequestedTopic(message: string): string | undefined {
-  const trimmed = message.trim();
-  if (!trimmed.startsWith("/")) return undefined;
-
-  const siteMatch = trimmed.match(/^\/new\s+site\s+(.+)$/i);
-  if (siteMatch) {
-    const preset = siteMatch[1]?.trim();
-    return preset ? `site ${preset}` : undefined;
-  }
-
-  const slidesMatch = trimmed.match(/^\/new\s+slides\s+(.+)$/i);
-  if (slidesMatch) {
-    const slug = slidesMatch[1]?.trim();
-    return slug ? `slides ${slug}` : undefined;
-  }
-
-  return undefined;
 }
 
 const UserBubble = memo(function UserBubble({ message }: { message: Message }) {
@@ -833,7 +815,8 @@ function Composer() {
 
   const handleSend = useCallback(async () => {
     if (isEmpty && pendingFiles.length === 0) return;
-    const input = text.trim();
+    const trimmedInput = text.trim();
+    const input = trimmedInput.startsWith("/") ? text.trimStart() : trimmedInput;
 
     let mediaPaths: string[] = [];
     let audioUploadMode: "recording" | "upload" | undefined;
@@ -872,7 +855,7 @@ function Composer() {
       return;
     }
 
-    if (input === "/help" || input === "/") {
+    if (trimmedInput === "/help" || trimmedInput === "/") {
       setText("");
       setCmdFeedback(
         COMMANDS.map((c) => `${c.cmd} — ${c.desc}`).join("\n"),
@@ -917,7 +900,9 @@ function Composer() {
       (audioUploadMode === "recording" ? "[Voice message]" : attachedText);
     const requestText =
       !input && audioUploadMode ? "" : messageText;
-    const requestedTopic = historyTopic || deriveRequestedTopic(requestText || messageText);
+    const commandTopic = nextTopicForCommand(requestText || messageText);
+    const requestedTopic =
+      commandTopic === undefined ? historyTopic : (commandTopic ?? undefined);
 
     let finalPayload = {
       sessionId: currentSessionId,

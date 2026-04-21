@@ -14,6 +14,7 @@ import { displayFilenameFromPath } from "@/lib/utils";
 import { getMessages as fetchSessionMessages } from "@/api/sessions";
 import { dispatchCrewFileEvent } from "./file-events";
 import { recordRuntimeCounter } from "./observability";
+import { eventSessionId, eventTopic } from "./event-scope";
 
 // ---------------------------------------------------------------------------
 // Helpers (shared with the old adapter, kept local)
@@ -232,14 +233,20 @@ function bindStreamToAssistant({
 
   const handleEvent = (evt: StreamManager.StreamEvent) => {
     const event = evt.raw;
-    const eventTopic =
-      typeof (event as { topic?: unknown }).topic === "string"
-        ? ((event as { topic?: string }).topic?.trim() || undefined)
-        : undefined;
-    if (eventTopic !== undefined && eventTopic !== normalizedHistoryTopic) {
+    const scopedSessionId = eventSessionId(event);
+    if (scopedSessionId !== undefined && scopedSessionId !== sessionId) {
+      recordRuntimeCounter("octos_session_mismatch_total", {
+        surface: "sse_bridge",
+      });
+      return;
+    }
+
+    const scopedTopic = eventTopic(event);
+    if (scopedTopic !== undefined && scopedTopic !== normalizedHistoryTopic) {
       recordRuntimeCounter("octos_topic_mismatch_total", {
         surface: "sse_bridge",
       });
+      return;
     }
 
     switch (event.type) {
@@ -259,7 +266,10 @@ function bindStreamToAssistant({
 
       case "tool_start": {
         const key = `tc_${++toolCallCounter}`;
-        const tcId = `tc_${event.tool}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        const tcId =
+          event.tool_call_id ||
+          event.tool_id ||
+          `tc_${event.tool}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         toolCalls.set(key, { id: tcId, name: event.tool, status: "running" });
         activeToolByName.set(event.tool, key);
         MessageStore.updateMessage(sessionId, assistantMsgId, {
@@ -294,7 +304,12 @@ function bindStreamToAssistant({
       case "thinking":
         window.dispatchEvent(
           new CustomEvent("crew:thinking", {
-            detail: { thinking: true, iteration: event.iteration, sessionId },
+            detail: {
+              thinking: true,
+              iteration: event.iteration,
+              sessionId,
+              topic: normalizedHistoryTopic,
+            },
           }),
         );
         break;
@@ -302,7 +317,12 @@ function bindStreamToAssistant({
       case "response":
         window.dispatchEvent(
           new CustomEvent("crew:thinking", {
-            detail: { thinking: false, iteration: event.iteration, sessionId },
+            detail: {
+              thinking: false,
+              iteration: event.iteration,
+              sessionId,
+              topic: normalizedHistoryTopic,
+            },
           }),
         );
         break;
@@ -317,22 +337,23 @@ function bindStreamToAssistant({
         if (event.path && event.filename) {
           const caption = event.caption || "";
 
-          // Only attach inline when we can confidently match the file to a
-          // known tool call. Unscoped file events may be deferred outputs from
-          // older background tasks and should be attached by authoritative
-          // history sync, not to the current streaming bubble.
-          if (event.tool_call_id) {
-            const msgs = MessageStore.getMessages(sessionId, historyTopic);
-            const match = msgs.find((m) =>
-              m.toolCalls.some((tc) => tc.id === event.tool_call_id),
+          const file = {
+            filename: event.filename,
+            path: event.path,
+            caption,
+          };
+          const attached = MessageStore.appendFileByToolCallId(
+            sessionId,
+            event.tool_call_id,
+            file,
+            historyTopic,
+          );
+          if (!attached) {
+            MessageStore.appendFileToBackgroundAnchor(
+              sessionId,
+              file,
+              historyTopic,
             );
-            if (match) {
-              MessageStore.appendFile(sessionId, match.id, {
-                filename: event.filename,
-                path: event.path,
-                caption,
-              }, historyTopic);
-            }
           }
 
           dispatchCrewFileEvent({
@@ -347,6 +368,7 @@ function bindStreamToAssistant({
       }
 
       case "task_status": {
+        MessageStore.bindBackgroundTask(sessionId, event.task, historyTopic);
         window.dispatchEvent(
           new CustomEvent("crew:task_status", {
             detail: { task: event.task, sessionId, topic: historyTopic },
@@ -423,6 +445,7 @@ function bindStreamToAssistant({
                 session_cost: event.session_cost,
                 duration_s: event.duration_s || 0,
                 sessionId,
+                topic: normalizedHistoryTopic,
                 messageId: assistantMsgId,
               },
             }),
@@ -435,7 +458,12 @@ function bindStreamToAssistant({
         // Clear thinking state
         window.dispatchEvent(
           new CustomEvent("crew:thinking", {
-            detail: { thinking: false, iteration: 0, sessionId },
+            detail: {
+              thinking: false,
+              iteration: 0,
+              sessionId,
+              topic: normalizedHistoryTopic,
+            },
           }),
         );
 
@@ -444,6 +472,12 @@ function bindStreamToAssistant({
         // We no longer call replaceHistory here — it races with the sync loop
         // and can wipe optimistic messages or create duplicates.
         if (event.has_bg_tasks) {
+          MessageStore.registerBackgroundAnchor(
+            sessionId,
+            assistantMsgId,
+            historyTopic,
+            Array.from(toolCalls.values()).map((toolCall) => toolCall.name),
+          );
           window.dispatchEvent(
             new CustomEvent("crew:bg_tasks", {
               detail: { sessionId, topic: historyTopic },
@@ -460,7 +494,12 @@ function bindStreamToAssistant({
         pendingStreamError.current = errMsg;
         window.dispatchEvent(
           new CustomEvent("crew:thinking", {
-            detail: { thinking: false, iteration: 0, sessionId },
+            detail: {
+              thinking: false,
+              iteration: 0,
+              sessionId,
+              topic: normalizedHistoryTopic,
+            },
           }),
         );
         break;
@@ -472,7 +511,7 @@ function bindStreamToAssistant({
   };
 
   // Subscribe with replay — events that arrived before subscription are replayed.
-  const unsub = StreamManager.subscribe(sessionId, handleEvent);
+  const unsub = StreamManager.subscribe(sessionId, handleEvent, historyTopic);
   if (unsub) {
     setupCleanup(
       sessionId,
@@ -505,9 +544,18 @@ function setupCleanup(
   // The subscriber is automatically cleaned up when the stream ends
   // (StreamManager clears subscribers). We also listen for stream_state
   // to handle the case where the stream ends without a done event.
+  const normalizedHistoryTopic = historyTopic?.trim() || undefined;
   const handler = (e: Event) => {
     const detail = (e as CustomEvent).detail;
-    if (detail?.sessionId === sessionId && !detail.active) {
+    const detailTopic =
+      typeof detail?.topic === "string" && detail.topic.trim()
+        ? detail.topic.trim()
+        : undefined;
+    if (
+      detail?.sessionId === sessionId &&
+      detailTopic === normalizedHistoryTopic &&
+      !detail.active
+    ) {
       window.removeEventListener("crew:stream_state", handler);
       _unsub();
 
