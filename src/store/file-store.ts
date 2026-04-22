@@ -4,6 +4,7 @@ import { buildFileUrl } from "@/api/files";
 import { getSessionFiles } from "@/api/sessions";
 import { API_BASE } from "@/lib/constants";
 import { displayFilenameFromPath } from "@/lib/utils";
+import { eventSessionId } from "@/runtime/event-scope";
 
 export interface FileEntry {
   id: string;
@@ -137,6 +138,24 @@ export function getFilesForSession(sessionId: string): FileEntry[] {
   return allFiles.filter((f) => f.sessionId === sessionId);
 }
 
+export function clearSessionFiles(sessionId: string): void {
+  let changed = false;
+  const baseSessionId = sessionId.split("#", 1)[0];
+  for (let i = allFiles.length - 1; i >= 0; i--) {
+    const file = allFiles[i];
+    if (
+      file.sessionId !== baseSessionId &&
+      !file.sessionId.startsWith(`${baseSessionId}#`)
+    ) {
+      continue;
+    }
+    if (file.blobUrl) URL.revokeObjectURL(file.blobUrl);
+    allFiles.splice(i, 1);
+    changed = true;
+  }
+  if (changed) notify();
+}
+
 async function fetchBlob(file: FileEntry) {
   try {
     const url = buildFileUrl(file.filePath);
@@ -185,18 +204,20 @@ if (typeof window !== "undefined") {
       caption?: string;
       sessionId?: string;
     };
+    const sessionId = eventSessionId(detail);
+    if (!sessionId) return;
     const pathMatch = detail.fileUrl?.match(/\/api\/files\/(.+)/);
     const filePath = pathMatch ? decodeURIComponent(pathMatch[1]) : detail.fileUrl ?? "";
     if (filePath && detail.filename) {
       addFile({
-        sessionId: detail.sessionId ?? "",
+        sessionId,
         filename: detail.filename,
         filePath,
         caption: detail.caption ?? "",
       });
       window.dispatchEvent(
         new CustomEvent("crew:file_notification", {
-          detail: { filename: detail.filename, sessionId: detail.sessionId },
+          detail: { filename: detail.filename, sessionId },
         }),
       );
     }

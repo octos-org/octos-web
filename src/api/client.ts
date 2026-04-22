@@ -4,7 +4,7 @@ import { getSettings } from "@/hooks/use-settings";
 function inferProfileIdFromHost(): string | null {
   if (typeof window === "undefined") return null;
   const hostname = window.location.hostname;
-  const suffixes = [".octos.ominix.io", ".crew.ominix.io"];
+  const suffixes = [".octos.ominix.io", ".crew.ominix.io", ".ocean.ominix.io"];
   for (const suffix of suffixes) {
     if (!hostname.endsWith(suffix)) continue;
     const subdomain = hostname.slice(0, -suffix.length);

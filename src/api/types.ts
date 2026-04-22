@@ -154,7 +154,7 @@ export interface AuthMeResponse {
 // SSE event types
 export type SseEvent =
   | { type: "token"; text: string }
-  | { type: "replace"; text: string }
+  | { type: "replace"; text: string; tool_call_id?: string | null }
   | { type: "tool_start"; tool: string; tool_call_id?: string; tool_id?: string }
   | { type: "tool_end"; tool: string; success: boolean; tool_call_id?: string; tool_id?: string }
   | { type: "tool_progress"; tool: string; message: string }
@@ -183,6 +183,7 @@ export type SseEvent =
       session_cost?: number | null;
       duration_s?: number;
       has_bg_tasks?: boolean;
+      bg_tasks?: BackgroundTaskInfo[];
     }
   | { type: "error"; message: string }
   | {

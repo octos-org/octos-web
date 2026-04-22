@@ -245,6 +245,7 @@ async function installMockRuntime(
   messagesBySession: Record<string, unknown[]> = {},
   firstChatEvents?: unknown[],
   messageDelayMs = 0,
+  secondChatEvents?: unknown[],
 ) {
   let chatCount = 0;
 
@@ -375,9 +376,10 @@ async function installMockRuntime(
                 tokens_out: 1,
                 duration_s: 1,
                 has_bg_tasks: true,
+                bg_tasks: [ACTIVE_PROGRESS_TASK],
               },
             ])
-          : [
+          : (secondChatEvents ?? [
               {
                 type: "replace",
                 text: "Here is the normal follow-up response.",
@@ -391,7 +393,7 @@ async function installMockRuntime(
                 duration_s: 1,
                 has_bg_tasks: false,
               },
-            ],
+            ]),
       ),
     });
   });
@@ -455,7 +457,88 @@ test.describe("background task scoping", () => {
     await expect(page.getByTestId("task-anchor-detail")).toContainText(
       "Searching: \"rust async\"",
     );
-    await expect(page.locator("[data-testid='assistant-message']")).toHaveCount(1);
+    await expect(
+      page
+        .locator("[data-testid='assistant-message']")
+        .filter({ hasText: "Here is the normal follow-up response." }),
+    ).toBeVisible();
+    await expect(page.getByTestId("task-anchor-message")).not.toContainText(
+      "Here is the normal follow-up response.",
+    );
+  });
+
+  test("has_bg_tasks without task identity does not create a task bubble", async ({
+    page,
+  }) => {
+    await installMockRuntime(page, [], [], {}, [
+      {
+        type: "replace",
+        text: "The weather is clear.",
+      },
+      {
+        type: "done",
+        content: "The weather is clear.",
+        model: "mock-model",
+        tokens_in: 1,
+        tokens_out: 1,
+        duration_s: 1,
+        has_bg_tasks: true,
+      },
+    ]);
+    await page.goto("/chat", { waitUntil: "networkidle" });
+    await page.waitForSelector(SEL.chatInput);
+
+    await getInput(page).fill("What is the weather?");
+    await getSendButton(page).click();
+
+    await expect(page.getByTestId("task-anchor-message")).toHaveCount(0);
+    await expect(page.getByTestId("assistant-message").last()).toHaveAttribute(
+      "data-message-type",
+      "assistant",
+    );
+    await expect(page.getByTestId("assistant-message").last()).toContainText(
+      "The weather is clear.",
+    );
+  });
+
+  test("done bg_tasks without a real task id does not create a task bubble", async ({
+    page,
+  }) => {
+    await installMockRuntime(page, [], [], {}, [
+      {
+        type: "replace",
+        text: "The weather is clear.",
+      },
+      {
+        type: "done",
+        content: "The weather is clear.",
+        model: "mock-model",
+        tokens_in: 1,
+        tokens_out: 1,
+        duration_s: 1,
+        has_bg_tasks: true,
+        bg_tasks: [
+          {
+            ...ACTIVE_PROGRESS_TASK,
+            id: "",
+          },
+        ],
+      },
+    ]);
+    await page.goto("/chat", { waitUntil: "networkidle" });
+    await page.waitForSelector(SEL.chatInput);
+
+    await getInput(page).fill("What is the weather?");
+    await getSendButton(page).click();
+
+    await expect(page.getByTestId("task-anchor-message")).toHaveCount(0);
+    await expect(page.getByTestId("assistant-message").last()).toHaveAttribute(
+      "data-message-type",
+      "assistant",
+    );
+    await expect(page.getByTestId("assistant-message").last()).toContainText(
+      "The weather is clear.",
+    );
   });
 
   test("active deep research task shows structured progress detail", async ({ page }) => {
@@ -474,36 +557,38 @@ test.describe("background task scoping", () => {
       { sessionId: ORIGIN_SESSION, task: ACTIVE_PROGRESS_TASK },
     );
 
-    await expect(page.getByTestId("session-task-label")).toContainText(
+    await expect(page.getByTestId("session-task-label")).toHaveCount(0);
+    await expect(page.getByTestId("session-task-detail")).toHaveCount(0);
+    await expect(page.getByTestId("task-anchor-label")).toContainText(
       "Deep research running",
     );
-    await expect(page.getByTestId("session-task-detail")).toContainText(
+    await expect(page.getByTestId("task-anchor-detail")).toContainText(
       "node search_round_2",
     );
-    await expect(page.getByTestId("session-task-detail")).toContainText(
+    await expect(page.getByTestId("task-anchor-detail")).toContainText(
       "tool web_fetch",
     );
-    await expect(page.getByTestId("session-task-detail")).toContainText(
+    await expect(page.getByTestId("task-anchor-detail")).toContainText(
       "iter 2",
     );
-    await expect(page.getByTestId("session-task-detail")).toContainText(
+    await expect(page.getByTestId("task-anchor-detail")).toContainText(
       "phase fetch",
     );
-    await expect(page.getByTestId("session-task-detail")).toContainText(
+    await expect(page.getByTestId("task-anchor-detail")).toContainText(
       "Fetching 4 pages in parallel...",
     );
-    await expect(page.getByTestId("session-task-detail")).toContainText(
+    await expect(page.getByTestId("task-anchor-detail")).toContainText(
       "node search_round_1",
     );
-    await expect(page.getByTestId("session-task-detail")).toContainText(
+    await expect(page.getByTestId("task-anchor-detail")).toContainText(
       "Searching: \"rust async\"",
     );
-    await expect(page.getByTestId("session-task-detail")).not.toContainText(
+    await expect(page.getByTestId("task-anchor-detail")).not.toContainText(
       "Background work continues independently",
     );
   });
 
-  test("live task status and later causal ack coalesce into one anchor", async ({
+  test("live task status and later causal ack coalesce by explicit task id", async ({
     page,
   }) => {
     const racedTask = {
@@ -526,6 +611,7 @@ test.describe("background task scoping", () => {
         tokens_out: 1,
         duration_s: 1,
         has_bg_tasks: true,
+        bg_tasks: [racedTask],
       },
     ]);
     await page.goto("/chat", { waitUntil: "networkidle" });
@@ -538,7 +624,11 @@ test.describe("background task scoping", () => {
     await expect(page.getByTestId("task-anchor-label")).toContainText(
       "Deep research running",
     );
-    await expect(page.getByTestId("task-anchor-message")).toContainText(
+    await expect(page.getByTestId("task-anchor-message")).not.toContainText(
+      "Deep research is running in the background.",
+    );
+    await expect(page.getByTestId("assistant-message")).toHaveCount(1);
+    await expect(page.getByTestId("assistant-message")).toContainText(
       "Deep research is running in the background.",
     );
   });
@@ -587,6 +677,52 @@ test.describe("background task scoping", () => {
     );
     await expect(page.getByTestId("task-anchor-message").last()).not.toContainText(
       "I am Octos.",
+    );
+  });
+
+  test("completed old task cannot attach to later cron weather or name answers", async ({
+    page,
+  }) => {
+    await installMockRuntime(
+      page,
+      [COMPLETED_PROGRESS_TASK],
+      [],
+      {
+        [ORIGIN_SESSION]: HISTORY_WITH_LATER_NORMAL_TURNS,
+      },
+      [
+        {
+          type: "replace",
+          text: "You have no scheduled tasks.",
+        },
+        {
+          type: "done",
+          content: "You have no scheduled tasks.",
+          model: "mock-model",
+          tokens_in: 1,
+          tokens_out: 1,
+          duration_s: 1,
+          has_bg_tasks: true,
+        },
+      ],
+    );
+    await page.goto("/chat", { waitUntil: "networkidle" });
+    await page.waitForSelector(SEL.chatInput);
+
+    await expect(page.getByTestId("task-anchor-message")).toHaveCount(1);
+    await getInput(page).fill("Do I have scheduled tasks?");
+    await getSendButton(page).click();
+
+    await expect(page.getByTestId("task-anchor-message")).toHaveCount(1);
+    await expect(page.getByTestId("task-anchor-message")).toHaveAttribute(
+      "data-task-id",
+      COMPLETED_PROGRESS_TASK.id,
+    );
+    await expect(page.getByTestId("task-anchor-message")).not.toContainText(
+      "You have no scheduled tasks.",
+    );
+    await expect(page.getByTestId("assistant-message").last()).toContainText(
+      "You have no scheduled tasks.",
     );
   });
 
@@ -645,12 +781,8 @@ test.describe("background task scoping", () => {
       { sessionId: ORIGIN_SESSION, task: FAILED_TASK },
     );
 
-    await expect(page.getByTestId("session-task-label")).toContainText(
-      "Deep research failed",
-    );
-    await expect(page.getByTestId("session-task-detail")).toContainText(
-      "run_pipeline",
-    );
+    await expect(page.getByTestId("session-task-label")).toHaveCount(0);
+    await expect(page.getByTestId("session-task-detail")).toHaveCount(0);
     await expect(page.getByTestId("task-anchor-label")).toContainText(
       "Deep research failed",
     );
@@ -691,7 +823,7 @@ test.describe("background task scoping", () => {
     );
   });
 
-  test("reloaded task anchor stays at the originating turn after later normal turns", async ({
+  test("reloaded task anchor remains task-id scoped after later normal turns", async ({
     page,
   }) => {
     await installMockRuntime(page, [ACTIVE_PROGRESS_TASK], [], {
@@ -716,14 +848,15 @@ test.describe("background task scoping", () => {
     await expect(page.getByTestId("task-anchor-message")).toHaveCount(1);
     let rows = await timeline();
     let taskIndex = rows.findIndex((row) => row.kind === "task-anchor-message");
-    let backgroundAckIndex = rows.findIndex((row) =>
-      row.text.includes("Deep research is running in the background."),
+    expect(taskIndex).toBeGreaterThanOrEqual(0);
+    await expect(page.getByTestId("task-anchor-message")).toHaveAttribute(
+      "data-task-id",
+      ACTIVE_PROGRESS_TASK.id,
     );
-    let weatherIndex = rows.findIndex((row) =>
-      row.text.includes("What is the weather today?"),
+    await expect(page.getByTestId("task-anchor-message")).not.toContainText(
+      "The weather is clear.",
     );
-    expect(taskIndex).toBeGreaterThanOrEqual(backgroundAckIndex);
-    expect(taskIndex).toBeLessThan(weatherIndex);
+    await expect(page.getByTestId("task-anchor-message")).not.toContainText("Octos");
 
     await page
       .locator(`[data-session-id="${OTHER_SESSION}"] [data-testid="session-switch-button"]`)
@@ -735,14 +868,15 @@ test.describe("background task scoping", () => {
 
     rows = await timeline();
     taskIndex = rows.findIndex((row) => row.kind === "task-anchor-message");
-    backgroundAckIndex = rows.findIndex((row) =>
-      row.text.includes("Deep research is running in the background."),
+    expect(taskIndex).toBeGreaterThanOrEqual(0);
+    await expect(page.getByTestId("task-anchor-message")).toHaveAttribute(
+      "data-task-id",
+      ACTIVE_PROGRESS_TASK.id,
     );
-    weatherIndex = rows.findIndex((row) =>
-      row.text.includes("What is the weather today?"),
+    await expect(page.getByTestId("task-anchor-message")).not.toContainText(
+      "The weather is clear.",
     );
-    expect(taskIndex).toBeGreaterThanOrEqual(backgroundAckIndex);
-    expect(taskIndex).toBeLessThan(weatherIndex);
+    await expect(page.getByTestId("task-anchor-message")).not.toContainText("Octos");
   });
 
   test("task anchor survives when /tasks replay beats /messages history", async ({
@@ -765,7 +899,80 @@ test.describe("background task scoping", () => {
     await expect(page.getByTestId("task-anchor-label")).toContainText(
       "Deep research running",
     );
-    await expect(page.getByTestId("task-anchor-message")).toContainText(
+    await expect(page.getByTestId("task-anchor-message")).not.toContainText(
+      "Deep research is running in the background.",
+    );
+    await expect(page.getByTestId("assistant-message").first()).toContainText(
+      "Deep research is running in the background.",
+    );
+  });
+
+  test("repeated deep research ACK streams create bubbles only from distinct task ids", async ({
+    page,
+  }) => {
+    await installMockRuntime(
+      page,
+      [],
+      [],
+      {},
+      [
+        {
+          type: "replace",
+          text: "Deep research is running in the background.",
+          tool_call_id: ACTIVE_PROGRESS_TASK.tool_call_id,
+        },
+        {
+          type: "done",
+          content: "Deep research is running in the background.",
+          model: "mock-model",
+          tokens_in: 1,
+          tokens_out: 1,
+          duration_s: 1,
+          has_bg_tasks: true,
+          bg_tasks: [ACTIVE_PROGRESS_TASK],
+        },
+      ],
+      0,
+      [
+        {
+          type: "replace",
+          text: "Deep research is running in the background.",
+          tool_call_id: SECOND_ACTIVE_PROGRESS_TASK.tool_call_id,
+        },
+        {
+          type: "done",
+          content: "Deep research is running in the background.",
+          model: "mock-model",
+          tokens_in: 1,
+          tokens_out: 1,
+          duration_s: 1,
+          has_bg_tasks: true,
+          bg_tasks: [SECOND_ACTIVE_PROGRESS_TASK],
+        },
+      ],
+    );
+    await page.goto("/chat", { waitUntil: "networkidle" });
+    await page.waitForSelector(SEL.chatInput);
+
+    await getInput(page).fill("Deep research the first topic");
+    await getSendButton(page).click();
+    await getInput(page).fill("Deep research the second topic");
+    await getSendButton(page).click();
+
+    await expect(page.getByTestId("task-anchor-message")).toHaveCount(2);
+    await expect(page.getByTestId("task-anchor-message").first()).toHaveAttribute(
+      "data-task-id",
+      ACTIVE_PROGRESS_TASK.id,
+    );
+    await expect(page.getByTestId("task-anchor-message").last()).toHaveAttribute(
+      "data-task-id",
+      SECOND_ACTIVE_PROGRESS_TASK.id,
+    );
+    await expect(page.getByTestId("assistant-message")).toHaveCount(2);
+    await expect(page.getByTestId("assistant-message").first()).toContainText(
+      "Deep research is running in the background.",
+    );
+    await expect(page.getByTestId("assistant-message").last()).toContainText(
       "Deep research is running in the background.",
     );
   });
@@ -847,19 +1054,18 @@ test.describe("background task scoping", () => {
     const weatherIndex = rows.findIndex((row) =>
       row.text.includes("What is the weather here?"),
     );
-    const triggerIndex = rows.findIndex((row) =>
-      row.text.includes("Deep research Iran and US reconciliation"),
-    );
-    const ackIndex = rows.findIndex((row) =>
-      row.text.includes("Deep research is running in the background."),
-    );
     const weatherAnswerIndex = rows.findIndex((row) =>
       row.text.includes("Please provide your city name."),
     );
 
     expect(taskIndex).toBeGreaterThan(weatherIndex);
-    expect(taskIndex).toBeGreaterThanOrEqual(triggerIndex);
-    expect(taskIndex).toBeGreaterThanOrEqual(ackIndex);
     expect(taskIndex).toBeLessThan(weatherAnswerIndex);
+    await expect(page.getByTestId("task-anchor-message")).toHaveAttribute(
+      "data-task-id",
+      TASK_STARTED_BEFORE_TRIGGER.id,
+    );
+    await expect(page.getByTestId("task-anchor-message")).not.toContainText(
+      "Please provide your city name.",
+    );
   });
 });

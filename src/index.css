@@ -294,46 +294,6 @@ body {
   text-transform: capitalize;
 }
 
-.session-task-indicator {
-  display: inline-flex;
-  max-width: min(32rem, 42vw);
-  align-items: center;
-  gap: 0.7rem;
-  flex-shrink: 1;
-}
-
-.session-task-indicator-dot {
-  position: relative;
-  flex-shrink: 0;
-  width: 0.9rem;
-  height: 0.9rem;
-  border-radius: 999px;
-  border: 2px solid color-mix(in srgb, var(--color-accent) 28%, transparent);
-  border-top-color: color-mix(in srgb, var(--color-accent) 96%, white 4%);
-  border-right-color: color-mix(in srgb, var(--color-accent) 72%, transparent);
-  opacity: 0.95;
-}
-
-.session-task-indicator-dot.is-active {
-  animation: sessionTaskSpin 0.85s linear infinite;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 14%, transparent);
-}
-
-.session-task-indicator-dot.is-failed {
-  border-color: color-mix(in srgb, #ef4444 72%, transparent);
-  border-top-color: #ef4444;
-  box-shadow: 0 0 0 3px color-mix(in srgb, #ef4444 12%, transparent);
-}
-
-@keyframes sessionTaskSpin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 @keyframes shellRise {
   from {
     opacity: 0;
@@ -400,11 +360,6 @@ body {
 
 [data-theme="light"] .message-card-assistant {
   background: color-mix(in srgb, white 78%, var(--color-surface-container) 22%);
-}
-
-[data-theme="light"] .session-task-indicator-dot {
-  border-color: color-mix(in srgb, var(--color-accent) 24%, transparent);
-  border-top-color: color-mix(in srgb, var(--color-accent) 86%, black 8%);
 }
 
 /* ── Scrollbar ──────────────────────────────────────── */

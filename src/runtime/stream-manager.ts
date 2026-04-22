@@ -9,6 +9,7 @@ import { buildApiHeaders } from "@/api/client";
 import { API_BASE } from "@/lib/constants";
 import { getSettings } from "@/hooks/use-settings";
 import type { SseEvent } from "@/api/types";
+import { normalizeTopic } from "./event-scope";
 
 /** A single SSE event with its parsed data. */
 export interface StreamEvent {
@@ -21,6 +22,7 @@ export type StreamSubscriber = (event: StreamEvent) => void;
 /** State of a managed session stream. */
 interface ManagedStream {
   sessionId: string;
+  topic?: string;
   /** All events received so far (for replay on resubscribe). */
   events: StreamEvent[];
   /** Whether the stream is still active (fetch in progress). */
@@ -40,10 +42,17 @@ const activeStreams = new Set<ManagedStream>();
 
 const streams = new Map<string, ManagedStream>();
 
-function createManagedStream(sessionId: string): ManagedStream {
+function streamKey(sessionId: string, topic?: string): string {
+  const normalizedTopic = normalizeTopic(topic);
+  return normalizedTopic ? `${sessionId}#${normalizedTopic}` : sessionId;
+}
+
+function createManagedStream(sessionId: string, topic?: string): ManagedStream {
   const abort = new AbortController();
+  const normalizedTopic = normalizeTopic(topic);
   const stream: ManagedStream = {
     sessionId,
+    topic: normalizedTopic,
     events: [],
     active: true,
     completed: false,
@@ -51,13 +60,13 @@ function createManagedStream(sessionId: string): ManagedStream {
     abort,
     text: "",
   };
-  // The streams map holds the LATEST stream per session (for subscribe/isActive).
-  // Previous streams keep running independently via their own fetch reference.
-  streams.set(sessionId, stream);
+  // The streams map holds the LATEST stream per session/topic. Previous
+  // streams keep running independently via their own fetch reference.
+  streams.set(streamKey(sessionId, normalizedTopic), stream);
   activeStreams.add(stream);
   window.dispatchEvent(
     new CustomEvent("crew:stream_state", {
-      detail: { sessionId, active: true },
+      detail: { sessionId, topic: normalizedTopic, active: true },
     }),
   );
   return stream;
@@ -132,15 +141,11 @@ function finalizeStream(sessionId: string, stream: ManagedStream): void {
   stream.active = false;
   activeStreams.delete(stream);
 
-  // Only emit stream_state inactive when NO streams are active for this session.
-  const anyActive = [...activeStreams].some((s) => s.sessionId === sessionId);
-  if (!anyActive) {
-    window.dispatchEvent(
-      new CustomEvent("crew:stream_state", {
-        detail: { sessionId, active: false },
-      }),
-    );
-  }
+  window.dispatchEvent(
+    new CustomEvent("crew:stream_state", {
+      detail: { sessionId, topic: stream.topic, active: false },
+    }),
+  );
 
   setTimeout(() => {
     stream.events = [];
@@ -186,7 +191,8 @@ export function startStream(
   // Previous streams keep running independently via their own fetch reference.
   // The backend's queue mode (followup/collect/steer/interrupt) handles
   // concurrent messages server-side.
-  const stream = createManagedStream(sessionId);
+  const normalizedTopic = normalizeTopic(topic);
+  const stream = createManagedStream(sessionId, normalizedTopic);
 
   const settings = getSettings();
 
@@ -211,7 +217,7 @@ export function startStream(
       body: JSON.stringify({
         message,
         session_id: sessionId,
-        topic,
+        topic: normalizedTopic,
         client_message_id: clientMessageId,
         stream: true,
         media,
@@ -227,11 +233,15 @@ export function startStream(
 /**
  * Reattach to an existing server-side stream for a session after refresh.
  */
-export function attachStream(sessionId: string): "attached" | "busy" {
-  const existing = streams.get(sessionId);
+export function attachStream(
+  sessionId: string,
+  topic?: string,
+): "attached" | "busy" {
+  const normalizedTopic = normalizeTopic(topic);
+  const existing = streams.get(streamKey(sessionId, normalizedTopic));
   if (existing?.active) return "busy";
 
-  const stream = createManagedStream(sessionId);
+  const stream = createManagedStream(sessionId, normalizedTopic);
 
   runStreamFetch(sessionId, stream, () =>
     fetch(`${API_BASE}/api/chat`, {
@@ -243,6 +253,7 @@ export function attachStream(sessionId: string): "attached" | "busy" {
       body: JSON.stringify({
         message: "",
         session_id: sessionId,
+        topic: normalizedTopic,
         stream: true,
         media: [],
         attach_only: true,
@@ -263,8 +274,9 @@ export function attachStream(sessionId: string): "attached" | "busy" {
 export function subscribe(
   sessionId: string,
   callback: StreamSubscriber,
+  topic?: string,
 ): (() => void) | null {
-  const stream = streams.get(sessionId);
+  const stream = streams.get(streamKey(sessionId, topic));
   if (!stream) return null;
 
   // Replay past events
@@ -286,29 +298,38 @@ export function subscribe(
 
 /** Check if a session has an active or completed stream. */
 export function hasStream(sessionId: string): boolean {
-  return streams.has(sessionId);
+  return [...streams.values()].some((stream) => stream.sessionId === sessionId);
 }
 
 /** Check if a session has any active stream. */
-export function isActive(sessionId: string): boolean {
-  return [...activeStreams].some((s) => s.sessionId === sessionId);
+export function isActive(sessionId: string, topic?: string): boolean {
+  const normalizedTopic = normalizeTopic(topic);
+  return [...activeStreams].some(
+    (s) =>
+      s.sessionId === sessionId &&
+      (normalizedTopic === undefined || s.topic === normalizedTopic),
+  );
 }
 
 /** Get the current accumulated text for a session. */
-export function getText(sessionId: string): string {
-  return streams.get(sessionId)?.text ?? "";
+export function getText(sessionId: string, topic?: string): string {
+  return streams.get(streamKey(sessionId, topic))?.text ?? "";
 }
 
 /** Check if stream completed normally. */
-export function isCompleted(sessionId: string): boolean {
-  return streams.get(sessionId)?.completed ?? false;
+export function isCompleted(sessionId: string, topic?: string): boolean {
+  return streams.get(streamKey(sessionId, topic))?.completed ?? false;
 }
 
 /** Clean up a session's stream (e.g., on session delete). */
-export function destroyStream(sessionId: string): void {
-  const stream = streams.get(sessionId);
-  if (stream) {
+export function destroyStream(sessionId: string, topic?: string): void {
+  const normalizedTopic = normalizeTopic(topic);
+  const matchingStreams = [...streams.entries()].filter(([, stream]) => {
+    if (stream.sessionId !== sessionId) return false;
+    return normalizedTopic === undefined || stream.topic === normalizedTopic;
+  });
+  for (const [key, stream] of matchingStreams) {
     if (stream.active) stream.abort.abort();
-    streams.delete(sessionId);
+    streams.delete(key);
   }
 }

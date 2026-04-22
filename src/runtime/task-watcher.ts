@@ -378,13 +378,27 @@ async function pollSession(entry: WatchedSession): Promise<void> {
     }
 
     // Hydrate tasks once even when the stream is healthy so reloads can
-    // reconstruct task anchors from `/tasks` replay alone.
-    if (!entry.tasksHydrated || !entry.streamHealthy) {
-      const tasks = await getSessionTasks(entry.sessionId, entry.topic).catch(
-        () => [] as BackgroundTaskInfo[],
-      );
+    // reconstruct task anchors from `/tasks` replay alone. Keep reconciling
+    // while we believe a task is active; terminal task_status events can be
+    // lost independently from final session_result delivery.
+    const shouldFetchTasks =
+      !entry.tasksHydrated || !entry.streamHealthy || entry.activeIds.size > 0;
+    if (shouldFetchTasks) {
+      let tasks: BackgroundTaskInfo[];
+      try {
+        tasks = await getSessionTasks(entry.sessionId, entry.topic);
+      } catch {
+        recordRuntimeCounter("octos_replay_fallback_total", {
+          mode: "task_watcher_poll",
+          reason: "tasks_fetch_error",
+        });
+        tasks = TaskStore.getTasks(entry.sessionId, entry.topic);
+      }
 
-      const mergedTasks = mergeSnapshotWithKnownActiveTasks(entry, tasks);
+      const mergedTasks =
+        !entry.tasksHydrated || !entry.streamHealthy
+          ? mergeSnapshotWithKnownActiveTasks(entry, tasks)
+          : tasks;
 
       TaskStore.replaceTasks(entry.sessionId, mergedTasks, entry.topic);
       for (const task of mergedTasks) {

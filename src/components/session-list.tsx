@@ -46,10 +46,15 @@ export function SessionList() {
 
   const handleDelete = useCallback(async (id: string) => {
     setDeletingId(id);
-    await new Promise((r) => setTimeout(r, 250));
-    await removeSession(id);
-    setDeletingId(null);
-    setConfirmingDelete(null);
+    try {
+      await new Promise((r) => setTimeout(r, 250));
+      await removeSession(id);
+      setConfirmingDelete(null);
+    } catch (error) {
+      console.error("Failed to delete session", error);
+    } finally {
+      setDeletingId(null);
+    }
   }, [removeSession]);
 
   return (
