@@ -9,7 +9,7 @@
 
 import { useSyncExternalStore } from "react";
 import { getMessages as fetchMessages } from "@/api/sessions";
-import type { MessageInfo } from "@/api/types";
+import type { BackgroundTaskInfo, MessageInfo } from "@/api/types";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { addFile as addToFileStore } from "@/store/file-store";
 import { recordRuntimeCounter } from "@/runtime/observability";
@@ -22,6 +22,7 @@ export interface ToolCallInfo {
   id: string;
   name: string;
   status: "running" | "complete" | "error";
+  detail?: string;
 }
 
 export interface MessageFile {
@@ -37,10 +38,18 @@ export interface MessageMeta {
   duration_s: number;
 }
 
+export interface TaskAnchorMeta {
+  taskId?: string;
+  toolCallId?: string;
+  outputFiles?: string[];
+  toolNames?: string[];
+}
+
 export interface Message {
   id: string;
   role: "user" | "assistant" | "system";
   text: string;
+  kind?: "task_anchor";
   clientMessageId?: string;
   responseToClientMessageId?: string;
   files: MessageFile[];
@@ -49,6 +58,8 @@ export interface Message {
   timestamp: number;
   historySeq?: number;
   meta?: MessageMeta;
+  sourceToolCallId?: string;
+  taskAnchor?: TaskAnchorMeta;
 }
 
 // ---------------------------------------------------------------------------
@@ -61,6 +72,17 @@ const listeners = new Set<() => void>();
 const loadedSessions = new Set<string>();
 /** Track in-flight history loads to avoid duplicate requests. */
 const loadingPromises = new Map<string, Promise<void>>();
+
+interface BackgroundAnchor {
+  messageId: string;
+  toolNames: Set<string>;
+  createdAt: number;
+}
+
+const backgroundAnchorsByKey = new Map<string, BackgroundAnchor[]>();
+const taskMessageByKey = new Map<string, Map<string, string>>();
+const toolCallMessageByKey = new Map<string, Map<string, string>>();
+const outputPathMessageByKey = new Map<string, Map<string, string>>();
 
 let version = 0;
 // Snapshot cache keyed by session/topic key — invalidated on every notify().
@@ -101,6 +123,45 @@ function nextId(): string {
   return `msg-${Date.now()}-${++idCounter}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
+function taskAnchorMessageId(sessionId: string, taskId: string): string {
+  return `task:${sessionId}:${taskId}`;
+}
+
+function taskTimestamp(task: BackgroundTaskInfo): number {
+  const startedAt = new Date(task.started_at).getTime();
+  return Number.isFinite(startedAt) ? startedAt : Date.now();
+}
+
+function uniqueStrings(values: Array<string | undefined | null>): string[] {
+  return [
+    ...new Set(
+      values
+        .filter((value): value is string => !!value && !!value.trim())
+        .map((value) => value.trim()),
+    ),
+  ];
+}
+
+function sameStrings(left: string[] | undefined, right: string[] | undefined): boolean {
+  const normalizedLeft = uniqueStrings(left ?? []);
+  const normalizedRight = uniqueStrings(right ?? []);
+  if (normalizedLeft.length !== normalizedRight.length) return false;
+  return normalizedLeft.every((value, index) => value === normalizedRight[index]);
+}
+
+function mergeTaskAnchorMeta(
+  existing: TaskAnchorMeta | undefined,
+  task: BackgroundTaskInfo,
+): TaskAnchorMeta {
+  const normalizedToolName = normalizeToolName(task.tool_name) || task.tool_name;
+  return {
+    taskId: task.id || existing?.taskId,
+    toolCallId: task.tool_call_id ?? existing?.toolCallId,
+    outputFiles: uniqueStrings([...(existing?.outputFiles ?? []), ...(task.output_files ?? [])]),
+    toolNames: uniqueStrings([...(existing?.toolNames ?? []), normalizedToolName]),
+  };
+}
+
 function getList(sessionId: string, topic?: string): Message[] {
   const key = storeKey(sessionId, topic);
   let list = messagesByKey.get(key);
@@ -113,6 +174,192 @@ function getList(sessionId: string, topic?: string): Message[] {
 
 function historyLoadKey(sessionId: string, topic?: string): string {
   return storeKey(sessionId, topic);
+}
+
+function normalizeToolName(name: string | undefined): string {
+  if (!name) return "";
+  return name === "Direct TTS" ? "fm_tts" : name;
+}
+
+function isTaskActive(task: BackgroundTaskInfo): boolean {
+  return task.status === "spawned" || task.status === "running";
+}
+
+function taskMessageStatus(task: BackgroundTaskInfo): Message["status"] {
+  if (task.status === "failed") return "error";
+  if (isTaskActive(task)) return "streaming";
+  return "complete";
+}
+
+function pathMatchKeys(path: string): string[] {
+  const keys = new Set<string>();
+  const add = (value: string | undefined) => {
+    const normalized = value?.trim();
+    if (normalized) keys.add(normalized);
+  };
+
+  add(path);
+  try {
+    add(decodeURIComponent(path));
+  } catch {
+    // Keep the original path when decoding fails.
+  }
+  add(displayFilenameFromPath(path));
+  return [...keys];
+}
+
+function mapFor(
+  root: Map<string, Map<string, string>>,
+  key: string,
+): Map<string, string> {
+  let map = root.get(key);
+  if (!map) {
+    map = new Map();
+    root.set(key, map);
+  }
+  return map;
+}
+
+function trimBackgroundAnchors(key: string): void {
+  const anchors = backgroundAnchorsByKey.get(key);
+  if (!anchors) return;
+  const cutoff = Date.now() - 60 * 60_000;
+  const kept = anchors.filter((anchor) => anchor.createdAt >= cutoff);
+  if (kept.length > 24) kept.splice(0, kept.length - 24);
+  if (kept.length === 0) {
+    backgroundAnchorsByKey.delete(key);
+  } else {
+    backgroundAnchorsByKey.set(key, kept);
+  }
+}
+
+function indexToolCallForMessage(key: string, toolCallId: string, messageId: string): void {
+  if (!toolCallId) return;
+  mapFor(toolCallMessageByKey, key).set(toolCallId, messageId);
+}
+
+function indexTaskForMessage(key: string, task: BackgroundTaskInfo, messageId: string): void {
+  mapFor(taskMessageByKey, key).set(task.id, messageId);
+  if (task.tool_call_id) {
+    indexToolCallForMessage(key, task.tool_call_id, messageId);
+  }
+  const outputMap = mapFor(outputPathMessageByKey, key);
+  for (const path of task.output_files ?? []) {
+    for (const pathKey of pathMatchKeys(path)) {
+      outputMap.set(pathKey, messageId);
+    }
+  }
+}
+
+function findMessageIndexById(list: Message[], messageId: string): number {
+  return list.findIndex((message) => message.id === messageId);
+}
+
+function findMessageIndexByToolCallId(list: Message[], toolCallId?: string): number {
+  if (!toolCallId) return -1;
+  return list.findIndex((message) =>
+    message.toolCalls.some((toolCall) => toolCall.id === toolCallId) ||
+    message.sourceToolCallId === toolCallId,
+  );
+}
+
+function findMessageIndexForFilePath(key: string, list: Message[], file: MessageFile): number {
+  const outputMap = outputPathMessageByKey.get(key);
+  if (!outputMap) return -1;
+
+  for (const pathKey of pathMatchKeys(file.path)) {
+    const messageId = outputMap.get(pathKey);
+    if (!messageId) continue;
+    const index = findMessageIndexById(list, messageId);
+    if (index !== -1) return index;
+  }
+  return -1;
+}
+
+function findBackgroundAnchorIndex(
+  key: string,
+  list: Message[],
+  toolName?: string,
+): number {
+  trimBackgroundAnchors(key);
+  const normalizedToolName = normalizeToolName(toolName);
+  const anchors = backgroundAnchorsByKey.get(key);
+  if (!anchors) return -1;
+
+  for (let i = anchors.length - 1; i >= 0; i -= 1) {
+    const anchor = anchors[i];
+    if (
+      normalizedToolName &&
+      anchor.toolNames.size > 0 &&
+      !anchor.toolNames.has(normalizedToolName)
+    ) {
+      continue;
+    }
+    const index = findMessageIndexById(list, anchor.messageId);
+    if (index !== -1) return index;
+  }
+
+  return -1;
+}
+
+function findTaskAnchorIndex(
+  sessionId: string,
+  key: string,
+  list: Message[],
+  task: BackgroundTaskInfo,
+): number {
+  const anchorId = taskAnchorMessageId(sessionId, task.id);
+  const directIndex = findMessageIndexById(list, anchorId);
+  if (directIndex !== -1) return directIndex;
+
+  const taskMap = taskMessageByKey.get(key);
+  if (taskMap?.has(task.id)) {
+    const mappedIndex = findMessageIndexById(list, taskMap.get(task.id)!);
+    if (mappedIndex !== -1) return mappedIndex;
+  }
+
+  const byToolCall = findMessageIndexByToolCallId(list, task.tool_call_id);
+  if (byToolCall !== -1) return byToolCall;
+
+  for (const path of task.output_files ?? []) {
+    const byPath = findMessageIndexForFilePath(key, list, {
+      filename: displayFilenameFromPath(path),
+      path,
+      caption: "",
+    });
+    if (byPath !== -1) return byPath;
+  }
+
+  return findBackgroundAnchorIndex(key, list, task.tool_name);
+}
+
+function findRecentAssistantIndex(list: Message[], beforeTimestamp?: number): number {
+  const cutoff = Date.now() - 30 * 60_000;
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    const message = list[index];
+    if (message.role !== "assistant") continue;
+    if (message.files.length > 0) continue;
+    if (message.timestamp < cutoff) continue;
+    if (beforeTimestamp && message.timestamp > beforeTimestamp + 5_000) continue;
+    return index;
+  }
+  return -1;
+}
+
+function addFileToMessage(message: Message, file: MessageFile): Message {
+  if (message.files.some((existing) => existing.path === file.path)) return message;
+  return { ...message, files: [...message.files, file] };
+}
+
+function indexFilesForMessage(sessionId: string, message: Message): void {
+  for (const file of message.files) {
+    addToFileStore({
+      sessionId,
+      filename: file.filename,
+      filePath: file.path,
+      caption: file.caption ?? "",
+    });
+  }
 }
 
 function parseLegacyFileLine(line: string): MessageFile | null {
@@ -212,6 +459,7 @@ function shouldCollapseAuthoritativeDuplicate(
   candidate: Message,
   authoritative: Message,
 ): boolean {
+  if (candidate.kind === "task_anchor") return false;
   if (candidate.role !== authoritative.role) return false;
 
   if (
@@ -334,6 +582,9 @@ function mergeAuthoritativeIntoMessage(
     timestamp: authoritative.timestamp,
     historySeq: authoritative.historySeq,
     meta: existing.meta,
+    sourceToolCallId: authoritative.sourceToolCallId ?? existing.sourceToolCallId,
+    kind: existing.kind ?? authoritative.kind,
+    taskAnchor: existing.taskAnchor ?? authoritative.taskAnchor,
   };
 }
 
@@ -376,20 +627,99 @@ function convertApiMessage(m: MessageInfo): Message | null {
     status: "complete",
     timestamp: m.timestamp ? new Date(m.timestamp).getTime() : Date.now(),
     historySeq: typeof m.seq === "number" ? m.seq : undefined,
+    sourceToolCallId: m.tool_call_id,
   };
 }
 
-function indexFilesForSession(sessionId: string, messages: Message[]): void {
+function indexFilesForSession(
+  sessionId: string,
+  messages: Message[],
+  topic?: string,
+): void {
+  const key = storeKey(sessionId, topic);
   for (const message of messages) {
-    for (const file of message.files) {
-      addToFileStore({
-        sessionId,
-        filename: file.filename,
-        filePath: file.path,
-        caption: file.caption ?? "",
-      });
+    indexFilesForMessage(sessionId, message);
+    if (message.sourceToolCallId) {
+      indexToolCallForMessage(key, message.sourceToolCallId, message.id);
+    }
+    for (const toolCall of message.toolCalls) {
+      indexToolCallForMessage(key, toolCall.id, message.id);
     }
   }
+}
+
+function shouldCoalesceFileResult(message: Message): boolean {
+  if (message.role !== "assistant" || message.files.length === 0) return false;
+  if (message.sourceToolCallId) return true;
+  if (!message.text.trim()) return true;
+  return TASK_COMPLETION_RE.test(message.text.trim());
+}
+
+function findFileResultTargetIndex(
+  key: string,
+  list: Message[],
+  fileResult: Message,
+): number {
+  if (!shouldCoalesceFileResult(fileResult)) return -1;
+
+  const byToolCall = findMessageIndexByToolCallId(
+    list,
+    fileResult.sourceToolCallId,
+  );
+  if (byToolCall !== -1) return byToolCall;
+
+  for (const file of fileResult.files) {
+    const byPath = findMessageIndexForFilePath(key, list, file);
+    if (byPath !== -1) return byPath;
+  }
+
+  const byAnchor = findBackgroundAnchorIndex(key, list);
+  if (byAnchor !== -1) return byAnchor;
+
+  return fileResult.sourceToolCallId
+    ? findRecentAssistantIndex(list, fileResult.timestamp)
+    : -1;
+}
+
+function mergeFileResultIntoTarget(target: Message, fileResult: Message): Message {
+  const files = fileResult.files.map((file) => ({
+    ...file,
+    caption: file.caption || fileResult.text || "",
+  }));
+
+  return {
+    ...target,
+    text: target.text.trim() ? target.text : fileResult.text,
+    files: mergeMessageFiles(files, target.files),
+    toolCalls:
+      target.toolCalls.length > 0 ? target.toolCalls : fileResult.toolCalls,
+    sourceToolCallId: target.sourceToolCallId ?? fileResult.sourceToolCallId,
+  };
+}
+
+function coalesceFileResultsIntoAnchors(
+  sessionId: string,
+  messages: Message[],
+  topic?: string,
+): Message[] {
+  const key = storeKey(sessionId, topic);
+  const merged: Message[] = [];
+
+  for (const message of messages) {
+    const targetIndex = findFileResultTargetIndex(key, merged, message);
+    if (targetIndex === -1) {
+      merged.push(message);
+      continue;
+    }
+
+    merged[targetIndex] = mergeFileResultIntoTarget(merged[targetIndex], message);
+    recordRuntimeCounter("octos_result_duplicate_suppressed_total", {
+      kind: message.role,
+      reason: "background_file_coalesced",
+    });
+  }
+
+  return merged;
 }
 
 function replaceHistoryFromApi(
@@ -456,7 +786,10 @@ function replaceHistoryFromApi(
 
   // Phase 3: Merge and sort — authoritative first by seq, pending at the end
   // ordered by timestamp.
-  const merged = [...authoritative, ...pending];
+  const merged = [
+    ...coalesceFileResultsIntoAnchors(sessionId, authoritative, topic),
+    ...pending,
+  ];
   merged.sort((a, b) => {
     const aSeq = typeof a.historySeq === "number" ? a.historySeq : Number.MAX_SAFE_INTEGER;
     const bSeq = typeof b.historySeq === "number" ? b.historySeq : Number.MAX_SAFE_INTEGER;
@@ -465,7 +798,7 @@ function replaceHistoryFromApi(
   });
 
   messagesByKey.set(key, merged);
-  indexFilesForSession(sessionId, merged);
+  indexFilesForSession(sessionId, merged, topic);
   loadedSessions.add(key);
   notify();
 }
@@ -503,6 +836,11 @@ export function updateMessage(
   const idx = list.findIndex((m) => m.id === messageId);
   if (idx === -1) return;
   list[idx] = { ...list[idx], ...updates };
+  if (updates.toolCalls) {
+    for (const toolCall of updates.toolCalls) {
+      indexToolCallForMessage(key, toolCall.id, messageId);
+    }
+  }
   messagesByKey.set(key, [...list]);
   notify();
 }
@@ -558,6 +896,193 @@ export function appendFile(
   notify();
 }
 
+export function registerBackgroundAnchor(
+  sessionId: string,
+  messageId: string,
+  topic?: string,
+  toolNames: string[] = [],
+): void {
+  const key = storeKey(sessionId, topic);
+  const list = messagesByKey.get(key);
+  if (!list?.some((message) => message.id === messageId)) return;
+
+  trimBackgroundAnchors(key);
+  const anchors = backgroundAnchorsByKey.get(key) ?? [];
+  const existing = anchors.find((anchor) => anchor.messageId === messageId);
+  const normalizedToolNames = toolNames.map(normalizeToolName).filter(Boolean);
+
+  if (existing) {
+    for (const toolName of normalizedToolNames) {
+      existing.toolNames.add(toolName);
+    }
+    existing.createdAt = Date.now();
+  } else {
+    anchors.push({
+      messageId,
+      toolNames: new Set(normalizedToolNames),
+      createdAt: Date.now(),
+    });
+  }
+
+  backgroundAnchorsByKey.set(key, anchors);
+
+  const index = findMessageIndexById(list, messageId);
+  if (index === -1) return;
+
+  const current = list[index];
+  const nextToolNames = uniqueStrings([
+    ...(current.taskAnchor?.toolNames ?? []),
+    ...normalizedToolNames,
+  ]);
+  list[index] = {
+    ...current,
+    kind: "task_anchor",
+    taskAnchor: {
+      ...(current.taskAnchor ?? {}),
+      toolNames: nextToolNames,
+    },
+  };
+  messagesByKey.set(key, [...list]);
+  notify();
+}
+
+export function ensureTaskAnchor(
+  sessionId: string,
+  task: BackgroundTaskInfo,
+  topic?: string,
+): string {
+  const key = storeKey(sessionId, topic);
+  const list = getList(sessionId, topic);
+  const anchorId = taskAnchorMessageId(sessionId, task.id);
+  const targetIndex = findTaskAnchorIndex(sessionId, key, list, task);
+  const nextTaskAnchor = mergeTaskAnchorMeta(
+    targetIndex !== -1 ? list[targetIndex].taskAnchor : undefined,
+    task,
+  );
+
+  if (targetIndex !== -1) {
+    const current = list[targetIndex];
+    if (
+      current.id === anchorId &&
+      current.kind === "task_anchor" &&
+      current.status === taskMessageStatus(task) &&
+      current.sourceToolCallId === (task.tool_call_id ?? current.sourceToolCallId) &&
+      current.taskAnchor?.taskId === task.id &&
+      current.taskAnchor?.toolCallId === (task.tool_call_id ?? current.taskAnchor?.toolCallId) &&
+      sameStrings(current.taskAnchor?.outputFiles, nextTaskAnchor.outputFiles) &&
+      sameStrings(current.taskAnchor?.toolNames, nextTaskAnchor.toolNames)
+    ) {
+      return anchorId;
+    }
+  }
+
+  if (targetIndex === -1) {
+    list.push({
+      id: anchorId,
+      role: "assistant",
+      kind: "task_anchor",
+      text: "",
+      files: [],
+      toolCalls: [],
+      status: taskMessageStatus(task),
+      timestamp: taskTimestamp(task),
+      sourceToolCallId: task.tool_call_id,
+      taskAnchor: nextTaskAnchor,
+    });
+  } else {
+    const current = list[targetIndex];
+    if (current.id !== anchorId) {
+      const anchors = backgroundAnchorsByKey.get(key);
+      if (anchors) {
+        for (const anchor of anchors) {
+          if (anchor.messageId === current.id) {
+            anchor.messageId = anchorId;
+          }
+        }
+      }
+    }
+    list[targetIndex] = {
+      ...current,
+      id: anchorId,
+      role: current.role === "system" ? "assistant" : current.role,
+      kind: "task_anchor",
+      status: taskMessageStatus(task),
+      timestamp: current.timestamp || taskTimestamp(task),
+      sourceToolCallId: task.tool_call_id ?? current.sourceToolCallId,
+      taskAnchor: nextTaskAnchor,
+    };
+  }
+
+  indexTaskForMessage(key, task, anchorId);
+  messagesByKey.set(key, [...list]);
+  notify();
+  return anchorId;
+}
+
+export function bindBackgroundTask(
+  sessionId: string,
+  task: BackgroundTaskInfo,
+  topic?: string,
+): string | null {
+  return ensureTaskAnchor(sessionId, task, topic);
+}
+
+export function appendFileByToolCallId(
+  sessionId: string,
+  toolCallId: string | undefined,
+  file: MessageFile,
+  topic?: string,
+): boolean {
+  if (!toolCallId) return false;
+
+  const key = storeKey(sessionId, topic);
+  const list = messagesByKey.get(key);
+  if (!list) return false;
+
+  const mappedMessageId = toolCallMessageByKey.get(key)?.get(toolCallId);
+  let targetIndex = mappedMessageId
+    ? findMessageIndexById(list, mappedMessageId)
+    : -1;
+  if (targetIndex === -1) {
+    targetIndex = findMessageIndexByToolCallId(list, toolCallId);
+  }
+  if (targetIndex === -1) return false;
+
+  const next = addFileToMessage(list[targetIndex], file);
+  if (next === list[targetIndex]) return true;
+
+  list[targetIndex] = next;
+  messagesByKey.set(key, [...list]);
+  indexFilesForMessage(sessionId, next);
+  notify();
+  return true;
+}
+
+export function appendFileToBackgroundAnchor(
+  sessionId: string,
+  file: MessageFile,
+  topic?: string,
+): boolean {
+  const key = storeKey(sessionId, topic);
+  const list = messagesByKey.get(key);
+  if (!list) return false;
+
+  let targetIndex = findMessageIndexForFilePath(key, list, file);
+  if (targetIndex === -1) {
+    targetIndex = findBackgroundAnchorIndex(key, list);
+  }
+  if (targetIndex === -1) return false;
+
+  const next = addFileToMessage(list[targetIndex], file);
+  if (next === list[targetIndex]) return true;
+
+  list[targetIndex] = next;
+  messagesByKey.set(key, [...list]);
+  indexFilesForMessage(sessionId, next);
+  notify();
+  return true;
+}
+
 /** Get messages for a session (snapshot, not reactive). */
 export function getMessages(sessionId: string, topic?: string): Message[] {
   return messagesByKey.get(storeKey(sessionId, topic)) ?? [];
@@ -568,10 +1093,18 @@ export function clearMessages(sessionId: string, topic?: string): void {
   const key = storeKey(sessionId, topic);
   if (topic?.trim()) {
     messagesByKey.delete(key);
+    backgroundAnchorsByKey.delete(key);
+    taskMessageByKey.delete(key);
+    toolCallMessageByKey.delete(key);
+    outputPathMessageByKey.delete(key);
   } else {
     for (const messageKey of [...messagesByKey.keys()]) {
       if (messageKey === sessionId || messageKey.startsWith(`${sessionId}#`)) {
         messagesByKey.delete(messageKey);
+        backgroundAnchorsByKey.delete(messageKey);
+        taskMessageByKey.delete(messageKey);
+        toolCallMessageByKey.delete(messageKey);
+        outputPathMessageByKey.delete(messageKey);
       }
     }
   }
@@ -630,6 +1163,30 @@ export function appendHistoryMessages(
       continue;
     }
 
+    const fileResultTargetIndex = findFileResultTargetIndex(key, list, converted);
+    if (fileResultTargetIndex !== -1) {
+      list[fileResultTargetIndex] = mergeFileResultIntoTarget(
+        list[fileResultTargetIndex],
+        converted,
+      );
+      if (converted.sourceToolCallId) {
+        indexToolCallForMessage(
+          key,
+          converted.sourceToolCallId,
+          list[fileResultTargetIndex].id,
+        );
+      }
+      if (typeof converted.historySeq === "number") {
+        maxSeq = Math.max(maxSeq, converted.historySeq);
+      }
+      changed = true;
+      recordRuntimeCounter("octos_result_duplicate_suppressed_total", {
+        kind: converted.role,
+        reason: "background_file_coalesced",
+      });
+      continue;
+    }
+
     const optimisticMatchIndex = findOptimisticMatchIndex(list, converted);
     if (optimisticMatchIndex !== -1) {
       const optimistic = list[optimisticMatchIndex];
@@ -685,7 +1242,7 @@ export function appendHistoryMessages(
       return a.timestamp - b.timestamp;
     });
     messagesByKey.set(key, [...list]);
-    indexFilesForSession(sessionId, list);
+    indexFilesForSession(sessionId, list, topic);
     loadedSessions.add(key);
     notify();
   }
@@ -708,6 +1265,26 @@ export function mergeHistoryMessageIntoMessage(
 
   let targetIndex = list.findIndex((message) => message.id === messageId);
   if (targetIndex === -1) return false;
+
+  const fileResultTargetIndex = findFileResultTargetIndex(key, list, converted);
+  if (fileResultTargetIndex !== -1) {
+    list[fileResultTargetIndex] = mergeFileResultIntoTarget(
+      list[fileResultTargetIndex],
+      converted,
+    );
+    if (converted.sourceToolCallId) {
+      indexToolCallForMessage(
+        key,
+        converted.sourceToolCallId,
+        list[fileResultTargetIndex].id,
+      );
+    }
+    messagesByKey.set(key, [...list]);
+    indexFilesForSession(sessionId, list, topic);
+    loadedSessions.add(key);
+    notify();
+    return true;
+  }
 
   const target = list[targetIndex];
   if (target.role !== converted.role) return false;
@@ -754,7 +1331,7 @@ export function mergeHistoryMessageIntoMessage(
   });
 
   messagesByKey.set(key, [...list]);
-  indexFilesForSession(sessionId, list);
+  indexFilesForSession(sessionId, list, topic);
   loadedSessions.add(key);
   notify();
   return true;

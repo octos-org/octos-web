@@ -1,6 +1,10 @@
 import { useMemo } from "react";
-import type { BackgroundTaskInfo as TaskInfo } from "@/api/types";
-import { useAllTasksBySession } from "@/store/task-store";
+import type {
+  BackgroundTaskInfo as TaskInfo,
+  BackgroundTaskProgressEvent,
+  BackgroundTaskRuntimeDetail,
+} from "@/api/types";
+import { useTasks } from "@/store/task-store";
 import { useSession } from "@/runtime/session-context";
 
 function isTaskActive(task: TaskInfo): boolean {
@@ -20,6 +24,74 @@ function taskDisplayName(toolName: string): string {
   }
 }
 
+function runtimeDetail(task: TaskInfo): BackgroundTaskRuntimeDetail | undefined {
+  return task.runtime_detail ?? undefined;
+}
+
+function stringField(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function taskPhase(task: TaskInfo): string | undefined {
+  const detail = runtimeDetail(task);
+  return (
+    stringField(task.current_phase) ??
+    stringField(detail?.current_phase) ??
+    stringField(task.lifecycle_state) ??
+    stringField(detail?.lifecycle_state)
+  );
+}
+
+function taskProgressMessage(task: TaskInfo): string | undefined {
+  const detail = runtimeDetail(task);
+  return (
+    stringField(task.progress_message) ??
+    stringField(detail?.progress_message) ??
+    stringField(detail?.message)
+  );
+}
+
+function taskProgressEvents(task: TaskInfo): BackgroundTaskProgressEvent[] {
+  return task.progress_events ?? [];
+}
+
+function formatProgressEvent(event: BackgroundTaskProgressEvent): string {
+  const parts: string[] = [];
+  if (event.node) parts.push(`node ${event.node}`);
+  if (event.tool) parts.push(`tool ${event.tool}`);
+  if (typeof event.iteration === "number") parts.push(`iter ${event.iteration}`);
+  if (event.phase) parts.push(`phase ${event.phase}`);
+
+  const head = parts.join(" · ");
+  const message = stringField(event.message);
+  if (head && message) return `${head} — ${message}`;
+  return head || message || event.kind;
+}
+
+function taskTimeline(task: TaskInfo): string[] {
+  return taskProgressEvents(task).slice(-3).map(formatProgressEvent);
+}
+
+function taskLatestDetail(task: TaskInfo): string | undefined {
+  const lines = taskTimeline(task);
+  if (lines.length > 0) {
+    return lines[lines.length - 1];
+  }
+  return taskProgressMessage(task) ?? taskPhase(task);
+}
+
+function taskDetail(task: TaskInfo, fallback: string): string {
+  const lines = taskTimeline(task);
+  if (lines.length > 0) return lines.join("\n");
+
+  const phase = taskPhase(task);
+  const message = taskProgressMessage(task);
+  if (phase && message) return `${phase}: ${message}`;
+  if (message) return message;
+  if (phase) return `Current phase: ${phase}`;
+  return fallback;
+}
+
 function buildSessionSummary(tasks: TaskInfo[]): {
   label: string;
   detail: string;
@@ -30,7 +102,13 @@ function buildSessionSummary(tasks: TaskInfo[]): {
   if (active.length > 1) {
     return {
       label: `${active.length} tasks running`,
-      detail: active.map((task) => taskDisplayName(task.tool_name)).join(" · "),
+      detail: active
+        .map((task) => {
+          const name = taskDisplayName(task.tool_name);
+          const detail = taskLatestDetail(task);
+          return detail ? `${name}: ${detail}` : name;
+        })
+        .join(" · "),
       active: true,
       failed: false,
     };
@@ -40,7 +118,10 @@ function buildSessionSummary(tasks: TaskInfo[]): {
     const task = active[0];
     return {
       label: `${taskDisplayName(task.tool_name)} running`,
-      detail: "Background work continues independently of chat messages.",
+      detail: taskDetail(
+        task,
+        "Background work continues independently of chat messages.",
+      ),
       active: true,
       failed: false,
     };
@@ -51,7 +132,7 @@ function buildSessionSummary(tasks: TaskInfo[]): {
     const task = failed[0];
     return {
       label: `${taskDisplayName(task.tool_name)} failed`,
-      detail: task.error || "Background task needs attention.",
+      detail: task.error || taskDetail(task, "Background task needs attention."),
       active: false,
       failed: true,
     };
@@ -61,46 +142,14 @@ function buildSessionSummary(tasks: TaskInfo[]): {
 }
 
 export function SessionTaskIndicator() {
-  const { currentSessionId } = useSession();
-  const taskEntries = useAllTasksBySession();
+  const { currentSessionId, historyTopic } = useSession();
+  const currentTasks = useTasks(currentSessionId, historyTopic);
 
   const summary = useMemo(
     () => {
-      const currentTasks =
-        taskEntries.find(([sessionId]) => sessionId === currentSessionId)?.[1] ?? [];
-      const currentSummary = buildSessionSummary(currentTasks);
-      if (currentSummary) return currentSummary;
-
-      const otherTasks = taskEntries
-        .filter(([sessionId]) => sessionId !== currentSessionId)
-        .flatMap(([, tasks]) => tasks);
-
-      const activeElsewhere = otherTasks.filter(isTaskActive);
-      if (activeElsewhere.length > 0) {
-        return {
-          label:
-            activeElsewhere.length === 1
-              ? `${taskDisplayName(activeElsewhere[0].tool_name)} running elsewhere`
-              : `${activeElsewhere.length} tasks running elsewhere`,
-          detail: "Background work continues in another session.",
-          active: true,
-          failed: false,
-        };
-      }
-
-      const failedElsewhere = otherTasks.find((task) => task.status === "failed");
-      if (failedElsewhere) {
-        return {
-          label: `${taskDisplayName(failedElsewhere.tool_name)} failed elsewhere`,
-          detail: failedElsewhere.error || "Background task needs attention.",
-          active: false,
-          failed: true,
-        };
-      }
-
-      return null;
+      return buildSessionSummary(currentTasks);
     },
-    [currentSessionId, taskEntries],
+    [currentTasks],
   );
 
   if (!summary) return null;
@@ -120,10 +169,16 @@ export function SessionTaskIndicator() {
         }`}
       />
       <div className="min-w-0">
-        <div className="truncate text-[12px] font-semibold text-text-strong">
+        <div
+          className="truncate text-[12px] font-semibold text-text-strong"
+          data-testid="session-task-label"
+        >
           {summary.label}
         </div>
-        <div className="truncate text-[10px] text-muted">
+        <div
+          className="whitespace-pre-line text-[10px] leading-4 text-muted"
+          data-testid="session-task-detail"
+        >
           {summary.detail}
         </div>
       </div>

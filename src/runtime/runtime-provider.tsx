@@ -16,6 +16,7 @@ import * as TaskStore from "@/store/task-store";
 import { getSessionStatus } from "@/api/sessions";
 import type { BackgroundTaskInfo } from "@/api/types";
 import { watchSession } from "./task-watcher";
+import { eventSessionId, eventTopic } from "./event-scope";
 /** Max sessions kept in memory simultaneously. */
 const MAX_CACHED = 5;
 
@@ -53,9 +54,6 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
         const status = await getSessionStatus(currentSessionId, historyTopic);
         if (cancelled) return;
 
-        const hasBackgroundWork =
-          status.active || status.has_deferred_files || status.has_bg_tasks;
-
         setServerTaskActive(
           currentSessionId,
           status.has_deferred_files || status.has_bg_tasks,
@@ -81,10 +79,10 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
           );
         }
 
-        // Register with the global task watcher for background work.
-        if (hasBackgroundWork) {
-          watchSession(currentSessionId, historyTopic);
-        }
+        // Always register the current session so `/tasks` replay can rebuild
+        // anchors after reload, even when the server is no longer reporting
+        // active background work.
+        watchSession(currentSessionId, historyTopic);
       } catch {
         // Non-fatal — session will still work for new messages.
       }
@@ -95,20 +93,29 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
     // Listen for background task events from SSE and register with watcher.
     function handleBgTasks(event: Event) {
       const detail = (event as CustomEvent).detail;
-      const sessionId = detail?.sessionId;
+      const sessionId = eventSessionId(detail);
       if (!sessionId) return;
+      const topic = eventTopic(detail);
+      setServerTaskActive(sessionId, true);
       // Register ANY session with bg tasks, not just the current one.
-      watchSession(sessionId, detail?.topic);
+      watchSession(sessionId, topic);
     }
 
     function handleTaskStatus(event: Event) {
       const detail = (event as CustomEvent).detail;
-      const sessionId = detail?.sessionId;
+      const sessionId = eventSessionId(detail);
       if (!sessionId) return;
+      const topic = eventTopic(detail);
       const task = detail?.task as BackgroundTaskInfo | undefined;
       if (task) {
-        TaskStore.mergeTask(sessionId, task, detail?.topic);
-        watchSession(sessionId, detail?.topic);
+        TaskStore.mergeTask(sessionId, task, topic);
+        MessageStore.bindBackgroundTask(sessionId, task, topic);
+        const hasActiveTasks = TaskStore.getTasks(sessionId, topic).some(
+          (candidate) =>
+            candidate.status === "spawned" || candidate.status === "running",
+        );
+        setServerTaskActive(sessionId, hasActiveTasks);
+        watchSession(sessionId, topic);
       }
     }
 

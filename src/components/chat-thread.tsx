@@ -25,9 +25,11 @@ import {
   Camera,
   StopCircle,
   Download,
+  Loader2,
   Layers,
   Route,
 } from "lucide-react";
+import type { BackgroundTaskInfo } from "@/api/types";
 import { useSession } from "@/runtime/session-context";
 import {
   useMessages,
@@ -35,6 +37,7 @@ import {
   type MessageFile,
   type MessageMeta,
 } from "@/store/message-store";
+import { useTasks } from "@/store/task-store";
 import { uploadFiles } from "@/api/chat";
 import { sendMessage as bridgeSend } from "@/runtime/sse-bridge";
 import * as StreamManager from "@/runtime/stream-manager";
@@ -43,6 +46,7 @@ import { ThinkingIndicator } from "./thinking-indicator";
 import { ToolProgressIndicator } from "./tool-progress-indicator";
 import { buildFileUrl } from "@/api/files";
 import { displayFilenameFromPath } from "@/lib/utils";
+import { nextTopicForCommand } from "@/lib/slash-commands";
 import { getToken } from "@/api/client";
 
 // ---------------------------------------------------------------------------
@@ -71,23 +75,74 @@ function visibleAttachmentCaption(caption?: string): string {
   return caption;
 }
 
-function deriveRequestedTopic(message: string): string | undefined {
-  const trimmed = message.trim();
-  if (!trimmed.startsWith("/")) return undefined;
-
-  const siteMatch = trimmed.match(/^\/new\s+site\s+(.+)$/i);
-  if (siteMatch) {
-    const preset = siteMatch[1]?.trim();
-    return preset ? `site ${preset}` : undefined;
+function taskDisplayName(toolName: string): string {
+  switch (toolName) {
+    case "podcast_generate":
+      return "Podcast";
+    case "fm_tts":
+      return "Voice";
+    case "voice_transcribe":
+      return "Transcript";
+    default:
+      return toolName.replace(/_/gu, " ");
   }
+}
 
-  const slidesMatch = trimmed.match(/^\/new\s+slides\s+(.+)$/i);
-  if (slidesMatch) {
-    const slug = slidesMatch[1]?.trim();
-    return slug ? `slides ${slug}` : undefined;
-  }
+function taskPhase(task: BackgroundTaskInfo): string | undefined {
+  const runtime = task.runtime_detail ?? undefined;
+  const candidates = [
+    task.current_phase,
+    runtime?.current_phase,
+    task.lifecycle_state,
+    runtime?.lifecycle_state,
+  ];
+  return candidates.find((value) => typeof value === "string" && value.trim())?.trim();
+}
 
-  return undefined;
+function taskProgressMessage(task: BackgroundTaskInfo): string | undefined {
+  const runtime = task.runtime_detail ?? undefined;
+  const candidates = [
+    task.progress_message,
+    runtime?.progress_message,
+    runtime?.message,
+  ];
+  return candidates.find((value) => typeof value === "string" && value.trim())?.trim();
+}
+
+function stringField(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function formatProgressEvent(
+  event: NonNullable<BackgroundTaskInfo["progress_events"]>[number],
+): string {
+  const parts: string[] = [];
+  if (event.node) parts.push(`node ${event.node}`);
+  if (event.tool) parts.push(`tool ${event.tool}`);
+  if (typeof event.iteration === "number") parts.push(`iter ${event.iteration}`);
+  if (event.phase) parts.push(`phase ${event.phase}`);
+
+  const head = parts.join(" · ");
+  const message = stringField(event.message);
+  if (head && message) return `${head} — ${message}`;
+  return head || message || event.kind;
+}
+
+function taskTimeline(task: BackgroundTaskInfo): string[] {
+  return (task.progress_events ?? []).slice(-3).map(formatProgressEvent);
+}
+
+function taskDetail(task: BackgroundTaskInfo, fallback: string): string {
+  if (task.status === "failed" && task.error) return task.error;
+  const lines = taskTimeline(task);
+  if (lines.length > 0) return lines.join("\n");
+
+  const phase = taskPhase(task);
+  const message = taskProgressMessage(task);
+  if (phase && message) return `${phase}: ${message}`;
+  if (message) return message;
+  if (phase) return `Current phase: ${phase}`;
+  return fallback;
 }
 
 const UserBubble = memo(function UserBubble({ message }: { message: Message }) {
@@ -182,6 +237,126 @@ const AssistantBubble = memo(function AssistantBubble({
         )}
 
         {/* Message meta */}
+        <MessageMetaInline message={message} />
+      </div>
+    </div>
+  );
+});
+
+const TaskAnchorBubble = memo(function TaskAnchorBubble({
+  message,
+  sessionId,
+  topic,
+}: {
+  message: Message;
+  sessionId: string;
+  topic?: string;
+}) {
+  const tasks = useTasks(sessionId, topic);
+  const taskId = message.taskAnchor?.taskId;
+  const task = taskId ? tasks.find((candidate) => candidate.id === taskId) : undefined;
+  const fallbackToolName =
+    message.taskAnchor?.toolNames?.[0] ??
+    message.toolCalls[0]?.name ??
+    "background_task";
+  const toolName = task ? taskDisplayName(task.tool_name) : taskDisplayName(fallbackToolName);
+  const isActive = task
+    ? task.status === "spawned" || task.status === "running"
+    : message.kind === "task_anchor" && message.status !== "error";
+  const isFailed = task ? task.status === "failed" : message.status === "error";
+  const statusLabel = task
+    ? task.status === "completed"
+      ? "completed"
+      : task.status === "failed"
+        ? "failed"
+        : "running"
+    : isFailed
+      ? "failed"
+      : "running";
+  const detail = task
+    ? taskDetail(task, "Background work continues independently of chat messages.")
+    : message.taskAnchor?.toolNames?.length
+      ? message.taskAnchor.toolNames.join(" · ")
+      : "";
+
+  return (
+    <div className="flex px-4 py-3">
+      <div
+        data-testid="task-anchor-message"
+        className="message-card message-card-assistant animate-shell-rise max-w-[88%] rounded-[14px] rounded-bl-[4px] px-4 py-3 text-sm leading-relaxed text-text"
+      >
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 shrink-0">
+            {isActive ? (
+              <Loader2
+                data-testid="task-anchor-spinner"
+                size={14}
+                className="animate-spin text-accent"
+              />
+            ) : isFailed ? (
+              <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-red-500/20 text-[10px] leading-none text-red-400">
+                !
+              </span>
+            ) : (
+              <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-400/20 text-[10px] leading-none text-emerald-300">
+                ✓
+              </span>
+            )}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div
+              data-testid="task-anchor-label"
+              className="text-sm font-medium text-text-strong"
+            >
+              {toolName} {statusLabel}
+            </div>
+            {detail && (
+              <div
+                data-testid="task-anchor-detail"
+                className="whitespace-pre-line text-xs leading-5 text-muted"
+              >
+                {detail}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {message.text.trim() && (
+          <div className="mt-3 min-w-0">
+            <MarkdownContent
+              text={message.text}
+              className="prose prose-invert prose-sm max-w-none min-w-0 break-words"
+            />
+          </div>
+        )}
+
+        {message.files.length > 0 && (
+          <div className="mt-3 flex flex-col gap-2">
+            {message.files.map((file) => (
+              <FileAttachment key={file.path} file={file} />
+            ))}
+          </div>
+        )}
+
+        {message.toolCalls.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {message.toolCalls.map((toolCall) => (
+              <span
+                key={toolCall.id}
+                className={`glass-pill inline-flex items-center gap-1 rounded-[10px] px-2.5 py-1 text-[10px] font-mono ${
+                  toolCall.status === "running"
+                    ? "border-accent/20 bg-accent/14 text-accent animate-pulse"
+                    : toolCall.status === "error"
+                      ? "border-red-500/20 bg-red-500/12 text-red-400"
+                      : "text-muted"
+                }`}
+              >
+                {toolCall.name}
+              </span>
+            ))}
+          </div>
+        )}
+
         <MessageMetaInline message={message} />
       </div>
     </div>
@@ -524,7 +699,11 @@ export function ChatThread({
   return (
     <div className="flex h-full min-h-0 flex-col bg-transparent">
       {hasMessages ? (
-        <MessageList messages={visibleMessages} sessionId={currentSessionId} />
+        <MessageList
+          messages={visibleMessages}
+          sessionId={currentSessionId}
+          topic={historyTopic}
+        />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6">
           <div className="glass-section animate-shell-rise max-w-xl rounded-[12px] px-7 py-9 text-center">
@@ -551,9 +730,12 @@ export function ChatThread({
 
 function MessageList({
   messages,
+  sessionId,
+  topic,
 }: {
   messages: Message[];
   sessionId: string;
+  topic?: string;
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
@@ -586,6 +768,16 @@ function MessageList({
       <div className="mx-auto max-w-4xl py-6">
         {messages.map((msg, i) => {
           const isLast = i === messages.length - 1;
+          if (msg.kind === "task_anchor") {
+            return (
+              <TaskAnchorBubble
+                key={msg.id}
+                message={msg}
+                sessionId={sessionId}
+                topic={topic}
+              />
+            );
+          }
           if (msg.role === "user") {
             return <UserBubble key={msg.id} message={msg} />;
           }
@@ -833,7 +1025,8 @@ function Composer() {
 
   const handleSend = useCallback(async () => {
     if (isEmpty && pendingFiles.length === 0) return;
-    const input = text.trim();
+    const trimmedInput = text.trim();
+    const input = trimmedInput.startsWith("/") ? text.trimStart() : trimmedInput;
 
     let mediaPaths: string[] = [];
     let audioUploadMode: "recording" | "upload" | undefined;
@@ -872,7 +1065,7 @@ function Composer() {
       return;
     }
 
-    if (input === "/help" || input === "/") {
+    if (trimmedInput === "/help" || trimmedInput === "/") {
       setText("");
       setCmdFeedback(
         COMMANDS.map((c) => `${c.cmd} — ${c.desc}`).join("\n"),
@@ -917,7 +1110,9 @@ function Composer() {
       (audioUploadMode === "recording" ? "[Voice message]" : attachedText);
     const requestText =
       !input && audioUploadMode ? "" : messageText;
-    const requestedTopic = historyTopic || deriveRequestedTopic(requestText || messageText);
+    const commandTopic = nextTopicForCommand(requestText || messageText);
+    const requestedTopic =
+      commandTopic === undefined ? historyTopic : (commandTopic ?? undefined);
 
     let finalPayload = {
       sessionId: currentSessionId,

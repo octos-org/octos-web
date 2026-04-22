@@ -18,6 +18,7 @@ import * as FileStore from "@/store/file-store";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { dispatchCrewFileEvent } from "./file-events";
 import { recordRuntimeCounter } from "./observability";
+import { eventSessionId, eventTopic } from "./event-scope";
 import type { BackgroundTaskInfo, MessageInfo } from "@/api/types";
 
 const POLL_INTERVAL_MS = 2500;
@@ -41,6 +42,7 @@ interface WatchedSession {
   activeIds: Set<string>;
   replayComplete: boolean;
   streamHealthy: boolean;
+  tasksHydrated: boolean;
   terminalSince: number | null;
   eventAbort?: AbortController;
 }
@@ -76,6 +78,19 @@ function updateActiveIds(entry: WatchedSession, tasks: BackgroundTaskInfo[]): vo
   } else if (entry.replayComplete && entry.terminalSince == null) {
     entry.terminalSince = Date.now();
   }
+}
+
+function mergeSnapshotWithKnownActiveTasks(
+  entry: WatchedSession,
+  fetchedTasks: BackgroundTaskInfo[],
+): BackgroundTaskInfo[] {
+  const fetchedIds = new Set(fetchedTasks.map((task) => task.id));
+  const retainedActiveTasks = TaskStore.getTasks(entry.sessionId, entry.topic)
+    .filter((task) => isTaskActive(task) && !fetchedIds.has(task.id));
+
+  return retainedActiveTasks.length > 0
+    ? [...fetchedTasks, ...retainedActiveTasks]
+    : fetchedTasks;
 }
 
 function applyTaskUpdate(entry: WatchedSession, task: BackgroundTaskInfo): void {
@@ -177,6 +192,7 @@ export function watchSession(sessionId: string, topic?: string): void {
     activeIds: new Set(),
     replayComplete: false,
     streamHealthy: false,
+    tasksHydrated: false,
     terminalSince: null,
   });
 
@@ -280,6 +296,22 @@ function ensureEventStream(key: string): void {
             const current = watchedSessions.get(key);
             if (!current) return;
 
+            const scopedSessionId = eventSessionId(event);
+            if (scopedSessionId !== undefined && scopedSessionId !== current.sessionId) {
+              recordRuntimeCounter("octos_session_mismatch_total", {
+                surface: "task_watcher_stream",
+              });
+              continue;
+            }
+
+            const scopedTopic = eventTopic(event);
+            if (scopedTopic !== undefined && scopedTopic !== current.topic) {
+              recordRuntimeCounter("octos_topic_mismatch_total", {
+                surface: "task_watcher_stream",
+              });
+              continue;
+            }
+
             if (event.type === "task_status" && "task" in event) {
               TaskStore.mergeTask(current.sessionId, event.task, current.topic);
               applyTaskUpdate(current, event.task);
@@ -345,32 +377,40 @@ async function pollSession(entry: WatchedSession): Promise<void> {
       ensureEventStream(key);
     }
 
-    // Stream is the primary truth path. Poll while the stream is unavailable,
-    // even if a connection attempt is currently in flight. This prevents
-    // redirects/HTML fallback responses from starving `/messages` replay.
-    if (!entry.streamHealthy) {
-      const [tasks, messages] = await Promise.all([
-        getSessionTasks(entry.sessionId, entry.topic).catch(
-          () => [] as BackgroundTaskInfo[],
-        ),
-        fetchSessionMessages(
+    // Hydrate tasks once even when the stream is healthy so reloads can
+    // reconstruct task anchors from `/tasks` replay alone.
+    if (!entry.tasksHydrated || !entry.streamHealthy) {
+      const tasks = await getSessionTasks(entry.sessionId, entry.topic).catch(
+        () => [] as BackgroundTaskInfo[],
+      );
+
+      const mergedTasks = mergeSnapshotWithKnownActiveTasks(entry, tasks);
+
+      TaskStore.replaceTasks(entry.sessionId, mergedTasks, entry.topic);
+      for (const task of mergedTasks) {
+        dispatchTaskStatusEvent(entry.sessionId, entry.topic, task);
+      }
+      updateActiveIds(entry, mergedTasks);
+      entry.tasksHydrated = true;
+
+      // Stream is the primary truth path for committed messages. Poll while
+      // the stream is unavailable, even if a connection attempt is currently
+      // in flight. This prevents redirects/HTML fallback responses from
+      // starving `/messages` replay.
+      if (!entry.streamHealthy) {
+        const messages = await fetchSessionMessages(
           entry.sessionId,
           500,
           0,
           entry.lastCommittedSeq >= 0 ? entry.lastCommittedSeq : undefined,
           entry.topic,
-        ),
-      ]);
+        );
 
-      TaskStore.replaceTasks(entry.sessionId, tasks, entry.topic);
-      for (const task of tasks) {
-        dispatchTaskStatusEvent(entry.sessionId, entry.topic, task);
-      }
-      updateActiveIds(entry, tasks);
-      applyCommittedMessages(entry.sessionId, entry, messages);
-      entry.replayComplete = true;
-      if (entry.activeIds.size === 0 && entry.terminalSince == null) {
-        entry.terminalSince = Date.now();
+        applyCommittedMessages(entry.sessionId, entry, messages);
+        entry.replayComplete = true;
+        if (entry.activeIds.size === 0 && entry.terminalSince == null) {
+          entry.terminalSince = Date.now();
+        }
       }
     }
 

@@ -25,9 +25,38 @@ export interface MessageInfo {
   content: string;
   client_message_id?: string;
   response_to_client_message_id?: string;
+  tool_call_id?: string;
   timestamp: string;
   media?: string[];
   tool_calls?: { id?: string; name?: string }[];
+}
+
+export interface BackgroundTaskRuntimeDetail {
+  schema?: string;
+  kind?: string;
+  workflow_kind?: string;
+  workflow?: string;
+  node?: string;
+  tool?: string;
+  iteration?: number;
+  current_phase?: string;
+  progress_message?: string;
+  message?: string;
+  progress?: number;
+  lifecycle_state?: string;
+  [key: string]: unknown;
+}
+
+export interface BackgroundTaskProgressEvent {
+  recorded_at: string;
+  kind: string;
+  workflow_kind?: string | null;
+  node?: string | null;
+  tool?: string | null;
+  iteration?: number | null;
+  phase?: string | null;
+  message?: string | null;
+  progress?: number | null;
 }
 
 export interface BackgroundTaskInfo {
@@ -40,6 +69,13 @@ export interface BackgroundTaskInfo {
   output_files?: string[];
   error: string | null;
   session_key?: string;
+  workflow_kind?: string | null;
+  current_phase?: string | null;
+  lifecycle_state?: string | null;
+  runtime_detail?: BackgroundTaskRuntimeDetail | null;
+  progress_message?: string | null;
+  progress?: number | null;
+  progress_events?: BackgroundTaskProgressEvent[];
 }
 
 export interface ServerStatus {
@@ -119,8 +155,8 @@ export interface AuthMeResponse {
 export type SseEvent =
   | { type: "token"; text: string }
   | { type: "replace"; text: string }
-  | { type: "tool_start"; tool: string }
-  | { type: "tool_end"; tool: string; success: boolean }
+  | { type: "tool_start"; tool: string; tool_call_id?: string; tool_id?: string }
+  | { type: "tool_end"; tool: string; success: boolean; tool_call_id?: string; tool_id?: string }
   | { type: "tool_progress"; tool: string; message: string }
   | { type: "stream_end" }
   | {
@@ -151,17 +187,7 @@ export type SseEvent =
   | { type: "error"; message: string }
   | {
       type: "task_status";
-      task: {
-        id: string;
-        tool_name: string;
-        tool_call_id: string;
-        status: "spawned" | "running" | "completed" | "failed";
-        started_at: string;
-        completed_at: string | null;
-        output_files: string[];
-        error: string | null;
-        session_key?: string;
-      };
+      task: BackgroundTaskInfo;
     }
   | {
       type: "session_result";
