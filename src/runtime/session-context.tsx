@@ -16,14 +16,92 @@ import {
 import type { BackgroundTaskInfo, SessionInfo, MessageInfo } from "@/api/types";
 import { nextTopicForCommand } from "@/lib/slash-commands";
 import * as MessageStore from "@/store/message-store";
+import * as TaskStore from "@/store/task-store";
+import * as FileStore from "@/store/file-store";
 
 const SESSION_TITLE_STORAGE_KEY = "octos_session_titles";
 const SESSION_STATS_STORAGE_KEY = "octos_session_stats";
 const SESSION_TOPIC_STORAGE_KEY = "octos_session_topics";
 const SESSION_SYNC_STORAGE_KEY = "octos_sessions_sync";
+const SESSION_DELETED_STORAGE_KEY = "octos_deleted_sessions";
+const MAX_DELETED_SESSION_TOMBSTONES = 200;
+const MAX_SESSION_TITLE_FETCHES = 10;
 
 function isTaskActive(task: BackgroundTaskInfo): boolean {
   return task.status === "spawned" || task.status === "running";
+}
+
+function loadDeletedSessionIds(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const parsed = JSON.parse(
+      localStorage.getItem(SESSION_DELETED_STORAGE_KEY) || "[]",
+    );
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((id): id is string => typeof id === "string"));
+  } catch {
+    return new Set();
+  }
+}
+
+function persistDeletedSessionIds(ids: Set<string>) {
+  if (typeof window === "undefined") return;
+  const bounded = [...ids].slice(-MAX_DELETED_SESSION_TOMBSTONES);
+  localStorage.setItem(SESSION_DELETED_STORAGE_KEY, JSON.stringify(bounded));
+}
+
+function sessionDeleteGroupKey(sessionId: string): string {
+  return sessionId.split("#", 1)[0];
+}
+
+function isSameSessionGroup(left: string, right: string): boolean {
+  return sessionDeleteGroupKey(left) === sessionDeleteGroupKey(right);
+}
+
+function rememberDeletedSession(sessionId: string) {
+  const ids = loadDeletedSessionIds();
+  const groupKey = sessionDeleteGroupKey(sessionId);
+  ids.delete(groupKey);
+  ids.delete(sessionId);
+  ids.add(groupKey);
+  persistDeletedSessionIds(ids);
+}
+
+function publishSessionDeleted(sessionId: string) {
+  localStorage.setItem(
+    SESSION_SYNC_STORAGE_KEY,
+    JSON.stringify({ type: "deleted", sessionId, ts: Date.now() }),
+  );
+}
+
+function parseDeletedSessionSync(value: string | null): string | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as { type?: unknown; sessionId?: unknown };
+    if (parsed.type === "deleted" && typeof parsed.sessionId === "string") {
+      return parsed.sessionId;
+    }
+  } catch {
+    // Older clients wrote a timestamp only; keep refresh compatibility below.
+  }
+  return null;
+}
+
+function isDeletedSessionId(
+  deletedIds: Set<string>,
+  sessionId: string,
+): boolean {
+  return (
+    deletedIds.has(sessionId) ||
+    deletedIds.has(sessionDeleteGroupKey(sessionId))
+  );
+}
+
+function isPendingDeletedSessionId(
+  pendingGroups: Set<string>,
+  sessionId: string,
+): boolean {
+  return pendingGroups.has(sessionDeleteGroupKey(sessionId));
 }
 
 /** Extract a short title from message content, handling JSON content parts. */
@@ -189,6 +267,21 @@ function mergeNullableCost(
   return nextCost === undefined ? currentCost : nextCost;
 }
 
+function setSessionActiveFlag(
+  current: Record<string, boolean>,
+  sessionId: string,
+  active: boolean,
+): Record<string, boolean> {
+  if (current[sessionId] === active) return current;
+  const next = { ...current };
+  if (active) {
+    next[sessionId] = true;
+  } else {
+    delete next[sessionId];
+  }
+  return next;
+}
+
 /** Extract a sortable timestamp from a session ID.
  *  Handles both formats:
  *    web-{timestamp}-{random}  → timestamp directly (milliseconds)
@@ -221,7 +314,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return saved ? topics[saved] : undefined;
   });
   const [initialMessages, setInitialMessages] = useState<MessageInfo[]>([]);
-  const [activeTaskOnServer, setActiveTaskOnServer] = useState(false);
+  const [serverTaskActiveBySession, setServerTaskActiveBySession] = useState<
+    Record<string, boolean>
+  >({});
   const { queueMode, adaptiveMode } = useModeState();
   const previousSessionIdRef = useRef<string | null>(null);
   const titleCache = useRef<Record<string, string>>(loadStoredTitles());
@@ -231,6 +326,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [sessionTopics, setSessionTopics] = useState<Record<string, string>>(() =>
     loadStoredTopics(),
   );
+  const pendingDeleteGroupsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     setCurrentSessionStatsState(statsCache.current[currentSessionId] ?? null);
@@ -246,6 +342,53 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     },
     [currentSessionId],
   );
+
+  const forgetSessionLocalState = useCallback((sessionId: string) => {
+    const groupKey = sessionDeleteGroupKey(sessionId);
+    let titlesChanged = false;
+    for (const key of Object.keys(titleCache.current)) {
+      if (!isSameSessionGroup(key, groupKey)) continue;
+      delete titleCache.current[key];
+      titlesChanged = true;
+    }
+    if (titlesChanged) {
+      persistStoredTitles(titleCache.current);
+    }
+    let statsChanged = false;
+    for (const key of Object.keys(statsCache.current)) {
+      if (!isSameSessionGroup(key, groupKey)) continue;
+      delete statsCache.current[key];
+      statsChanged = true;
+    }
+    if (statsChanged) {
+      persistStoredStats(statsCache.current);
+    }
+    setSessionTopics((prev) => {
+      const entries = Object.entries(prev);
+      if (!entries.some(([key]) => isSameSessionGroup(key, groupKey))) {
+        return prev;
+      }
+      const next = { ...prev };
+      for (const key of Object.keys(next)) {
+        if (isSameSessionGroup(key, groupKey)) {
+          delete next[key];
+        }
+      }
+      persistStoredTopics(next);
+      return next;
+    });
+    setServerTaskActiveBySession((prev) =>
+      Object.fromEntries(
+        Object.entries(prev).filter(([key]) => !isSameSessionGroup(key, groupKey)),
+      ),
+    );
+    MessageStore.clearMessages(groupKey);
+    TaskStore.clearTasks(groupKey);
+    FileStore.clearSessionFiles(groupKey);
+    setSessions((prev) =>
+      prev.filter((s) => !isSameSessionGroup(s.id, groupKey)),
+    );
+  }, []);
 
   // Persist current session ID for refresh recovery
   useEffect(() => {
@@ -268,7 +411,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       }).catch(() => {});
       getSessionTasks(saved, restoredTopic)
         .then((tasks) => {
-          setActiveTaskOnServer(tasks.some(isTaskActive));
+          setServerTaskActiveBySession((prev) =>
+            setSessionActiveFlag(prev, saved, tasks.some(isTaskActive)),
+          );
         })
         .catch(() => {});
       setActiveHistoryTopic(restoredTopic);
@@ -278,15 +423,36 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const refreshSessions = useCallback(async () => {
     try {
       const list = await listSessions();
-      const webSessions = list
-        .filter((s) => s.id.startsWith("web-") && (s.message_count ?? 0) > 0)
-        .sort((a, b) => sessionTimestamp(b) - sessionTimestamp(a))
-        .slice(0, 20);
+      const deletedIds = loadDeletedSessionIds();
+      const pendingDeleteGroups = new Set(pendingDeleteGroupsRef.current);
+      const collapsedBySession = new Map<string, SessionInfo>();
+      for (const session of list) {
+        const id = sessionDeleteGroupKey(session.id);
+        if (
+          !id.startsWith("web-") ||
+          (session.message_count ?? 0) <= 0 ||
+          isDeletedSessionId(deletedIds, id) ||
+          isPendingDeletedSessionId(pendingDeleteGroups, id)
+        ) {
+          continue;
+        }
+        const existing = collapsedBySession.get(id);
+        collapsedBySession.set(id, {
+          ...session,
+          id,
+          message_count: Math.max(
+            existing?.message_count ?? 0,
+            session.message_count ?? 0,
+          ),
+        });
+      }
+      const webSessions = [...collapsedBySession.values()]
+        .sort((a, b) => sessionTimestamp(b) - sessionTimestamp(a));
 
       // Fetch titles for sessions we haven't seen
       const needTitle = webSessions.filter((s) => !titleCache.current[s.id]);
       await Promise.all(
-        needTitle.slice(0, 10).map(async (s) => {
+        needTitle.slice(0, MAX_SESSION_TITLE_FETCHES).map(async (s) => {
           try {
             const msgs = await getMessages(s.id, 10);
             const firstUser = msgs.find((m) => m.role === "user" && m.content?.trim());
@@ -301,14 +467,24 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       );
 
       setSessions((prev) => {
+        const latestDeletedIds = loadDeletedSessionIds();
+        const latestPendingDeleteGroups = new Set(pendingDeleteGroupsRef.current);
         const fromApi = webSessions.map((s) => ({
           ...s,
           title: titleCache.current[s.id],
-        }));
+        })).filter(
+          (s) =>
+            !isDeletedSessionId(latestDeletedIds, s.id) &&
+            !isPendingDeletedSessionId(latestPendingDeleteGroups, s.id),
+        );
         // Preserve any locally-tracked sessions that aren't in the API yet
         const apiIds = new Set(fromApi.map((s) => s.id));
         const localOnly = prev.filter(
-          (s) => s._local && !apiIds.has(s.id),
+          (s) =>
+            s._local &&
+            !apiIds.has(s.id) &&
+            !isDeletedSessionId(latestDeletedIds, s.id) &&
+            !isPendingDeletedSessionId(latestPendingDeleteGroups, s.id),
         );
         return [...localOnly, ...fromApi];
       });
@@ -332,6 +508,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
     const onStorage = (event: StorageEvent) => {
       if (event.key === SESSION_SYNC_STORAGE_KEY) {
+        const deletedSessionId = parseDeletedSessionSync(event.newValue);
+        if (deletedSessionId) {
+          rememberDeletedSession(deletedSessionId);
+          forgetSessionLocalState(deletedSessionId);
+          if (isSameSessionGroup(deletedSessionId, currentSessionId)) {
+            setInitialMessages([]);
+            setActiveHistoryTopic(undefined);
+            setCurrentSessionId(generateSessionId());
+          }
+        }
         void refreshSessions();
       }
     };
@@ -346,7 +532,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       document.removeEventListener("visibilitychange", refreshIfVisible);
       window.removeEventListener("storage", onStorage);
     };
-  }, [refreshSessions]);
+  }, [currentSessionId, forgetSessionLocalState, refreshSessions]);
 
   useEffect(() => {
     function handleCost(e: Event) {
@@ -395,12 +581,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const switchRequestRef = useRef(0);
   const setServerTaskActive = useCallback(
     (sessionId: string, active: boolean) => {
-      setActiveTaskOnServer((prev) => {
-        if (sessionId !== currentSessionId) return prev;
-        return active;
-      });
+      setServerTaskActiveBySession((prev) =>
+        setSessionActiveFlag(prev, sessionId, active),
+      );
     },
-    [currentSessionId],
+    [],
   );
 
   const renameSession = useCallback((sessionId: string, title: string) => {
@@ -447,16 +632,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       if (switchRequestRef.current !== requestId) return; // stale
       MessageStore.replaceHistory(id, messages, topic);
       setInitialMessages(messages);
-      setActiveTaskOnServer(tasks.some(isTaskActive));
+      setServerTaskActive(id, tasks.some(isTaskActive));
       setActiveHistoryTopic(topic);
     } catch {
       if (switchRequestRef.current !== requestId) return;
       setInitialMessages([]);
-      setActiveTaskOnServer(false);
+      setServerTaskActive(id, false);
       setActiveHistoryTopic(topic);
     }
     setCurrentSessionId(id);
-  }, [currentSessionId, sessionTopics]);
+  }, [currentSessionId, sessionTopics, setServerTaskActive]);
 
   const createSession = useCallback((title?: string) => {
     const nextId = generateSessionId();
@@ -532,41 +717,37 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   );
 
   const removeSession = useCallback(async (id: string) => {
+    const groupKey = sessionDeleteGroupKey(id);
+    pendingDeleteGroupsRef.current.add(groupKey);
+    setSessions((prev) =>
+      prev.filter((session) => !isSameSessionGroup(session.id, groupKey)),
+    );
     try {
       await apiDeleteSession(id);
-      if (titleCache.current[id]) {
-        delete titleCache.current[id];
-        persistStoredTitles(titleCache.current);
-      }
-      if (statsCache.current[id]) {
-        delete statsCache.current[id];
-        persistStoredStats(statsCache.current);
-      }
-      setSessionTopics((prev) => {
-        if (!prev[id]) return prev;
-        const next = { ...prev };
-        delete next[id];
-        persistStoredTopics(next);
-        return next;
-      });
-      setSessions((prev) => prev.filter((s) => s.id !== id));
-      if (id === currentSessionId) {
-        setInitialMessages([]);
-        setActiveHistoryTopic(undefined);
-        setCurrentSessionId(generateSessionId());
-      }
-      localStorage.setItem(SESSION_SYNC_STORAGE_KEY, String(Date.now()));
+    } catch (error) {
+      pendingDeleteGroupsRef.current.delete(groupKey);
       await refreshSessions();
-    } catch {
-      // ignore
+      throw error;
     }
-  }, [currentSessionId, refreshSessions]);
+
+    rememberDeletedSession(id);
+    forgetSessionLocalState(id);
+    publishSessionDeleted(id);
+    pendingDeleteGroupsRef.current.delete(groupKey);
+    if (isSameSessionGroup(id, currentSessionId)) {
+      setInitialMessages([]);
+      setActiveHistoryTopic(undefined);
+      setCurrentSessionId(generateSessionId());
+    }
+    await refreshSessions();
+  }, [currentSessionId, forgetSessionLocalState, refreshSessions]);
 
   const currentSessionTitle =
     sessions.find((s) => s.id === currentSessionId)?.title ||
     titleCache.current[currentSessionId] ||
     formatSessionName(currentSessionId);
   const currentSessionStats = currentSessionStatsState;
+  const activeTaskOnServer = serverTaskActiveBySession[currentSessionId] ?? false;
 
   return (
     <SessionContext.Provider
