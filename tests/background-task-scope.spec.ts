@@ -70,6 +70,45 @@ const ACTIVE_PROGRESS_TASK = {
   ],
 };
 
+const HISTORY_WITH_LATER_NORMAL_TURNS = [
+  {
+    seq: 0,
+    role: "user",
+    content: "Start the deep research task",
+    timestamp: "2026-04-20T12:00:00.100Z",
+  },
+  {
+    seq: 1,
+    role: "assistant",
+    content: "Deep research is running in the background.",
+    timestamp: "2026-04-20T12:00:00.200Z",
+  },
+  {
+    seq: 2,
+    role: "user",
+    content: "What is the weather today?",
+    timestamp: "2026-04-20T12:00:15.000Z",
+  },
+  {
+    seq: 3,
+    role: "assistant",
+    content: "The weather is clear.",
+    timestamp: "2026-04-20T12:00:18.000Z",
+  },
+  {
+    seq: 4,
+    role: "user",
+    content: "What is your name?",
+    timestamp: "2026-04-20T12:00:20.000Z",
+  },
+  {
+    seq: 5,
+    role: "assistant",
+    content: "Octos",
+    timestamp: "2026-04-20T12:00:22.000Z",
+  },
+];
+
 function sse(events: unknown[]): string {
   return events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
 }
@@ -86,6 +125,7 @@ async function installMockRuntime(
   page: Page,
   originTasks: unknown[] = [],
   streamTasks: unknown[] = originTasks,
+  messagesBySession: Record<string, unknown[]> = {},
 ) {
   let chatCount = 0;
 
@@ -138,9 +178,11 @@ async function installMockRuntime(
     ]),
   );
 
-  await page.route(/\/api\/sessions\/[^/]+\/messages(?:\?.*)?$/, (route) =>
-    fulfillJson(route, []),
-  );
+  await page.route(/\/api\/sessions\/([^/]+)\/messages(?:\?.*)?$/, (route) => {
+    const url = new URL(route.request().url());
+    const sessionId = decodeURIComponent(url.pathname.split("/")[3] || "");
+    return fulfillJson(route, messagesBySession[sessionId] ?? []);
+  });
 
   await page.route(/\/api\/sessions\/[^/]+\/files$/, (route) =>
     fulfillJson(route, []),
@@ -390,5 +432,59 @@ test.describe("background task scoping", () => {
     await expect(page.getByTestId("task-anchor-detail")).toContainText(
       "Searching: \"rust async\"",
     );
+  });
+
+  test("reloaded task anchor stays at the originating turn after later normal turns", async ({
+    page,
+  }) => {
+    await installMockRuntime(page, [ACTIVE_PROGRESS_TASK], [], {
+      [ORIGIN_SESSION]: HISTORY_WITH_LATER_NORMAL_TURNS,
+    });
+    await page.goto("/chat", { waitUntil: "networkidle" });
+    await page.waitForSelector(SEL.chatInput);
+
+    const timelineSelector = [
+      "[data-testid='chat-thread'] [data-testid='user-message']",
+      "[data-testid='chat-thread'] [data-testid='assistant-message']",
+      "[data-testid='chat-thread'] [data-testid='task-anchor-message']",
+    ].join(", ");
+    const timeline = async () =>
+      page.locator(timelineSelector).evaluateAll((elements) =>
+        elements.map((element) => ({
+          kind: element.getAttribute("data-testid"),
+          text: element.textContent ?? "",
+        })),
+      );
+
+    await expect(page.getByTestId("task-anchor-message")).toHaveCount(1);
+    let rows = await timeline();
+    let taskIndex = rows.findIndex((row) => row.kind === "task-anchor-message");
+    let backgroundAckIndex = rows.findIndex((row) =>
+      row.text.includes("Deep research is running in the background."),
+    );
+    let weatherIndex = rows.findIndex((row) =>
+      row.text.includes("What is the weather today?"),
+    );
+    expect(taskIndex).toBeGreaterThanOrEqual(backgroundAckIndex);
+    expect(taskIndex).toBeLessThan(weatherIndex);
+
+    await page
+      .locator(`[data-session-id="${OTHER_SESSION}"] [data-testid="session-switch-button"]`)
+      .click();
+    await page
+      .locator(`[data-session-id="${ORIGIN_SESSION}"] [data-testid="session-switch-button"]`)
+      .click();
+    await expect(page.getByTestId("task-anchor-message")).toHaveCount(1);
+
+    rows = await timeline();
+    taskIndex = rows.findIndex((row) => row.kind === "task-anchor-message");
+    backgroundAckIndex = rows.findIndex((row) =>
+      row.text.includes("Deep research is running in the background."),
+    );
+    weatherIndex = rows.findIndex((row) =>
+      row.text.includes("What is the weather today?"),
+    );
+    expect(taskIndex).toBeGreaterThanOrEqual(backgroundAckIndex);
+    expect(taskIndex).toBeLessThan(weatherIndex);
   });
 });

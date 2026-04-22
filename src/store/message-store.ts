@@ -132,6 +132,42 @@ function taskTimestamp(task: BackgroundTaskInfo): number {
   return Number.isFinite(startedAt) ? startedAt : Date.now();
 }
 
+function compareMessagesForDisplay(a: Message, b: Message): number {
+  const aIsTaskAnchor = a.kind === "task_anchor";
+  const bIsTaskAnchor = b.kind === "task_anchor";
+  if (aIsTaskAnchor || bIsTaskAnchor) {
+    const byTime = a.timestamp - b.timestamp;
+    if (byTime !== 0) return byTime;
+  }
+
+  const aSeq =
+    typeof a.historySeq === "number" ? a.historySeq : Number.MAX_SAFE_INTEGER;
+  const bSeq =
+    typeof b.historySeq === "number" ? b.historySeq : Number.MAX_SAFE_INTEGER;
+  if (aSeq !== bSeq) return aSeq - bSeq;
+  return a.timestamp - b.timestamp;
+}
+
+function sortedMessagesForDisplay(messages: Message[]): Message[] {
+  return messages
+    .map((message, index) => ({ message, index }))
+    .sort((a, b) => compareMessagesForDisplay(a.message, b.message) || a.index - b.index)
+    .map(({ message }) => message);
+}
+
+function taskAnchorTimelineTimestamp(list: Message[], task: BackgroundTaskInfo): number {
+  const startedAt = taskTimestamp(task);
+  const ackWindowMs = 10_000;
+  const originatingAck = list.find(
+    (message) =>
+      message.role === "assistant" &&
+      message.timestamp >= startedAt &&
+      message.timestamp <= startedAt + ackWindowMs,
+  );
+
+  return originatingAck ? originatingAck.timestamp + 1 : startedAt;
+}
+
 function uniqueStrings(values: Array<string | undefined | null>): string[] {
   return [
     ...new Set(
@@ -446,7 +482,7 @@ function normalizeMessageText(text: string): string {
   const lines = text.split("\n").filter((line) => {
     const t = line.trim();
     if (!t) return false;
-    if (/^[✓✗⚙📄✦]\s*[`\[]/u.test(t)) return false; // tool badges
+    if (/^[✓✗⚙📄✦]\s*[`[]/u.test(t)) return false; // tool badges
     if (/^via\s+\S+\s+\(/u.test(t)) return false; // provider info
     if (/^\d+s(\s*·\s*[\d.]+k?[↑↓].*)?$/u.test(t)) return false; // streaming stats
     if (t === "Processing") return false;
@@ -790,15 +826,10 @@ function replaceHistoryFromApi(
     ...coalesceFileResultsIntoAnchors(sessionId, authoritative, topic),
     ...pending,
   ];
-  merged.sort((a, b) => {
-    const aSeq = typeof a.historySeq === "number" ? a.historySeq : Number.MAX_SAFE_INTEGER;
-    const bSeq = typeof b.historySeq === "number" ? b.historySeq : Number.MAX_SAFE_INTEGER;
-    if (aSeq !== bSeq) return aSeq - bSeq;
-    return a.timestamp - b.timestamp;
-  });
+  const sorted = sortedMessagesForDisplay(merged);
 
-  messagesByKey.set(key, merged);
-  indexFilesForSession(sessionId, merged, topic);
+  messagesByKey.set(key, sorted);
+  indexFilesForSession(sessionId, sorted, topic);
   loadedSessions.add(key);
   notify();
 }
@@ -985,7 +1016,7 @@ export function ensureTaskAnchor(
       files: [],
       toolCalls: [],
       status: taskMessageStatus(task),
-      timestamp: taskTimestamp(task),
+      timestamp: taskAnchorTimelineTimestamp(list, task),
       sourceToolCallId: task.tool_call_id,
       taskAnchor: nextTaskAnchor,
     });
@@ -1014,7 +1045,7 @@ export function ensureTaskAnchor(
   }
 
   indexTaskForMessage(key, task, anchorId);
-  messagesByKey.set(key, [...list]);
+  messagesByKey.set(key, sortedMessagesForDisplay(list));
   notify();
   return anchorId;
 }
