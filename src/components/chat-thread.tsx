@@ -33,11 +33,11 @@ import type { BackgroundTaskInfo } from "@/api/types";
 import { useSession } from "@/runtime/session-context";
 import {
   useMessages,
+  stopStreamingMessages,
   type Message,
   type MessageFile,
   type MessageMeta,
 } from "@/store/message-store";
-import { useTasks } from "@/store/task-store";
 import { uploadFiles } from "@/api/chat";
 import { sendMessage as bridgeSend } from "@/runtime/sse-bridge";
 import * as StreamManager from "@/runtime/stream-manager";
@@ -145,6 +145,48 @@ function taskDetail(task: BackgroundTaskInfo, fallback: string): string {
   return fallback;
 }
 
+function messageRuntimeStatus(message: Message): string {
+  if (message.runtime?.status) return message.runtime.status;
+  if (message.status === "streaming") return "ongoing";
+  if (message.status === "complete") return "completed";
+  if (message.status === "stopped") return "stopped";
+  return "failed";
+}
+
+function messageRuntimeType(message: Message): string {
+  if (message.runtime?.type) return message.runtime.type;
+  if (message.kind === "task_anchor") return "background_task";
+  return message.role;
+}
+
+function taskSnapshotFromMessage(message: Message): BackgroundTaskInfo | undefined {
+  const anchor = message.taskAnchor;
+  if (!anchor?.taskId) return undefined;
+  return {
+    id: anchor.taskId,
+    tool_name: anchor.toolNames?.[0] ?? "background_task",
+    tool_call_id: anchor.toolCallId,
+    status:
+      anchor.taskStatus ??
+      (message.status === "error"
+        ? "failed"
+        : message.status === "complete"
+          ? "completed"
+          : "running"),
+    started_at: anchor.taskStartedAt ?? new Date(message.timestamp).toISOString(),
+    completed_at: anchor.completedAt,
+    output_files: anchor.outputFiles ?? [],
+    error: anchor.error ?? null,
+    workflow_kind: anchor.workflowKind ?? null,
+    current_phase: anchor.currentPhase ?? null,
+    lifecycle_state: anchor.lifecycleState ?? null,
+    runtime_detail: anchor.runtimeDetail ?? null,
+    progress_message: anchor.progressMessage ?? null,
+    progress: anchor.progress ?? null,
+    progress_events: anchor.progressEvents ?? [],
+  };
+}
+
 const UserBubble = memo(function UserBubble({ message }: { message: Message }) {
   const visibleText = userBubbleVisibleText(message);
   return (
@@ -153,6 +195,8 @@ const UserBubble = memo(function UserBubble({ message }: { message: Message }) {
         {visibleText && (
           <div
             data-testid="user-message"
+            data-message-type={messageRuntimeType(message)}
+            data-message-status={messageRuntimeStatus(message)}
             className="message-card message-card-user rounded-[14px] rounded-br-[4px] px-4 py-2.5 text-sm leading-relaxed text-text"
           >
             {visibleText}
@@ -184,6 +228,8 @@ const AssistantBubble = memo(function AssistantBubble({
     <div className="flex px-4 py-3">
       <div
         data-testid="assistant-message"
+        data-message-type={messageRuntimeType(message)}
+        data-message-status={messageRuntimeStatus(message)}
         className="message-card message-card-assistant animate-shell-rise max-w-[88%] rounded-[14px] rounded-bl-[4px] px-4 py-3 text-sm leading-relaxed text-text"
       >
         {message.text ? (
@@ -197,6 +243,8 @@ const AssistantBubble = memo(function AssistantBubble({
             <span className="h-2 w-2 rounded-full bg-accent/60 animate-pulse [animation-delay:150ms]" />
             <span className="h-2 w-2 rounded-full bg-accent/60 animate-pulse [animation-delay:300ms]" />
           </span>
+        ) : message.status === "stopped" ? (
+          <span className="text-muted">Stopped.</span>
         ) : null}
 
         {/* Inline file attachments */}
@@ -252,27 +300,23 @@ const TaskAnchorBubble = memo(function TaskAnchorBubble({
   sessionId: string;
   topic?: string;
 }) {
-  const tasks = useTasks(sessionId, topic);
-  const taskId = message.taskAnchor?.taskId;
-  const task = taskId ? tasks.find((candidate) => candidate.id === taskId) : undefined;
+  void sessionId;
+  void topic;
+  const task = taskSnapshotFromMessage(message);
   const fallbackToolName =
     message.taskAnchor?.toolNames?.[0] ??
     message.toolCalls[0]?.name ??
     "background_task";
   const toolName = task ? taskDisplayName(task.tool_name) : taskDisplayName(fallbackToolName);
-  const isActive = task
-    ? task.status === "spawned" || task.status === "running"
-    : message.kind === "task_anchor" && message.status !== "error";
-  const isFailed = task ? task.status === "failed" : message.status === "error";
-  const statusLabel = task
-    ? task.status === "completed"
-      ? "completed"
-      : task.status === "failed"
-        ? "failed"
-        : "running"
-    : isFailed
-      ? "failed"
-      : "running";
+  const runtimeStatus = messageRuntimeStatus(message);
+  const isActive = runtimeStatus === "ongoing" || runtimeStatus === "queued";
+  const isFailed = runtimeStatus === "failed";
+  const statusLabel =
+    runtimeStatus === "ongoing"
+      ? "running"
+      : runtimeStatus === "completed"
+        ? "completed"
+        : runtimeStatus;
   const detail = task
     ? taskDetail(task, "Background work continues independently of chat messages.")
     : message.taskAnchor?.toolNames?.length
@@ -283,6 +327,9 @@ const TaskAnchorBubble = memo(function TaskAnchorBubble({
     <div className="flex px-4 py-3">
       <div
         data-testid="task-anchor-message"
+        data-message-type={messageRuntimeType(message)}
+        data-message-status={runtimeStatus}
+        data-task-id={message.taskAnchor?.taskId}
         className="message-card message-card-assistant animate-shell-rise max-w-[88%] rounded-[14px] rounded-bl-[4px] px-4 py-3 text-sm leading-relaxed text-text"
       >
         <div className="flex items-start gap-3">
@@ -369,17 +416,14 @@ const TaskAnchorBubble = memo(function TaskAnchorBubble({
 
 /** Fetch a file with auth and return an object URL. */
 function useBlobUrl(filePath: string): string | undefined {
+  const externalUrl = filePath.startsWith("http") ? filePath : undefined;
   const [blobUrl, setBlobUrl] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     let revoked = false;
     let url: string | undefined;
 
-    // External URLs don't need auth
-    if (filePath.startsWith("http")) {
-      setBlobUrl(filePath);
-      return;
-    }
+    if (externalUrl) return;
 
     const token = getToken();
     const apiUrl = buildFileUrl(filePath);
@@ -403,9 +447,9 @@ function useBlobUrl(filePath: string): string | undefined {
       revoked = true;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [filePath]);
+  }, [externalUrl, filePath]);
 
-  return blobUrl;
+  return externalUrl ?? blobUrl;
 }
 
 function FileAttachment({ file }: { file: MessageFile }) {
@@ -788,7 +832,12 @@ function MessageList({
           }
           // system messages — render as a subtle divider
           return (
-            <div key={msg.id} className="px-4 py-2 text-center text-xs text-muted/60">
+            <div
+              key={msg.id}
+              data-message-type={messageRuntimeType(msg)}
+              data-message-status={messageRuntimeStatus(msg)}
+              className="px-4 py-2 text-center text-xs text-muted/60"
+            >
               {msg.text}
             </div>
           );
@@ -1170,7 +1219,8 @@ function Composer() {
 
   const handleCancel = useCallback(() => {
     StreamManager.destroyStream(currentSessionId);
-  }, [currentSessionId]);
+    stopStreamingMessages(currentSessionId, historyTopic);
+  }, [currentSessionId, historyTopic]);
 
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {

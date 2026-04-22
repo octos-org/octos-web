@@ -38,9 +38,38 @@ export interface MessageMeta {
   duration_s: number;
 }
 
+export type MessageRuntimeType = "user" | "assistant" | "system" | "background_task";
+export type MessageRuntimeStatus =
+  | "queued"
+  | "ongoing"
+  | "completed"
+  | "stopped"
+  | "failed";
+
+export interface MessageRuntime {
+  type: MessageRuntimeType;
+  status: MessageRuntimeStatus;
+  updatedAt: number;
+  taskId?: string;
+  toolCallId?: string;
+  phase?: string | null;
+  detail?: string | null;
+}
+
 export interface TaskAnchorMeta {
   taskId?: string;
   toolCallId?: string;
+  taskStartedAt?: string;
+  taskStatus?: BackgroundTaskInfo["status"];
+  lifecycleState?: string | null;
+  currentPhase?: string | null;
+  progressMessage?: string | null;
+  progress?: number | null;
+  progressEvents?: BackgroundTaskInfo["progress_events"];
+  runtimeDetail?: BackgroundTaskInfo["runtime_detail"];
+  completedAt?: string | null;
+  error?: string | null;
+  workflowKind?: string | null;
   outputFiles?: string[];
   toolNames?: string[];
 }
@@ -54,7 +83,8 @@ export interface Message {
   responseToClientMessageId?: string;
   files: MessageFile[];
   toolCalls: ToolCallInfo[];
-  status: "streaming" | "complete" | "error";
+  status: "streaming" | "complete" | "error" | "stopped";
+  runtime?: MessageRuntime;
   timestamp: number;
   historySeq?: number;
   meta?: MessageMeta;
@@ -155,17 +185,65 @@ function sortedMessagesForDisplay(messages: Message[]): Message[] {
     .map(({ message }) => message);
 }
 
-function taskAnchorTimelineTimestamp(list: Message[], task: BackgroundTaskInfo): number {
-  const startedAt = taskTimestamp(task);
-  const ackWindowMs = 10_000;
-  const originatingAck = list.find(
-    (message) =>
-      message.role === "assistant" &&
-      message.timestamp >= startedAt &&
-      message.timestamp <= startedAt + ackWindowMs,
-  );
+function isBackgroundStartAck(message: Message): boolean {
+  if (message.role !== "assistant") return false;
+  return /后台启动|background|running in the background/i.test(message.text);
+}
 
-  return originatingAck ? originatingAck.timestamp + 1 : startedAt;
+function taskAnchorTimelineTimestampForStart(
+  list: Message[],
+  startedAt: number,
+): number {
+  const ackWindowMs = 10_000;
+  const timestampFloor = startedAt - 1_000;
+  const timestampCeiling = startedAt + ackWindowMs;
+  const nearest = (messages: Message[]): Message | undefined => {
+    const afterStart = messages
+      .filter((message) => message.timestamp >= startedAt)
+      .sort((a, b) => a.timestamp - b.timestamp);
+    if (afterStart[0]) return afterStart[0];
+    return messages.sort((a, b) => b.timestamp - a.timestamp)[0];
+  };
+
+  const originatingAck = nearest(list.filter(
+    (message) =>
+      message.kind !== "task_anchor" &&
+      isBackgroundStartAck(message) &&
+      message.timestamp >= timestampFloor &&
+      message.timestamp <= timestampCeiling,
+  ));
+  if (originatingAck) return originatingAck.timestamp + 1;
+
+  const triggerUser = nearest(list.filter(
+    (message) =>
+      message.kind !== "task_anchor" &&
+      message.role === "user" &&
+      message.timestamp >= timestampFloor &&
+      message.timestamp <= timestampCeiling,
+  ));
+  if (triggerUser) return triggerUser.timestamp + 1;
+
+  return startedAt;
+}
+
+function taskAnchorTimelineTimestamp(list: Message[], task: BackgroundTaskInfo): number {
+  return taskAnchorTimelineTimestampForStart(list, taskTimestamp(task));
+}
+
+function realignTaskAnchors(messages: Message[]): Message[] {
+  return messages.map((message) => {
+    const startedAt = message.taskAnchor?.taskStartedAt
+      ? new Date(message.taskAnchor.taskStartedAt).getTime()
+      : NaN;
+    if (message.kind !== "task_anchor" || !Number.isFinite(startedAt)) {
+      return message;
+    }
+    if (typeof message.historySeq === "number" && isBackgroundStartAck(message)) {
+      return message;
+    }
+    const timestamp = taskAnchorTimelineTimestampForStart(messages, startedAt);
+    return timestamp === message.timestamp ? message : { ...message, timestamp };
+  });
 }
 
 function uniqueStrings(values: Array<string | undefined | null>): string[] {
@@ -185,6 +263,33 @@ function sameStrings(left: string[] | undefined, right: string[] | undefined): b
   return normalizedLeft.every((value, index) => value === normalizedRight[index]);
 }
 
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+}
+
+function sameTaskAnchorMeta(
+  left: TaskAnchorMeta | undefined,
+  right: TaskAnchorMeta | undefined,
+): boolean {
+  return (
+    left?.taskId === right?.taskId &&
+    left?.toolCallId === right?.toolCallId &&
+    left?.taskStartedAt === right?.taskStartedAt &&
+    left?.taskStatus === right?.taskStatus &&
+    left?.lifecycleState === right?.lifecycleState &&
+    left?.currentPhase === right?.currentPhase &&
+    left?.progressMessage === right?.progressMessage &&
+    left?.progress === right?.progress &&
+    left?.completedAt === right?.completedAt &&
+    left?.error === right?.error &&
+    left?.workflowKind === right?.workflowKind &&
+    sameStrings(left?.outputFiles, right?.outputFiles) &&
+    sameStrings(left?.toolNames, right?.toolNames) &&
+    sameJson(left?.progressEvents, right?.progressEvents) &&
+    sameJson(left?.runtimeDetail, right?.runtimeDetail)
+  );
+}
+
 function mergeTaskAnchorMeta(
   existing: TaskAnchorMeta | undefined,
   task: BackgroundTaskInfo,
@@ -193,6 +298,17 @@ function mergeTaskAnchorMeta(
   return {
     taskId: task.id || existing?.taskId,
     toolCallId: task.tool_call_id ?? existing?.toolCallId,
+    taskStartedAt: task.started_at ?? existing?.taskStartedAt,
+    taskStatus: task.status ?? existing?.taskStatus,
+    lifecycleState: task.lifecycle_state ?? existing?.lifecycleState,
+    currentPhase: task.current_phase ?? existing?.currentPhase,
+    progressMessage: task.progress_message ?? existing?.progressMessage,
+    progress: task.progress ?? existing?.progress,
+    progressEvents: task.progress_events ?? existing?.progressEvents,
+    runtimeDetail: task.runtime_detail ?? existing?.runtimeDetail,
+    completedAt: task.completed_at ?? existing?.completedAt,
+    error: task.error ?? existing?.error,
+    workflowKind: task.workflow_kind ?? existing?.workflowKind,
     outputFiles: uniqueStrings([...(existing?.outputFiles ?? []), ...(task.output_files ?? [])]),
     toolNames: uniqueStrings([...(existing?.toolNames ?? []), normalizedToolName]),
   };
@@ -217,6 +333,74 @@ function normalizeToolName(name: string | undefined): string {
   return name === "Direct TTS" ? "fm_tts" : name;
 }
 
+function messageRuntimeType(message: Pick<Message, "role" | "kind">): MessageRuntimeType {
+  if (message.kind === "task_anchor") return "background_task";
+  return message.role;
+}
+
+function runtimeStatusForMessageStatus(status: Message["status"]): MessageRuntimeStatus {
+  switch (status) {
+    case "streaming":
+      return "ongoing";
+    case "complete":
+      return "completed";
+    case "stopped":
+      return "stopped";
+    case "error":
+      return "failed";
+  }
+}
+
+function runtimeStatusForTask(task: BackgroundTaskInfo): MessageRuntimeStatus {
+  switch (task.status) {
+    case "spawned":
+    case "running":
+      return "ongoing";
+    case "completed":
+      return "completed";
+    case "failed":
+      return "failed";
+  }
+}
+
+function runtimeForMessage(
+  message: Message,
+  overrides: Partial<MessageRuntime> = {},
+): MessageRuntime {
+  return {
+    ...(message.runtime ?? {
+      type: messageRuntimeType(message),
+      status: runtimeStatusForMessageStatus(message.status),
+      updatedAt: Date.now(),
+    }),
+    type: overrides.type ?? messageRuntimeType(message),
+    status: overrides.status ?? runtimeStatusForMessageStatus(message.status),
+    updatedAt: overrides.updatedAt ?? Date.now(),
+    taskId: overrides.taskId ?? message.taskAnchor?.taskId ?? message.runtime?.taskId,
+    toolCallId:
+      overrides.toolCallId ??
+      message.sourceToolCallId ??
+      message.taskAnchor?.toolCallId ??
+      message.runtime?.toolCallId,
+    phase: overrides.phase ?? message.taskAnchor?.currentPhase ?? message.runtime?.phase,
+    detail:
+      overrides.detail ??
+      message.taskAnchor?.progressMessage ??
+      message.taskAnchor?.error ??
+      message.runtime?.detail,
+  };
+}
+
+function withRuntime<T extends Message>(
+  message: T,
+  overrides: Partial<MessageRuntime> = {},
+): T {
+  return {
+    ...message,
+    runtime: runtimeForMessage(message, overrides),
+  };
+}
+
 function isTaskActive(task: BackgroundTaskInfo): boolean {
   return task.status === "spawned" || task.status === "running";
 }
@@ -225,6 +409,17 @@ function taskMessageStatus(task: BackgroundTaskInfo): Message["status"] {
   if (task.status === "failed") return "error";
   if (isTaskActive(task)) return "streaming";
   return "complete";
+}
+
+function taskRuntimeOverrides(task: BackgroundTaskInfo): Partial<MessageRuntime> {
+  return {
+    type: "background_task",
+    status: runtimeStatusForTask(task),
+    taskId: task.id,
+    toolCallId: task.tool_call_id,
+    phase: task.current_phase ?? task.lifecycle_state ?? null,
+    detail: task.progress_message ?? task.error ?? null,
+  };
 }
 
 function pathMatchKeys(path: string): string[] {
@@ -291,11 +486,41 @@ function findMessageIndexById(list: Message[], messageId: string): number {
   return list.findIndex((message) => message.id === messageId);
 }
 
-function findMessageIndexByToolCallId(list: Message[], toolCallId?: string): number {
+function messageBelongsToDifferentTask(message: Message, taskId?: string): boolean {
+  return Boolean(
+    taskId &&
+      message.kind === "task_anchor" &&
+      message.taskAnchor?.taskId &&
+      message.taskAnchor.taskId !== taskId,
+  );
+}
+
+function findMessageIndexByToolCallId(
+  list: Message[],
+  toolCallId?: string,
+  taskId?: string,
+): number {
   if (!toolCallId) return -1;
-  return list.findIndex((message) =>
-    message.toolCalls.some((toolCall) => toolCall.id === toolCallId) ||
-    message.sourceToolCallId === toolCallId,
+  return list.findIndex(
+    (message) =>
+      !messageBelongsToDifferentTask(message, taskId) &&
+      (message.toolCalls.some((toolCall) => toolCall.id === toolCallId) ||
+        message.sourceToolCallId === toolCallId),
+  );
+}
+
+function findTaskAnchorIndexByToolCallId(
+  list: Message[],
+  toolCallId?: string,
+  excludeMessageId?: string,
+): number {
+  if (!toolCallId) return -1;
+  return list.findIndex(
+    (message) =>
+      message.id !== excludeMessageId &&
+      message.kind === "task_anchor" &&
+      (message.sourceToolCallId === toolCallId ||
+        message.taskAnchor?.toolCallId === toolCallId),
   );
 }
 
@@ -354,7 +579,11 @@ function findTaskAnchorIndex(
     if (mappedIndex !== -1) return mappedIndex;
   }
 
-  const byToolCall = findMessageIndexByToolCallId(list, task.tool_call_id);
+  const byToolCall = findMessageIndexByToolCallId(
+    list,
+    task.tool_call_id,
+    task.id,
+  );
   if (byToolCall !== -1) return byToolCall;
 
   for (const path of task.output_files ?? []) {
@@ -366,7 +595,15 @@ function findTaskAnchorIndex(
     if (byPath !== -1) return byPath;
   }
 
-  return findBackgroundAnchorIndex(key, list, task.tool_name);
+  const byBackgroundAnchor = findBackgroundAnchorIndex(key, list, task.tool_name);
+  if (
+    byBackgroundAnchor !== -1 &&
+    !messageBelongsToDifferentTask(list[byBackgroundAnchor], task.id)
+  ) {
+    return byBackgroundAnchor;
+  }
+
+  return -1;
 }
 
 function findRecentAssistantIndex(list: Message[], beforeTimestamp?: number): number {
@@ -605,7 +842,7 @@ function mergeAuthoritativeIntoMessage(
   existing: Message,
   authoritative: Message,
 ): Message {
-  return {
+  const merged: Message = {
     ...existing,
     text: authoritative.text,
     clientMessageId: authoritative.clientMessageId ?? existing.clientMessageId,
@@ -622,6 +859,29 @@ function mergeAuthoritativeIntoMessage(
     kind: existing.kind ?? authoritative.kind,
     taskAnchor: existing.taskAnchor ?? authoritative.taskAnchor,
   };
+  return withRuntime(merged);
+}
+
+function mergeAuthoritativeIntoTaskAnchor(
+  existing: Message,
+  authoritative: Message,
+): Message {
+  const merged: Message = {
+    ...existing,
+    text: authoritative.text.trim() ? authoritative.text : existing.text,
+    clientMessageId: authoritative.clientMessageId ?? existing.clientMessageId,
+    responseToClientMessageId:
+      authoritative.responseToClientMessageId ?? existing.responseToClientMessageId,
+    files: mergeMessageFiles(authoritative.files, existing.files),
+    toolCalls:
+      existing.toolCalls.length > 0 ? existing.toolCalls : authoritative.toolCalls,
+    timestamp: authoritative.timestamp,
+    historySeq: authoritative.historySeq,
+    sourceToolCallId: authoritative.sourceToolCallId ?? existing.sourceToolCallId,
+    kind: "task_anchor",
+    taskAnchor: existing.taskAnchor,
+  };
+  return withRuntime(merged, existing.runtime);
 }
 
 /** Task completion notifications are status messages, not real responses. */
@@ -652,7 +912,7 @@ function convertApiMessage(m: MessageInfo): Message | null {
       status: "complete" as const,
     })) ?? [];
 
-  return {
+  return withRuntime({
     id: nextId(),
     role,
     text,
@@ -664,7 +924,7 @@ function convertApiMessage(m: MessageInfo): Message | null {
     timestamp: m.timestamp ? new Date(m.timestamp).getTime() : Date.now(),
     historySeq: typeof m.seq === "number" ? m.seq : undefined,
     sourceToolCallId: m.tool_call_id,
-  };
+  });
 }
 
 function indexFilesForSession(
@@ -773,6 +1033,23 @@ function replaceHistoryFromApi(
     .map(convertApiMessage)
     .filter((message): message is Message => message !== null)
     .map((message) => {
+      if (message.sourceToolCallId) {
+        const taskAnchorIndex = findTaskAnchorIndexByToolCallId(
+          existing,
+          message.sourceToolCallId,
+        );
+        if (
+          taskAnchorIndex !== -1 &&
+          !consumedOptimisticIndices.has(taskAnchorIndex)
+        ) {
+          consumedOptimisticIndices.add(taskAnchorIndex);
+          return mergeAuthoritativeIntoTaskAnchor(
+            existing[taskAnchorIndex],
+            message,
+          );
+        }
+      }
+
       const optimisticMatchIndex = findOptimisticMatchIndex(existing, message);
       if (
         optimisticMatchIndex === -1 ||
@@ -797,8 +1074,15 @@ function replaceHistoryFromApi(
     const msg = existing[i];
     // Already confirmed by server in a prior sync — server is authoritative.
     if (typeof msg.historySeq === "number") continue;
+    // Task anchors are local projections of server task state. Preserve them
+    // across history replacement unless an authoritative causal ack consumed
+    // them above.
+    if (msg.kind === "task_anchor") {
+      pending.push(msg);
+      continue;
+    }
     // Streaming or has local-only content — keep it.
-    if (msg.status === "streaming" || msg.status === "error") {
+    if (msg.status === "streaming" || msg.status === "error" || msg.status === "stopped") {
       pending.push(msg);
       continue;
     }
@@ -826,7 +1110,7 @@ function replaceHistoryFromApi(
     ...coalesceFileResultsIntoAnchors(sessionId, authoritative, topic),
     ...pending,
   ];
-  const sorted = sortedMessagesForDisplay(merged);
+  const sorted = sortedMessagesForDisplay(realignTaskAnchors(merged));
 
   messagesByKey.set(key, sorted);
   indexFilesForSession(sessionId, sorted, topic);
@@ -847,7 +1131,8 @@ export function addMessage(
   const id = nextId();
   const key = storeKey(sessionId, topic);
   const list = getList(sessionId, topic);
-  list.push({ ...msg, id, timestamp: Date.now() });
+  const message = withRuntime({ ...msg, id, timestamp: Date.now() });
+  list.push(message);
   // Replace the array reference so React picks up the change
   messagesByKey.set(key, [...list]);
   notify();
@@ -858,7 +1143,12 @@ export function addMessage(
 export function updateMessage(
   sessionId: string,
   messageId: string,
-  updates: Partial<Pick<Message, "text" | "status" | "files" | "toolCalls" | "meta">>,
+  updates: Partial<
+    Pick<
+      Message,
+      "text" | "status" | "files" | "toolCalls" | "meta" | "sourceToolCallId"
+    >
+  >,
   topic?: string,
 ): void {
   const key = storeKey(sessionId, topic);
@@ -866,10 +1156,39 @@ export function updateMessage(
   if (!list) return;
   const idx = list.findIndex((m) => m.id === messageId);
   if (idx === -1) return;
-  list[idx] = { ...list[idx], ...updates };
+  list[idx] = withRuntime({ ...list[idx], ...updates });
   if (updates.toolCalls) {
     for (const toolCall of updates.toolCalls) {
       indexToolCallForMessage(key, toolCall.id, messageId);
+    }
+  }
+  if (updates.sourceToolCallId) {
+    indexToolCallForMessage(key, updates.sourceToolCallId, messageId);
+    const updated = list[idx];
+    const taskAnchorIndex = findTaskAnchorIndexByToolCallId(
+      list,
+      updates.sourceToolCallId,
+      updated.id,
+    );
+    if (updated.kind !== "task_anchor" && taskAnchorIndex !== -1) {
+      const taskAnchor = list[taskAnchorIndex];
+      list[taskAnchorIndex] = withRuntime({
+        ...taskAnchor,
+        text: updated.text.trim() ? updated.text : taskAnchor.text,
+        clientMessageId: taskAnchor.clientMessageId ?? updated.clientMessageId,
+        responseToClientMessageId:
+          taskAnchor.responseToClientMessageId ?? updated.responseToClientMessageId,
+        files: mergeMessageFiles(taskAnchor.files, updated.files),
+        toolCalls:
+          taskAnchor.toolCalls.length > 0 ? taskAnchor.toolCalls : updated.toolCalls,
+        sourceToolCallId: taskAnchor.sourceToolCallId ?? updated.sourceToolCallId,
+        timestamp: updated.timestamp,
+      }, taskAnchor.runtime);
+      indexToolCallForMessage(key, updates.sourceToolCallId, taskAnchor.id);
+      list.splice(idx, 1);
+      messagesByKey.set(key, sortedMessagesForDisplay(list));
+      notify();
+      return;
     }
   }
   messagesByKey.set(key, [...list]);
@@ -885,6 +1204,32 @@ export function setMessageMeta(
   updateMessage(sessionId, messageId, { meta }, topic);
 }
 
+export function stopStreamingMessages(sessionId: string, topic?: string): void {
+  const key = storeKey(sessionId, topic);
+  const list = messagesByKey.get(key);
+  if (!list) return;
+
+  let changed = false;
+  const next = list.map((message) => {
+    if (message.status !== "streaming" || message.kind === "task_anchor") {
+      return message;
+    }
+    changed = true;
+    return withRuntime(
+      {
+        ...message,
+        text: message.text.trim() ? message.text : "Stopped.",
+        status: "stopped",
+      },
+      { status: "stopped" },
+    );
+  });
+
+  if (!changed) return;
+  messagesByKey.set(key, next);
+  notify();
+}
+
 /** Append text to a streaming message. */
 export function appendText(
   sessionId: string,
@@ -897,7 +1242,7 @@ export function appendText(
   if (!list) return;
   const idx = list.findIndex((m) => m.id === messageId);
   if (idx === -1) return;
-  list[idx] = { ...list[idx], text: list[idx].text + chunk };
+  list[idx] = withRuntime({ ...list[idx], text: list[idx].text + chunk });
   messagesByKey.set(key, [...list]);
   notify();
 }
@@ -965,14 +1310,17 @@ export function registerBackgroundAnchor(
     ...(current.taskAnchor?.toolNames ?? []),
     ...normalizedToolNames,
   ]);
-  list[index] = {
+  list[index] = withRuntime({
     ...current,
     kind: "task_anchor",
     taskAnchor: {
       ...(current.taskAnchor ?? {}),
       toolNames: nextToolNames,
     },
-  };
+  }, {
+    type: "background_task",
+    status: runtimeStatusForMessageStatus(current.status),
+  });
   messagesByKey.set(key, [...list]);
   notify();
 }
@@ -998,17 +1346,15 @@ export function ensureTaskAnchor(
       current.kind === "task_anchor" &&
       current.status === taskMessageStatus(task) &&
       current.sourceToolCallId === (task.tool_call_id ?? current.sourceToolCallId) &&
-      current.taskAnchor?.taskId === task.id &&
-      current.taskAnchor?.toolCallId === (task.tool_call_id ?? current.taskAnchor?.toolCallId) &&
-      sameStrings(current.taskAnchor?.outputFiles, nextTaskAnchor.outputFiles) &&
-      sameStrings(current.taskAnchor?.toolNames, nextTaskAnchor.toolNames)
+      current.runtime?.status === runtimeStatusForTask(task) &&
+      sameTaskAnchorMeta(current.taskAnchor, nextTaskAnchor)
     ) {
       return anchorId;
     }
   }
 
   if (targetIndex === -1) {
-    list.push({
+    list.push(withRuntime({
       id: anchorId,
       role: "assistant",
       kind: "task_anchor",
@@ -1019,7 +1365,7 @@ export function ensureTaskAnchor(
       timestamp: taskAnchorTimelineTimestamp(list, task),
       sourceToolCallId: task.tool_call_id,
       taskAnchor: nextTaskAnchor,
-    });
+    }, taskRuntimeOverrides(task)));
   } else {
     const current = list[targetIndex];
     if (current.id !== anchorId) {
@@ -1032,16 +1378,16 @@ export function ensureTaskAnchor(
         }
       }
     }
-    list[targetIndex] = {
+    list[targetIndex] = withRuntime({
       ...current,
       id: anchorId,
       role: current.role === "system" ? "assistant" : current.role,
       kind: "task_anchor",
       status: taskMessageStatus(task),
-      timestamp: current.timestamp || taskTimestamp(task),
+      timestamp: taskAnchorTimelineTimestamp(list, task),
       sourceToolCallId: task.tool_call_id ?? current.sourceToolCallId,
       taskAnchor: nextTaskAnchor,
-    };
+    }, taskRuntimeOverrides(task));
   }
 
   indexTaskForMessage(key, task, anchorId);
@@ -1387,7 +1733,12 @@ export function ensureStreamingAssistantMessage(
 
   if (existing) {
     if (!existing.text && text) {
-      existing.text = text;
+      const index = list.findIndex((message) => message.id === existing.id);
+      if (index !== -1) {
+        list[index] = withRuntime({ ...existing, text });
+      } else {
+        existing.text = text;
+      }
       messagesByKey.set(key, [...list]);
       notify();
     }
@@ -1395,7 +1746,7 @@ export function ensureStreamingAssistantMessage(
   }
 
   const id = nextId();
-  list.push({
+  list.push(withRuntime({
     id,
     role: "assistant",
     text,
@@ -1403,7 +1754,7 @@ export function ensureStreamingAssistantMessage(
     toolCalls: [],
     status: "streaming",
     timestamp: Date.now(),
-  });
+  }));
   messagesByKey.set(key, [...list]);
   notify();
   return id;
