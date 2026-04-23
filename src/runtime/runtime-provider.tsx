@@ -126,7 +126,15 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
       if (!sessionId) return;
       const topic = eventTopic(detail);
       const task = detail?.task as BackgroundTaskInfo | undefined;
-      if (task) {
+      if (!task) return;
+
+      // B-002: when the SSE bridge has already merged this snapshot,
+      // skip the redundant merge here and only apply the side-effects
+      // (watcher registration + activeTaskOnServer flag). Non-SSE
+      // sources — e.g. the task-watcher polling loop — still pass
+      // through `applyTaskStatus` for their single merge.
+      const alreadyMerged = detail?._alreadyMerged === true;
+      if (!alreadyMerged) {
         const serverSeq =
           typeof detail?.server_seq === "number"
             ? (detail.server_seq as number)
@@ -147,13 +155,14 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
           serverSeq,
           updatedAt,
         });
-        const hasActiveTasks = TaskStore.getTasks(sessionId, topic).some(
-          (candidate) =>
-            candidate.status === "spawned" || candidate.status === "running",
-        );
-        setServerTaskActive(sessionId, hasActiveTasks);
-        watchSession(sessionId, topic);
       }
+
+      const hasActiveTasks = TaskStore.getTasks(sessionId, topic).some(
+        (candidate) =>
+          candidate.status === "spawned" || candidate.status === "running",
+      );
+      setServerTaskActive(sessionId, hasActiveTasks);
+      watchSession(sessionId, topic);
     }
 
     function handleFile(event: Event) {

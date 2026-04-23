@@ -378,15 +378,45 @@ function bindStreamToAssistant({
       }
 
       case "task_status": {
+        // Extract server_seq / updated_at from either the event envelope
+        // (preferred) or the embedded task snapshot (fallback). Without
+        // these, the task-store's conflict resolution cannot tiebreak a
+        // stale task-watcher poll against this authoritative SSE update.
+        const serverSeq =
+          typeof event.server_seq === "number"
+            ? event.server_seq
+            : typeof event.task.server_seq === "number"
+              ? event.task.server_seq
+              : undefined;
+        const updatedAt =
+          typeof event.updated_at === "string"
+            ? event.updated_at
+            : typeof event.task.updated_at === "string"
+              ? event.task.updated_at
+              : undefined;
+
         applyTaskStatus({
           type: "task_status",
           sessionId,
           topic: historyTopic,
           task: event.task,
+          serverSeq,
+          updatedAt,
         });
+        // Re-dispatch on the window so the runtime-provider's task-watcher
+        // side effects fire (setServerTaskActive + watchSession). The
+        // runtime-provider listener no longer re-merges — the merge above
+        // is the single source of truth for task-store writes on SSE.
         window.dispatchEvent(
           new CustomEvent("crew:task_status", {
-            detail: { task: event.task, sessionId, topic: historyTopic },
+            detail: {
+              task: event.task,
+              sessionId,
+              topic: historyTopic,
+              serverSeq,
+              updatedAt,
+              _alreadyMerged: true,
+            },
           }),
         );
         break;

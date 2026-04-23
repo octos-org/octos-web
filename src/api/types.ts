@@ -197,7 +197,15 @@ export type SseEvent =
         output_files: string[];
         error: string | null;
         session_key?: string;
+        /** Server-provided monotonic sequence; may also appear on envelope. */
+        server_seq?: number;
+        /** RFC3339 last-updated timestamp; may also appear on envelope. */
+        updated_at?: string;
       };
+      /** Server-provided monotonic sequence on the envelope. */
+      server_seq?: number;
+      /** RFC3339 last-updated timestamp on the envelope. */
+      updated_at?: string;
     }
   | {
       type: "session_result";
