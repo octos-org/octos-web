@@ -197,4 +197,90 @@ test.describe("coding-blue phase 3-4 — bug class #2 sse + task-watcher converg
     await expect(anchor).toContainText(/NEWER_PROGRESS_B/);
     await expect(anchor).not.toContainText(/OLDER_PROGRESS_A/);
   });
+
+  test("equal server_seq: newer updated_at wins (B-004 tiebreak + B-010 guard)", async ({
+    page,
+  }) => {
+    await installMockRuntime(page);
+    await page.addInitScript((sessionId) => {
+      localStorage.clear();
+      localStorage.setItem("octos_session_token", "mock-token");
+      localStorage.setItem("octos_auth_token", "mock-token");
+      localStorage.setItem("selected_profile", "dspfac");
+      localStorage.setItem("octos_current_session", sessionId);
+    }, SESSION_ID);
+
+    await page.goto("/chat", { waitUntil: "networkidle" });
+    await page.waitForSelector(SEL.chatInput);
+
+    const EQUAL_SEQ = 5;
+    const FIRST_SNAPSHOT = {
+      ...OLDER_SNAPSHOT,
+      progress_message: "EQUAL_SEQ_FIRST_OLDER",
+      progress: 0.3,
+      server_seq: EQUAL_SEQ,
+      updated_at: "2026-04-20T12:00:05Z",
+    };
+    const SECOND_SNAPSHOT = {
+      ...OLDER_SNAPSHOT,
+      current_phase: "synthesize",
+      progress_message: "EQUAL_SEQ_SECOND_NEWER",
+      progress: 0.85,
+      server_seq: EQUAL_SEQ,
+      updated_at: "2026-04-20T12:05:00Z",
+    };
+
+    // First write establishes the existing snapshot at the equal seq.
+    await page.evaluate(
+      ({ sessionId, task }) => {
+        window.dispatchEvent(
+          new CustomEvent("crew:task_status", {
+            detail: { sessionId, task },
+          }),
+        );
+      },
+      { sessionId: SESSION_ID, task: FIRST_SNAPSHOT },
+    );
+    // Second write: same seq, strictly newer updated_at → must win.
+    await page.evaluate(
+      ({ sessionId, task }) => {
+        window.dispatchEvent(
+          new CustomEvent("crew:task_status", {
+            detail: { sessionId, task },
+          }),
+        );
+      },
+      { sessionId: SESSION_ID, task: SECOND_SNAPSHOT },
+    );
+
+    const anchor = page.locator(`[data-testid="task-anchor-message-${TASK_ID}"]`);
+    await expect(anchor).toBeVisible({ timeout: 10_000 });
+    await expect(anchor).toContainText(/EQUAL_SEQ_SECOND_NEWER/);
+    await expect(anchor).not.toContainText(/EQUAL_SEQ_FIRST_OLDER/);
+
+    // Now try the reverse: send a third snapshot with the same seq but an
+    // OLDER updated_at. It must be rejected; the second snapshot still
+    // drives the UI.
+    const THIRD_STALE = {
+      ...OLDER_SNAPSHOT,
+      current_phase: "research",
+      progress_message: "EQUAL_SEQ_THIRD_STALE",
+      progress: 0.1,
+      server_seq: EQUAL_SEQ,
+      updated_at: "2026-04-20T11:00:00Z",
+    };
+    await page.evaluate(
+      ({ sessionId, task }) => {
+        window.dispatchEvent(
+          new CustomEvent("crew:task_status", {
+            detail: { sessionId, task },
+          }),
+        );
+      },
+      { sessionId: SESSION_ID, task: THIRD_STALE },
+    );
+
+    await expect(anchor).toContainText(/EQUAL_SEQ_SECOND_NEWER/);
+    await expect(anchor).not.toContainText(/EQUAL_SEQ_THIRD_STALE/);
+  });
 });

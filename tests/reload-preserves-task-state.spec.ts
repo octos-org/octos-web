@@ -162,23 +162,23 @@ test.describe("coding-blue phase 3-4 — bug class #1 reload preserves task stat
       page.locator(`[data-testid="task-anchor-message-${ACTIVE_TASK.id}"]`),
     ).toBeVisible({ timeout: 10_000 });
 
-    // Give the task-store's debounced persister (250 ms) time to flush.
-    await page.waitForTimeout(800);
-
-    // Sanity-check: the persisted entry was written under the scoped key so
-    // the next page load can read it before network traffic settles.
-    const persistedBeforeReload = await page.evaluate((sessionId) => {
-      const key = `octos_web:task_store:v1:dspfac:${sessionId}`;
-      return localStorage.getItem(key);
-    }, SESSION_ID);
-    expect(persistedBeforeReload).not.toBeNull();
-    expect(persistedBeforeReload).toContain(ACTIVE_TASK.id);
-
-    // Reload — stub out the fresh task list so the re-render cannot recover
-    // via the network. Only the persisted task-store can keep the anchor.
+    // B-005: NO waitForTimeout here. The pagehide/visibilitychange flush
+    // (registered on module load) must synchronously persist the task
+    // slice when the reload begins, even inside the 250 ms debounce
+    // window. If this test requires a timeout to pass, bug class #1 is
+    // still latent.
     await installMockRuntime(page, { tasksAfterReload: [] });
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForSelector(SEL.chatInput);
+
+    // Sanity-check from the POST-reload side: the persisted entry made it
+    // to localStorage BEFORE the network arrived to repopulate the store.
+    const persistedAfterReload = await page.evaluate((sessionId) => {
+      const key = `octos_web:task_store:v1:dspfac:${sessionId}`;
+      return localStorage.getItem(key);
+    }, SESSION_ID);
+    expect(persistedAfterReload).not.toBeNull();
+    expect(persistedAfterReload).toContain(ACTIVE_TASK.id);
 
     // The anchor must still be on screen before any network recovery — the
     // persisted task-store entry is the only thing that can supply it.

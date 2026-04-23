@@ -11,6 +11,7 @@ import { SlidesEditorPage } from "./slides/pages/slides-editor-page";
 import { SlidesPresentPage } from "./slides/pages/slides-present-page";
 import { SitesGalleryPage } from "./sites/pages/sites-gallery-page";
 import { SitesEditorPage } from "./sites/pages/sites-editor-page";
+import { absoluteUrl } from "./lib/utils";
 
 function ChatPage() {
   return (
@@ -28,7 +29,7 @@ function ChatPage() {
 
 function RedirectToAdminSettings() {
   if (typeof window !== "undefined") {
-    window.location.replace("/admin/my");
+    window.location.replace(absoluteUrl("/admin/my"));
   }
   return null;
 }

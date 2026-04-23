@@ -76,8 +76,44 @@ function persistKey(profile: string, sessionId: string): string {
   return `${PERSIST_PREFIX}:${profile}:${sessionId}`;
 }
 
+/**
+ * B-007: a profile id of `unknown`, empty, or falsy means we cannot
+ * scope writes to a user. Persisting under `unknown` would bleed tasks
+ * across accounts that share the same device. Skip persistence entirely
+ * (both write AND read) when the resolved profile is not a real id.
+ */
+function isPersistableProfile(profile: string | null | undefined): boolean {
+  if (!profile) return false;
+  const trimmed = profile.trim();
+  if (!trimmed) return false;
+  if (trimmed === "unknown") return false;
+  return true;
+}
+
 function canPersist(): boolean {
   return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
+}
+
+/**
+ * Remove any `octos_web:task_store:v1:unknown:*` entries from
+ * localStorage. Used when a real profile id becomes available after a
+ * previous session wrote under the `unknown` fallback.
+ */
+function clearUnknownProfileEntries(): void {
+  if (!canPersist()) return;
+  const prefix = `${PERSIST_PREFIX}:unknown:`;
+  const keysToRemove: string[] = [];
+  for (let i = 0; i < window.localStorage.length; i++) {
+    const key = window.localStorage.key(i);
+    if (key && key.startsWith(prefix)) keysToRemove.push(key);
+  }
+  for (const key of keysToRemove) {
+    try {
+      window.localStorage.removeItem(key);
+    } catch {
+      // ignore
+    }
+  }
 }
 
 function splitStoreKey(key: string): { sessionId: string; topic?: string } {
@@ -92,6 +128,7 @@ interface PersistedEntry {
 
 function readPersistedEntry(profile: string, sessionId: string): PersistedEntry | null {
   if (!canPersist()) return null;
+  if (!isPersistableProfile(profile)) return null;
   const raw = window.localStorage.getItem(persistKey(profile, sessionId));
   if (!raw) return null;
   try {
@@ -114,6 +151,7 @@ function readPersistedEntry(profile: string, sessionId: string): PersistedEntry 
 
 function writePersistedEntry(profile: string, sessionId: string, entry: PersistedEntry): void {
   if (!canPersist()) return;
+  if (!isPersistableProfile(profile)) return;
   const serialized = JSON.stringify(entry);
   // Hard cap: LRU-evict completed tasks older than 24h until we fit.
   if (serialized.length <= PERSIST_MAX_BYTES) {
@@ -169,10 +207,19 @@ function scheduleFlush(): void {
 }
 
 function flushPersistence(): void {
-  flushHandle = null;
+  if (flushHandle !== null) {
+    clearTimeout(flushHandle);
+    flushHandle = null;
+  }
   if (!canPersist()) return;
+  // B-007: drop dirty bookkeeping but do NOT touch localStorage when the
+  // profile is not a real id — we must never write nor remove under the
+  // `unknown` scope.
   const ids = [...dirtySessionIds];
   dirtySessionIds.clear();
+  if (!isPersistableProfile(activeProfile)) {
+    return;
+  }
   for (const sessionId of ids) {
     const scoped: Record<string, StoredTask[]> = {};
     for (const [key, tasks] of tasksByKey.entries()) {
@@ -193,15 +240,64 @@ function flushPersistence(): void {
   }
 }
 
+// B-005: synchronous flush on `pagehide` (with a `visibilitychange`
+// fallback for mobile Safari). Without this, a fast reload fires before
+// the 250 ms debounce elapses, leaving the task-store entry unwritten.
+// `beforeunload` is blocked on mobile Safari and is intentionally not
+// used. The module-level flag prevents double-registration across HMR.
+let pagehideListenerRegistered = false;
+
+function registerPagehideFlush(): void {
+  if (pagehideListenerRegistered) return;
+  if (typeof window === "undefined") return;
+  pagehideListenerRegistered = true;
+  const onHide = () => {
+    if (dirtySessionIds.size === 0) return;
+    try {
+      flushPersistence();
+    } catch {
+      // best-effort — never throw during unload
+    }
+  };
+  window.addEventListener("pagehide", onHide);
+  // Mobile Safari doesn't always fire `pagehide` reliably on back/forward
+  // navigation; watch visibility too. `document` check guards SSR.
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") onHide();
+    });
+  }
+}
+
+if (typeof window !== "undefined") {
+  registerPagehideFlush();
+}
+
+/** Exported for tests — force a synchronous flush. */
+export function __flushTaskStorePersistenceForTests(): void {
+  flushPersistence();
+}
+
 /**
  * Rehydrate the task-store for a given profile+session from localStorage.
  *
  * Called on module load for the current profile+session and again on
  * profile/session switch. Parse errors drop the bad entry and log a warning —
  * never throw.
+ *
+ * B-007: when the profile transitions from a non-persistable value
+ * (falsy / empty / `unknown`) to a real id, purge any lingering
+ * `octos_web:task_store:v1:unknown:*` entries so leftover tasks from
+ * the pre-login state don't bleed into the user's scope.
  */
 export function rehydrateTaskStore(opts: { profile: string; session: string }): void {
+  const incomingPersistable = isPersistableProfile(opts.profile);
+  const previousPersistable = isPersistableProfile(activeProfile);
+  if (incomingPersistable && !previousPersistable) {
+    clearUnknownProfileEntries();
+  }
   activeProfile = opts.profile;
+  if (!incomingPersistable) return;
   const entry = readPersistedEntry(opts.profile, opts.session);
   if (!entry) return;
 
@@ -343,9 +439,25 @@ export function mergeTask(
   const existingSeq = typeof existing.server_seq === "number" ? existing.server_seq : null;
   const incomingSeq = typeof incoming.server_seq === "number" ? incoming.server_seq : null;
 
-  // Conflict resolution: highest server_seq wins; else most recent updated_at.
+  // Conflict resolution: highest server_seq wins; on equal server_seq we
+  // tiebreak on updated_at. Without the tiebreak, two sources observing
+  // the same sequence but different timestamps would race — last write
+  // wins even when it is strictly older than the existing snapshot. We
+  // skip only when the incoming updated_at is strictly older; when both
+  // updated_at values are equal or both absent, last-write-wins is fine.
   if (existingSeq !== null && incomingSeq !== null) {
     if (incomingSeq < existingSeq) return;
+    if (incomingSeq === existingSeq) {
+      const existingAt = existing.updated_at ? Date.parse(existing.updated_at) : NaN;
+      const incomingAt = incoming.updated_at ? Date.parse(incoming.updated_at) : NaN;
+      if (
+        Number.isFinite(existingAt) &&
+        Number.isFinite(incomingAt) &&
+        incomingAt < existingAt
+      ) {
+        return;
+      }
+    }
   } else {
     const existingAt = existing.updated_at ? Date.parse(existing.updated_at) : 0;
     const incomingAt = incoming.updated_at ? Date.parse(incoming.updated_at) : Date.now();
