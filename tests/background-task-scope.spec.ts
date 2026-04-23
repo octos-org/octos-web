@@ -333,6 +333,28 @@ async function installMockRuntime(
     fulfillJson(route, []),
   );
 
+  await page.route(/\/api\/upload$/, async (route) => {
+    const body = (await route.request().postDataBuffer()).toString("utf8");
+    const paths = ["pf/uploaded-image.png"];
+    if (body.includes("voice.wav")) paths.push("pf/uploaded-voice.wav");
+    return fulfillJson(route, paths);
+  });
+
+  await page.route(/\/api\/files\/.+$/, async (route) => {
+    const path = decodeURIComponent(new URL(route.request().url()).pathname);
+    const isAudio = path.includes("uploaded-voice.wav");
+    await route.fulfill({
+      status: 200,
+      contentType: isAudio ? "audio/wav" : "image/png",
+      body: isAudio
+        ? Buffer.from("RIFF$\0\0\0WAVEfmt ")
+        : Buffer.from(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+            "base64",
+          ),
+    });
+  });
+
   await page.route(/\/api\/sessions\/[^/]+\/status(?:\?.*)?$/, (route) =>
     fulfillJson(route, {
       active: false,
@@ -816,6 +838,59 @@ test.describe("background task scoping", () => {
         nodes.map((node) => (node.textContent || "").trim()),
       );
     expect(bubbles.filter((text) => text.length === 0)).toHaveLength(0);
+  });
+
+  test("image and voice uploads stay on the user bubble", async ({ page }) => {
+    await installMockRuntime(page, [], [], {}, [
+      {
+        type: "replace",
+        text: "I received the uploaded image and voice file.",
+      },
+      {
+        type: "done",
+        content: "I received the uploaded image and voice file.",
+        model: "mock-model",
+        tokens_in: 1,
+        tokens_out: 1,
+        duration_s: 1,
+        has_bg_tasks: false,
+      },
+    ]);
+    await page.goto("/chat", { waitUntil: "networkidle" });
+    await page.waitForSelector(SEL.chatInput);
+
+    await page.locator("input[type='file']").setInputFiles([
+      {
+        name: "photo.png",
+        mimeType: "image/png",
+        buffer: Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+          "base64",
+        ),
+      },
+      {
+        name: "voice.wav",
+        mimeType: "audio/wav",
+        buffer: Buffer.from("RIFF$\0\0\0WAVEfmt "),
+      },
+    ]);
+
+    await getInput(page).fill("Please inspect these uploads");
+    await getSendButton(page).click();
+
+    await expect(page.getByTestId("user-message")).toHaveCount(1);
+    await expect(page.getByTestId("user-message")).toContainText(
+      "Please inspect these uploads",
+    );
+    await expect(page.getByAltText("uploaded-image.png")).toBeVisible();
+    await expect(page.getByTestId("audio-attachment")).toHaveAttribute(
+      "data-filename",
+      "uploaded-voice.wav",
+    );
+    await expect(page.getByTestId("assistant-message")).toContainText(
+      "I received the uploaded image and voice file.",
+    );
+    await expect(page.getByTestId("task-anchor-message")).toHaveCount(0);
   });
 
   test("failed deep research task stays in its originating session", async ({ page }) => {

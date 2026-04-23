@@ -832,6 +832,7 @@ function findAdjacentFileResultTargetIndex(
   const fileText = fileResult.text.trim();
   const isMediaOnly = fileText.length === 0 || TASK_COMPLETION_RE.test(fileText);
   if (!isMediaOnly) return -1;
+  const fileSeq = fileResult.historySeq;
 
   for (let index = list.length - 1; index >= 0; index -= 1) {
     const candidate = list[index];
@@ -839,6 +840,10 @@ function findAdjacentFileResultTargetIndex(
     if (candidate.role === "user" || candidate.role === "system") return -1;
     if (candidate.role !== "assistant") continue;
     if (!candidate.text.trim() && candidate.toolCalls.length === 0) continue;
+
+    if (typeof fileSeq === "number" && typeof candidate.historySeq === "number") {
+      return fileSeq === candidate.historySeq + 1 ? index : -1;
+    }
 
     const delta = fileResult.timestamp - candidate.timestamp;
     if (delta < 0 || delta > 5 * 60_000) return -1;
@@ -861,7 +866,124 @@ function mergeFileResultIntoTarget(target: Message, fileResult: Message): Messag
     toolCalls:
       target.toolCalls.length > 0 ? target.toolCalls : fileResult.toolCalls,
     sourceToolCallId: target.sourceToolCallId ?? fileResult.sourceToolCallId,
+    historySeq:
+      typeof target.historySeq === "number" && typeof fileResult.historySeq === "number"
+        ? Math.max(target.historySeq, fileResult.historySeq)
+        : (fileResult.historySeq ?? target.historySeq),
   };
+}
+
+function mergeAssistantDuplicate(primary: Message, duplicate: Message): Message {
+  return {
+    ...primary,
+    text: primary.text.trim() ? primary.text : duplicate.text,
+    files: mergeMessageFiles(duplicate.files, primary.files),
+    toolCalls:
+      primary.toolCalls.length > 0 ? primary.toolCalls : duplicate.toolCalls,
+    sourceToolCallId: primary.sourceToolCallId ?? duplicate.sourceToolCallId,
+    historySeq:
+      typeof primary.historySeq === "number" && typeof duplicate.historySeq === "number"
+        ? Math.max(primary.historySeq, duplicate.historySeq)
+        : (duplicate.historySeq ?? primary.historySeq),
+  };
+}
+
+function collapseAssistantDuplicateAt(list: Message[], index: number): number {
+  const duplicate = list[index];
+  if (!duplicate || duplicate.kind === "task_anchor" || duplicate.role !== "assistant") {
+    return index;
+  }
+  if (duplicate.files.length === 0) return index;
+  const duplicateText = normalizeMessageText(duplicate.text);
+  if (!duplicateText) return index;
+
+  for (let targetIndex = index - 1; targetIndex >= 0; targetIndex -= 1) {
+    const candidate = list[targetIndex];
+    if (candidate.kind === "task_anchor") continue;
+    if (candidate.role === "user" || candidate.role === "system") return index;
+    if (candidate.role !== "assistant") continue;
+    if (normalizeMessageText(candidate.text) !== duplicateText) continue;
+    if (Math.abs(candidate.timestamp - duplicate.timestamp) > 5 * 60_000) return index;
+
+    list[targetIndex] = mergeAssistantDuplicate(candidate, duplicate);
+    list.splice(index, 1);
+    recordRuntimeCounter("octos_result_duplicate_suppressed_total", {
+      kind: duplicate.role,
+      reason: "assistant_file_duplicate_coalesced",
+    });
+    return targetIndex;
+  }
+
+  return index;
+}
+
+function collapseAssistantFileDuplicates(messages: Message[]): Message[] {
+  const merged = [...messages];
+
+  for (let index = 0; index < merged.length; index += 1) {
+    const current = merged[index];
+    if (!current || current.kind === "task_anchor" || current.role !== "assistant") {
+      continue;
+    }
+    if (current.files.length === 0) continue;
+
+    const previousIndex = collapseAssistantDuplicateAt(merged, index);
+    if (previousIndex !== index) {
+      index = previousIndex;
+      continue;
+    }
+
+    const currentText = normalizeMessageText(current.text);
+    if (!currentText) continue;
+
+    for (let candidateIndex = index + 1; candidateIndex < merged.length; candidateIndex += 1) {
+      const candidate = merged[candidateIndex];
+      if (candidate.kind === "task_anchor") continue;
+      if (candidate.role === "user" || candidate.role === "system") break;
+      if (candidate.role !== "assistant") continue;
+      if (normalizeMessageText(candidate.text) !== currentText) continue;
+      if (Math.abs(candidate.timestamp - current.timestamp) > 5 * 60_000) break;
+
+      merged[index] = mergeAssistantDuplicate(current, candidate);
+      merged.splice(candidateIndex, 1);
+      recordRuntimeCounter("octos_result_duplicate_suppressed_total", {
+        kind: current.role,
+        reason: "assistant_file_duplicate_coalesced",
+      });
+      break;
+    }
+  }
+
+  return merged;
+}
+
+function isAssistantCompanionForFileMessage(
+  candidate: Message,
+  fileMessage: Message,
+): boolean {
+  if (candidate.kind === "task_anchor" || fileMessage.kind === "task_anchor") {
+    return false;
+  }
+  if (candidate.role !== "assistant" || fileMessage.role !== "assistant") {
+    return false;
+  }
+  if (candidate.files.length > 0 || fileMessage.files.length === 0) {
+    return false;
+  }
+  if (
+    normalizeMessageText(candidate.text) !== normalizeMessageText(fileMessage.text)
+  ) {
+    return false;
+  }
+
+  if (
+    typeof candidate.historySeq === "number" &&
+    typeof fileMessage.historySeq === "number"
+  ) {
+    return candidate.historySeq + 1 === fileMessage.historySeq;
+  }
+
+  return Math.abs(candidate.timestamp - fileMessage.timestamp) <= 5 * 60_000;
 }
 
 function coalesceFileResultsIntoAnchors(
@@ -880,6 +1002,7 @@ function coalesceFileResultsIntoAnchors(
     }
 
     merged[targetIndex] = mergeFileResultIntoTarget(merged[targetIndex], message);
+    collapseAssistantDuplicateAt(merged, targetIndex);
     recordRuntimeCounter("octos_result_duplicate_suppressed_total", {
       kind: message.role,
       reason: "background_file_coalesced",
@@ -964,7 +1087,9 @@ function replaceHistoryFromApi(
     ...coalesceFileResultsIntoAnchors(sessionId, authoritative, topic),
     ...pending,
   ];
-  const sorted = sortedMessagesForDisplay(realignTaskAnchors(merged));
+  const sorted = sortedMessagesForDisplay(
+    realignTaskAnchors(collapseAssistantFileDuplicates(merged)),
+  );
 
   messagesByKey.set(key, sorted);
   indexFilesForSession(sessionId, sorted, topic);
@@ -1292,11 +1417,12 @@ export function appendHistoryMessages(
         list[fileResultTargetIndex],
         converted,
       );
+      const mergedIndex = collapseAssistantDuplicateAt(list, fileResultTargetIndex);
       if (converted.sourceToolCallId) {
         indexToolCallForMessage(
           key,
           converted.sourceToolCallId,
-          list[fileResultTargetIndex].id,
+          list[mergedIndex].id,
         );
       }
       if (typeof converted.historySeq === "number") {
@@ -1318,6 +1444,20 @@ export function appendHistoryMessages(
         maxSeq = Math.max(maxSeq, converted.historySeq);
       }
       changed = true;
+      continue;
+    }
+
+    const fileCompanionIndex = list.findIndex((message) =>
+      isAssistantCompanionForFileMessage(converted, message),
+    );
+    if (fileCompanionIndex !== -1) {
+      recordRuntimeCounter("octos_result_duplicate_suppressed_total", {
+        kind: converted.role,
+        reason: "assistant_file_companion",
+      });
+      if (typeof converted.historySeq === "number") {
+        maxSeq = Math.max(maxSeq, converted.historySeq);
+      }
       continue;
     }
 
@@ -1360,6 +1500,7 @@ export function appendHistoryMessages(
   }
 
   if (changed) {
+    collapseAssistantFileDuplicates(list);
     list.sort((a, b) => {
       const aSeq = typeof a.historySeq === "number" ? a.historySeq : Number.MAX_SAFE_INTEGER;
       const bSeq = typeof b.historySeq === "number" ? b.historySeq : Number.MAX_SAFE_INTEGER;
@@ -1397,11 +1538,12 @@ export function mergeHistoryMessageIntoMessage(
       list[fileResultTargetIndex],
       converted,
     );
+    const mergedIndex = collapseAssistantDuplicateAt(list, fileResultTargetIndex);
     if (converted.sourceToolCallId) {
       indexToolCallForMessage(
         key,
         converted.sourceToolCallId,
-        list[fileResultTargetIndex].id,
+        list[mergedIndex].id,
       );
     }
     messagesByKey.set(key, [...list]);
