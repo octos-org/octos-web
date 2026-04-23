@@ -6,7 +6,6 @@ import { useResizablePanel } from "@/hooks/use-resizable-panel";
 import { CostBar } from "@/components/cost-bar";
 import { SessionList } from "@/components/session-list";
 import { ContentBrowser } from "@/components/content-browser";
-import { SessionTaskIndicator } from "@/components/session-task-dock";
 import { useSession } from "@/runtime/session-context";
 import { eventMatchesScope } from "@/runtime/event-scope";
 import {
@@ -181,7 +180,6 @@ export function ChatLayout({ children }: { children: ReactNode }) {
                     {currentSessionTitle}
                   </div>
                 </div>
-                <SessionTaskIndicator />
                 <button
                   onClick={() => setMediaPanelOpen((v) => !v)}
                   className={`glass-icon-button relative rounded-[12px] p-2.5 ${
