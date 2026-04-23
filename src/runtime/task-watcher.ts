@@ -485,7 +485,7 @@ async function pollSession(entry: WatchedSession): Promise<void> {
         ),
       ]);
 
-      TaskStore.replaceTasks(entry.sessionId, tasks, entry.topic);
+      TaskStore.reconcileTasks(entry.sessionId, tasks, entry.topic);
       for (const task of tasks) {
         // Replay each snapshot through the reducer action so conflict
         // resolution (server_seq / updated_at) stays consistent with SSE

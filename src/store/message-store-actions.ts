@@ -165,13 +165,19 @@ export interface TaskStatusAction {
 /**
  * Task snapshots are deduplicated/merged inside task-store; this action is the
  * single entry point for any runtime surface that observes a task_status.
+ *
+ * The task_anchor message is projected first so its toolCallId → anchorId
+ * mapping is authoritative. bindBackgroundTask is intentionally NOT called
+ * here — the legacy "attach a tool-call badge to the nearest assistant
+ * bubble" behaviour would otherwise convert an in-flight assistant message
+ * into a task_anchor (via findTaskAnchorIndex falling back to the taskId
+ * map) and drop its text on subsequent updates.
  */
 export function applyTaskStatus(action: TaskStatusAction): void {
   TaskStore.mergeTask(action.sessionId, action.task, action.topic, {
     serverSeq: action.serverSeq,
     updatedAt: action.updatedAt,
   });
-  MessageStore.bindBackgroundTask(action.sessionId, action.task, action.topic);
   MessageStore.ensureTaskAnchor(action.sessionId, action.task, action.topic);
 }
 

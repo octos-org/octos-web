@@ -271,6 +271,50 @@ export function replaceTasks(
   notify();
 }
 
+/**
+ * Merge an authoritative list of tasks with the existing scoped slice, but
+ * keep any locally-known active task that is absent from the incoming list.
+ *
+ * This guards against the reload-during-active-task bug class (#1): a poll
+ * that returns an empty list cannot silently wipe a rehydrated running task
+ * whose state lived only in localStorage. Terminal tasks in the store that
+ * aren't in the incoming list are dropped, since callers expect poll results
+ * to supersede completed bookkeeping.
+ */
+export function reconcileTasks(
+  sessionId: string,
+  tasks: BackgroundTaskInfo[],
+  topic?: string,
+): void {
+  const key = storeKey(sessionId, topic);
+  const existing = tasksByKey.get(key) ?? [];
+  const incomingById = new Map<string, StoredTask>();
+  for (const task of tasks) {
+    if (task.id) incomingById.set(task.id, task as StoredTask);
+  }
+
+  const merged: StoredTask[] = [];
+  for (const existingTask of existing) {
+    const incoming = existingTask.id ? incomingById.get(existingTask.id) : undefined;
+    if (incoming) {
+      merged.push({ ...existingTask, ...incoming });
+      incomingById.delete(existingTask.id);
+      continue;
+    }
+    // Preserve active tasks whose authoritative source temporarily lost them.
+    if (existingTask.status === "spawned" || existingTask.status === "running") {
+      merged.push(existingTask);
+    }
+  }
+  for (const leftover of incomingById.values()) {
+    merged.push(leftover);
+  }
+
+  tasksByKey.set(key, sorted(merged));
+  markDirty(sessionId);
+  notify();
+}
+
 export function mergeTask(
   sessionId: string,
   task: BackgroundTaskInfo,

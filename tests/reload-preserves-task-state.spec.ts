@@ -48,7 +48,10 @@ async function fulfillJson(route: Route, body: unknown) {
   });
 }
 
-async function installMockRuntime(page: Page, opts: { tasksAfterReload?: unknown[] } = {}) {
+async function installMockRuntime(
+  page: Page,
+  opts: { tasksAfterReload?: unknown[]; seedFirstLoad?: boolean } = {},
+) {
   const taskList = opts.tasksAfterReload ?? [ACTIVE_TASK];
 
   await page.route(/\/api\/auth\/status$/, (route) =>
@@ -127,8 +130,10 @@ test.describe("coding-blue phase 3-4 — bug class #1 reload preserves task stat
   }) => {
     await installMockRuntime(page);
 
+    // Seed auth/profile/session in localStorage WITHOUT clearing it — the
+    // reload path below must be able to read the persisted task-store entry
+    // that the first page write flushed there.
     await page.addInitScript((sessionId) => {
-      localStorage.clear();
       localStorage.setItem("octos_session_token", "mock-token");
       localStorage.setItem("octos_auth_token", "mock-token");
       localStorage.setItem("selected_profile", "dspfac");
