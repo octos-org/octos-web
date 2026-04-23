@@ -343,9 +343,25 @@ export function mergeTask(
   const existingSeq = typeof existing.server_seq === "number" ? existing.server_seq : null;
   const incomingSeq = typeof incoming.server_seq === "number" ? incoming.server_seq : null;
 
-  // Conflict resolution: highest server_seq wins; else most recent updated_at.
+  // Conflict resolution: highest server_seq wins; on equal server_seq we
+  // tiebreak on updated_at. Without the tiebreak, two sources observing
+  // the same sequence but different timestamps would race — last write
+  // wins even when it is strictly older than the existing snapshot. We
+  // skip only when the incoming updated_at is strictly older; when both
+  // updated_at values are equal or both absent, last-write-wins is fine.
   if (existingSeq !== null && incomingSeq !== null) {
     if (incomingSeq < existingSeq) return;
+    if (incomingSeq === existingSeq) {
+      const existingAt = existing.updated_at ? Date.parse(existing.updated_at) : NaN;
+      const incomingAt = incoming.updated_at ? Date.parse(incoming.updated_at) : NaN;
+      if (
+        Number.isFinite(existingAt) &&
+        Number.isFinite(incomingAt) &&
+        incomingAt < existingAt
+      ) {
+        return;
+      }
+    }
   } else {
     const existingAt = existing.updated_at ? Date.parse(existing.updated_at) : 0;
     const incomingAt = incoming.updated_at ? Date.parse(incoming.updated_at) : Date.now();
