@@ -34,3 +34,4 @@ research/
 !book/**/*.md
 !docs/**/*.md
 book/build/
+test-results/
