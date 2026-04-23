@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:next": "CODING_BLUE_NEXT=1 tsc -b && CODING_BLUE_NEXT=1 vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "npx playwright test",
