@@ -1,5 +1,6 @@
 import { buildApiHeaders, clearToken } from "./client";
 import { API_BASE } from "@/lib/constants";
+import { absoluteUrl } from "@/lib/utils";
 import type { ChatResponse } from "./types";
 import { request } from "./client";
 
@@ -47,7 +48,9 @@ export async function uploadFiles(
       clearToken();
       if (!window.location.pathname.endsWith("/login")) {
         window.location.href =
-          "/login?redirect=" + encodeURIComponent(window.location.pathname);
+          absoluteUrl("/login") +
+          "?redirect=" +
+          encodeURIComponent(window.location.pathname);
       }
     }
     const text = await resp.text();

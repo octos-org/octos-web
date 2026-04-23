@@ -1,5 +1,6 @@
 import { API_BASE, TOKEN_KEY, ADMIN_TOKEN_KEY } from "@/lib/constants";
 import { getSettings } from "@/hooks/use-settings";
+import { absoluteUrl } from "@/lib/utils";
 
 function inferProfileIdFromHost(): string | null {
   if (typeof window === "undefined") return null;
@@ -131,7 +132,10 @@ export async function request<T>(
       clearToken();
       // Redirect to login unless already there
       if (!window.location.pathname.endsWith("/login")) {
-        window.location.href = "/login?redirect=" + encodeURIComponent(window.location.pathname);
+        window.location.href =
+          absoluteUrl("/login") +
+          "?redirect=" +
+          encodeURIComponent(window.location.pathname);
       }
     }
     const text = await resp.text();
