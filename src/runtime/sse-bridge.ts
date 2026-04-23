@@ -10,11 +10,20 @@
 
 import * as StreamManager from "./stream-manager";
 import * as MessageStore from "@/store/message-store";
+import {
+  applyAppendFileArtifact,
+  applyFinalizeAssistant,
+  applyRegisterBackgroundAnchor,
+  applyReplaceAssistantText,
+  applyStreamError,
+  applyTaskStatus,
+  applyUpdateToolCalls,
+  isEventInScope,
+} from "@/store/message-store-actions";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { getMessages as fetchSessionMessages } from "@/api/sessions";
 import { dispatchCrewFileEvent } from "./file-events";
 import { recordRuntimeCounter } from "./observability";
-import { eventSessionId, eventTopic } from "./event-scope";
 
 // ---------------------------------------------------------------------------
 // Helpers (shared with the old adapter, kept local)
@@ -233,17 +242,8 @@ function bindStreamToAssistant({
 
   const handleEvent = (evt: StreamManager.StreamEvent) => {
     const event = evt.raw;
-    const scopedSessionId = eventSessionId(event);
-    if (scopedSessionId !== undefined && scopedSessionId !== sessionId) {
+    if (!isEventInScope(event, { sessionId, topic: normalizedHistoryTopic })) {
       recordRuntimeCounter("octos_session_mismatch_total", {
-        surface: "sse_bridge",
-      });
-      return;
-    }
-
-    const scopedTopic = eventTopic(event);
-    if (scopedTopic !== undefined && scopedTopic !== normalizedHistoryTopic) {
-      recordRuntimeCounter("octos_topic_mismatch_total", {
         surface: "sse_bridge",
       });
       return;
@@ -252,16 +252,24 @@ function bindStreamToAssistant({
     switch (event.type) {
       case "token":
         rawText += event.text;
-        MessageStore.updateMessage(sessionId, assistantMsgId, {
+        applyReplaceAssistantText({
+          type: "replace_assistant_text",
+          sessionId,
+          messageId: assistantMsgId,
+          topic: historyTopic,
           text: clean(rawText),
-        }, historyTopic);
+        });
         break;
 
       case "replace":
         rawText = event.text;
-        MessageStore.updateMessage(sessionId, assistantMsgId, {
+        applyReplaceAssistantText({
+          type: "replace_assistant_text",
+          sessionId,
+          messageId: assistantMsgId,
+          topic: historyTopic,
           text: clean(rawText),
-        }, historyTopic);
+        });
         break;
 
       case "tool_start": {
@@ -272,9 +280,13 @@ function bindStreamToAssistant({
           `tc_${event.tool}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         toolCalls.set(key, { id: tcId, name: event.tool, status: "running" });
         activeToolByName.set(event.tool, key);
-        MessageStore.updateMessage(sessionId, assistantMsgId, {
+        applyUpdateToolCalls({
+          type: "update_tool_calls",
+          sessionId,
+          messageId: assistantMsgId,
+          topic: historyTopic,
           toolCalls: Array.from(toolCalls.values()),
-        }, historyTopic);
+        });
         break;
       }
 
@@ -282,9 +294,13 @@ function bindStreamToAssistant({
         const key = activeToolByName.get(event.tool);
         const tc = key ? toolCalls.get(key) : undefined;
         if (tc) tc.status = event.success ? "complete" : "error";
-        MessageStore.updateMessage(sessionId, assistantMsgId, {
+        applyUpdateToolCalls({
+          type: "update_tool_calls",
+          sessionId,
+          messageId: assistantMsgId,
+          topic: historyTopic,
           toolCalls: Array.from(toolCalls.values()),
-        }, historyTopic);
+        });
         break;
       }
 
@@ -342,19 +358,13 @@ function bindStreamToAssistant({
             path: event.path,
             caption,
           };
-          const attached = MessageStore.appendFileByToolCallId(
+          applyAppendFileArtifact({
+            type: "append_file_artifact",
             sessionId,
-            event.tool_call_id,
+            topic: historyTopic,
             file,
-            historyTopic,
-          );
-          if (!attached) {
-            MessageStore.appendFileToBackgroundAnchor(
-              sessionId,
-              file,
-              historyTopic,
-            );
-          }
+            toolCallId: event.tool_call_id,
+          });
 
           dispatchCrewFileEvent({
             sessionId,
@@ -368,7 +378,12 @@ function bindStreamToAssistant({
       }
 
       case "task_status": {
-        MessageStore.bindBackgroundTask(sessionId, event.task, historyTopic);
+        applyTaskStatus({
+          type: "task_status",
+          sessionId,
+          topic: historyTopic,
+          task: event.task,
+        });
         window.dispatchEvent(
           new CustomEvent("crew:task_status", {
             detail: { task: event.task, sessionId, topic: historyTopic },
@@ -424,26 +439,29 @@ function bindStreamToAssistant({
           rawText = event.content;
         }
         const finalText = clean(rawText);
-        MessageStore.updateMessage(sessionId, assistantMsgId, {
+        const meta = event.model || event.tokens_in || event.tokens_out
+          ? {
+              model: event.model || "",
+              tokens_in: event.tokens_in || 0,
+              tokens_out: event.tokens_out || 0,
+              duration_s: event.duration_s || 0,
+            }
+          : undefined;
+        applyFinalizeAssistant({
+          type: "finalize_assistant",
+          sessionId,
+          messageId: assistantMsgId,
+          topic: historyTopic,
           text: finalText,
-          status: "complete",
-        }, historyTopic);
+          meta,
+        });
 
-        if (event.model || event.tokens_in || event.tokens_out) {
-          MessageStore.setMessageMeta(sessionId, assistantMsgId, {
-            model: event.model || "",
-            tokens_in: event.tokens_in || 0,
-            tokens_out: event.tokens_out || 0,
-            duration_s: event.duration_s || 0,
-          }, historyTopic);
+        if (meta) {
           window.dispatchEvent(
             new CustomEvent("crew:message_meta", {
               detail: {
-                model: event.model || "",
-                tokens_in: event.tokens_in || 0,
-                tokens_out: event.tokens_out || 0,
+                ...meta,
                 session_cost: event.session_cost,
-                duration_s: event.duration_s || 0,
                 sessionId,
                 topic: normalizedHistoryTopic,
                 messageId: assistantMsgId,
@@ -472,12 +490,13 @@ function bindStreamToAssistant({
         // We no longer call replaceHistory here — it races with the sync loop
         // and can wipe optimistic messages or create duplicates.
         if (event.has_bg_tasks) {
-          MessageStore.registerBackgroundAnchor(
+          applyRegisterBackgroundAnchor({
+            type: "register_background_anchor",
             sessionId,
-            assistantMsgId,
-            historyTopic,
-            Array.from(toolCalls.values()).map((toolCall) => toolCall.name),
-          );
+            topic: historyTopic,
+            messageId: assistantMsgId,
+            toolNames: Array.from(toolCalls.values()).map((toolCall) => toolCall.name),
+          });
           window.dispatchEvent(
             new CustomEvent("crew:bg_tasks", {
               detail: { sessionId, topic: historyTopic },
@@ -578,9 +597,13 @@ function setupCleanup(
             },
           ).then(() => _onComplete?.());
         } else if (assistantMsg.text) {
-          MessageStore.updateMessage(sessionId, assistantMsgId, {
-            status: "complete",
-          }, historyTopic);
+          applyFinalizeAssistant({
+            type: "finalize_assistant",
+            sessionId,
+            messageId: assistantMsgId,
+            topic: historyTopic,
+            text: assistantMsg.text,
+          });
           _onComplete?.();
         } else {
           // No content — poll for response
@@ -650,10 +673,13 @@ async function pollForResponse(
         );
         if (!merged) {
           MessageStore.appendHistoryMessages(sessionId, [matchedAssistant], historyTopic);
-          MessageStore.updateMessage(sessionId, assistantMsgId, {
+          applyFinalizeAssistant({
+            type: "finalize_assistant",
+            sessionId,
+            messageId: assistantMsgId,
+            topic: historyTopic,
             text: matchedAssistant.content,
-            status: "complete",
-          }, historyTopic);
+          });
         }
         return true;
       }
@@ -662,16 +688,23 @@ async function pollForResponse(
     }
   }
   if (!options?.errorMessage) {
-    MessageStore.updateMessage(sessionId, assistantMsgId, {
-      text: "No response received.",
-      status: "error",
-    }, historyTopic);
+    applyStreamError({
+      type: "stream_error",
+      sessionId,
+      messageId: assistantMsgId,
+      topic: historyTopic,
+      errorMessage: "No response received.",
+      raw: true,
+    });
     return false;
   }
 
-  MessageStore.updateMessage(sessionId, assistantMsgId, {
-    text: `Error: ${options.errorMessage}`,
-    status: "error",
-  }, historyTopic);
+  applyStreamError({
+    type: "stream_error",
+    sessionId,
+    messageId: assistantMsgId,
+    topic: historyTopic,
+    errorMessage: options.errorMessage,
+  });
   return false;
 }
