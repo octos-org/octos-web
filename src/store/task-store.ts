@@ -169,7 +169,10 @@ function scheduleFlush(): void {
 }
 
 function flushPersistence(): void {
-  flushHandle = null;
+  if (flushHandle !== null) {
+    clearTimeout(flushHandle);
+    flushHandle = null;
+  }
   if (!canPersist()) return;
   const ids = [...dirtySessionIds];
   dirtySessionIds.clear();
@@ -191,6 +194,44 @@ function flushPersistence(): void {
     }
     writePersistedEntry(activeProfile, sessionId, { scoped });
   }
+}
+
+// B-005: synchronous flush on `pagehide` (with a `visibilitychange`
+// fallback for mobile Safari). Without this, a fast reload fires before
+// the 250 ms debounce elapses, leaving the task-store entry unwritten.
+// `beforeunload` is blocked on mobile Safari and is intentionally not
+// used. The module-level flag prevents double-registration across HMR.
+let pagehideListenerRegistered = false;
+
+function registerPagehideFlush(): void {
+  if (pagehideListenerRegistered) return;
+  if (typeof window === "undefined") return;
+  pagehideListenerRegistered = true;
+  const onHide = () => {
+    if (dirtySessionIds.size === 0) return;
+    try {
+      flushPersistence();
+    } catch {
+      // best-effort — never throw during unload
+    }
+  };
+  window.addEventListener("pagehide", onHide);
+  // Mobile Safari doesn't always fire `pagehide` reliably on back/forward
+  // navigation; watch visibility too. `document` check guards SSR.
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") onHide();
+    });
+  }
+}
+
+if (typeof window !== "undefined") {
+  registerPagehideFlush();
+}
+
+/** Exported for tests — force a synchronous flush. */
+export function __flushTaskStorePersistenceForTests(): void {
+  flushPersistence();
 }
 
 /**
