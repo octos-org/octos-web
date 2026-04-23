@@ -31,6 +31,34 @@ export interface MessageInfo {
   tool_calls?: { id?: string; name?: string }[];
 }
 
+export interface BackgroundTaskRuntimeDetail {
+  schema?: string;
+  kind?: string;
+  workflow_kind?: string;
+  workflow?: string;
+  node?: string;
+  tool?: string;
+  iteration?: number;
+  current_phase?: string;
+  progress_message?: string;
+  message?: string;
+  progress?: number;
+  lifecycle_state?: string;
+  [key: string]: unknown;
+}
+
+export interface BackgroundTaskProgressEvent {
+  recorded_at: string;
+  kind: string;
+  workflow_kind?: string | null;
+  node?: string | null;
+  tool?: string | null;
+  iteration?: number | null;
+  phase?: string | null;
+  message?: string | null;
+  progress?: number | null;
+}
+
 export interface BackgroundTaskInfo {
   id: string;
   tool_name: string;
@@ -41,6 +69,13 @@ export interface BackgroundTaskInfo {
   output_files?: string[];
   error: string | null;
   session_key?: string;
+  workflow_kind?: string | null;
+  current_phase?: string | null;
+  lifecycle_state?: string | null;
+  runtime_detail?: BackgroundTaskRuntimeDetail | null;
+  progress_message?: string | null;
+  progress?: number | null;
+  progress_events?: BackgroundTaskProgressEvent[];
 }
 
 export interface ServerStatus {
