@@ -5,10 +5,15 @@ import type { CreateMessageId, Now } from "./shared";
 import {
   mergeMessageFiles,
   normalizeMessageText,
+  sortedMessagesForDisplay,
   TASK_COMPLETION_RE,
   withRuntime,
 } from "./shared";
-import { parseLegacyFileDeliveries } from "./file-artifact-reducer";
+import {
+  findFileResultTargetIndex,
+  mergeFileResultIntoTarget,
+  parseLegacyFileDeliveries,
+} from "./file-artifact-reducer";
 
 export interface ConvertHistoryReplayMessageEvent {
   type: "convert_history_replay_message";
@@ -217,4 +222,110 @@ export function reduceConvertHistoryReplayMessageEvent(
   event: ConvertHistoryReplayMessageEvent,
 ): Message | null {
   return convertApiMessage(event.message, event.createId, event.now);
+}
+
+// ---------------------------------------------------------------------------
+// Full three-phase history replacement projector
+// ---------------------------------------------------------------------------
+
+export interface ReplaceHistoryEvent {
+  type: "replace_history_from_api";
+  existing: Message[];
+  apiMessages: MessageInfo[];
+  outputPathMessageIds?: ReadonlyMap<string, string>;
+  createId: CreateMessageId;
+  now?: Now;
+}
+
+export interface ReplaceHistoryProjection {
+  messages: Message[];
+}
+
+const PENDING_USER_RETAIN_MS = 120_000;
+const PENDING_ASSISTANT_RETAIN_MS = 30_000;
+
+/**
+ * Pure projector for replaceHistory. Returns the fully merged + sorted list
+ * without mutating any caller state. The three phases are:
+ *
+ *   Phase 1  Convert API messages to local form; merge with optimistic
+ *            matches to preserve local-only state (id, meta, files from SSE).
+ *   Phase 2  Collect unconsumed optimistic messages — drop stale completed
+ *            ones that should have matched but didn't; keep streaming
+ *            messages unconditionally; keep recent optimistic messages.
+ *   Phase 3  Merge authoritative + pending, coalesce late file results into
+ *            their anchor bubbles, then sort for display.
+ */
+export function reduceReplaceHistoryEvent(
+  event: ReplaceHistoryEvent,
+): ReplaceHistoryProjection {
+  const { existing, apiMessages, outputPathMessageIds, createId } = event;
+  const now = event.now ?? Date.now;
+  const consumedOptimisticIndices = new Set<number>();
+
+  // Phase 1
+  const authoritative: Message[] = [];
+  for (const apiMessage of apiMessages) {
+    const converted = convertApiMessage(apiMessage, createId, now);
+    if (!converted) continue;
+    const optimisticMatchIndex = findOptimisticMatchIndex(existing, converted);
+    if (
+      optimisticMatchIndex === -1 ||
+      consumedOptimisticIndices.has(optimisticMatchIndex)
+    ) {
+      authoritative.push(converted);
+      continue;
+    }
+    consumedOptimisticIndices.add(optimisticMatchIndex);
+    authoritative.push(
+      mergeAuthoritativeIntoMessage(existing[optimisticMatchIndex], converted, now),
+    );
+  }
+
+  // Phase 2
+  const currentTimestamp = now();
+  const pending: Message[] = [];
+  for (let i = 0; i < existing.length; i += 1) {
+    if (consumedOptimisticIndices.has(i)) continue;
+    const msg = existing[i];
+    if (typeof msg.historySeq === "number") continue;
+    if (msg.kind === "task_anchor") {
+      pending.push(msg);
+      continue;
+    }
+    if (msg.status === "streaming" || msg.status === "error" || msg.status === "stopped") {
+      pending.push(msg);
+      continue;
+    }
+    if (msg.role === "user") {
+      if (currentTimestamp - msg.timestamp < PENDING_USER_RETAIN_MS) {
+        pending.push(msg);
+      }
+      continue;
+    }
+    if (msg.files.length > 0 || msg.text.trim().length > 0) {
+      if (currentTimestamp - msg.timestamp < PENDING_ASSISTANT_RETAIN_MS) {
+        pending.push(msg);
+      }
+    }
+  }
+
+  // Phase 3
+  const coalesced: Message[] = [];
+  for (const message of authoritative) {
+    const targetIndex = findFileResultTargetIndex(
+      outputPathMessageIds,
+      coalesced,
+      message,
+    );
+    if (targetIndex === -1) {
+      coalesced.push(message);
+      continue;
+    }
+    coalesced[targetIndex] = mergeFileResultIntoTarget(coalesced[targetIndex], message);
+  }
+
+  return {
+    messages: sortedMessagesForDisplay([...coalesced, ...pending]),
+  };
 }

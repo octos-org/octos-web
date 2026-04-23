@@ -38,6 +38,7 @@ import {
   reduceCreateAssistantTurnEvent,
   reduceCreateUserMessageEvent,
   reduceEnsureStreamingAssistantEvent,
+  reduceReplaceHistoryEvent,
   reduceStopStreamingAssistantEvent,
   runtimeStatusForTask,
   sameTaskAnchorMeta,
@@ -366,35 +367,6 @@ function indexFilesForSession(
   }
 }
 
-function coalesceFileResultsIntoAnchors(
-  sessionId: string,
-  messages: Message[],
-  topic?: string,
-): Message[] {
-  const key = storeKey(sessionId, topic);
-  const merged: Message[] = [];
-
-  for (const message of messages) {
-    const targetIndex = findFileResultTargetIndex(
-      outputPathMessageByKey.get(key),
-      merged,
-      message,
-    );
-    if (targetIndex === -1) {
-      merged.push(message);
-      continue;
-    }
-
-    merged[targetIndex] = mergeFileResultIntoTarget(merged[targetIndex], message);
-    recordRuntimeCounter("octos_result_duplicate_suppressed_total", {
-      kind: message.role,
-      reason: "background_file_coalesced",
-    });
-  }
-
-  return merged;
-}
-
 function replaceHistoryFromApi(
   sessionId: string,
   apiMessages: MessageInfo[],
@@ -402,78 +374,17 @@ function replaceHistoryFromApi(
 ): void {
   const key = storeKey(sessionId, topic);
   const existing = messagesByKey.get(key) ?? [];
-  const consumedOptimisticIndices = new Set<number>();
 
-  // Phase 1: Convert API messages to local format, merging with optimistic
-  // matches to preserve local-only state (id, meta, files from SSE).
-  const authoritative = apiMessages
-    .map((apiMessage) => convertApiMessage(apiMessage, nextId))
-    .filter((message): message is Message => message !== null)
-    .map((message) => {
-      const optimisticMatchIndex = findOptimisticMatchIndex(existing, message);
-      if (
-        optimisticMatchIndex === -1 ||
-        consumedOptimisticIndices.has(optimisticMatchIndex)
-      ) {
-        return message;
-      }
+  const { messages } = reduceReplaceHistoryEvent({
+    type: "replace_history_from_api",
+    existing,
+    apiMessages,
+    outputPathMessageIds: outputPathMessageByKey.get(key),
+    createId: nextId,
+  });
 
-      consumedOptimisticIndices.add(optimisticMatchIndex);
-      const optimistic = existing[optimisticMatchIndex];
-      return mergeAuthoritativeIntoMessage(optimistic, message);
-    });
-
-  // Phase 2: Collect unconsumed optimistic messages — these are local-only
-  // messages the server hasn't seen yet (user just typed, or still streaming).
-  // Drop stale completed messages that SHOULD have matched but didn't (e.g.
-  // the server returned a slightly different text after tool-progress cleanup).
-  // Keep streaming messages unconditionally — they're actively being built.
-  const pending: Message[] = [];
-  for (let i = 0; i < existing.length; i++) {
-    if (consumedOptimisticIndices.has(i)) continue;
-    const msg = existing[i];
-    // Already confirmed by server in a prior sync — server is authoritative.
-    if (typeof msg.historySeq === "number") continue;
-    // Task anchors are local projections of server task state. Preserve them
-    // across history replacement unless an authoritative causal ack consumed
-    // them above.
-    if (msg.kind === "task_anchor") {
-      pending.push(msg);
-      continue;
-    }
-    // Streaming or has local-only content — keep it.
-    if (msg.status === "streaming" || msg.status === "error" || msg.status === "stopped") {
-      pending.push(msg);
-      continue;
-    }
-    // Completed optimistic user message not yet in API — keep if recent.
-    if (msg.role === "user") {
-      const age = Date.now() - msg.timestamp;
-      if (age < 120_000) {
-        pending.push(msg);
-      }
-      continue;
-    }
-    // Completed assistant message not matched — keep only if it has
-    // meaningful content (files or text) that may not be in API yet.
-    if (msg.files.length > 0 || msg.text.trim().length > 0) {
-      const age = Date.now() - msg.timestamp;
-      if (age < 30_000) {
-        pending.push(msg);
-      }
-    }
-  }
-
-  // Phase 3: Merge and sort — authoritative first by seq, pending at the end
-  // ordered by timestamp.
-  const merged = [
-    ...coalesceFileResultsIntoAnchors(sessionId, authoritative, topic),
-    ...pending,
-  ];
-  const sorted = sortedMessagesForDisplay(merged);
-
-  messagesByKey.set(key, sorted);
-  indexFilesForSession(sessionId, sorted, topic);
+  messagesByKey.set(key, messages);
+  indexFilesForSession(sessionId, messages, topic);
   loadedSessions.add(key);
   notify();
 }
