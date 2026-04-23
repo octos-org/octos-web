@@ -560,12 +560,12 @@ function bindStreamToAssistant({
   };
 
   // Subscribe with replay — events that arrived before subscription are replayed.
-  const unsub = StreamManager.subscribe(sessionId, handleEvent, historyTopic);
-  if (unsub) {
+  const subscription = StreamManager.subscribe(sessionId, handleEvent, historyTopic);
+  if (subscription) {
     setupCleanup(
       sessionId,
       assistantMsgId,
-      unsub,
+      subscription.unsub,
       rawText,
       historyTopic,
       onComplete,
@@ -573,6 +573,7 @@ function bindStreamToAssistant({
       clientMessageId,
       sentAt,
       pendingStreamError,
+      subscription.streamId,
     );
   }
 }
@@ -589,6 +590,7 @@ function setupCleanup(
   clientMessageId?: string,
   sentAt?: number,
   pendingStreamError?: { current: string | null },
+  streamId?: number,
 ): void {
   // The subscriber is automatically cleaned up when the stream ends
   // (StreamManager clears subscribers). We also listen for stream_state
@@ -600,10 +602,19 @@ function setupCleanup(
       typeof detail?.topic === "string" && detail.topic.trim()
         ? detail.topic.trim()
         : undefined;
+    // When two prompts fire before either finishes, both subscribers share
+    // the same (sessionId, topic) but are attached to different streams.
+    // The event must match THIS stream's id — otherwise a fast sibling
+    // stream finishing first would trip this handler, unsubscribe from our
+    // still-running stream, and strand the assistant bubble on the slow
+    // poll-recovery path (see concurrent-deep-research-ordering.spec.ts).
     if (
       detail?.sessionId === sessionId &&
       detailTopic === normalizedHistoryTopic &&
-      !detail.active
+      !detail.active &&
+      (streamId === undefined ||
+        typeof detail?.streamId !== "number" ||
+        detail.streamId === streamId)
     ) {
       window.removeEventListener("crew:stream_state", handler);
       _unsub();

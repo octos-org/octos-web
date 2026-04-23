@@ -88,7 +88,7 @@ export function StudioPanel() {
 
       // Subscribe to capture file events and completion.
       // Use the captured outputId directly to avoid stale closure over project.outputs.
-      const unsubscribe = StreamManager.subscribe(genSessionId, (streamEvt) => {
+      const subscription = StreamManager.subscribe(genSessionId, (streamEvt) => {
         const evt = streamEvt.raw as any;
         if (evt.type === "file") {
           const token = getToken();
@@ -107,14 +107,14 @@ export function StudioPanel() {
                 ? evt.content.slice(0, 200)
                 : undefined,
           });
-          unsubscribe?.();
+          subscription?.unsub();
         }
         if (evt.type === "error") {
           updateOutput(outputId, {
             status: "error",
             error: evt.message || "Generation failed",
           });
-          unsubscribe?.();
+          subscription?.unsub();
         }
       });
 

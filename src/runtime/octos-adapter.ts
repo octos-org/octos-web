@@ -82,7 +82,7 @@ export function createOctosAdapter(
       const queue: StreamManager.StreamEvent[] = [];
       let resolve: (() => void) | null = null;
 
-      const unsub = StreamManager.subscribe(
+      const subscription = StreamManager.subscribe(
         sessionId,
         (event: StreamManager.StreamEvent) => {
           queue.push(event);
@@ -93,10 +93,11 @@ export function createOctosAdapter(
         },
       );
 
-      if (!unsub) {
+      if (!subscription) {
         // No stream found — shouldn't happen
         return;
       }
+      const unsub = subscription.unsub;
 
       try {
         while (!done) {
