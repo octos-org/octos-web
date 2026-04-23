@@ -13,6 +13,7 @@ import { resumeSessionStream } from "./sse-bridge";
 import * as FileStore from "@/store/file-store";
 import * as MessageStore from "@/store/message-store";
 import * as TaskStore from "@/store/task-store";
+import { applyAppendFileArtifact, applyTaskStatus } from "@/store/message-store-actions";
 import { getSessionStatus } from "@/api/sessions";
 import type { BackgroundTaskInfo } from "@/api/types";
 import { restoreWatchedSessions, unwatchSession, watchSession } from "./task-watcher";
@@ -126,8 +127,26 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
       const topic = eventTopic(detail);
       const task = detail?.task as BackgroundTaskInfo | undefined;
       if (task) {
-        TaskStore.mergeTask(sessionId, task, topic);
-        MessageStore.bindBackgroundTask(sessionId, task, topic);
+        const serverSeq =
+          typeof detail?.server_seq === "number"
+            ? (detail.server_seq as number)
+            : typeof (task as { server_seq?: number }).server_seq === "number"
+              ? (task as { server_seq?: number }).server_seq
+              : undefined;
+        const updatedAt =
+          typeof detail?.updated_at === "string"
+            ? (detail.updated_at as string)
+            : typeof (task as { updated_at?: string }).updated_at === "string"
+              ? (task as { updated_at?: string }).updated_at
+              : undefined;
+        applyTaskStatus({
+          type: "task_status",
+          sessionId,
+          topic,
+          task,
+          serverSeq,
+          updatedAt,
+        });
         const hasActiveTasks = TaskStore.getTasks(sessionId, topic).some(
           (candidate) =>
             candidate.status === "spawned" || candidate.status === "running",
@@ -137,13 +156,38 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
       }
     }
 
+    function handleFile(event: Event) {
+      const detail = (event as CustomEvent).detail;
+      const sessionId = eventSessionId(detail);
+      if (!sessionId) return;
+      const topic = eventTopic(detail);
+      const path = typeof detail?.path === "string" ? detail.path : "";
+      const filename = typeof detail?.filename === "string" ? detail.filename : "";
+      if (!path || !filename) return;
+      const toolCallId =
+        typeof detail?.tool_call_id === "string" ? detail.tool_call_id : undefined;
+      applyAppendFileArtifact({
+        type: "append_file_artifact",
+        sessionId,
+        topic,
+        file: {
+          path,
+          filename,
+          caption: typeof detail?.caption === "string" ? detail.caption : "",
+        },
+        toolCallId,
+      });
+    }
+
     window.addEventListener("crew:bg_tasks", handleBgTasks);
     window.addEventListener("crew:task_status", handleTaskStatus);
+    window.addEventListener("crew:file", handleFile);
 
     return () => {
       cancelled = true;
       window.removeEventListener("crew:bg_tasks", handleBgTasks);
       window.removeEventListener("crew:task_status", handleTaskStatus);
+      window.removeEventListener("crew:file", handleFile);
     };
   }, [currentSessionId, historyTopic, setServerTaskActive]);
 
