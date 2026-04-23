@@ -255,12 +255,23 @@ const TaskAnchorBubble = memo(function TaskAnchorBubble({
       : null;
   const phaseLabel = currentPhase?.trim() || taskStatusLabel(status);
 
+  const statusWord = failed ? "failed" : active ? "in progress" : "completed";
+  const displayToolName = toolName || "Background task";
+  const ariaLabel = progressMessage
+    ? `${displayToolName} ${statusWord} — ${phaseLabel} — ${progressMessage}`
+    : `${displayToolName} ${statusWord} — ${phaseLabel}`;
+  const progressValueNow =
+    progressPct !== null ? Math.round(progressPct * 100) : null;
+
   return (
     <div className="flex px-4 py-3">
       <div
         data-testid={`task-anchor-message-${taskId}`}
         data-task-id={taskId}
         data-task-status={status}
+        role="status"
+        aria-live="polite"
+        aria-label={ariaLabel}
         className={`message-card message-card-assistant animate-shell-rise max-w-[88%] rounded-[14px] rounded-bl-[4px] px-4 py-3 text-sm leading-relaxed text-text ${
           failed ? "border-red-500/20" : ""
         }`}
@@ -269,14 +280,14 @@ const TaskAnchorBubble = memo(function TaskAnchorBubble({
           {active && (
             <span
               data-testid={`task-anchor-spinner-${taskId}`}
+              aria-hidden="true"
               className="inline-flex h-3 w-3 items-center justify-center"
             >
               <span className="h-2 w-2 animate-ping rounded-full bg-accent/60" />
             </span>
           )}
           <span className="font-medium">
-            {toolName || "Background task"}{" "}
-            {failed ? "failed" : active ? "in progress" : "completed"}
+            {displayToolName} {statusWord}
           </span>
           <span
             data-testid={`task-anchor-phase-${taskId}`}
@@ -292,19 +303,29 @@ const TaskAnchorBubble = memo(function TaskAnchorBubble({
             className="mt-1 text-xs text-muted"
           >
             {progressMessage}
-            {progressPct !== null && (
-              <span className="ml-2 text-muted/70">
-                {Math.round(progressPct * 100)}%
+            {progressValueNow !== null && (
+              <span
+                role="progressbar"
+                aria-valuenow={progressValueNow}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                className="ml-2 text-muted/70"
+              >
+                {progressValueNow}%
               </span>
             )}
           </div>
         )}
-        {progressMessage == null && progressPct !== null && (
+        {progressMessage == null && progressValueNow !== null && (
           <div
             data-testid={`task-anchor-progress-${taskId}`}
+            role="progressbar"
+            aria-valuenow={progressValueNow}
+            aria-valuemin={0}
+            aria-valuemax={100}
             className="mt-1 text-xs text-muted"
           >
-            {Math.round(progressPct * 100)}%
+            {progressValueNow}%
           </div>
         )}
 
