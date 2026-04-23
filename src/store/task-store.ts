@@ -76,8 +76,44 @@ function persistKey(profile: string, sessionId: string): string {
   return `${PERSIST_PREFIX}:${profile}:${sessionId}`;
 }
 
+/**
+ * B-007: a profile id of `unknown`, empty, or falsy means we cannot
+ * scope writes to a user. Persisting under `unknown` would bleed tasks
+ * across accounts that share the same device. Skip persistence entirely
+ * (both write AND read) when the resolved profile is not a real id.
+ */
+function isPersistableProfile(profile: string | null | undefined): boolean {
+  if (!profile) return false;
+  const trimmed = profile.trim();
+  if (!trimmed) return false;
+  if (trimmed === "unknown") return false;
+  return true;
+}
+
 function canPersist(): boolean {
   return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
+}
+
+/**
+ * Remove any `octos_web:task_store:v1:unknown:*` entries from
+ * localStorage. Used when a real profile id becomes available after a
+ * previous session wrote under the `unknown` fallback.
+ */
+function clearUnknownProfileEntries(): void {
+  if (!canPersist()) return;
+  const prefix = `${PERSIST_PREFIX}:unknown:`;
+  const keysToRemove: string[] = [];
+  for (let i = 0; i < window.localStorage.length; i++) {
+    const key = window.localStorage.key(i);
+    if (key && key.startsWith(prefix)) keysToRemove.push(key);
+  }
+  for (const key of keysToRemove) {
+    try {
+      window.localStorage.removeItem(key);
+    } catch {
+      // ignore
+    }
+  }
 }
 
 function splitStoreKey(key: string): { sessionId: string; topic?: string } {
@@ -92,6 +128,7 @@ interface PersistedEntry {
 
 function readPersistedEntry(profile: string, sessionId: string): PersistedEntry | null {
   if (!canPersist()) return null;
+  if (!isPersistableProfile(profile)) return null;
   const raw = window.localStorage.getItem(persistKey(profile, sessionId));
   if (!raw) return null;
   try {
@@ -114,6 +151,7 @@ function readPersistedEntry(profile: string, sessionId: string): PersistedEntry 
 
 function writePersistedEntry(profile: string, sessionId: string, entry: PersistedEntry): void {
   if (!canPersist()) return;
+  if (!isPersistableProfile(profile)) return;
   const serialized = JSON.stringify(entry);
   // Hard cap: LRU-evict completed tasks older than 24h until we fit.
   if (serialized.length <= PERSIST_MAX_BYTES) {
@@ -174,8 +212,14 @@ function flushPersistence(): void {
     flushHandle = null;
   }
   if (!canPersist()) return;
+  // B-007: drop dirty bookkeeping but do NOT touch localStorage when the
+  // profile is not a real id — we must never write nor remove under the
+  // `unknown` scope.
   const ids = [...dirtySessionIds];
   dirtySessionIds.clear();
+  if (!isPersistableProfile(activeProfile)) {
+    return;
+  }
   for (const sessionId of ids) {
     const scoped: Record<string, StoredTask[]> = {};
     for (const [key, tasks] of tasksByKey.entries()) {
@@ -240,9 +284,20 @@ export function __flushTaskStorePersistenceForTests(): void {
  * Called on module load for the current profile+session and again on
  * profile/session switch. Parse errors drop the bad entry and log a warning —
  * never throw.
+ *
+ * B-007: when the profile transitions from a non-persistable value
+ * (falsy / empty / `unknown`) to a real id, purge any lingering
+ * `octos_web:task_store:v1:unknown:*` entries so leftover tasks from
+ * the pre-login state don't bleed into the user's scope.
  */
 export function rehydrateTaskStore(opts: { profile: string; session: string }): void {
+  const incomingPersistable = isPersistableProfile(opts.profile);
+  const previousPersistable = isPersistableProfile(activeProfile);
+  if (incomingPersistable && !previousPersistable) {
+    clearUnknownProfileEntries();
+  }
   activeProfile = opts.profile;
+  if (!incomingPersistable) return;
   const entry = readPersistedEntry(opts.profile, opts.session);
   if (!entry) return;
 
