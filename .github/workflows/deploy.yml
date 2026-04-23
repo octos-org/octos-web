@@ -24,6 +24,24 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: E2E regression tests
+        run: |
+          npm run build
+          npm run preview -- --host 127.0.0.1 --port 5174 > /tmp/octos-web-preview.log 2>&1 &
+          echo $! > /tmp/octos-web-preview.pid
+          trap 'kill "$(cat /tmp/octos-web-preview.pid)" 2>/dev/null || true' EXIT
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:5174 >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:5174 >/dev/null || {
+            cat /tmp/octos-web-preview.log
+            exit 1
+          }
+          npm test -- tests/background-task-scope.spec.ts --project=chromium
       - run: npm run build
         env:
           BASE_URL: /octos-web/

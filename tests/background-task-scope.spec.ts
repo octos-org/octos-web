@@ -226,6 +226,28 @@ const HISTORY_WITH_PRECEDING_NORMAL_TURNS = [
   },
 ];
 
+const HISTORY_WITH_MEDIA_ONLY_REPORT = [
+  {
+    seq: 0,
+    role: "user",
+    content: "Search for the Navy Secretary story",
+    timestamp: "2026-04-20T12:00:00.000Z",
+  },
+  {
+    seq: 1,
+    role: "assistant",
+    content: "快速搜索未能获取详细信息，但已生成研究报告。",
+    timestamp: "2026-04-20T12:00:10.000Z",
+  },
+  {
+    seq: 2,
+    role: "assistant",
+    content: "",
+    media: ["pf/research-report.md"],
+    timestamp: "2026-04-20T12:00:10.010Z",
+  },
+];
+
 function sse(events: unknown[]): string {
   return events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
 }
@@ -763,6 +785,37 @@ test.describe("background task scoping", () => {
       .locator("text=news_fetch");
     await expect(toolChip).toBeVisible();
     await expect(toolChip).not.toHaveClass(/animate-pulse/u);
+  });
+
+  test("media-only report history coalesces into preceding assistant answer", async ({
+    page,
+  }) => {
+    await installMockRuntime(
+      page,
+      [],
+      [],
+      {
+        [ORIGIN_SESSION]: HISTORY_WITH_MEDIA_ONLY_REPORT,
+      },
+      [],
+    );
+    await page.goto("/chat", { waitUntil: "networkidle" });
+    await page.waitForSelector(SEL.chatInput);
+
+    await expect(page.getByTestId("assistant-message")).toHaveCount(1);
+    await expect(page.getByTestId("assistant-message")).toContainText(
+      "快速搜索未能获取详细信息",
+    );
+    await expect(page.getByTestId("assistant-message")).toContainText(
+      "research-report.md",
+    );
+
+    const bubbles = await page
+      .getByTestId("assistant-message")
+      .evaluateAll((nodes) =>
+        nodes.map((node) => (node.textContent || "").trim()),
+      );
+    expect(bubbles.filter((text) => text.length === 0)).toHaveLength(0);
   });
 
   test("failed deep research task stays in its originating session", async ({ page }) => {

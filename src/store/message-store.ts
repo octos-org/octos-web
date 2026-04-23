@@ -819,6 +819,32 @@ function findFileResultTargetIndex(
     if (byPath !== -1) return byPath;
   }
 
+  const adjacent = findAdjacentFileResultTargetIndex(list, fileResult);
+  if (adjacent !== -1) return adjacent;
+
+  return -1;
+}
+
+function findAdjacentFileResultTargetIndex(
+  list: Message[],
+  fileResult: Message,
+): number {
+  const fileText = fileResult.text.trim();
+  const isMediaOnly = fileText.length === 0 || TASK_COMPLETION_RE.test(fileText);
+  if (!isMediaOnly) return -1;
+
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    const candidate = list[index];
+    if (candidate.kind === "task_anchor") continue;
+    if (candidate.role === "user" || candidate.role === "system") return -1;
+    if (candidate.role !== "assistant") continue;
+    if (!candidate.text.trim() && candidate.toolCalls.length === 0) continue;
+
+    const delta = fileResult.timestamp - candidate.timestamp;
+    if (delta < 0 || delta > 5 * 60_000) return -1;
+    return index;
+  }
+
   return -1;
 }
 
