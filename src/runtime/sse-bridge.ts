@@ -717,12 +717,18 @@ async function pollForResponse(
 
       const matchedAssistant = [...msgs].reverse().find((message) => {
         if (message.role !== "assistant") return false;
-        if (!message.content || message.content.trim().length <= 20)
-          return false;
+        if (!message.content) return false;
         if (clientMessageId) {
+          // Authoritative cmid correlation — trust server-side routing even
+          // when the reply text is short (e.g. a shell echo of <= 20 chars
+          // under speculative queue mode). Previously the content-length
+          // guard here rejected legitimate short BRAVO replies and the
+          // overflow bubble stayed empty (FA-12f web-side fallback).
           return message.response_to_client_message_id === clientMessageId;
         }
-
+        // Time-based fallback — keep the length guard to avoid matching
+        // short server-side system replies when cmid is not available.
+        if (message.content.trim().length <= 20) return false;
         if (!sentAt) return false;
         const messageTime = Date.parse(message.timestamp);
         if (Number.isNaN(messageTime)) return false;
