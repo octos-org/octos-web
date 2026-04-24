@@ -424,14 +424,38 @@ function bindStreamToAssistant({
 
       case "session_result": {
         if (event.message) {
+          // FA-12f: under `/queue speculative`, the server emits
+          // overflow session_result events onto the PRIMARY turn's SSE
+          // stream (ApiChannel broadcasts to `pending[chat_id]` in
+          // addition to `watchers`). Blindly merging every
+          // session_result into this bubble's `assistantMsgId` clobbers
+          // the primary bubble (ALPHA) with the overflow reply (BRAVO)
+          // and then the collapse pass removes BRAVO's own streaming
+          // bubble as a "duplicate" — so BRAVO never renders.
+          //
+          // Route by `response_to_client_message_id` correlation:
+          //   - match this bubble  → merge in place (fast path; keeps
+          //     file artifacts, tool calls, meta attached to the bubble)
+          //   - different bubble  → go through appendHistoryMessages so
+          //     findOptimisticMatchIndex correlates against the right
+          //     sibling bubble
+          //   - no correlation    → legacy behaviour (in-place merge)
+          const incomingCmid = event.message.response_to_client_message_id;
+          const isForThisBubble =
+            !incomingCmid || !clientMessageId || incomingCmid === clientMessageId;
+
           const previousSeq = MessageStore.getMaxHistorySeq(sessionId, historyTopic);
-          const merged = MessageStore.mergeHistoryMessageIntoMessage(
-            sessionId,
-            assistantMsgId,
-            event.message,
-            historyTopic,
-          );
-          if (!merged) {
+          if (isForThisBubble) {
+            const merged = MessageStore.mergeHistoryMessageIntoMessage(
+              sessionId,
+              assistantMsgId,
+              event.message,
+              historyTopic,
+            );
+            if (!merged) {
+              MessageStore.appendHistoryMessages(sessionId, [event.message], historyTopic);
+            }
+          } else {
             MessageStore.appendHistoryMessages(sessionId, [event.message], historyTopic);
           }
           const observedSeq =
