@@ -2,19 +2,42 @@ import { API_BASE, TOKEN_KEY, ADMIN_TOKEN_KEY } from "@/lib/constants";
 import { getSettings } from "@/hooks/use-settings";
 import { absoluteUrl } from "@/lib/utils";
 
-function inferProfileIdFromHost(): string | null {
-  if (typeof window === "undefined") return null;
-  const hostname = window.location.hostname;
-  const suffixes = [".octos.ominix.io", ".crew.ominix.io"];
-  for (const suffix of suffixes) {
+// Per-mini base-domain suffixes. Each mini serves profiles under its
+// own base domain (mini1=crew, mini2=bot, mini3=octos, mini5=ocean), so
+// the suffix list must cover every variant — otherwise `dspfac.bot.ominix.io`
+// resolves to a null profile id and the web client falls back to the
+// stored selection (or none at all). The landing-page subdomains themselves
+// (`crew.`, `bot.`, `octos.`, `ocean.`, `www`) must be stripped so they
+// do not get treated as profile IDs.
+const PROFILE_HOST_SUFFIXES = [
+  ".octos.ominix.io",
+  ".crew.ominix.io",
+  ".bot.ominix.io",
+  ".ocean.ominix.io",
+];
+const RESERVED_ROOT_SUBDOMAINS = new Set([
+  "crew",
+  "octos",
+  "bot",
+  "ocean",
+  "www",
+]);
+
+export function inferProfileIdFromHostname(hostname: string): string | null {
+  for (const suffix of PROFILE_HOST_SUFFIXES) {
     if (!hostname.endsWith(suffix)) continue;
     const subdomain = hostname.slice(0, -suffix.length);
-    if (!subdomain || subdomain === "crew" || subdomain === "octos" || subdomain === "www") {
+    if (!subdomain || RESERVED_ROOT_SUBDOMAINS.has(subdomain)) {
       return null;
     }
     return subdomain;
   }
   return null;
+}
+
+function inferProfileIdFromHost(): string | null {
+  if (typeof window === "undefined") return null;
+  return inferProfileIdFromHostname(window.location.hostname);
 }
 
 function isLocalBrowserHost(): boolean {
