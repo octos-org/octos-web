@@ -6,6 +6,7 @@ import {
   createLocalMessage,
   findFileResultTargetIndex,
   findMessageIndexForFilePath,
+  findNoSeqDuplicateIndex,
   findOptimisticMatchIndex,
   findTaskAnchorIndex,
   isAssistantCompanionForFileMessage,
@@ -465,5 +466,43 @@ test.describe("message-store reducer helpers", () => {
       "sess", later, [user], mergeTaskAnchorMeta(undefined, later), undefined, fixedNow,
     );
     expect(laterAnchor.timestamp).toBe(Date.parse(later.started_at));
+  });
+
+  test("findNoSeqDuplicateIndex covers role/window/seq guards for no-seq messages", () => {
+    // Bug 2: messages without historySeq bypass both the seq guard and the
+    // confirmed-text guard, so they append on every poll. The no-seq guard
+    // matches by role + normalized text + a short timestamp window.
+    const baseTs = Date.parse("2026-04-20T12:00:00.000Z");
+    const savedText = "已记住。Saratoga, CA 今天多云，11.6°C，湿度 80%，几乎无风";
+    const existing = makeMessage({ id: "a", role: "assistant", text: savedText, timestamp: baseTs });
+
+    // 1) Same role + same text within window → dedup.
+    expect(
+      findNoSeqDuplicateIndex([existing], makeMessage({
+        id: "dup", role: "assistant", text: savedText, timestamp: baseTs + 3_000,
+      })),
+    ).toBe(0);
+
+    // 2) Same role + same text but outside the 10s window → keep both.
+    expect(
+      findNoSeqDuplicateIndex([existing], makeMessage({
+        id: "stale", role: "assistant", text: savedText, timestamp: baseTs + 60_000,
+      })),
+    ).toBe(-1);
+
+    // 3) Different role → keep both (user echoing the same text).
+    expect(
+      findNoSeqDuplicateIndex([existing], makeMessage({
+        id: "user", role: "user", text: savedText, timestamp: baseTs + 1_000,
+      })),
+    ).toBe(-1);
+
+    // 4) Converted has a historySeq → let the seq-based guard handle it.
+    expect(
+      findNoSeqDuplicateIndex([existing], makeMessage({
+        id: "with-seq", role: "assistant", text: savedText, timestamp: baseTs + 2_000,
+        historySeq: 5,
+      })),
+    ).toBe(-1);
   });
 });
