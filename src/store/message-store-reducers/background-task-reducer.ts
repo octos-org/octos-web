@@ -43,19 +43,49 @@ export function taskAnchorTimelineTimestamp(
 ): number {
   const serverTs = taskTimestamp(task, now);
   // Guard against client/server clock skew: the anchor bubble must never sort
-  // ahead of the user prompt that spawned it. Walk the current list for the
-  // most recent user message and bump the anchor's timestamp to just after it
-  // so `compareMessagesForDisplay` (which falls back to timestamp for task
-  // anchors) keeps the prompt on top.
-  let latestUserTs = -Infinity;
+  // ahead of the user prompt that spawned IT specifically. Earlier revision
+  // walked for the LATEST user message, which incorrectly promoted older
+  // tasks above newer user turns. Correct behaviour: find the user message
+  // whose timestamp most-recently-precedes the task's server-reported
+  // started_at, and bump the anchor to just after THAT user — never past
+  // a later user turn.
+  let triggeringUserTs = -Infinity;
   for (const message of list) {
-    if (message.role === "user" && message.timestamp > latestUserTs) {
-      latestUserTs = message.timestamp;
+    if (message.role !== "user") continue;
+    if (message.timestamp > serverTs) continue;
+    if (message.timestamp > triggeringUserTs) {
+      triggeringUserTs = message.timestamp;
     }
   }
-  if (Number.isFinite(latestUserTs) && serverTs <= latestUserTs) {
-    return latestUserTs + 1;
+  if (!Number.isFinite(triggeringUserTs)) {
+    // No preceding user turn (e.g. task started before any user prompt, rare);
+    // fall back to the oldest user turn to avoid floating above everything.
+    let earliestUserTs = Infinity;
+    for (const message of list) {
+      if (message.role !== "user") continue;
+      if (message.timestamp < earliestUserTs) {
+        earliestUserTs = message.timestamp;
+      }
+    }
+    if (Number.isFinite(earliestUserTs) && serverTs < earliestUserTs) {
+      return earliestUserTs + 1;
+    }
+    return serverTs;
   }
+  // Always clamp to [triggeringUserTs+1, next-user-turn-1] so multi-task
+  // timelines stay interleaved correctly.
+  let nextUserTs = Infinity;
+  for (const message of list) {
+    if (message.role !== "user") continue;
+    if (message.timestamp <= triggeringUserTs) continue;
+    if (message.timestamp < nextUserTs) {
+      nextUserTs = message.timestamp;
+    }
+  }
+  const lowerBound = triggeringUserTs + 1;
+  const upperBound = Number.isFinite(nextUserTs) ? nextUserTs - 1 : Number.POSITIVE_INFINITY;
+  if (serverTs < lowerBound) return lowerBound;
+  if (serverTs > upperBound) return upperBound;
   return serverTs;
 }
 

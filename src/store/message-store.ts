@@ -866,10 +866,12 @@ export function appendHistoryMessages(
     );
     if (confirmedDupe !== -1) {
       const existing = list[confirmedDupe];
-      // If the existing entry has no historySeq, adopt the new one's seq
-      // so future replays/polls dedup via the primary seq guard above.
+      // If the existing entry has no historySeq, adopt the full authoritative
+      // message via mergeAuthoritativeIntoMessage — this carries over
+      // timestamp, toolCalls, files, meta, and responseToClientMessageId that
+      // a bare seq-adoption would silently drop.
       if (typeof existing.historySeq !== "number" && typeof converted.historySeq === "number") {
-        list[confirmedDupe] = { ...existing, historySeq: converted.historySeq };
+        list[confirmedDupe] = mergeAuthoritativeIntoMessage(existing, converted);
         changed = true;
       }
       recordRuntimeCounter("octos_result_duplicate_suppressed_total", {

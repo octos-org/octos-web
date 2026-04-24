@@ -699,23 +699,32 @@ export function ChatThread({
   );
   const synthesizedAnchors = useMemo(() => {
     const out: Message[] = [];
-    // Guard against clock skew: if task.started_at predates the latest user
-    // prompt, push the synthesized anchor to just after it so the progress
-    // bubble never sorts ahead of the prompt that spawned it (Bug 1).
-    let latestUserTs = -Infinity;
-    for (const message of messages) {
-      if (message.role === "user" && message.timestamp > latestUserTs) {
-        latestUserTs = message.timestamp;
-      }
-    }
     for (const task of tasks) {
       if (!task.id || anchoredIds.has(task.id)) continue;
       const startedAt = Date.parse(task.started_at);
       const serverTs = Number.isFinite(startedAt) ? startedAt : Date.now();
-      const timestamp =
-        Number.isFinite(latestUserTs) && serverTs <= latestUserTs
-          ? latestUserTs + 1
-          : serverTs;
+      // Clamp to the band between the user prompt that spawned THIS task
+      // and the next user prompt. Prevents older tasks from jumping above
+      // newer user turns (the multi-task-timeline bug a reviewer flagged
+      // against the earlier "latestUserTs" heuristic).
+      let triggeringUserTs = -Infinity;
+      let nextUserTs = Infinity;
+      for (const m of messages) {
+        if (m.role !== "user") continue;
+        if (m.timestamp <= serverTs && m.timestamp > triggeringUserTs) {
+          triggeringUserTs = m.timestamp;
+        }
+        if (m.timestamp > serverTs && m.timestamp < nextUserTs) {
+          nextUserTs = m.timestamp;
+        }
+      }
+      let timestamp = serverTs;
+      if (Number.isFinite(triggeringUserTs) && timestamp <= triggeringUserTs) {
+        timestamp = triggeringUserTs + 1;
+      }
+      if (Number.isFinite(nextUserTs) && timestamp >= nextUserTs) {
+        timestamp = nextUserTs - 1;
+      }
       out.push({
         id: `task:${currentSessionId}:${task.id}`,
         role: "assistant",
