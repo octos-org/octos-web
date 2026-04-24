@@ -442,4 +442,28 @@ test.describe("message-store reducer helpers", () => {
       ),
     ).toEqual(["user", "assistant", "pending", "task"]);
   });
+
+  test("task anchor sorts after user prompt when server started_at predates client timestamp", () => {
+    // Bug 1: clock skew between browser and server can place task.started_at
+    // BEFORE the user message timestamp, causing the "Deep research in
+    // progress" anchor to render ABOVE the user prompt that triggered it.
+    const userTs = Date.parse("2026-04-20T12:00:00.000Z");
+    const user = makeMessage({ id: "user", role: "user", timestamp: userTs });
+    const task = makeTask({ id: "skew", started_at: "2026-04-20T11:59:58.000Z" });
+    const anchor = projectTaskAnchorMessage(
+      "sess", task, [user], mergeTaskAnchorMeta(undefined, task), undefined, fixedNow,
+    );
+    expect(anchor.timestamp).toBeGreaterThan(user.timestamp);
+    expect(sortedMessagesForDisplay([anchor, user]).map((m) => m.id)).toEqual([
+      user.id, anchor.id,
+    ]);
+
+    // Same projector keeps the server timestamp when the task starts AFTER
+    // the prompt (no skew).
+    const later = makeTask({ id: "later", started_at: "2026-04-20T12:00:03.000Z" });
+    const laterAnchor = projectTaskAnchorMessage(
+      "sess", later, [user], mergeTaskAnchorMeta(undefined, later), undefined, fixedNow,
+    );
+    expect(laterAnchor.timestamp).toBe(Date.parse(later.started_at));
+  });
 });
