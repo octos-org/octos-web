@@ -104,6 +104,47 @@ async function consumeSseResponse(
 
   const contentType = resp.headers.get("content-type") || "";
   if (contentType.includes("application/json")) {
+    // FA-11 defect C fix: under `/queue speculative`, when a second POST
+    // /api/chat arrives while an earlier SSE stream is still live, the
+    // gateway returns a JSON ack:
+    //   {"status":"queued","message":"…"}
+    // Previously we silently dropped it and the assistant bubble stayed
+    // "streaming" forever — the bubble would only clear after the 15-minute
+    // polling fallback consumed the session_result via /messages.
+    //
+    // Recognise the ack and emit a lightweight side-channel event so the
+    // runtime provider can guarantee a session-event-stream subscription is
+    // live. The overflow reply the gateway is about to produce will arrive
+    // as a `session_result` event on that stream and merge into the
+    // streaming bubble via `responseToClientMessageId` correlation.
+    try {
+      const body = await resp.text();
+      if (body) {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(body);
+        } catch {
+          parsed = undefined;
+        }
+        if (
+          parsed &&
+          typeof parsed === "object" &&
+          (parsed as { status?: string }).status === "queued"
+        ) {
+          window.dispatchEvent(
+            new CustomEvent("crew:queued_ack", {
+              detail: {
+                sessionId: stream.sessionId,
+                topic: stream.topic,
+                streamId: stream.id,
+              },
+            }),
+          );
+        }
+      }
+    } catch {
+      // ignore JSON body read errors — stream-end handling below still runs
+    }
     stream.active = false;
     return;
   }

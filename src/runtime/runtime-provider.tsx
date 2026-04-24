@@ -188,15 +188,31 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
       });
     }
 
+    // FA-11 defect C fix: when POST /api/chat returns `{status:"queued"}`
+    // (speculative queue mode overflow), the server will deliver the
+    // eventual reply as a `session_result` event on the session-event
+    // stream. Ensure the session is being watched so that stream is open
+    // and `appendHistoryMessages` can merge the reply into the streaming
+    // bubble via `responseToClientMessageId` correlation.
+    function handleQueuedAck(event: Event) {
+      const detail = (event as CustomEvent).detail;
+      const sessionId = eventSessionId(detail);
+      if (!sessionId) return;
+      const topic = eventTopic(detail);
+      watchSession(sessionId, topic);
+    }
+
     window.addEventListener("crew:bg_tasks", handleBgTasks);
     window.addEventListener("crew:task_status", handleTaskStatus);
     window.addEventListener("crew:file", handleFile);
+    window.addEventListener("crew:queued_ack", handleQueuedAck);
 
     return () => {
       cancelled = true;
       window.removeEventListener("crew:bg_tasks", handleBgTasks);
       window.removeEventListener("crew:task_status", handleTaskStatus);
       window.removeEventListener("crew:file", handleFile);
+      window.removeEventListener("crew:queued_ack", handleQueuedAck);
     };
   }, [currentSessionId, historyTopic, setServerTaskActive]);
 
