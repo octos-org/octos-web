@@ -846,13 +846,15 @@ export function appendHistoryMessages(
       continue;
     }
 
-    // Safety: check if a confirmed message with the same text+role already
-    // exists (e.g. two turns produced identical responses and the optimistic
-    // matcher consumed the wrong one). Merge into the existing message rather
-    // than adding a duplicate.
+    // Safety: check if a message with the same text+role already exists,
+    // either as a confirmed (seq'd) entry or as a live-streamed no-seq
+    // bubble. When an authoritative historySeq message arrives and matches
+    // an existing no-seq bubble, merge the seq into it instead of appending
+    // a second copy. This catches the speculative-overflow-replay case
+    // where seq=N session_result arrives after the live SSE bubble already
+    // rendered the same text.
     const confirmedDupe = list.findIndex(
       (m) =>
-        typeof m.historySeq === "number" &&
         m.role === converted.role &&
         m.files.length === 0 &&
         converted.files.length === 0 &&
@@ -862,6 +864,13 @@ export function appendHistoryMessages(
         Math.abs(m.timestamp - converted.timestamp) < 120_000,
     );
     if (confirmedDupe !== -1) {
+      const existing = list[confirmedDupe];
+      // If the existing entry has no historySeq, adopt the new one's seq
+      // so future replays/polls dedup via the primary seq guard above.
+      if (typeof existing.historySeq !== "number" && typeof converted.historySeq === "number") {
+        list[confirmedDupe] = { ...existing, historySeq: converted.historySeq };
+        changed = true;
+      }
       recordRuntimeCounter("octos_result_duplicate_suppressed_total", {
         kind: converted.role,
         reason: "confirmed_text_match",
