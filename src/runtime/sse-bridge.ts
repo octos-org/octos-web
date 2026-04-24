@@ -758,6 +758,18 @@ async function pollForResponse(
       // keep polling
     }
   }
+  // Timeout reached. When the caller supplied a clientMessageId, the reply
+  // MAY still arrive later via the session-event-stream watcher: speculative
+  // queue mode can park a turn behind an overflow/primary cycle that
+  // exceeds our 15-min poll window. In that case, do NOT overwrite the
+  // bubble with "No response received." — leave it in streaming state so
+  // findOptimisticMatchIndex (matching by responseToClientMessageId) can
+  // merge the eventual authoritative session_result into it. The caller's
+  // onComplete still fires so abort/cleanup proceeds.
+  if (clientMessageId && !options?.errorMessage) {
+    return false;
+  }
+
   if (!options?.errorMessage) {
     applyStreamError({
       type: "stream_error",
