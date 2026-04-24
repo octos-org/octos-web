@@ -19,6 +19,12 @@ import * as MessageStore from "@/store/message-store";
 import * as TaskStore from "@/store/task-store";
 import * as FileStore from "@/store/file-store";
 
+function currentProfile(): string {
+  if (typeof window === "undefined") return "unknown";
+  const stored = window.localStorage.getItem("selected_profile");
+  return stored && stored.trim() ? stored : "unknown";
+}
+
 const SESSION_TITLE_STORAGE_KEY = "octos_session_titles";
 const SESSION_STATS_STORAGE_KEY = "octos_session_stats";
 const SESSION_TOPIC_STORAGE_KEY = "octos_session_topics";
@@ -351,6 +357,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     restoredRef.current = true;
     const saved = localStorage.getItem("octos_current_session");
     if (saved && saved.startsWith("web-")) {
+      // Rehydrate the persisted task-store slice BEFORE awaiting network. This
+      // is the core of bug class #1 recovery — the reload must resurface
+      // active task anchors immediately instead of waiting for the first
+      // poll or SSE reconnect to finish.
+      TaskStore.rehydrateTaskStore({ profile: currentProfile(), session: saved });
       const restoredTopic = sessionTopics[saved];
       getMessages(saved, 500, 0, undefined, restoredTopic).then((msgs) => {
         if (msgs.length > 0) {
@@ -545,6 +556,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     if (id !== currentSessionId) {
       previousSessionIdRef.current = currentSessionId;
     }
+    // Rehydrate the target session's persisted task-store slice synchronously
+    // so the task anchors are on-screen before the network round-trip below
+    // has a chance to finish.
+    TaskStore.rehydrateTaskStore({ profile: currentProfile(), session: id });
     // Guard against race: only the latest switch request wins
     const requestId = ++switchRequestRef.current;
     const topic = sessionTopics[id];

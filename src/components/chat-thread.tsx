@@ -35,6 +35,8 @@ import {
   type MessageFile,
   type MessageMeta,
 } from "@/store/message-store";
+import { useTasks } from "@/store/task-store";
+import type { BackgroundTaskInfo } from "@/api/types";
 import { uploadFiles } from "@/api/chat";
 import { sendMessage as bridgeSend } from "@/runtime/sse-bridge";
 import * as StreamManager from "@/runtime/stream-manager";
@@ -164,6 +166,183 @@ const AssistantBubble = memo(function AssistantBubble({
         )}
 
         {/* Message meta */}
+        <MessageMetaInline message={message} />
+      </div>
+    </div>
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Task anchor bubble — subscribes to task-store and falls back to the
+// message-embedded taskAnchor when no store entry exists.
+// ---------------------------------------------------------------------------
+
+interface TaskAnchorDerived {
+  taskId: string;
+  toolName?: string;
+  status: BackgroundTaskInfo["status"];
+  currentPhase?: string | null;
+  progressMessage?: string | null;
+  progress?: number | null;
+  error?: string | null;
+  outputFiles?: string[];
+}
+
+function deriveTaskAnchor(
+  message: Message,
+  storeTask: BackgroundTaskInfo | undefined,
+): TaskAnchorDerived | null {
+  const taskId = storeTask?.id ?? message.taskAnchor?.taskId;
+  if (!taskId) return null;
+  if (storeTask) {
+    return {
+      taskId: storeTask.id,
+      toolName: storeTask.tool_name,
+      status: storeTask.status,
+      currentPhase: storeTask.current_phase ?? null,
+      progressMessage: storeTask.progress_message ?? null,
+      progress: storeTask.progress ?? null,
+      error: storeTask.error,
+      outputFiles: storeTask.output_files,
+    };
+  }
+  const fallback = message.taskAnchor;
+  if (!fallback) return null;
+  return {
+    taskId,
+    toolName: fallback.toolNames?.[0],
+    status: fallback.taskStatus ?? "running",
+    currentPhase: fallback.currentPhase ?? null,
+    progressMessage: fallback.progressMessage ?? null,
+    progress: fallback.progress ?? null,
+    error: fallback.error ?? null,
+    outputFiles: fallback.outputFiles,
+  };
+}
+
+function taskStatusLabel(status: BackgroundTaskInfo["status"]): string {
+  switch (status) {
+    case "spawned":
+      return "queued";
+    case "running":
+      return "running";
+    case "completed":
+      return "completed";
+    case "failed":
+      return "failed";
+  }
+}
+
+const TaskAnchorBubble = memo(function TaskAnchorBubble({
+  message,
+  storeTask,
+}: {
+  message: Message;
+  storeTask: BackgroundTaskInfo | undefined;
+}) {
+  const derived = deriveTaskAnchor(message, storeTask);
+  if (!derived) {
+    // Shouldn't happen — fall through to generic assistant rendering.
+    return <AssistantBubble message={message} isLast={false} />;
+  }
+
+  const { taskId, toolName, status, currentPhase, progressMessage, progress, error } = derived;
+  const active = status === "spawned" || status === "running";
+  const failed = status === "failed";
+  const progressPct =
+    typeof progress === "number" && Number.isFinite(progress)
+      ? Math.max(0, Math.min(1, progress))
+      : null;
+  const phaseLabel = currentPhase?.trim() || taskStatusLabel(status);
+
+  const statusWord = failed ? "failed" : active ? "in progress" : "completed";
+  const displayToolName = toolName || "Background task";
+  const ariaLabel = progressMessage
+    ? `${displayToolName} ${statusWord} — ${phaseLabel} — ${progressMessage}`
+    : `${displayToolName} ${statusWord} — ${phaseLabel}`;
+  const progressValueNow =
+    progressPct !== null ? Math.round(progressPct * 100) : null;
+
+  return (
+    <div className="flex px-4 py-3">
+      <div
+        data-testid={`task-anchor-message-${taskId}`}
+        data-task-id={taskId}
+        data-task-status={status}
+        role="status"
+        aria-live="polite"
+        aria-label={ariaLabel}
+        className={`message-card message-card-assistant animate-shell-rise max-w-[88%] rounded-[14px] rounded-bl-[4px] px-4 py-3 text-sm leading-relaxed text-text ${
+          failed ? "border-red-500/20" : ""
+        }`}
+      >
+        <div className="flex items-center gap-2">
+          {active && (
+            <span
+              data-testid={`task-anchor-spinner-${taskId}`}
+              aria-hidden="true"
+              className="inline-flex h-3 w-3 items-center justify-center"
+            >
+              <span className="h-2 w-2 animate-ping rounded-full bg-accent/60" />
+            </span>
+          )}
+          <span className="font-medium">
+            {displayToolName} {statusWord}
+          </span>
+          <span
+            data-testid={`task-anchor-phase-${taskId}`}
+            className="glass-pill rounded-[8px] px-2 py-0.5 text-[10px] text-muted"
+          >
+            {phaseLabel}
+          </span>
+        </div>
+
+        {progressMessage && (
+          <div
+            data-testid={`task-anchor-progress-${taskId}`}
+            className="mt-1 text-xs text-muted"
+          >
+            {progressMessage}
+            {progressValueNow !== null && (
+              <span
+                role="progressbar"
+                aria-valuenow={progressValueNow}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                className="ml-2 text-muted/70"
+              >
+                {progressValueNow}%
+              </span>
+            )}
+          </div>
+        )}
+        {progressMessage == null && progressValueNow !== null && (
+          <div
+            data-testid={`task-anchor-progress-${taskId}`}
+            role="progressbar"
+            aria-valuenow={progressValueNow}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            className="mt-1 text-xs text-muted"
+          >
+            {progressValueNow}%
+          </div>
+        )}
+
+        {error && (
+          <div className="mt-2 whitespace-pre-wrap rounded-[10px] border border-red-500/20 bg-red-900/10 px-2 py-1 text-[11px] text-red-300">
+            {error}
+          </div>
+        )}
+
+        {message.files.length > 0 && (
+          <div className="mt-3 flex flex-col gap-2">
+            {message.files.map((f) => (
+              <FileAttachment key={f.path} file={f} />
+            ))}
+          </div>
+        )}
+
         <MessageMetaInline message={message} />
       </div>
     </div>
@@ -494,19 +673,102 @@ export function ChatThread({
 }: ChatThreadProps = {}) {
   const { currentSessionId, historyTopic } = useSession();
   const messages = useMessages(currentSessionId, historyTopic);
-  const visibleMessages = useMemo(
+  // Subscribe to task-store so the chat thread re-renders when any active
+  // task changes — even when the task update does not touch message-store.
+  const tasks = useTasks(currentSessionId, historyTopic);
+  const taskIndex = useMemo(() => {
+    const map = new Map<string, BackgroundTaskInfo>();
+    for (const task of tasks) {
+      if (task.id) map.set(task.id, task);
+    }
+    return map;
+  }, [tasks]);
+
+  // task-store may contain tasks whose anchor message hasn't been projected
+  // into message-store yet (e.g. reload-rehydrated entry where the
+  // assistant-turn bubble has not reappeared). Synthesize placeholder anchor
+  // messages for those so the UI can still show the running task immediately.
+  const anchoredIds = useMemo(
     () =>
-      hideFileOnlyAssistantMessages
-        ? messages.filter((message) => !isFileOnlyAssistantMessage(message))
-        : messages,
-    [hideFileOnlyAssistantMessages, messages],
+      new Set(
+        messages
+          .filter((m) => m.kind === "task_anchor" && m.taskAnchor?.taskId)
+          .map((m) => m.taskAnchor!.taskId!),
+      ),
+    [messages],
   );
+  const synthesizedAnchors = useMemo(() => {
+    const out: Message[] = [];
+    for (const task of tasks) {
+      if (!task.id || anchoredIds.has(task.id)) continue;
+      const startedAt = Date.parse(task.started_at);
+      const serverTs = Number.isFinite(startedAt) ? startedAt : Date.now();
+      // Clamp to the band between the user prompt that spawned THIS task
+      // and the next user prompt. Prevents older tasks from jumping above
+      // newer user turns (the multi-task-timeline bug a reviewer flagged
+      // against the earlier "latestUserTs" heuristic).
+      let triggeringUserTs = -Infinity;
+      let nextUserTs = Infinity;
+      for (const m of messages) {
+        if (m.role !== "user") continue;
+        if (m.timestamp <= serverTs && m.timestamp > triggeringUserTs) {
+          triggeringUserTs = m.timestamp;
+        }
+        if (m.timestamp > serverTs && m.timestamp < nextUserTs) {
+          nextUserTs = m.timestamp;
+        }
+      }
+      let timestamp = serverTs;
+      if (Number.isFinite(triggeringUserTs) && timestamp <= triggeringUserTs) {
+        timestamp = triggeringUserTs + 1;
+      }
+      if (Number.isFinite(nextUserTs) && timestamp >= nextUserTs) {
+        timestamp = nextUserTs - 1;
+      }
+      out.push({
+        id: `task:${currentSessionId}:${task.id}`,
+        role: "assistant",
+        kind: "task_anchor",
+        text: "",
+        files: [],
+        toolCalls: [],
+        status: task.status === "failed" ? "error" : "streaming",
+        timestamp,
+        taskAnchor: {
+          taskId: task.id,
+          taskStatus: task.status,
+          taskStartedAt: task.started_at,
+          currentPhase: task.current_phase ?? null,
+          progressMessage: task.progress_message ?? null,
+          progress: task.progress ?? null,
+          error: task.error,
+          outputFiles: task.output_files,
+          toolNames: [task.tool_name],
+        },
+      });
+    }
+    return out;
+  }, [tasks, anchoredIds, currentSessionId, messages]);
+
+  const visibleMessages = useMemo(() => {
+    const combined = synthesizedAnchors.length > 0
+      ? [...messages, ...synthesizedAnchors].sort((a, b) => a.timestamp - b.timestamp)
+      : messages;
+    return hideFileOnlyAssistantMessages
+      ? combined.filter((message) => !isFileOnlyAssistantMessage(message))
+      : combined;
+  }, [hideFileOnlyAssistantMessages, messages, synthesizedAnchors]);
+
   const hasMessages = visibleMessages.length > 0;
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-transparent">
       {hasMessages ? (
-        <MessageList messages={visibleMessages} sessionId={currentSessionId} />
+        <MessageList
+          messages={visibleMessages}
+          sessionId={currentSessionId}
+          taskIndex={taskIndex}
+        />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6">
           <div className="glass-section animate-shell-rise max-w-xl rounded-[12px] px-7 py-9 text-center">
@@ -533,9 +795,11 @@ export function ChatThread({
 
 function MessageList({
   messages,
+  taskIndex,
 }: {
   messages: Message[];
   sessionId: string;
+  taskIndex: ReadonlyMap<string, BackgroundTaskInfo>;
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
@@ -568,6 +832,13 @@ function MessageList({
       <div className="mx-auto max-w-4xl py-6">
         {messages.map((msg, i) => {
           const isLast = i === messages.length - 1;
+          if (msg.kind === "task_anchor") {
+            const taskId = msg.taskAnchor?.taskId;
+            const storeTask = taskId ? taskIndex.get(taskId) : undefined;
+            return (
+              <TaskAnchorBubble key={msg.id} message={msg} storeTask={storeTask} />
+            );
+          }
           if (msg.role === "user") {
             return <UserBubble key={msg.id} message={msg} />;
           }

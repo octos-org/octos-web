@@ -146,8 +146,12 @@ test.describe("background task scoping", () => {
       { sessionId: ORIGIN_SESSION, task: FAILED_TASK },
     );
 
-    await expect(page.getByText("Deep research failed")).toBeVisible();
-    await expect(page.getByText(/run_pipeline/)).toBeVisible();
+    // Both the session-task-dock and the in-thread task-anchor bubble show
+    // "Deep research failed" for the same underlying state, so resolve both
+    // via first() — the assertion is that at least one is visible in the
+    // originating session.
+    await expect(page.getByText("Deep research failed").first()).toBeVisible();
+    await expect(page.getByText(/run_pipeline/).first()).toBeVisible();
 
     await page
       .locator(`[data-session-id="${OTHER_SESSION}"] [data-testid="session-switch-button"]`)

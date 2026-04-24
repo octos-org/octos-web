@@ -21,6 +21,14 @@ export type StreamSubscriber = (event: StreamEvent) => void;
 
 /** State of a managed session stream. */
 interface ManagedStream {
+  /**
+   * Unique, monotonic identifier scoped to this tab. Out-of-order concurrent
+   * responses share a (sessionId, topic) but have different ids, so consumers
+   * that must discriminate "my stream" from "a sibling stream" (e.g. the
+   * sse-bridge cleanup handler below) can match on this value instead of on
+   * the session key that every concurrent stream reuses.
+   */
+  id: number;
   sessionId: string;
   topic?: string;
   /** All events received so far (for replay on resubscribe). */
@@ -37,10 +45,21 @@ interface ManagedStream {
   text: string;
 }
 
+/** Handle returned by subscribe — unsubscribe callback plus the id of the
+ * stream the callback is attached to. Consumers need the id to match
+ * per-stream lifecycle events (e.g. crew:stream_state) across concurrent
+ * streams that share the same (sessionId, topic). */
+export interface StreamSubscription {
+  unsub: () => void;
+  streamId: number;
+}
+
 /** Track all active streams so isActive reports true while ANY is running. */
 const activeStreams = new Set<ManagedStream>();
 
 const streams = new Map<string, ManagedStream>();
+
+let nextStreamId = 1;
 
 function streamKey(sessionId: string, topic?: string): string {
   const normalizedTopic = normalizeTopic(topic);
@@ -50,7 +69,9 @@ function streamKey(sessionId: string, topic?: string): string {
 function createManagedStream(sessionId: string, topic?: string): ManagedStream {
   const abort = new AbortController();
   const normalizedTopic = normalizeTopic(topic);
+  const id = nextStreamId++;
   const stream: ManagedStream = {
+    id,
     sessionId,
     topic: normalizedTopic,
     events: [],
@@ -66,7 +87,7 @@ function createManagedStream(sessionId: string, topic?: string): ManagedStream {
   activeStreams.add(stream);
   window.dispatchEvent(
     new CustomEvent("crew:stream_state", {
-      detail: { sessionId, topic: normalizedTopic, active: true },
+      detail: { sessionId, topic: normalizedTopic, active: true, streamId: id },
     }),
   );
   return stream;
@@ -83,6 +104,47 @@ async function consumeSseResponse(
 
   const contentType = resp.headers.get("content-type") || "";
   if (contentType.includes("application/json")) {
+    // FA-11 defect C fix: under `/queue speculative`, when a second POST
+    // /api/chat arrives while an earlier SSE stream is still live, the
+    // gateway returns a JSON ack:
+    //   {"status":"queued","message":"…"}
+    // Previously we silently dropped it and the assistant bubble stayed
+    // "streaming" forever — the bubble would only clear after the 15-minute
+    // polling fallback consumed the session_result via /messages.
+    //
+    // Recognise the ack and emit a lightweight side-channel event so the
+    // runtime provider can guarantee a session-event-stream subscription is
+    // live. The overflow reply the gateway is about to produce will arrive
+    // as a `session_result` event on that stream and merge into the
+    // streaming bubble via `responseToClientMessageId` correlation.
+    try {
+      const body = await resp.text();
+      if (body) {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(body);
+        } catch {
+          parsed = undefined;
+        }
+        if (
+          parsed &&
+          typeof parsed === "object" &&
+          (parsed as { status?: string }).status === "queued"
+        ) {
+          window.dispatchEvent(
+            new CustomEvent("crew:queued_ack", {
+              detail: {
+                sessionId: stream.sessionId,
+                topic: stream.topic,
+                streamId: stream.id,
+              },
+            }),
+          );
+        }
+      }
+    } catch {
+      // ignore JSON body read errors — stream-end handling below still runs
+    }
     stream.active = false;
     return;
   }
@@ -141,9 +203,19 @@ function finalizeStream(sessionId: string, stream: ManagedStream): void {
   stream.active = false;
   activeStreams.delete(stream);
 
+  // Dispatch with streamId so subscribers that race concurrent streams on
+  // the same (sessionId, topic) can tell whose lifecycle event this is.
+  // Without streamId, a fast sibling stream finishing first would trip
+  // every subscriber's cleanup path — unsubscribing them from their own
+  // still-running stream.
   window.dispatchEvent(
     new CustomEvent("crew:stream_state", {
-      detail: { sessionId, topic: stream.topic, active: false },
+      detail: {
+        sessionId,
+        topic: stream.topic,
+        active: false,
+        streamId: stream.id,
+      },
     }),
   );
 
@@ -269,13 +341,15 @@ export function attachStream(
  * Subscribe to a session's stream. Replays all past events immediately,
  * then delivers new events as they arrive.
  *
- * Returns an unsubscribe function.
+ * Returns `{ unsub, streamId }` so the caller can correlate lifecycle
+ * events (crew:stream_state) with the specific stream it subscribed to.
+ * Returns null when no stream exists for the session/topic.
  */
 export function subscribe(
   sessionId: string,
   callback: StreamSubscriber,
   topic?: string,
-): (() => void) | null {
+): StreamSubscription | null {
   const stream = streams.get(streamKey(sessionId, topic));
   if (!stream) return null;
 
@@ -291,8 +365,11 @@ export function subscribe(
   // Subscribe for future events
   stream.subscribers.add(callback);
 
-  return () => {
-    stream.subscribers.delete(callback);
+  return {
+    unsub: () => {
+      stream.subscribers.delete(callback);
+    },
+    streamId: stream.id,
   };
 }
 

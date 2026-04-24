@@ -13,6 +13,7 @@ import { resumeSessionStream } from "./sse-bridge";
 import * as FileStore from "@/store/file-store";
 import * as MessageStore from "@/store/message-store";
 import * as TaskStore from "@/store/task-store";
+import { applyAppendFileArtifact, applyTaskStatus } from "@/store/message-store-actions";
 import { getSessionStatus } from "@/api/sessions";
 import type { BackgroundTaskInfo } from "@/api/types";
 import { restoreWatchedSessions, unwatchSession, watchSession } from "./task-watcher";
@@ -125,25 +126,93 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
       if (!sessionId) return;
       const topic = eventTopic(detail);
       const task = detail?.task as BackgroundTaskInfo | undefined;
-      if (task) {
-        TaskStore.mergeTask(sessionId, task, topic);
-        MessageStore.bindBackgroundTask(sessionId, task, topic);
-        const hasActiveTasks = TaskStore.getTasks(sessionId, topic).some(
-          (candidate) =>
-            candidate.status === "spawned" || candidate.status === "running",
-        );
-        setServerTaskActive(sessionId, hasActiveTasks);
-        watchSession(sessionId, topic);
+      if (!task) return;
+
+      // B-002: when the SSE bridge has already merged this snapshot,
+      // skip the redundant merge here and only apply the side-effects
+      // (watcher registration + activeTaskOnServer flag). Non-SSE
+      // sources — e.g. the task-watcher polling loop — still pass
+      // through `applyTaskStatus` for their single merge.
+      const alreadyMerged = detail?._alreadyMerged === true;
+      if (!alreadyMerged) {
+        const serverSeq =
+          typeof detail?.server_seq === "number"
+            ? (detail.server_seq as number)
+            : typeof (task as { server_seq?: number }).server_seq === "number"
+              ? (task as { server_seq?: number }).server_seq
+              : undefined;
+        const updatedAt =
+          typeof detail?.updated_at === "string"
+            ? (detail.updated_at as string)
+            : typeof (task as { updated_at?: string }).updated_at === "string"
+              ? (task as { updated_at?: string }).updated_at
+              : undefined;
+        applyTaskStatus({
+          type: "task_status",
+          sessionId,
+          topic,
+          task,
+          serverSeq,
+          updatedAt,
+        });
       }
+
+      const hasActiveTasks = TaskStore.getTasks(sessionId, topic).some(
+        (candidate) =>
+          candidate.status === "spawned" || candidate.status === "running",
+      );
+      setServerTaskActive(sessionId, hasActiveTasks);
+      watchSession(sessionId, topic);
+    }
+
+    function handleFile(event: Event) {
+      const detail = (event as CustomEvent).detail;
+      const sessionId = eventSessionId(detail);
+      if (!sessionId) return;
+      const topic = eventTopic(detail);
+      const path = typeof detail?.path === "string" ? detail.path : "";
+      const filename = typeof detail?.filename === "string" ? detail.filename : "";
+      if (!path || !filename) return;
+      const toolCallId =
+        typeof detail?.tool_call_id === "string" ? detail.tool_call_id : undefined;
+      applyAppendFileArtifact({
+        type: "append_file_artifact",
+        sessionId,
+        topic,
+        file: {
+          path,
+          filename,
+          caption: typeof detail?.caption === "string" ? detail.caption : "",
+        },
+        toolCallId,
+      });
+    }
+
+    // FA-11 defect C fix: when POST /api/chat returns `{status:"queued"}`
+    // (speculative queue mode overflow), the server will deliver the
+    // eventual reply as a `session_result` event on the session-event
+    // stream. Ensure the session is being watched so that stream is open
+    // and `appendHistoryMessages` can merge the reply into the streaming
+    // bubble via `responseToClientMessageId` correlation.
+    function handleQueuedAck(event: Event) {
+      const detail = (event as CustomEvent).detail;
+      const sessionId = eventSessionId(detail);
+      if (!sessionId) return;
+      const topic = eventTopic(detail);
+      watchSession(sessionId, topic);
     }
 
     window.addEventListener("crew:bg_tasks", handleBgTasks);
     window.addEventListener("crew:task_status", handleTaskStatus);
+    window.addEventListener("crew:file", handleFile);
+    window.addEventListener("crew:queued_ack", handleQueuedAck);
 
     return () => {
       cancelled = true;
       window.removeEventListener("crew:bg_tasks", handleBgTasks);
       window.removeEventListener("crew:task_status", handleTaskStatus);
+      window.removeEventListener("crew:file", handleFile);
+      window.removeEventListener("crew:queued_ack", handleQueuedAck);
     };
   }, [currentSessionId, historyTopic, setServerTaskActive]);
 

@@ -31,6 +31,34 @@ export interface MessageInfo {
   tool_calls?: { id?: string; name?: string }[];
 }
 
+export interface BackgroundTaskRuntimeDetail {
+  schema?: string;
+  kind?: string;
+  workflow_kind?: string;
+  workflow?: string;
+  node?: string;
+  tool?: string;
+  iteration?: number;
+  current_phase?: string;
+  progress_message?: string;
+  message?: string;
+  progress?: number;
+  lifecycle_state?: string;
+  [key: string]: unknown;
+}
+
+export interface BackgroundTaskProgressEvent {
+  recorded_at: string;
+  kind: string;
+  workflow_kind?: string | null;
+  node?: string | null;
+  tool?: string | null;
+  iteration?: number | null;
+  phase?: string | null;
+  message?: string | null;
+  progress?: number | null;
+}
+
 export interface BackgroundTaskInfo {
   id: string;
   tool_name: string;
@@ -41,6 +69,13 @@ export interface BackgroundTaskInfo {
   output_files?: string[];
   error: string | null;
   session_key?: string;
+  workflow_kind?: string | null;
+  current_phase?: string | null;
+  lifecycle_state?: string | null;
+  runtime_detail?: BackgroundTaskRuntimeDetail | null;
+  progress_message?: string | null;
+  progress?: number | null;
+  progress_events?: BackgroundTaskProgressEvent[];
 }
 
 export interface ServerStatus {
@@ -148,6 +183,12 @@ export type SseEvent =
       session_cost?: number | null;
       duration_s?: number;
       has_bg_tasks?: boolean;
+      /**
+       * M8.10-A: server-committed session sequence under which the assistant
+       * message was persisted. Populated by current server builds; absent on
+       * legacy/error paths (web tolerates it being missing).
+       */
+      committed_seq?: number;
     }
   | { type: "error"; message: string }
   | {
@@ -162,7 +203,15 @@ export type SseEvent =
         output_files: string[];
         error: string | null;
         session_key?: string;
+        /** Server-provided monotonic sequence; may also appear on envelope. */
+        server_seq?: number;
+        /** RFC3339 last-updated timestamp; may also appear on envelope. */
+        updated_at?: string;
       };
+      /** Server-provided monotonic sequence on the envelope. */
+      server_seq?: number;
+      /** RFC3339 last-updated timestamp on the envelope. */
+      updated_at?: string;
     }
   | {
       type: "session_result";
