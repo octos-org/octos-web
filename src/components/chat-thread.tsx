@@ -699,10 +699,23 @@ export function ChatThread({
   );
   const synthesizedAnchors = useMemo(() => {
     const out: Message[] = [];
+    // Guard against clock skew: if task.started_at predates the latest user
+    // prompt, push the synthesized anchor to just after it so the progress
+    // bubble never sorts ahead of the prompt that spawned it (Bug 1).
+    let latestUserTs = -Infinity;
+    for (const message of messages) {
+      if (message.role === "user" && message.timestamp > latestUserTs) {
+        latestUserTs = message.timestamp;
+      }
+    }
     for (const task of tasks) {
       if (!task.id || anchoredIds.has(task.id)) continue;
       const startedAt = Date.parse(task.started_at);
-      const timestamp = Number.isFinite(startedAt) ? startedAt : Date.now();
+      const serverTs = Number.isFinite(startedAt) ? startedAt : Date.now();
+      const timestamp =
+        Number.isFinite(latestUserTs) && serverTs <= latestUserTs
+          ? latestUserTs + 1
+          : serverTs;
       out.push({
         id: `task:${currentSessionId}:${task.id}`,
         role: "assistant",
@@ -726,7 +739,7 @@ export function ChatThread({
       });
     }
     return out;
-  }, [tasks, anchoredIds, currentSessionId]);
+  }, [tasks, anchoredIds, currentSessionId, messages]);
 
   const visibleMessages = useMemo(() => {
     const combined = synthesizedAnchors.length > 0

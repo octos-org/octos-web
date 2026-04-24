@@ -41,8 +41,22 @@ export function taskAnchorTimelineTimestamp(
   task: BackgroundTaskInfo,
   now: Now = Date.now,
 ): number {
-  void list;
-  return taskTimestamp(task, now);
+  const serverTs = taskTimestamp(task, now);
+  // Guard against client/server clock skew: the anchor bubble must never sort
+  // ahead of the user prompt that spawned it. Walk the current list for the
+  // most recent user message and bump the anchor's timestamp to just after it
+  // so `compareMessagesForDisplay` (which falls back to timestamp for task
+  // anchors) keeps the prompt on top.
+  let latestUserTs = -Infinity;
+  for (const message of list) {
+    if (message.role === "user" && message.timestamp > latestUserTs) {
+      latestUserTs = message.timestamp;
+    }
+  }
+  if (Number.isFinite(latestUserTs) && serverTs <= latestUserTs) {
+    return latestUserTs + 1;
+  }
+  return serverTs;
 }
 
 function sameStrings(left: string[] | undefined, right: string[] | undefined): boolean {

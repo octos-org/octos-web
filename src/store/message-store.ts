@@ -24,6 +24,7 @@ import {
   findFileResultTargetIndex,
   findMessageIndexById,
   findMessageIndexByToolCallId,
+  findNoSeqDuplicateIndex,
   findOptimisticMatchIndex,
   findTaskAnchorIndex,
   mergeAuthoritativeIntoMessage,
@@ -869,6 +870,18 @@ export function appendHistoryMessages(
       if (typeof converted.historySeq === "number") {
         maxSeq = Math.max(maxSeq, converted.historySeq);
       }
+      continue;
+    }
+
+    // Final dedup: messages without a historySeq slip past the seq guard and
+    // the confirmed-text check (both require typeof historySeq === "number").
+    // Legacy replay / skill events occasionally emit MessageInfo with no seq,
+    // which re-appends on every poll (the "已记住 ..." reappear bug).
+    if (findNoSeqDuplicateIndex(list, converted) !== -1) {
+      recordRuntimeCounter("octos_result_duplicate_suppressed_total", {
+        kind: converted.role,
+        reason: "no_seq_text_match",
+      });
       continue;
     }
 
