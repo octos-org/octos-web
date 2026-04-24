@@ -70,6 +70,31 @@ export function shouldCollapseAuthoritativeDuplicate(
   return candidateText.length > 0 && candidateText === authoritativeText;
 }
 
+/**
+ * Dedup layer for history messages that arrive without a `seq`.
+ *
+ * Both `appendHistoryMessages` seq-guard and the confirmed-text-dupe check
+ * require `typeof historySeq === "number"`. Legacy replay paths and some skill
+ * events emit `MessageInfo` without `seq`, so they bypass both guards and
+ * re-append on every poll (the "已记住 ..." reappear bug). This helper catches
+ * that case by matching same role + normalized text + timestamp within a
+ * short window.
+ */
+const NO_SEQ_DUP_WINDOW_MS = 10_000;
+
+export function findNoSeqDuplicateIndex(list: Message[], converted: Message): number {
+  if (typeof converted.historySeq === "number") return -1;
+  const textKey = normalizeMessageText(converted.text);
+  if (!textKey) return -1;
+  return list.findIndex(
+    (existing) =>
+      existing.kind !== "task_anchor" &&
+      existing.role === converted.role &&
+      normalizeMessageText(existing.text) === textKey &&
+      Math.abs(existing.timestamp - converted.timestamp) < NO_SEQ_DUP_WINDOW_MS,
+  );
+}
+
 export function findOptimisticMatchIndex(list: Message[], authoritative: Message): number {
   if (authoritative.clientMessageId) {
     const directMatchIndex = list.findIndex(
