@@ -41,6 +41,15 @@ export interface FinalizeAssistantAction extends AssistantStreamTarget {
   type: "finalize_assistant";
   text: string;
   meta?: MessageMeta;
+  /**
+   * Authoritative session sequence under which the server persisted this
+   * assistant message (M8.10-A). When present, written onto the bubble so the
+   * sort comparator (`compareMessagesForDisplay`) can rank it by historySeq
+   * instead of falling back to MAX_SAFE_INTEGER and floating it to the end of
+   * the list. Optional for backward compatibility with legacy server builds
+   * that omit `committed_seq` from the SSE `done` event.
+   */
+  historySeq?: number;
 }
 
 export interface StreamErrorAction extends AssistantStreamTarget {
@@ -72,6 +81,19 @@ export function applyFinalizeAssistant(action: FinalizeAssistantAction): void {
   );
   if (action.meta) {
     MessageStore.setMessageMeta(action.sessionId, action.messageId, action.meta, action.topic);
+  }
+  // M8.10-A: thread the server-committed seq onto the live-streamed bubble so
+  // it sorts by `compareMessagesForDisplay` historySeq rather than tiebreaking
+  // to MAX_SAFE_INTEGER. Skip when undefined (legacy server, persist failed,
+  // or non-streaming finalize call) — leaving historySeq undefined preserves
+  // existing timestamp-only ordering for those paths.
+  if (typeof action.historySeq === "number") {
+    MessageStore.setMessageHistorySeq(
+      action.sessionId,
+      action.messageId,
+      action.historySeq,
+      action.topic,
+    );
   }
 }
 

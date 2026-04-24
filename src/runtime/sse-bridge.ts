@@ -501,6 +501,12 @@ function bindStreamToAssistant({
               duration_s: event.duration_s || 0,
             }
           : undefined;
+        // M8.10-A: thread the server-committed seq onto the live bubble so
+        // it sorts in chronological order alongside seq'd history. Old
+        // server builds may omit `committed_seq`; in that case the bubble
+        // keeps no historySeq and falls back to timestamp-only ordering.
+        const historySeq =
+          typeof event.committed_seq === "number" ? event.committed_seq : undefined;
         applyFinalizeAssistant({
           type: "finalize_assistant",
           sessionId,
@@ -508,6 +514,7 @@ function bindStreamToAssistant({
           topic: historyTopic,
           text: finalText,
           meta,
+          historySeq,
         });
 
         if (meta) {
