@@ -183,6 +183,12 @@ export type SseEvent =
       session_cost?: number | null;
       duration_s?: number;
       has_bg_tasks?: boolean;
+      /**
+       * M8.10-A: server-committed session sequence under which the assistant
+       * message was persisted. Populated by current server builds; absent on
+       * legacy/error paths (web tolerates it being missing).
+       */
+      committed_seq?: number;
     }
   | { type: "error"; message: string }
   | {

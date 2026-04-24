@@ -463,6 +463,31 @@ export function setMessageMeta(
   updateMessage(sessionId, messageId, { meta }, topic);
 }
 
+/**
+ * Write an authoritative `historySeq` onto an existing message (M8.10-A).
+ *
+ * Used when the SSE `done` event threads back the server-committed sequence
+ * for a live-streamed assistant bubble. Without this, the bubble has no seq
+ * and `compareMessagesForDisplay` ranks it via `Number.MAX_SAFE_INTEGER`,
+ * making it float to the end of the list when newer seq'd messages arrive.
+ */
+export function setMessageHistorySeq(
+  sessionId: string,
+  messageId: string,
+  historySeq: number,
+  topic?: string,
+): void {
+  const key = storeKey(sessionId, topic);
+  const list = messagesByKey.get(key);
+  if (!list) return;
+  const idx = list.findIndex((m) => m.id === messageId);
+  if (idx === -1) return;
+  if (list[idx].historySeq === historySeq) return;
+  list[idx] = withRuntime({ ...list[idx], historySeq });
+  messagesByKey.set(key, [...list]);
+  notify();
+}
+
 /** Finalise any still-streaming assistant bubbles (e.g. on user stop). */
 export function stopStreamingMessages(sessionId: string, topic?: string): void {
   const key = storeKey(sessionId, topic);

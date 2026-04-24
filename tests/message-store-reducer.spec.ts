@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 import type { BackgroundTaskInfo, MessageInfo } from "../src/api/types";
+import * as MessageStore from "../src/store/message-store";
 import type { Message } from "../src/store/message-store";
+import { applyFinalizeAssistant } from "../src/store/message-store-actions";
 import {
   convertApiMessage,
   createLocalMessage,
@@ -504,5 +506,215 @@ test.describe("message-store reducer helpers", () => {
         historySeq: 5,
       })),
     ).toBe(-1);
+  });
+
+  // ── M8.10-A: SSE `done` event populates historySeq on live bubbles ──
+
+  test("finalize_assistant_sets_history_seq_when_provided", () => {
+    // M8.10-A regression: when the SSE `done` event carries `committed_seq`,
+    // applyFinalizeAssistant must write it onto the matching bubble so the
+    // sort comparator sees a real seq instead of MAX_SAFE_INTEGER.
+    const sessionId = `m810a-set-${Date.now()}`;
+    const messageId = MessageStore.addMessage(sessionId, {
+      role: "assistant",
+      text: "",
+      files: [],
+      toolCalls: [],
+      status: "streaming",
+    });
+
+    applyFinalizeAssistant({
+      type: "finalize_assistant",
+      sessionId,
+      messageId,
+      text: "Hello!",
+      historySeq: 5,
+    });
+
+    const messages = MessageStore.getMessages(sessionId);
+    const finalized = messages.find((m) => m.id === messageId);
+    expect(finalized).toBeDefined();
+    expect(finalized?.text).toBe("Hello!");
+    expect(finalized?.status).toBe("complete");
+    expect(finalized?.historySeq).toBe(5);
+  });
+
+  test("finalize_assistant_leaves_history_seq_undefined_when_missing_from_done", () => {
+    // M8.10-A: when an old/legacy server omits `committed_seq` from the `done`
+    // event, the finalize action must NOT fabricate or default the seq —
+    // leaving historySeq undefined keeps the bubble on the timestamp-only
+    // sort path used by older builds.
+    const sessionId = `m810a-missing-${Date.now()}`;
+    const messageId = MessageStore.addMessage(sessionId, {
+      role: "assistant",
+      text: "",
+      files: [],
+      toolCalls: [],
+      status: "streaming",
+    });
+
+    applyFinalizeAssistant({
+      type: "finalize_assistant",
+      sessionId,
+      messageId,
+      text: "Legacy response",
+    });
+
+    const messages = MessageStore.getMessages(sessionId);
+    const finalized = messages.find((m) => m.id === messageId);
+    expect(finalized).toBeDefined();
+    expect(finalized?.text).toBe("Legacy response");
+    expect(finalized?.status).toBe("complete");
+    expect(finalized?.historySeq).toBeUndefined();
+  });
+
+  test("done_event_with_committed_seq_keeps_bubble_in_chronological_order", () => {
+    // M8.10-A integration: simulate the full SSE-stream → done sequence on
+    // the message-store side. Bubble starts streaming (no historySeq),
+    // applyFinalizeAssistant receives committed_seq=5 from the `done` event,
+    // and a subsequent message with historySeq=6 arrives. The live bubble
+    // must NOT migrate to the end of the list when sorted for display.
+    const sessionId = `m810a-flow-${Date.now()}`;
+
+    // 1. SSE stream starts — placeholder bubble created (no historySeq yet).
+    const assistantMsgId = MessageStore.addMessage(sessionId, {
+      role: "assistant",
+      text: "",
+      files: [],
+      toolCalls: [],
+      status: "streaming",
+    });
+
+    // 2. Token events come in (omitted here — irrelevant to seq logic).
+    //    Pretend the final text is accumulated.
+
+    // 3. SSE `done` event arrives with committed_seq=5.
+    applyFinalizeAssistant({
+      type: "finalize_assistant",
+      sessionId,
+      messageId: assistantMsgId,
+      text: "Live response",
+      historySeq: 5,
+    });
+
+    // 4. Newer message lands with historySeq=6.
+    const followUpId = MessageStore.addMessage(sessionId, {
+      role: "user",
+      text: "Follow-up",
+      files: [],
+      toolCalls: [],
+      status: "complete",
+    });
+    MessageStore.setMessageHistorySeq(sessionId, followUpId, 6);
+
+    // 5. Sort — assistant bubble must come BEFORE the seq=6 follow-up.
+    const messages = MessageStore.getMessages(sessionId);
+    const sorted = sortedMessagesForDisplay(messages);
+    const assistantIdx = sorted.findIndex((m) => m.id === assistantMsgId);
+    const followUpIdx = sorted.findIndex((m) => m.id === followUpId);
+    expect(assistantIdx).toBeGreaterThanOrEqual(0);
+    expect(followUpIdx).toBeGreaterThan(assistantIdx);
+
+    // Sanity: the live bubble actually got the seq written.
+    const finalBubble = sorted[assistantIdx];
+    expect(finalBubble.historySeq).toBe(5);
+  });
+
+  test("done_event_without_committed_seq_keeps_bubble_renderable_via_timestamp", () => {
+    // M8.10-A backward-compat: legacy server omits `committed_seq` from the
+    // `done` event. The bubble's historySeq stays undefined, but it still
+    // renders correctly via timestamp ordering against other no-seq messages.
+    const sessionId = `m810a-legacy-${Date.now()}`;
+
+    const earlierId = MessageStore.addMessage(sessionId, {
+      role: "user",
+      text: "Earlier prompt",
+      files: [],
+      toolCalls: [],
+      status: "complete",
+    });
+    // Force a known timestamp ordering by waiting one millisecond.
+    const assistantId = MessageStore.addMessage(sessionId, {
+      role: "assistant",
+      text: "",
+      files: [],
+      toolCalls: [],
+      status: "streaming",
+    });
+
+    // Legacy `done` event — no committed_seq.
+    applyFinalizeAssistant({
+      type: "finalize_assistant",
+      sessionId,
+      messageId: assistantId,
+      text: "Legacy reply",
+    });
+
+    const messages = MessageStore.getMessages(sessionId);
+    const sorted = sortedMessagesForDisplay(messages);
+    const earlierIdx = sorted.findIndex((m) => m.id === earlierId);
+    const assistantIdx = sorted.findIndex((m) => m.id === assistantId);
+    expect(earlierIdx).toBeGreaterThanOrEqual(0);
+    expect(assistantIdx).toBeGreaterThan(earlierIdx);
+    expect(sorted[assistantIdx].historySeq).toBeUndefined();
+    expect(sorted[assistantIdx].text).toBe("Legacy reply");
+    expect(sorted[assistantIdx].status).toBe("complete");
+  });
+
+  test("sorted_display_keeps_bubble_in_place_after_history_seq_population", () => {
+    // M8.10-A regression: when the SSE `done` event populates a bubble's
+    // historySeq, subsequent messages with higher seqs must sort AFTER it,
+    // not before it. Without the fix, the bubble had no historySeq and was
+    // pushed to the END of the list (MAX_SAFE_INTEGER tiebreaker).
+    const userTs = Date.parse("2026-04-20T12:00:00.000Z");
+    const assistantStreamTs = Date.parse("2026-04-20T12:00:05.000Z");
+    const followUpTs = Date.parse("2026-04-20T12:00:10.000Z");
+
+    const userMessage = makeMessage({
+      id: "user-1",
+      role: "user",
+      text: "Hi",
+      timestamp: userTs,
+      historySeq: 0,
+    });
+
+    // Live-streamed assistant bubble — STARTS without historySeq while
+    // the SSE stream runs (see sse-bridge.ts assistant placeholder creation).
+    const beforePopulation = makeMessage({
+      id: "assistant-1",
+      role: "assistant",
+      text: "Live reply",
+      timestamp: assistantStreamTs,
+      // No historySeq yet — this is the buggy state pre-M8.10-A.
+    });
+
+    // Without populated historySeq, a later seq'd message would sort BEFORE
+    // the live bubble (the buggy "floats to end" behaviour).
+    const followUp = makeMessage({
+      id: "user-2",
+      role: "user",
+      text: "Follow up",
+      timestamp: followUpTs,
+      historySeq: 6,
+    });
+
+    const buggyOrder = sortedMessagesForDisplay([
+      userMessage,
+      beforePopulation,
+      followUp,
+    ]).map((m) => m.id);
+    // Pre-fix: live bubble sorts AFTER the seq=6 follow-up because
+    // MAX_SAFE_INTEGER > 6.
+    expect(buggyOrder).toEqual(["user-1", "user-2", "assistant-1"]);
+
+    // After SSE `done` with committed_seq=5 fires, the bubble gets a real
+    // historySeq and the sort places it correctly between seq=0 and seq=6.
+    const afterPopulation: Message = { ...beforePopulation, historySeq: 5 };
+    const fixedOrder = sortedMessagesForDisplay([
+      userMessage,
+      afterPopulation,
+      followUp,
+    ]).map((m) => m.id);
+    expect(fixedOrder).toEqual(["user-1", "assistant-1", "user-2"]);
   });
 });
