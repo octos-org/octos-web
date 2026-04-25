@@ -187,6 +187,18 @@ export function mergeAuthoritativeIntoMessage(
   authoritative: Message,
   now: Now = Date.now,
 ): Message {
+  // Keep the EARLIER of the two timestamps. The optimistic timestamp
+  // (client-T, set at the moment the user pressed send) is usually a more
+  // chronologically accurate anchor than the authoritative server timestamp,
+  // which can be 100ms-1s later due to network + persistence. Without this
+  // guard, the merged user bubble jumps forward in the timestamp-primary
+  // comparator and lands AFTER its triggering assistant placeholder, which
+  // still has its earlier client-T. Result: assistant bubble visually
+  // precedes the user bubble that triggered it (anomaly 1).
+  //
+  // Math.min keeps whichever came first; on backfilled history where the
+  // optimistic side is missing, both timestamps are equal so this is a no-op.
+  const mergedTimestamp = Math.min(existing.timestamp, authoritative.timestamp);
   const merged: Message = {
     ...existing,
     text: authoritative.text,
@@ -197,7 +209,7 @@ export function mergeAuthoritativeIntoMessage(
     toolCalls:
       authoritative.toolCalls.length > 0 ? authoritative.toolCalls : existing.toolCalls,
     status: "complete",
-    timestamp: authoritative.timestamp,
+    timestamp: mergedTimestamp,
     historySeq: authoritative.historySeq,
     meta: existing.meta,
     sourceToolCallId: authoritative.sourceToolCallId ?? existing.sourceToolCallId,

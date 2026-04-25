@@ -34,6 +34,7 @@ import {
   reduceMergeAuthoritativeHistoryMessageEvent,
 } from "../src/store/message-store-reducers/history-replay-reducer";
 import { reduceCreateUserMessageEvent } from "../src/store/message-store-reducers/user-message-reducer";
+import { isEmptyCompletedAssistantBubble } from "../src/lib/message-display";
 
 const NOW = Date.parse("2026-04-20T12:00:30.000Z");
 
@@ -708,5 +709,174 @@ test.describe("message-store reducer helpers", () => {
     expect(
       sortedMessagesForDisplay([userMessage, withSeq, followUp]).map((m) => m.id),
     ).toEqual(["user-1", "assistant-1", "user-2"]);
+  });
+
+  test("merge_keeps_optimistic_timestamp_when_authoritative_is_later", () => {
+    // Anomaly 1: when the optimistic user bubble's timestamp gets overwritten
+    // by the authoritative server timestamp (which arrives later), the user
+    // bubble can sort AFTER its triggering assistant placeholder, since the
+    // assistant placeholder was created right after the user pressed send
+    // and still has the earlier client-T. Result: assistant bubble visually
+    // appears BEFORE the user bubble that prompted it.
+    //
+    // The merge must keep the EARLIER timestamp so chronological order is
+    // preserved across the optimistic→authoritative transition.
+    const optimisticUserTs = Date.parse("2026-04-25T10:00:00.000Z");
+    const optimisticUser = makeMessage({
+      id: "optimistic-user",
+      role: "user",
+      text: "Hi assistant",
+      timestamp: optimisticUserTs,
+      clientMessageId: "cmid-1",
+      status: "complete",
+    });
+    const authoritativeUser = convertApiMessage(
+      makeApiMessage({
+        seq: 4,
+        role: "user",
+        content: "Hi assistant",
+        client_message_id: "cmid-1",
+        // Server stamp is 1.2s later (typical network + persistence delay).
+        timestamp: "2026-04-25T10:00:01.200Z",
+      }),
+      () => "api-user",
+      fixedNow,
+    );
+    expect(authoritativeUser).not.toBeNull();
+
+    const merged = reduceMergeAuthoritativeHistoryMessageEvent({
+      type: "merge_authoritative_history_message",
+      existing: optimisticUser,
+      authoritative: authoritativeUser!,
+      now: fixedNow,
+    });
+
+    // Optimistic timestamp wins because it is earlier.
+    expect(merged.timestamp).toBe(optimisticUserTs);
+    // Authoritative seq still adopted.
+    expect(merged.historySeq).toBe(4);
+
+    // Sort regression: an assistant placeholder created 100ms after the
+    // optimistic user send (cmid-keyed response) must STILL render after
+    // the merged user bubble.
+    const assistantPlaceholder = makeMessage({
+      id: "assistant-placeholder",
+      role: "assistant",
+      text: "Hello!",
+      timestamp: optimisticUserTs + 100,
+      responseToClientMessageId: "cmid-1",
+      status: "complete",
+    });
+    const order = sortedMessagesForDisplay([assistantPlaceholder, merged]).map(
+      (m) => m.id,
+    );
+    expect(order).toEqual(["optimistic-user", "assistant-placeholder"]);
+
+    // Symmetric guard: when authoritative timestamp is EARLIER than the
+    // optimistic timestamp (e.g. clock skew), keep that earlier server
+    // timestamp.
+    const skewedAuthoritative = convertApiMessage(
+      makeApiMessage({
+        seq: 5,
+        role: "user",
+        content: "Hi assistant",
+        client_message_id: "cmid-1",
+        timestamp: "2026-04-25T09:59:59.500Z",
+      }),
+      () => "api-user-skew",
+      fixedNow,
+    );
+    expect(skewedAuthoritative).not.toBeNull();
+    const mergedSkewed = reduceMergeAuthoritativeHistoryMessageEvent({
+      type: "merge_authoritative_history_message",
+      existing: optimisticUser,
+      authoritative: skewedAuthoritative!,
+      now: fixedNow,
+    });
+    expect(mergedSkewed.timestamp).toBe(skewedAuthoritative!.timestamp);
+  });
+
+  test("empty_completed_assistant_bubble_is_filtered_from_display", () => {
+    // Anomaly 2: a `done` event with empty content (or a queued M9
+    // placeholder whose stream was canceled) leaves an assistant message
+    // with text="", files=[], toolCalls=[], status="complete". The
+    // AssistantBubble shell still renders MessageMetaInline so the user
+    // sees a metadata-only bubble showing just a timestamp string. The
+    // chat-thread component must filter those out before rendering.
+    const empty = makeMessage({
+      id: "empty-done",
+      role: "assistant",
+      text: "",
+      files: [],
+      toolCalls: [],
+      status: "complete",
+      timestamp: Date.parse("2026-04-25T10:08:44.000Z"),
+    });
+    expect(isEmptyCompletedAssistantBubble(empty)).toBe(true);
+
+    // Whitespace-only text is also filtered.
+    const whitespace = makeMessage({
+      id: "whitespace",
+      role: "assistant",
+      text: "   \n  \t",
+      status: "complete",
+    });
+    expect(isEmptyCompletedAssistantBubble(whitespace)).toBe(true);
+
+    // A streaming placeholder still renders (typing dots).
+    const streaming = makeMessage({
+      id: "streaming",
+      role: "assistant",
+      text: "",
+      status: "streaming",
+    });
+    expect(isEmptyCompletedAssistantBubble(streaming)).toBe(false);
+
+    // task_anchor placeholders intentionally render without text.
+    const taskAnchor = makeMessage({
+      id: "task-anchor",
+      role: "assistant",
+      kind: "task_anchor",
+      text: "",
+      status: "complete",
+      taskAnchor: { taskId: "task-1" },
+    });
+    expect(isEmptyCompletedAssistantBubble(taskAnchor)).toBe(false);
+
+    // Assistants with text, files, or tool calls always render.
+    const withText = makeMessage({
+      id: "with-text",
+      role: "assistant",
+      text: "Hi",
+      status: "complete",
+    });
+    expect(isEmptyCompletedAssistantBubble(withText)).toBe(false);
+
+    const withFiles = makeMessage({
+      id: "with-files",
+      role: "assistant",
+      text: "",
+      files: [{ filename: "a.md", path: "pf/a.md", caption: "" }],
+      status: "complete",
+    });
+    expect(isEmptyCompletedAssistantBubble(withFiles)).toBe(false);
+
+    const withTools = makeMessage({
+      id: "with-tools",
+      role: "assistant",
+      text: "",
+      toolCalls: [{ id: "tc1", name: "shell", status: "complete" }],
+      status: "complete",
+    });
+    expect(isEmptyCompletedAssistantBubble(withTools)).toBe(false);
+
+    // User messages aren't considered (separate code path).
+    const user = makeMessage({
+      id: "user",
+      role: "user",
+      text: "",
+      status: "complete",
+    });
+    expect(isEmptyCompletedAssistantBubble(user)).toBe(false);
   });
 });
