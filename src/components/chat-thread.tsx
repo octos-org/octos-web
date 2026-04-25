@@ -45,6 +45,10 @@ import { ThinkingIndicator } from "./thinking-indicator";
 import { ToolProgressIndicator } from "./tool-progress-indicator";
 import { buildFileUrl } from "@/api/files";
 import { displayFilenameFromPath } from "@/lib/utils";
+import {
+  isEmptyCompletedAssistantBubble,
+  isFileOnlyAssistantMessage,
+} from "@/lib/message-display";
 import { nextTopicForCommand } from "@/lib/slash-commands";
 import { getToken } from "@/api/client";
 
@@ -659,14 +663,8 @@ interface ChatThreadProps {
   hideFileOnlyAssistantMessages?: boolean;
 }
 
-function isFileOnlyAssistantMessage(message: Message): boolean {
-  return (
-    message.role === "assistant" &&
-    !message.text.trim() &&
-    message.files.length > 0 &&
-    message.toolCalls.length === 0
-  );
-}
+// Visibility helpers — pure, no React/CSS deps — live in lib/message-display
+// so unit tests can import them without the full chat-thread tree.
 
 export function ChatThread({
   hideFileOnlyAssistantMessages = false,
@@ -754,9 +752,16 @@ export function ChatThread({
     const combined = synthesizedAnchors.length > 0
       ? [...messages, ...synthesizedAnchors].sort((a, b) => a.timestamp - b.timestamp)
       : messages;
+    // Always drop empty completed assistant bubbles — these are stray
+    // `done` events with no text, or queued placeholders whose stream was
+    // canceled. They render as a metadata-only bubble showing just a
+    // timestamp string (anomaly 2).
+    const withoutEmpty = combined.filter(
+      (message) => !isEmptyCompletedAssistantBubble(message),
+    );
     return hideFileOnlyAssistantMessages
-      ? combined.filter((message) => !isFileOnlyAssistantMessage(message))
-      : combined;
+      ? withoutEmpty.filter((message) => !isFileOnlyAssistantMessage(message))
+      : withoutEmpty;
   }, [hideFileOnlyAssistantMessages, messages, synthesizedAnchors]);
 
   const hasMessages = visibleMessages.length > 0;
