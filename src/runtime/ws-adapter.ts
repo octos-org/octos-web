@@ -552,27 +552,6 @@ export function createWsAdapter(
                     }
                   | undefined;
                 if (message) {
-                  // User-message session_result: locate the optimistic
-                  // bubble by client_message_id and stamp the seq onto
-                  // it so it sorts in chronological order. See the SSE
-                  // bridge for the full rationale.
-                  if (
-                    message.role === "user" &&
-                    typeof message.seq === "number" &&
-                    typeof message.client_message_id === "string"
-                  ) {
-                    const updated = MessageStore.setMessageHistorySeqByClientMessageId(
-                      sessionId,
-                      message.client_message_id,
-                      message.seq,
-                      historyTopic,
-                    );
-                    if (!updated) {
-                      MessageStore.appendHistoryMessages(sessionId, [message], historyTopic);
-                    }
-                    break;
-                  }
-
                   const previousSeq = MessageStore.getMaxHistorySeq(sessionId, historyTopic);
                   const merged = MessageStore.mergeHistoryMessageIntoMessage(
                     sessionId,

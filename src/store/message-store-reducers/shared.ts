@@ -14,19 +14,19 @@ export type Now = () => number;
 export const TASK_COMPLETION_RE = /^[✓✗]\s+\S+\s+(completed|failed)\s*\(/u;
 
 export function compareMessagesForDisplay(a: Message, b: Message): number {
-  const aIsTaskAnchor = a.kind === "task_anchor";
-  const bIsTaskAnchor = b.kind === "task_anchor";
-  if (aIsTaskAnchor || bIsTaskAnchor) {
-    const byTime = a.timestamp - b.timestamp;
-    if (byTime !== 0) return byTime;
-  }
-
+  // Timestamp primary: every Message construction path (optimistic client send,
+  // server-stamped, replayed history, task anchor) populates `timestamp`, so
+  // this is the one ordering key that's universally available. Optimistic
+  // bubbles slot into chronological position by their client-set timestamp
+  // without waiting for a server seq round-trip.
+  if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
+  // Server seq tiebreaker for messages stamped within the same millisecond.
+  // Missing seq sorts last among same-ms peers (deterministic; rare in practice).
   const aSeq =
     typeof a.historySeq === "number" ? a.historySeq : Number.MAX_SAFE_INTEGER;
   const bSeq =
     typeof b.historySeq === "number" ? b.historySeq : Number.MAX_SAFE_INTEGER;
-  if (aSeq !== bSeq) return aSeq - bSeq;
-  return a.timestamp - b.timestamp;
+  return aSeq - bSeq;
 }
 
 export function sortedMessagesForDisplay(messages: Message[]): Message[] {
