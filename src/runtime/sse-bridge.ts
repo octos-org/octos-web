@@ -434,15 +434,20 @@ function bindStreamToAssistant({
           // bubble as a "duplicate" — so BRAVO never renders.
           //
           // Route by `response_to_client_message_id` correlation:
-          //   - match this bubble  → merge in place (fast path; keeps
+          //   - positive match     → merge in place (fast path; keeps
           //     file artifacts, tool calls, meta attached to the bubble)
-          //   - different bubble  → go through appendHistoryMessages so
+          //   - different bubble   → go through appendHistoryMessages so
           //     findOptimisticMatchIndex correlates against the right
           //     sibling bubble
-          //   - no correlation    → legacy behaviour (in-place merge)
+          //   - no cmid on incoming → append rather than clobber. A
+          //     background-task `session_result` lacking cmid (delivered
+          //     mid-stream by the watcher channel) was previously merged
+          //     into THIS bubble's text via the `!incomingCmid` short-
+          //     circuit, producing wholesale text replacement + a visible
+          //     UI flicker. Treat unidentified events as new history rows.
           const incomingCmid = event.message.response_to_client_message_id;
           const isForThisBubble =
-            !incomingCmid || !clientMessageId || incomingCmid === clientMessageId;
+            !!incomingCmid && !!clientMessageId && incomingCmid === clientMessageId;
 
           const previousSeq = MessageStore.getMaxHistorySeq(sessionId, historyTopic);
           if (isForThisBubble) {

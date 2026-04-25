@@ -437,13 +437,14 @@ test.describe("message-store reducer helpers", () => {
       timestamp: Date.parse("2026-04-20T11:59:59.000Z"),
     });
 
-    // Current comparator keeps seq-ordered messages ahead of pending local
-    // messages, while task anchors still compare by timestamp against pending.
+    // Timestamp-primary comparator: pure chronological order across all kinds
+    // (task anchors, pending no-seq, server-stamped). pending=11:59:59 first,
+    // user=12:00:00, task=12:00:02, assistant=12:00:05.
     expect(
       sortedMessagesForDisplay([assistant, pending, taskAnchor, user]).map(
         (message) => message.id,
       ),
-    ).toEqual(["user", "assistant", "pending", "task"]);
+    ).toEqual(["pending", "user", "task", "assistant"]);
   });
 
   test("task anchor sorts after user prompt when server started_at predates client timestamp", () => {
@@ -661,11 +662,11 @@ test.describe("message-store reducer helpers", () => {
     expect(sorted[assistantIdx].status).toBe("complete");
   });
 
-  test("sorted_display_keeps_bubble_in_place_after_history_seq_population", () => {
-    // M8.10-A regression: when the SSE `done` event populates a bubble's
-    // historySeq, subsequent messages with higher seqs must sort AFTER it,
-    // not before it. Without the fix, the bubble had no historySeq and was
-    // pushed to the END of the list (MAX_SAFE_INTEGER tiebreaker).
+  test("sorted_display_orders_by_timestamp_regardless_of_history_seq_presence", () => {
+    // Timestamp-primary comparator: chronological order is determined by
+    // `timestamp`, so a no-seq live bubble slots between earlier and later
+    // seq'd messages by its own timestamp without waiting on a server seq.
+    // (Pre-fix this bubble sorted to the END via MAX_SAFE_INTEGER fallback.)
     const userTs = Date.parse("2026-04-20T12:00:00.000Z");
     const assistantStreamTs = Date.parse("2026-04-20T12:00:05.000Z");
     const followUpTs = Date.parse("2026-04-20T12:00:10.000Z");
@@ -678,18 +679,14 @@ test.describe("message-store reducer helpers", () => {
       historySeq: 0,
     });
 
-    // Live-streamed assistant bubble — STARTS without historySeq while
-    // the SSE stream runs (see sse-bridge.ts assistant placeholder creation).
-    const beforePopulation = makeMessage({
+    const noSeqLiveBubble = makeMessage({
       id: "assistant-1",
       role: "assistant",
       text: "Live reply",
       timestamp: assistantStreamTs,
-      // No historySeq yet — this is the buggy state pre-M8.10-A.
+      // No historySeq — streaming bubble before any seq lands.
     });
 
-    // Without populated historySeq, a later seq'd message would sort BEFORE
-    // the live bubble (the buggy "floats to end" behaviour).
     const followUp = makeMessage({
       id: "user-2",
       role: "user",
@@ -698,23 +695,18 @@ test.describe("message-store reducer helpers", () => {
       historySeq: 6,
     });
 
-    const buggyOrder = sortedMessagesForDisplay([
-      userMessage,
-      beforePopulation,
-      followUp,
-    ]).map((m) => m.id);
-    // Pre-fix: live bubble sorts AFTER the seq=6 follow-up because
-    // MAX_SAFE_INTEGER > 6.
-    expect(buggyOrder).toEqual(["user-1", "user-2", "assistant-1"]);
+    // No seq on the live bubble: timestamp ordering still places it correctly.
+    expect(
+      sortedMessagesForDisplay([userMessage, noSeqLiveBubble, followUp]).map(
+        (m) => m.id,
+      ),
+    ).toEqual(["user-1", "assistant-1", "user-2"]);
 
-    // After SSE `done` with committed_seq=5 fires, the bubble gets a real
-    // historySeq and the sort places it correctly between seq=0 and seq=6.
-    const afterPopulation: Message = { ...beforePopulation, historySeq: 5 };
-    const fixedOrder = sortedMessagesForDisplay([
-      userMessage,
-      afterPopulation,
-      followUp,
-    ]).map((m) => m.id);
-    expect(fixedOrder).toEqual(["user-1", "assistant-1", "user-2"]);
+    // With seq populated: same chronological order, seq is just a tiebreaker
+    // for same-timestamp peers (rare).
+    const withSeq: Message = { ...noSeqLiveBubble, historySeq: 5 };
+    expect(
+      sortedMessagesForDisplay([userMessage, withSeq, followUp]).map((m) => m.id),
+    ).toEqual(["user-1", "assistant-1", "user-2"]);
   });
 });

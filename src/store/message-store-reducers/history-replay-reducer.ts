@@ -128,11 +128,25 @@ export function findOptimisticMatchIndex(list: Message[], authoritative: Message
       const timeDelta = Math.abs(candidate.timestamp - authoritative.timestamp);
       if (timeDelta > 15 * 60_000) continue;
 
-      // Recovery can replay the committed session_result before the resumed
-      // streaming bubble receives its final `done` payload. In that window the
-      // texts differ ("Resuming..." vs final answer), but they still represent
-      // the same assistant turn and must collapse into one message.
-      return index;
+      // Streaming-bubble fast path is gated on positive cmid correlation.
+      // Without this gate, a concurrent background-task `session_result` (no
+      // cmid) would clobber the live streaming bubble's text with an older
+      // snapshot and flip status to "complete" mid-stream, producing the
+      // visible UI flicker users reported.
+      const candidateCmid =
+        candidate.responseToClientMessageId ?? candidate.clientMessageId;
+      const authoritativeCmid =
+        authoritative.responseToClientMessageId ?? authoritative.clientMessageId;
+      if (
+        candidateCmid &&
+        authoritativeCmid &&
+        candidateCmid === authoritativeCmid
+      ) {
+        return index;
+      }
+      // Without cmid correlation, fall through to the text-similarity match
+      // below — that still handles recovery-replay where the resumed bubble's
+      // text matches the committed answer.
     }
   }
 
