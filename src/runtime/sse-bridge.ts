@@ -424,6 +424,37 @@ function bindStreamToAssistant({
 
       case "session_result": {
         if (event.message) {
+          // User-message session_result (this fix): when the server
+          // persists the user turn it broadcasts a session_result with
+          // role="user" + the client-supplied `client_message_id`. We
+          // locate the optimistic user bubble by that id and stamp the
+          // authoritative `historySeq` onto it so subsequent seq'd
+          // messages don't bump it past MAX_SAFE_INTEGER.
+          //
+          // Tolerate legacy/missing variants: when no matching bubble
+          // exists, fall back to appending the message into history so
+          // server-side sessions that pre-date this event shape still
+          // render correctly.
+          if (
+            event.message.role === "user" &&
+            typeof event.message.seq === "number" &&
+            typeof event.message.client_message_id === "string"
+          ) {
+            const updated = MessageStore.setMessageHistorySeqByClientMessageId(
+              sessionId,
+              event.message.client_message_id,
+              event.message.seq,
+              historyTopic,
+            );
+            if (!updated) {
+              // No optimistic bubble matched (resumed session, restart,
+              // or message arrived before the bubble was created) — fall
+              // back to a normal history append.
+              MessageStore.appendHistoryMessages(sessionId, [event.message], historyTopic);
+            }
+            break;
+          }
+
           // FA-12f: under `/queue speculative`, the server emits
           // overflow session_result events onto the PRIMARY turn's SSE
           // stream (ApiChannel broadcasts to `pending[chat_id]` in

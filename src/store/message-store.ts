@@ -488,6 +488,39 @@ export function setMessageHistorySeq(
   notify();
 }
 
+/**
+ * Same as {@link setMessageHistorySeq}, but locates the bubble by the
+ * client-supplied UUID rather than the runtime message id. This is the
+ * counterpart to M8.10-A on the user-message side: the optimistic user
+ * bubble created by `sendMessage` has no `historySeq` until the server
+ * persists the `Message` and emits a `session_result` event for it. The
+ * SSE bridge calls into here once that event arrives.
+ *
+ * Returns `true` when a matching bubble was found and updated. Returns
+ * `false` when no bubble with the given `clientMessageId` exists in the
+ * session — callers can then fall back to appending the message into
+ * history (the same shape as a backfill row).
+ */
+export function setMessageHistorySeqByClientMessageId(
+  sessionId: string,
+  clientMessageId: string,
+  historySeq: number,
+  topic?: string,
+): boolean {
+  const key = storeKey(sessionId, topic);
+  const list = messagesByKey.get(key);
+  if (!list) return false;
+  const idx = list.findIndex(
+    (m) => m.role === "user" && m.clientMessageId === clientMessageId,
+  );
+  if (idx === -1) return false;
+  if (list[idx].historySeq === historySeq) return true;
+  list[idx] = withRuntime({ ...list[idx], historySeq });
+  messagesByKey.set(key, [...list]);
+  notify();
+  return true;
+}
+
 /** Finalise any still-streaming assistant bubbles (e.g. on user stop). */
 export function stopStreamingMessages(sessionId: string, topic?: string): void {
   const key = storeKey(sessionId, topic);
