@@ -5,14 +5,52 @@
  * Messages are keyed by sessionId plus optional history topic. History is
  * loaded from the API on first access; streaming updates arrive via the
  * runtime bridges.
+ *
+ * Pure reducer logic lives in ./message-store-reducers/*. This file keeps the
+ * stateful facade — session/topic maps, React subscriptions, and observability
+ * counters — but delegates message-shape transformations to the reducers for
+ * isolated unit testing.
  */
 
 import { useSyncExternalStore } from "react";
 import { getMessages as fetchMessages } from "@/api/sessions";
 import type { BackgroundTaskInfo, MessageInfo } from "@/api/types";
-import { displayFilenameFromPath } from "@/lib/utils";
 import { addFile as addToFileStore } from "@/store/file-store";
 import { recordRuntimeCounter } from "@/runtime/observability";
+import {
+  addFileToMessage,
+  convertApiMessage,
+  createLocalMessage,
+  findFileResultTargetIndex,
+  findMessageIndexById,
+  findMessageIndexByToolCallId,
+  findNoSeqDuplicateIndex,
+  findOptimisticMatchIndex,
+  findTaskAnchorIndex,
+  mergeAuthoritativeIntoMessage,
+  mergeFileResultIntoTarget,
+  mergeMessageFiles,
+  mergeTaskAnchorMeta,
+  normalizeMessageText,
+  pathMatchKeys,
+  projectTaskAnchorMessage,
+  reduceAppendAssistantTextEvent,
+  reduceAppendFileArtifactEvent,
+  reduceCreateAssistantTurnEvent,
+  reduceCreateUserMessageEvent,
+  reduceEnsureStreamingAssistantEvent,
+  reduceReplaceHistoryEvent,
+  reduceStopStreamingAssistantEvent,
+  runtimeStatusForTask,
+  sameTaskAnchorMeta,
+  shouldCollapseAuthoritativeDuplicate,
+  sortedMessagesForDisplay,
+  taskAnchorMessageId,
+  taskIdentity,
+  taskMessageStatus,
+  withRuntime,
+  TASK_COMPLETION_RE,
+} from "@/store/message-store-reducer";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -22,6 +60,7 @@ export interface ToolCallInfo {
   id: string;
   name: string;
   status: "running" | "complete" | "error";
+  detail?: string;
 }
 
 export interface MessageFile {
@@ -37,19 +76,58 @@ export interface MessageMeta {
   duration_s: number;
 }
 
+export type MessageRuntimeType = "user" | "assistant" | "system" | "background_task";
+export type MessageRuntimeStatus =
+  | "queued"
+  | "ongoing"
+  | "completed"
+  | "stopped"
+  | "failed";
+
+export interface MessageRuntime {
+  type: MessageRuntimeType;
+  status: MessageRuntimeStatus;
+  updatedAt: number;
+  taskId?: string;
+  toolCallId?: string;
+  phase?: string | null;
+  detail?: string | null;
+}
+
+export interface TaskAnchorMeta {
+  taskId?: string;
+  toolCallId?: string;
+  taskStartedAt?: string;
+  taskStatus?: BackgroundTaskInfo["status"];
+  lifecycleState?: string | null;
+  currentPhase?: string | null;
+  progressMessage?: string | null;
+  progress?: number | null;
+  progressEvents?: BackgroundTaskInfo["progress_events"];
+  runtimeDetail?: BackgroundTaskInfo["runtime_detail"];
+  completedAt?: string | null;
+  error?: string | null;
+  workflowKind?: string | null;
+  outputFiles?: string[];
+  toolNames?: string[];
+}
+
 export interface Message {
   id: string;
   role: "user" | "assistant" | "system";
   text: string;
+  kind?: "task_anchor";
   clientMessageId?: string;
   responseToClientMessageId?: string;
   files: MessageFile[];
   toolCalls: ToolCallInfo[];
-  status: "streaming" | "complete" | "error";
+  status: "streaming" | "complete" | "error" | "stopped";
+  runtime?: MessageRuntime;
   timestamp: number;
   historySeq?: number;
   meta?: MessageMeta;
   sourceToolCallId?: string;
+  taskAnchor?: TaskAnchorMeta;
 }
 
 // ---------------------------------------------------------------------------
@@ -144,23 +222,6 @@ function taskToolStatus(
   return "complete";
 }
 
-function pathMatchKeys(path: string): string[] {
-  const keys = new Set<string>();
-  const add = (value: string | undefined) => {
-    const normalized = value?.trim();
-    if (normalized) keys.add(normalized);
-  };
-
-  add(path);
-  try {
-    add(decodeURIComponent(path));
-  } catch {
-    // Keep the original path when decoding fails.
-  }
-  add(displayFilenameFromPath(path));
-  return [...keys];
-}
-
 function mapFor(
   root: Map<string, Map<string, string>>,
   key: string,
@@ -202,18 +263,6 @@ function indexTaskForMessage(key: string, task: BackgroundTaskInfo, messageId: s
       outputMap.set(pathKey, messageId);
     }
   }
-}
-
-function findMessageIndexById(list: Message[], messageId: string): number {
-  return list.findIndex((message) => message.id === messageId);
-}
-
-function findMessageIndexByToolCallId(list: Message[], toolCallId?: string): number {
-  if (!toolCallId) return -1;
-  return list.findIndex((message) =>
-    message.toolCalls.some((toolCall) => toolCall.id === toolCallId) ||
-    message.sourceToolCallId === toolCallId,
-  );
 }
 
 function findMessageIndexForFilePath(key: string, list: Message[], file: MessageFile): number {
@@ -291,11 +340,6 @@ function upsertToolCall(
   return { ...message, toolCalls: [...message.toolCalls, toolCall] };
 }
 
-function addFileToMessage(message: Message, file: MessageFile): Message {
-  if (message.files.some((existing) => existing.path === file.path)) return message;
-  return { ...message, files: [...message.files, file] };
-}
-
 function indexFilesForMessage(sessionId: string, message: Message): void {
   for (const file of message.files) {
     addToFileStore({
@@ -305,272 +349,6 @@ function indexFilesForMessage(sessionId: string, message: Message): void {
       caption: file.caption ?? "",
     });
   }
-}
-
-function parseLegacyFileLine(line: string): MessageFile | null {
-  const match = line.trim().match(/^\[file:([^\]]+)\]\s*(.*)$/u);
-  if (!match) return null;
-
-  const path = match[1]?.trim();
-  if (!path) return null;
-
-  const fallbackName = displayFilenameFromPath(path);
-  const remainder = (match[2] || "").trim();
-  if (!remainder) {
-    return { filename: fallbackName, path, caption: "" };
-  }
-
-  const separator = " — ";
-  const sepIdx = remainder.indexOf(separator);
-  if (sepIdx === -1) {
-    return { filename: remainder || fallbackName, path, caption: "" };
-  }
-
-  const filename = remainder.slice(0, sepIdx).trim() || fallbackName;
-  const caption = remainder.slice(sepIdx + separator.length).trim();
-  return { filename, path, caption };
-}
-
-function parseLegacyFileDeliveries(content: string): {
-  text: string;
-  files: MessageFile[];
-} {
-  if (!content.includes("[file:")) {
-    return { text: content, files: [] };
-  }
-
-  const files: MessageFile[] = [];
-  const remainingLines: string[] = [];
-  const seenPaths = new Set<string>();
-
-  for (const line of content.split(/\r?\n/u)) {
-    const parsed = parseLegacyFileLine(line);
-    if (!parsed) {
-      remainingLines.push(line);
-      continue;
-    }
-
-    if (seenPaths.has(parsed.path)) continue;
-    seenPaths.add(parsed.path);
-    files.push(parsed);
-  }
-
-  return {
-    text: remainingLines.join("\n").trim(),
-    files,
-  };
-}
-
-function mergeMessageFiles(primary: MessageFile[], fallback: MessageFile[]): MessageFile[] {
-  const merged = new Map<string, MessageFile>();
-
-  for (const file of primary) {
-    merged.set(file.path, file);
-  }
-
-  for (const file of fallback) {
-    const existing = merged.get(file.path);
-    if (!existing) {
-      merged.set(file.path, file);
-      continue;
-    }
-
-    merged.set(file.path, {
-      ...existing,
-      filename: existing.filename || file.filename,
-      caption: existing.caption || file.caption || "",
-    });
-  }
-
-  return Array.from(merged.values());
-}
-
-function normalizeMessageText(text: string): string {
-  // Strip tool progress lines, streaming stats, and provider info that
-  // may differ between the SSE-streamed text and the API-stored text.
-  const lines = text.split("\n").filter((line) => {
-    const t = line.trim();
-    if (!t) return false;
-    if (/^[✓✗⚙📄✦]\s*[`[]/u.test(t)) return false; // tool badges
-    if (/^via\s+\S+\s+\(/u.test(t)) return false; // provider info
-    if (/^\d+s(\s*·\s*[\d.]+k?[↑↓].*)?$/u.test(t)) return false; // streaming stats
-    if (t === "Processing") return false;
-    return true;
-  });
-  return lines.join(" ").replace(/\s+/gu, " ").trim();
-}
-
-function shouldCollapseAuthoritativeDuplicate(
-  candidate: Message,
-  authoritative: Message,
-): boolean {
-  if (candidate.role !== authoritative.role) return false;
-
-  if (
-    typeof candidate.historySeq === "number" &&
-    typeof authoritative.historySeq === "number" &&
-    candidate.historySeq === authoritative.historySeq
-  ) {
-    return true;
-  }
-
-  if (
-    authoritative.clientMessageId &&
-    candidate.clientMessageId === authoritative.clientMessageId
-  ) {
-    return true;
-  }
-
-  if (
-    authoritative.responseToClientMessageId &&
-    candidate.responseToClientMessageId === authoritative.responseToClientMessageId
-  ) {
-    return true;
-  }
-
-  if (candidate.role !== "assistant") return false;
-
-  const timeDelta = Math.abs(candidate.timestamp - authoritative.timestamp);
-  if (timeDelta > 15 * 60_000) return false;
-
-  if (candidate.status === "streaming") return true;
-
-  const candidateText = normalizeMessageText(candidate.text);
-  const authoritativeText = normalizeMessageText(authoritative.text);
-  return candidateText.length > 0 && candidateText === authoritativeText;
-}
-
-function findOptimisticMatchIndex(list: Message[], authoritative: Message): number {
-  if (authoritative.clientMessageId) {
-    const directMatchIndex = list.findIndex(
-      (candidate) =>
-        typeof candidate.historySeq !== "number" &&
-        candidate.role === authoritative.role &&
-        candidate.clientMessageId === authoritative.clientMessageId,
-    );
-    if (directMatchIndex !== -1) return directMatchIndex;
-  }
-
-  if (authoritative.responseToClientMessageId) {
-    const responseMatchIndex = list.findIndex(
-      (candidate) =>
-        typeof candidate.historySeq !== "number" &&
-        candidate.role === authoritative.role &&
-        candidate.responseToClientMessageId === authoritative.responseToClientMessageId,
-    );
-    if (responseMatchIndex !== -1) return responseMatchIndex;
-  }
-
-  if (authoritative.role === "assistant") {
-    for (let index = list.length - 1; index >= 0; index -= 1) {
-      const candidate = list[index];
-      if (typeof candidate.historySeq === "number") continue;
-      if (candidate.role !== "assistant" || candidate.status !== "streaming") continue;
-
-      const timeDelta = Math.abs(candidate.timestamp - authoritative.timestamp);
-      if (timeDelta > 15 * 60_000) continue;
-
-      // Recovery can replay the committed session_result before the resumed
-      // streaming bubble receives its final `done` payload. In that window the
-      // texts differ ("Resuming..." vs final answer), but they still represent
-      // the same assistant turn and must collapse into one message.
-      return index;
-    }
-  }
-
-  const authoritativeText = normalizeMessageText(authoritative.text);
-  const authoritativeTime = authoritative.timestamp;
-
-  let bestIndex = -1;
-  let bestTimeDelta = Number.MAX_SAFE_INTEGER;
-
-  for (let index = 0; index < list.length; index += 1) {
-    const candidate = list[index];
-    if (typeof candidate.historySeq === "number") continue;
-    if (candidate.role !== authoritative.role) continue;
-    if (normalizeMessageText(candidate.text) !== authoritativeText) continue;
-    // Don't require file or tool call match — both arrive asynchronously
-    // via SSE and may differ from the API version.
-
-    const timeDelta = Math.abs(candidate.timestamp - authoritativeTime);
-    // Recovery can recreate an optimistic assistant bubble and then replay the
-    // committed session_result much later. Keep a wider assistant merge window
-    // so resumed turns are replaced in place instead of appending a duplicate
-    // assistant bubble after one or more reloads.
-    const optimisticWindowMs =
-      candidate.role === "assistant" ? 15 * 60_000 : 60_000;
-    if (timeDelta > optimisticWindowMs) continue;
-    if (timeDelta >= bestTimeDelta) continue;
-
-    bestIndex = index;
-    bestTimeDelta = timeDelta;
-  }
-
-  return bestIndex;
-}
-
-function mergeAuthoritativeIntoMessage(
-  existing: Message,
-  authoritative: Message,
-): Message {
-  return {
-    ...existing,
-    text: authoritative.text,
-    clientMessageId: authoritative.clientMessageId ?? existing.clientMessageId,
-    responseToClientMessageId:
-      authoritative.responseToClientMessageId ?? existing.responseToClientMessageId,
-    files: mergeMessageFiles(authoritative.files, existing.files),
-    toolCalls:
-      authoritative.toolCalls.length > 0 ? authoritative.toolCalls : existing.toolCalls,
-    status: "complete",
-    timestamp: authoritative.timestamp,
-    historySeq: authoritative.historySeq,
-    meta: existing.meta,
-    sourceToolCallId: authoritative.sourceToolCallId ?? existing.sourceToolCallId,
-  };
-}
-
-/** Task completion notifications are status messages, not real responses. */
-const TASK_COMPLETION_RE = /^[✓✗]\s+\S+\s+(completed|failed)\s*\(/u;
-
-function convertApiMessage(m: MessageInfo): Message | null {
-  if (m.role === "tool") return null;
-  const role = m.role === "user" ? "user" : m.role === "system" ? "system" : "assistant";
-  const mediaFiles: MessageFile[] = (m.media ?? []).map((path) => ({
-    filename: displayFilenameFromPath(path),
-    path,
-    caption: "",
-  }));
-  const parsedLegacy = parseLegacyFileDeliveries(m.content);
-  const files = mergeMessageFiles(parsedLegacy.files, mediaFiles);
-  const text = parsedLegacy.text;
-  if (!text.trim() && files.length === 0) return null;
-  // Skip task completion status messages (e.g. "✓ fm_tts completed (file.mp3)")
-  // — the file is already delivered via the media field on a separate message.
-  if (role === "assistant" && files.length === 0 && TASK_COMPLETION_RE.test(text.trim())) {
-    return null;
-  }
-
-  const toolCalls: ToolCallInfo[] =
-    m.tool_calls?.filter((tc) => tc.name).map((tc) => ({
-      id: tc.id || "",
-      name: tc.name || "",
-      status: "complete" as const,
-    })) ?? [];
-
-  return {
-    id: nextId(),
-    role,
-    text,
-    clientMessageId: m.client_message_id,
-    responseToClientMessageId: m.response_to_client_message_id,
-    files,
-    toolCalls,
-    status: "complete",
-    timestamp: m.timestamp ? new Date(m.timestamp).getTime() : Date.now(),
-    historySeq: typeof m.seq === "number" ? m.seq : undefined,
-    sourceToolCallId: m.tool_call_id,
-  };
 }
 
 function indexFilesForSession(
@@ -590,79 +368,6 @@ function indexFilesForSession(
   }
 }
 
-function shouldCoalesceFileResult(message: Message): boolean {
-  if (message.role !== "assistant" || message.files.length === 0) return false;
-  if (message.sourceToolCallId) return true;
-  if (!message.text.trim()) return true;
-  return TASK_COMPLETION_RE.test(message.text.trim());
-}
-
-function findFileResultTargetIndex(
-  key: string,
-  list: Message[],
-  fileResult: Message,
-): number {
-  if (!shouldCoalesceFileResult(fileResult)) return -1;
-
-  const byToolCall = findMessageIndexByToolCallId(
-    list,
-    fileResult.sourceToolCallId,
-  );
-  if (byToolCall !== -1) return byToolCall;
-
-  for (const file of fileResult.files) {
-    const byPath = findMessageIndexForFilePath(key, list, file);
-    if (byPath !== -1) return byPath;
-  }
-
-  const byAnchor = findBackgroundAnchorIndex(key, list);
-  if (byAnchor !== -1) return byAnchor;
-
-  return fileResult.sourceToolCallId
-    ? findRecentAssistantIndex(list, fileResult.timestamp)
-    : -1;
-}
-
-function mergeFileResultIntoTarget(target: Message, fileResult: Message): Message {
-  const files = fileResult.files.map((file) => ({
-    ...file,
-    caption: file.caption || fileResult.text || "",
-  }));
-
-  return {
-    ...target,
-    files: mergeMessageFiles(files, target.files),
-    toolCalls:
-      target.toolCalls.length > 0 ? target.toolCalls : fileResult.toolCalls,
-    sourceToolCallId: target.sourceToolCallId ?? fileResult.sourceToolCallId,
-  };
-}
-
-function coalesceFileResultsIntoAnchors(
-  sessionId: string,
-  messages: Message[],
-  topic?: string,
-): Message[] {
-  const key = storeKey(sessionId, topic);
-  const merged: Message[] = [];
-
-  for (const message of messages) {
-    const targetIndex = findFileResultTargetIndex(key, merged, message);
-    if (targetIndex === -1) {
-      merged.push(message);
-      continue;
-    }
-
-    merged[targetIndex] = mergeFileResultIntoTarget(merged[targetIndex], message);
-    recordRuntimeCounter("octos_result_duplicate_suppressed_total", {
-      kind: message.role,
-      reason: "background_file_coalesced",
-    });
-  }
-
-  return merged;
-}
-
 function replaceHistoryFromApi(
   sessionId: string,
   apiMessages: MessageInfo[],
@@ -670,76 +375,17 @@ function replaceHistoryFromApi(
 ): void {
   const key = storeKey(sessionId, topic);
   const existing = messagesByKey.get(key) ?? [];
-  const consumedOptimisticIndices = new Set<number>();
 
-  // Phase 1: Convert API messages to local format, merging with optimistic
-  // matches to preserve local-only state (id, meta, files from SSE).
-  const authoritative = apiMessages
-    .map(convertApiMessage)
-    .filter((message): message is Message => message !== null)
-    .map((message) => {
-      const optimisticMatchIndex = findOptimisticMatchIndex(existing, message);
-      if (
-        optimisticMatchIndex === -1 ||
-        consumedOptimisticIndices.has(optimisticMatchIndex)
-      ) {
-        return message;
-      }
-
-      consumedOptimisticIndices.add(optimisticMatchIndex);
-      const optimistic = existing[optimisticMatchIndex];
-      return mergeAuthoritativeIntoMessage(optimistic, message);
-    });
-
-  // Phase 2: Collect unconsumed optimistic messages — these are local-only
-  // messages the server hasn't seen yet (user just typed, or still streaming).
-  // Drop stale completed messages that SHOULD have matched but didn't (e.g.
-  // the server returned a slightly different text after tool-progress cleanup).
-  // Keep streaming messages unconditionally — they're actively being built.
-  const pending: Message[] = [];
-  for (let i = 0; i < existing.length; i++) {
-    if (consumedOptimisticIndices.has(i)) continue;
-    const msg = existing[i];
-    // Already confirmed by server in a prior sync — server is authoritative.
-    if (typeof msg.historySeq === "number") continue;
-    // Streaming or has local-only content — keep it.
-    if (msg.status === "streaming" || msg.status === "error") {
-      pending.push(msg);
-      continue;
-    }
-    // Completed optimistic user message not yet in API — keep if recent.
-    if (msg.role === "user") {
-      const age = Date.now() - msg.timestamp;
-      if (age < 120_000) {
-        pending.push(msg);
-      }
-      continue;
-    }
-    // Completed assistant message not matched — keep only if it has
-    // meaningful content (files or text) that may not be in API yet.
-    if (msg.files.length > 0 || msg.text.trim().length > 0) {
-      const age = Date.now() - msg.timestamp;
-      if (age < 30_000) {
-        pending.push(msg);
-      }
-    }
-  }
-
-  // Phase 3: Merge and sort — authoritative first by seq, pending at the end
-  // ordered by timestamp.
-  const merged = [
-    ...coalesceFileResultsIntoAnchors(sessionId, authoritative, topic),
-    ...pending,
-  ];
-  merged.sort((a, b) => {
-    const aSeq = typeof a.historySeq === "number" ? a.historySeq : Number.MAX_SAFE_INTEGER;
-    const bSeq = typeof b.historySeq === "number" ? b.historySeq : Number.MAX_SAFE_INTEGER;
-    if (aSeq !== bSeq) return aSeq - bSeq;
-    return a.timestamp - b.timestamp;
+  const { messages } = reduceReplaceHistoryEvent({
+    type: "replace_history_from_api",
+    existing,
+    apiMessages,
+    outputPathMessageIds: outputPathMessageByKey.get(key),
+    createId: nextId,
   });
 
-  messagesByKey.set(key, merged);
-  indexFilesForSession(sessionId, merged, topic);
+  messagesByKey.set(key, messages);
+  indexFilesForSession(sessionId, messages, topic);
   loadedSessions.add(key);
   notify();
 }
@@ -757,7 +403,21 @@ export function addMessage(
   const id = nextId();
   const key = storeKey(sessionId, topic);
   const list = getList(sessionId, topic);
-  list.push({ ...msg, id, timestamp: Date.now() });
+  const message =
+    msg.role === "user"
+      ? reduceCreateUserMessageEvent({
+          type: "create_user_message",
+          message: { ...msg, role: "user" },
+          createId: () => id,
+        })
+      : msg.role === "assistant"
+        ? reduceCreateAssistantTurnEvent({
+            type: "create_assistant_turn",
+            message: { ...msg, role: "assistant" },
+            createId: () => id,
+          })
+        : createLocalMessage(msg, () => id);
+  list.push(message);
   // Replace the array reference so React picks up the change
   messagesByKey.set(key, [...list]);
   notify();
@@ -768,7 +428,12 @@ export function addMessage(
 export function updateMessage(
   sessionId: string,
   messageId: string,
-  updates: Partial<Pick<Message, "text" | "status" | "files" | "toolCalls" | "meta">>,
+  updates: Partial<
+    Pick<
+      Message,
+      "text" | "status" | "files" | "toolCalls" | "meta" | "sourceToolCallId"
+    >
+  >,
   topic?: string,
 ): void {
   const key = storeKey(sessionId, topic);
@@ -776,11 +441,14 @@ export function updateMessage(
   if (!list) return;
   const idx = list.findIndex((m) => m.id === messageId);
   if (idx === -1) return;
-  list[idx] = { ...list[idx], ...updates };
+  list[idx] = withRuntime({ ...list[idx], ...updates });
   if (updates.toolCalls) {
     for (const toolCall of updates.toolCalls) {
       indexToolCallForMessage(key, toolCall.id, messageId);
     }
+  }
+  if (updates.sourceToolCallId) {
+    indexToolCallForMessage(key, updates.sourceToolCallId, messageId);
   }
   messagesByKey.set(key, [...list]);
   notify();
@@ -795,6 +463,52 @@ export function setMessageMeta(
   updateMessage(sessionId, messageId, { meta }, topic);
 }
 
+/**
+ * Write an authoritative `historySeq` onto an existing message (M8.10-A).
+ *
+ * Used when the SSE `done` event threads back the server-committed sequence
+ * for a live-streamed assistant bubble. Without this, the bubble has no seq
+ * and `compareMessagesForDisplay` ranks it via `Number.MAX_SAFE_INTEGER`,
+ * making it float to the end of the list when newer seq'd messages arrive.
+ */
+export function setMessageHistorySeq(
+  sessionId: string,
+  messageId: string,
+  historySeq: number,
+  topic?: string,
+): void {
+  const key = storeKey(sessionId, topic);
+  const list = messagesByKey.get(key);
+  if (!list) return;
+  const idx = list.findIndex((m) => m.id === messageId);
+  if (idx === -1) return;
+  if (list[idx].historySeq === historySeq) return;
+  list[idx] = withRuntime({ ...list[idx], historySeq });
+  messagesByKey.set(key, [...list]);
+  notify();
+}
+
+/** Finalise any still-streaming assistant bubbles (e.g. on user stop). */
+export function stopStreamingMessages(sessionId: string, topic?: string): void {
+  const key = storeKey(sessionId, topic);
+  const list = messagesByKey.get(key);
+  if (!list) return;
+
+  let changed = false;
+  const next = list.map((message) => {
+    const projected = reduceStopStreamingAssistantEvent({
+      type: "stop_streaming_assistant",
+      message,
+    });
+    if (projected !== message) changed = true;
+    return projected;
+  });
+
+  if (!changed) return;
+  messagesByKey.set(key, next);
+  notify();
+}
+
 /** Append text to a streaming message. */
 export function appendText(
   sessionId: string,
@@ -807,7 +521,11 @@ export function appendText(
   if (!list) return;
   const idx = list.findIndex((m) => m.id === messageId);
   if (idx === -1) return;
-  list[idx] = { ...list[idx], text: list[idx].text + chunk };
+  list[idx] = reduceAppendAssistantTextEvent({
+    type: "append_assistant_text",
+    message: list[idx],
+    chunk,
+  });
   messagesByKey.set(key, [...list]);
   notify();
 }
@@ -826,7 +544,11 @@ export function appendFile(
   if (idx === -1) return;
   const msg = list[idx];
   if (msg.files.some((f) => f.path === file.path)) return;
-  list[idx] = { ...msg, files: [...msg.files, file] };
+  list[idx] = reduceAppendFileArtifactEvent({
+    type: "append_file_artifact",
+    message: msg,
+    file,
+  });
   messagesByKey.set(key, [...list]);
   addToFileStore({
     sessionId,
@@ -837,6 +559,73 @@ export function appendFile(
   notify();
 }
 
+/**
+ * Project a background task's current state into a task_anchor bubble.
+ *
+ * Creates or updates the anchor message for the task, merging runtime detail
+ * and ensuring the timestamp anchors to the task's started_at timestamp.
+ */
+export function ensureTaskAnchor(
+  sessionId: string,
+  task: BackgroundTaskInfo,
+  topic?: string,
+): string | null {
+  const taskId = taskIdentity(task);
+  if (!taskId) return null;
+  const key = storeKey(sessionId, topic);
+  const list = getList(sessionId, topic);
+  const anchorId = taskAnchorMessageId(sessionId, taskId);
+  const targetIndex = findTaskAnchorIndex(
+    sessionId,
+    taskMessageByKey.get(key),
+    list,
+    task,
+  );
+  const nextTaskAnchor = mergeTaskAnchorMeta(
+    targetIndex !== -1 ? list[targetIndex].taskAnchor : undefined,
+    task,
+  );
+
+  if (targetIndex !== -1) {
+    const current = list[targetIndex];
+    if (
+      current.id === anchorId &&
+      current.kind === "task_anchor" &&
+      current.status === taskMessageStatus(task) &&
+      current.sourceToolCallId === (task.tool_call_id ?? current.sourceToolCallId) &&
+      current.runtime?.status === runtimeStatusForTask(task) &&
+      sameTaskAnchorMeta(current.taskAnchor, nextTaskAnchor)
+    ) {
+      return anchorId;
+    }
+  }
+
+  if (targetIndex === -1) {
+    list.push(projectTaskAnchorMessage(sessionId, task, list, nextTaskAnchor));
+  } else {
+    list[targetIndex] = projectTaskAnchorMessage(
+      sessionId,
+      task,
+      list,
+      nextTaskAnchor,
+      list[targetIndex],
+    );
+  }
+
+  indexTaskForMessage(key, task, anchorId);
+  messagesByKey.set(key, sortedMessagesForDisplay(list));
+  notify();
+  return anchorId;
+}
+
+/**
+ * Register a background-task anchor tied to an assistant message id.
+ *
+ * Used by the SSE/WS bridges when they create the assistant bubble that will
+ * later be enriched with tool-call progress and file attachments. The anchor
+ * metadata is consulted by the file/tool-call routers to find the right
+ * bubble to attach to.
+ */
 export function registerBackgroundAnchor(
   sessionId: string,
   messageId: string,
@@ -1030,7 +819,7 @@ export function appendHistoryMessages(
   let maxSeq = getMaxHistorySeq(sessionId, topic);
 
   for (const apiMessage of apiMessages) {
-    const converted = convertApiMessage(apiMessage);
+    const converted = convertApiMessage(apiMessage, nextId);
     if (!converted) continue;
     if (
       typeof converted.historySeq === "number" &&
@@ -1044,7 +833,11 @@ export function appendHistoryMessages(
       continue;
     }
 
-    const fileResultTargetIndex = findFileResultTargetIndex(key, list, converted);
+    const fileResultTargetIndex = findFileResultTargetIndex(
+      outputPathMessageByKey.get(key),
+      list,
+      converted,
+    );
     if (fileResultTargetIndex !== -1) {
       list[fileResultTargetIndex] = mergeFileResultIntoTarget(
         list[fileResultTargetIndex],
@@ -1079,13 +872,15 @@ export function appendHistoryMessages(
       continue;
     }
 
-    // Safety: check if a confirmed message with the same text+role already
-    // exists (e.g. two turns produced identical responses and the optimistic
-    // matcher consumed the wrong one). Merge into the existing message rather
-    // than adding a duplicate.
+    // Safety: check if a message with the same text+role already exists,
+    // either as a confirmed (seq'd) entry or as a live-streamed no-seq
+    // bubble. When an authoritative historySeq message arrives and matches
+    // an existing no-seq bubble, merge the seq into it instead of appending
+    // a second copy. This catches the speculative-overflow-replay case
+    // where seq=N session_result arrives after the live SSE bubble already
+    // rendered the same text.
     const confirmedDupe = list.findIndex(
       (m) =>
-        typeof m.historySeq === "number" &&
         m.role === converted.role &&
         m.files.length === 0 &&
         converted.files.length === 0 &&
@@ -1095,9 +890,15 @@ export function appendHistoryMessages(
         Math.abs(m.timestamp - converted.timestamp) < 120_000,
     );
     if (confirmedDupe !== -1) {
-      // Already have a confirmed message with same content — this is likely
-      // the correct instance. Skip adding a duplicate; the existing one is
-      // close enough (authoritative seq may differ but UI position is right).
+      const existing = list[confirmedDupe];
+      // If the existing entry has no historySeq, adopt the full authoritative
+      // message via mergeAuthoritativeIntoMessage — this carries over
+      // timestamp, toolCalls, files, meta, and responseToClientMessageId that
+      // a bare seq-adoption would silently drop.
+      if (typeof existing.historySeq !== "number" && typeof converted.historySeq === "number") {
+        list[confirmedDupe] = mergeAuthoritativeIntoMessage(existing, converted);
+        changed = true;
+      }
       recordRuntimeCounter("octos_result_duplicate_suppressed_total", {
         kind: converted.role,
         reason: "confirmed_text_match",
@@ -1105,6 +906,18 @@ export function appendHistoryMessages(
       if (typeof converted.historySeq === "number") {
         maxSeq = Math.max(maxSeq, converted.historySeq);
       }
+      continue;
+    }
+
+    // Final dedup: messages without a historySeq slip past the seq guard and
+    // the confirmed-text check (both require typeof historySeq === "number").
+    // Legacy replay / skill events occasionally emit MessageInfo with no seq,
+    // which re-appends on every poll (the "已记住 ..." reappear bug).
+    if (findNoSeqDuplicateIndex(list, converted) !== -1) {
+      recordRuntimeCounter("octos_result_duplicate_suppressed_total", {
+        kind: converted.role,
+        reason: "no_seq_text_match",
+      });
       continue;
     }
 
@@ -1116,14 +929,9 @@ export function appendHistoryMessages(
   }
 
   if (changed) {
-    list.sort((a, b) => {
-      const aSeq = typeof a.historySeq === "number" ? a.historySeq : Number.MAX_SAFE_INTEGER;
-      const bSeq = typeof b.historySeq === "number" ? b.historySeq : Number.MAX_SAFE_INTEGER;
-      if (aSeq !== bSeq) return aSeq - bSeq;
-      return a.timestamp - b.timestamp;
-    });
-    messagesByKey.set(key, [...list]);
-    indexFilesForSession(sessionId, list, topic);
+    const sorted = sortedMessagesForDisplay(list);
+    messagesByKey.set(key, sorted);
+    indexFilesForSession(sessionId, sorted, topic);
     loadedSessions.add(key);
     notify();
   }
@@ -1137,7 +945,7 @@ export function mergeHistoryMessageIntoMessage(
   apiMessage: MessageInfo,
   topic?: string,
 ): boolean {
-  const converted = convertApiMessage(apiMessage);
+  const converted = convertApiMessage(apiMessage, nextId);
   if (!converted) return false;
 
   const key = storeKey(sessionId, topic);
@@ -1147,7 +955,11 @@ export function mergeHistoryMessageIntoMessage(
   let targetIndex = list.findIndex((message) => message.id === messageId);
   if (targetIndex === -1) return false;
 
-  const fileResultTargetIndex = findFileResultTargetIndex(key, list, converted);
+  const fileResultTargetIndex = findFileResultTargetIndex(
+    outputPathMessageByKey.get(key),
+    list,
+    converted,
+  );
   if (fileResultTargetIndex !== -1) {
     list[fileResultTargetIndex] = mergeFileResultIntoTarget(
       list[fileResultTargetIndex],
@@ -1204,15 +1016,9 @@ export function mergeHistoryMessageIntoMessage(
     }
   }
 
-  list.sort((a, b) => {
-    const aSeq = typeof a.historySeq === "number" ? a.historySeq : Number.MAX_SAFE_INTEGER;
-    const bSeq = typeof b.historySeq === "number" ? b.historySeq : Number.MAX_SAFE_INTEGER;
-    if (aSeq !== bSeq) return aSeq - bSeq;
-    return a.timestamp - b.timestamp;
-  });
-
-  messagesByKey.set(key, [...list]);
-  indexFilesForSession(sessionId, list, topic);
+  const sorted = sortedMessagesForDisplay(list);
+  messagesByKey.set(key, sorted);
+  indexFilesForSession(sessionId, sorted, topic);
   loadedSessions.add(key);
   notify();
   return true;
@@ -1231,32 +1037,18 @@ export function ensureStreamingAssistantMessage(
 ): string {
   const key = storeKey(sessionId, topic);
   const list = getList(sessionId, topic);
-  const existing = [...list]
-    .reverse()
-    .find((message) => message.role === "assistant" && message.status === "streaming");
-
-  if (existing) {
-    if (!existing.text && text) {
-      existing.text = text;
-      messagesByKey.set(key, [...list]);
-      notify();
-    }
-    return existing.id;
-  }
-
-  const id = nextId();
-  list.push({
-    id,
-    role: "assistant",
+  const projected = reduceEnsureStreamingAssistantEvent({
+    type: "ensure_streaming_assistant",
+    messages: list,
     text,
-    files: [],
-    toolCalls: [],
-    status: "streaming",
-    timestamp: Date.now(),
+    createId: nextId,
   });
-  messagesByKey.set(key, [...list]);
-  notify();
-  return id;
+
+  if (projected.changed) {
+    messagesByKey.set(key, projected.messages);
+    notify();
+  }
+  return projected.messageId;
 }
 
 function isResumePlaceholderText(text: string): boolean {
@@ -1326,14 +1118,16 @@ export function reconcileRecoveredStreamingMessages(
       continue;
     }
 
-    next.push({
-      ...message,
-      text:
-        !options?.streamActive && isResumePlaceholderText(message.text)
-          ? ""
-          : message.text,
-      status: "complete",
-    });
+    next.push(
+      withRuntime({
+        ...message,
+        text:
+          !options?.streamActive && isResumePlaceholderText(message.text)
+            ? ""
+            : message.text,
+        status: "complete",
+      }),
+    );
     changed = true;
     recordRuntimeCounter("octos_recovery_stream_cleanup_total", {
       action: "finalize_orphan",
@@ -1345,6 +1139,9 @@ export function reconcileRecoveredStreamingMessages(
   messagesByKey.set(key, next);
   notify();
 }
+
+// Re-exported for consumers that need direct access to the shared sentinel.
+export { TASK_COMPLETION_RE };
 
 // ---------------------------------------------------------------------------
 // History loading

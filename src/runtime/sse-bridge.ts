@@ -10,11 +10,20 @@
 
 import * as StreamManager from "./stream-manager";
 import * as MessageStore from "@/store/message-store";
+import {
+  applyAppendFileArtifact,
+  applyFinalizeAssistant,
+  applyRegisterBackgroundAnchor,
+  applyReplaceAssistantText,
+  applyStreamError,
+  applyTaskStatus,
+  applyUpdateToolCalls,
+  isEventInScope,
+} from "@/store/message-store-actions";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { getMessages as fetchSessionMessages } from "@/api/sessions";
 import { dispatchCrewFileEvent } from "./file-events";
 import { recordRuntimeCounter } from "./observability";
-import { eventSessionId, eventTopic } from "./event-scope";
 
 // ---------------------------------------------------------------------------
 // Helpers (shared with the old adapter, kept local)
@@ -233,17 +242,8 @@ function bindStreamToAssistant({
 
   const handleEvent = (evt: StreamManager.StreamEvent) => {
     const event = evt.raw;
-    const scopedSessionId = eventSessionId(event);
-    if (scopedSessionId !== undefined && scopedSessionId !== sessionId) {
+    if (!isEventInScope(event, { sessionId, topic: normalizedHistoryTopic })) {
       recordRuntimeCounter("octos_session_mismatch_total", {
-        surface: "sse_bridge",
-      });
-      return;
-    }
-
-    const scopedTopic = eventTopic(event);
-    if (scopedTopic !== undefined && scopedTopic !== normalizedHistoryTopic) {
-      recordRuntimeCounter("octos_topic_mismatch_total", {
         surface: "sse_bridge",
       });
       return;
@@ -252,16 +252,24 @@ function bindStreamToAssistant({
     switch (event.type) {
       case "token":
         rawText += event.text;
-        MessageStore.updateMessage(sessionId, assistantMsgId, {
+        applyReplaceAssistantText({
+          type: "replace_assistant_text",
+          sessionId,
+          messageId: assistantMsgId,
+          topic: historyTopic,
           text: clean(rawText),
-        }, historyTopic);
+        });
         break;
 
       case "replace":
         rawText = event.text;
-        MessageStore.updateMessage(sessionId, assistantMsgId, {
+        applyReplaceAssistantText({
+          type: "replace_assistant_text",
+          sessionId,
+          messageId: assistantMsgId,
+          topic: historyTopic,
           text: clean(rawText),
-        }, historyTopic);
+        });
         break;
 
       case "tool_start": {
@@ -272,9 +280,13 @@ function bindStreamToAssistant({
           `tc_${event.tool}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         toolCalls.set(key, { id: tcId, name: event.tool, status: "running" });
         activeToolByName.set(event.tool, key);
-        MessageStore.updateMessage(sessionId, assistantMsgId, {
+        applyUpdateToolCalls({
+          type: "update_tool_calls",
+          sessionId,
+          messageId: assistantMsgId,
+          topic: historyTopic,
           toolCalls: Array.from(toolCalls.values()),
-        }, historyTopic);
+        });
         break;
       }
 
@@ -282,9 +294,13 @@ function bindStreamToAssistant({
         const key = activeToolByName.get(event.tool);
         const tc = key ? toolCalls.get(key) : undefined;
         if (tc) tc.status = event.success ? "complete" : "error";
-        MessageStore.updateMessage(sessionId, assistantMsgId, {
+        applyUpdateToolCalls({
+          type: "update_tool_calls",
+          sessionId,
+          messageId: assistantMsgId,
+          topic: historyTopic,
           toolCalls: Array.from(toolCalls.values()),
-        }, historyTopic);
+        });
         break;
       }
 
@@ -342,19 +358,13 @@ function bindStreamToAssistant({
             path: event.path,
             caption,
           };
-          const attached = MessageStore.appendFileByToolCallId(
+          applyAppendFileArtifact({
+            type: "append_file_artifact",
             sessionId,
-            event.tool_call_id,
+            topic: historyTopic,
             file,
-            historyTopic,
-          );
-          if (!attached) {
-            MessageStore.appendFileToBackgroundAnchor(
-              sessionId,
-              file,
-              historyTopic,
-            );
-          }
+            toolCallId: event.tool_call_id,
+          });
 
           dispatchCrewFileEvent({
             sessionId,
@@ -368,10 +378,45 @@ function bindStreamToAssistant({
       }
 
       case "task_status": {
-        MessageStore.bindBackgroundTask(sessionId, event.task, historyTopic);
+        // Extract server_seq / updated_at from either the event envelope
+        // (preferred) or the embedded task snapshot (fallback). Without
+        // these, the task-store's conflict resolution cannot tiebreak a
+        // stale task-watcher poll against this authoritative SSE update.
+        const serverSeq =
+          typeof event.server_seq === "number"
+            ? event.server_seq
+            : typeof event.task.server_seq === "number"
+              ? event.task.server_seq
+              : undefined;
+        const updatedAt =
+          typeof event.updated_at === "string"
+            ? event.updated_at
+            : typeof event.task.updated_at === "string"
+              ? event.task.updated_at
+              : undefined;
+
+        applyTaskStatus({
+          type: "task_status",
+          sessionId,
+          topic: historyTopic,
+          task: event.task,
+          serverSeq,
+          updatedAt,
+        });
+        // Re-dispatch on the window so the runtime-provider's task-watcher
+        // side effects fire (setServerTaskActive + watchSession). The
+        // runtime-provider listener no longer re-merges — the merge above
+        // is the single source of truth for task-store writes on SSE.
         window.dispatchEvent(
           new CustomEvent("crew:task_status", {
-            detail: { task: event.task, sessionId, topic: historyTopic },
+            detail: {
+              task: event.task,
+              sessionId,
+              topic: historyTopic,
+              serverSeq,
+              updatedAt,
+              _alreadyMerged: true,
+            },
           }),
         );
         break;
@@ -379,14 +424,43 @@ function bindStreamToAssistant({
 
       case "session_result": {
         if (event.message) {
+          // FA-12f: under `/queue speculative`, the server emits
+          // overflow session_result events onto the PRIMARY turn's SSE
+          // stream (ApiChannel broadcasts to `pending[chat_id]` in
+          // addition to `watchers`). Blindly merging every
+          // session_result into this bubble's `assistantMsgId` clobbers
+          // the primary bubble (ALPHA) with the overflow reply (BRAVO)
+          // and then the collapse pass removes BRAVO's own streaming
+          // bubble as a "duplicate" — so BRAVO never renders.
+          //
+          // Route by `response_to_client_message_id` correlation:
+          //   - positive match     → merge in place (fast path; keeps
+          //     file artifacts, tool calls, meta attached to the bubble)
+          //   - different bubble   → go through appendHistoryMessages so
+          //     findOptimisticMatchIndex correlates against the right
+          //     sibling bubble
+          //   - no cmid on incoming → append rather than clobber. A
+          //     background-task `session_result` lacking cmid (delivered
+          //     mid-stream by the watcher channel) was previously merged
+          //     into THIS bubble's text via the `!incomingCmid` short-
+          //     circuit, producing wholesale text replacement + a visible
+          //     UI flicker. Treat unidentified events as new history rows.
+          const incomingCmid = event.message.response_to_client_message_id;
+          const isForThisBubble =
+            !!incomingCmid && !!clientMessageId && incomingCmid === clientMessageId;
+
           const previousSeq = MessageStore.getMaxHistorySeq(sessionId, historyTopic);
-          const merged = MessageStore.mergeHistoryMessageIntoMessage(
-            sessionId,
-            assistantMsgId,
-            event.message,
-            historyTopic,
-          );
-          if (!merged) {
+          if (isForThisBubble) {
+            const merged = MessageStore.mergeHistoryMessageIntoMessage(
+              sessionId,
+              assistantMsgId,
+              event.message,
+              historyTopic,
+            );
+            if (!merged) {
+              MessageStore.appendHistoryMessages(sessionId, [event.message], historyTopic);
+            }
+          } else {
             MessageStore.appendHistoryMessages(sessionId, [event.message], historyTopic);
           }
           const observedSeq =
@@ -424,26 +498,36 @@ function bindStreamToAssistant({
           rawText = event.content;
         }
         const finalText = clean(rawText);
-        MessageStore.updateMessage(sessionId, assistantMsgId, {
+        const meta = event.model || event.tokens_in || event.tokens_out
+          ? {
+              model: event.model || "",
+              tokens_in: event.tokens_in || 0,
+              tokens_out: event.tokens_out || 0,
+              duration_s: event.duration_s || 0,
+            }
+          : undefined;
+        // M8.10-A: thread the server-committed seq onto the live bubble so
+        // it sorts in chronological order alongside seq'd history. Old
+        // server builds may omit `committed_seq`; in that case the bubble
+        // keeps no historySeq and falls back to timestamp-only ordering.
+        const historySeq =
+          typeof event.committed_seq === "number" ? event.committed_seq : undefined;
+        applyFinalizeAssistant({
+          type: "finalize_assistant",
+          sessionId,
+          messageId: assistantMsgId,
+          topic: historyTopic,
           text: finalText,
-          status: "complete",
-        }, historyTopic);
+          meta,
+          historySeq,
+        });
 
-        if (event.model || event.tokens_in || event.tokens_out) {
-          MessageStore.setMessageMeta(sessionId, assistantMsgId, {
-            model: event.model || "",
-            tokens_in: event.tokens_in || 0,
-            tokens_out: event.tokens_out || 0,
-            duration_s: event.duration_s || 0,
-          }, historyTopic);
+        if (meta) {
           window.dispatchEvent(
             new CustomEvent("crew:message_meta", {
               detail: {
-                model: event.model || "",
-                tokens_in: event.tokens_in || 0,
-                tokens_out: event.tokens_out || 0,
+                ...meta,
                 session_cost: event.session_cost,
-                duration_s: event.duration_s || 0,
                 sessionId,
                 topic: normalizedHistoryTopic,
                 messageId: assistantMsgId,
@@ -472,12 +556,13 @@ function bindStreamToAssistant({
         // We no longer call replaceHistory here — it races with the sync loop
         // and can wipe optimistic messages or create duplicates.
         if (event.has_bg_tasks) {
-          MessageStore.registerBackgroundAnchor(
+          applyRegisterBackgroundAnchor({
+            type: "register_background_anchor",
             sessionId,
-            assistantMsgId,
-            historyTopic,
-            Array.from(toolCalls.values()).map((toolCall) => toolCall.name),
-          );
+            topic: historyTopic,
+            messageId: assistantMsgId,
+            toolNames: Array.from(toolCalls.values()).map((toolCall) => toolCall.name),
+          });
           window.dispatchEvent(
             new CustomEvent("crew:bg_tasks", {
               detail: { sessionId, topic: historyTopic },
@@ -511,12 +596,12 @@ function bindStreamToAssistant({
   };
 
   // Subscribe with replay — events that arrived before subscription are replayed.
-  const unsub = StreamManager.subscribe(sessionId, handleEvent, historyTopic);
-  if (unsub) {
+  const subscription = StreamManager.subscribe(sessionId, handleEvent, historyTopic);
+  if (subscription) {
     setupCleanup(
       sessionId,
       assistantMsgId,
-      unsub,
+      subscription.unsub,
       rawText,
       historyTopic,
       onComplete,
@@ -524,6 +609,7 @@ function bindStreamToAssistant({
       clientMessageId,
       sentAt,
       pendingStreamError,
+      subscription.streamId,
     );
   }
 }
@@ -540,6 +626,7 @@ function setupCleanup(
   clientMessageId?: string,
   sentAt?: number,
   pendingStreamError?: { current: string | null },
+  streamId?: number,
 ): void {
   // The subscriber is automatically cleaned up when the stream ends
   // (StreamManager clears subscribers). We also listen for stream_state
@@ -551,10 +638,19 @@ function setupCleanup(
       typeof detail?.topic === "string" && detail.topic.trim()
         ? detail.topic.trim()
         : undefined;
+    // When two prompts fire before either finishes, both subscribers share
+    // the same (sessionId, topic) but are attached to different streams.
+    // The event must match THIS stream's id — otherwise a fast sibling
+    // stream finishing first would trip this handler, unsubscribe from our
+    // still-running stream, and strand the assistant bubble on the slow
+    // poll-recovery path (see concurrent-deep-research-ordering.spec.ts).
     if (
       detail?.sessionId === sessionId &&
       detailTopic === normalizedHistoryTopic &&
-      !detail.active
+      !detail.active &&
+      (streamId === undefined ||
+        typeof detail?.streamId !== "number" ||
+        detail.streamId === streamId)
     ) {
       window.removeEventListener("crew:stream_state", handler);
       _unsub();
@@ -578,9 +674,13 @@ function setupCleanup(
             },
           ).then(() => _onComplete?.());
         } else if (assistantMsg.text) {
-          MessageStore.updateMessage(sessionId, assistantMsgId, {
-            status: "complete",
-          }, historyTopic);
+          applyFinalizeAssistant({
+            type: "finalize_assistant",
+            sessionId,
+            messageId: assistantMsgId,
+            topic: historyTopic,
+            text: assistantMsg.text,
+          });
           _onComplete?.();
         } else {
           // No content — poll for response
@@ -629,12 +729,18 @@ async function pollForResponse(
 
       const matchedAssistant = [...msgs].reverse().find((message) => {
         if (message.role !== "assistant") return false;
-        if (!message.content || message.content.trim().length <= 20)
-          return false;
+        if (!message.content) return false;
         if (clientMessageId) {
+          // Authoritative cmid correlation — trust server-side routing even
+          // when the reply text is short (e.g. a shell echo of <= 20 chars
+          // under speculative queue mode). Previously the content-length
+          // guard here rejected legitimate short BRAVO replies and the
+          // overflow bubble stayed empty (FA-12f web-side fallback).
           return message.response_to_client_message_id === clientMessageId;
         }
-
+        // Time-based fallback — keep the length guard to avoid matching
+        // short server-side system replies when cmid is not available.
+        if (message.content.trim().length <= 20) return false;
         if (!sentAt) return false;
         const messageTime = Date.parse(message.timestamp);
         if (Number.isNaN(messageTime)) return false;
@@ -650,10 +756,13 @@ async function pollForResponse(
         );
         if (!merged) {
           MessageStore.appendHistoryMessages(sessionId, [matchedAssistant], historyTopic);
-          MessageStore.updateMessage(sessionId, assistantMsgId, {
+          applyFinalizeAssistant({
+            type: "finalize_assistant",
+            sessionId,
+            messageId: assistantMsgId,
+            topic: historyTopic,
             text: matchedAssistant.content,
-            status: "complete",
-          }, historyTopic);
+          });
         }
         return true;
       }
@@ -661,17 +770,36 @@ async function pollForResponse(
       // keep polling
     }
   }
-  if (!options?.errorMessage) {
-    MessageStore.updateMessage(sessionId, assistantMsgId, {
-      text: "No response received.",
-      status: "error",
-    }, historyTopic);
+  // Timeout reached. When the caller supplied a clientMessageId, the reply
+  // MAY still arrive later via the session-event-stream watcher: speculative
+  // queue mode can park a turn behind an overflow/primary cycle that
+  // exceeds our 15-min poll window. In that case, do NOT overwrite the
+  // bubble with "No response received." — leave it in streaming state so
+  // findOptimisticMatchIndex (matching by responseToClientMessageId) can
+  // merge the eventual authoritative session_result into it. The caller's
+  // onComplete still fires so abort/cleanup proceeds.
+  if (clientMessageId && !options?.errorMessage) {
     return false;
   }
 
-  MessageStore.updateMessage(sessionId, assistantMsgId, {
-    text: `Error: ${options.errorMessage}`,
-    status: "error",
-  }, historyTopic);
+  if (!options?.errorMessage) {
+    applyStreamError({
+      type: "stream_error",
+      sessionId,
+      messageId: assistantMsgId,
+      topic: historyTopic,
+      errorMessage: "No response received.",
+      raw: true,
+    });
+    return false;
+  }
+
+  applyStreamError({
+    type: "stream_error",
+    sessionId,
+    messageId: assistantMsgId,
+    topic: historyTopic,
+    errorMessage: options.errorMessage,
+  });
   return false;
 }

@@ -1,4 +1,4 @@
-import { type ReactNode, useState, useEffect, useCallback } from "react";
+import { type ReactNode, useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "@/auth/auth-context";
 import { useOctosStatus } from "@/hooks/use-octos-status";
 import { useTheme } from "@/hooks/use-theme";
@@ -6,7 +6,6 @@ import { useResizablePanel } from "@/hooks/use-resizable-panel";
 import { CostBar } from "@/components/cost-bar";
 import { SessionList } from "@/components/session-list";
 import { ContentBrowser } from "@/components/content-browser";
-import { SessionTaskIndicator } from "@/components/session-task-dock";
 import { useSession } from "@/runtime/session-context";
 import { eventMatchesScope } from "@/runtime/event-scope";
 import {
@@ -46,29 +45,45 @@ export function ChatLayout({ children }: { children: ReactNode }) {
 
   // Notification toast state
   const [toast, setToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const openPanel = useCallback(() => setMediaPanelOpen(true), []);
+  const clearToastTimer = useCallback(() => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
+  }, []);
+  const dismissToast = useCallback(() => {
+    clearToastTimer();
+    setToast(null);
+  }, [clearToastTimer]);
 
   // Listen for crew:file to show toast (crew:file_notification is a secondary
   // event dispatched by the file-store itself, so listening to both caused
   // duplicate toasts).
   useEffect(() => {
-    let toastTimer: ReturnType<typeof setTimeout> | null = null;
     function onFile(e: Event) {
       const detail = (e as CustomEvent).detail;
       if (!eventMatchesScope(detail, currentSessionId, historyTopic)) return;
       const filename = detail?.filename || "file";
       const isAudio = /\.(mp3|wav|ogg|m4a|opus|flac|aac)$/i.test(filename);
       setToast(isAudio ? `🎵 Audio ready: ${filename}` : `📄 File ready: ${filename}`);
-      if (toastTimer) clearTimeout(toastTimer);
-      toastTimer = setTimeout(() => setToast(null), 8000);
+      clearToastTimer();
+      toastTimerRef.current = setTimeout(() => {
+        toastTimerRef.current = null;
+        setToast(null);
+      }, 8000);
     }
     window.addEventListener("crew:file", onFile);
     return () => {
       window.removeEventListener("crew:file", onFile);
-      if (toastTimer) clearTimeout(toastTimer);
     };
-  }, [currentSessionId, historyTopic]);
+  }, [clearToastTimer, currentSessionId, historyTopic]);
+
+  useEffect(() => {
+    return dismissToast;
+  }, [currentSessionId, dismissToast, historyTopic]);
 
   return (
     <div className="chat-shell flex h-screen gap-3 p-3">
@@ -165,7 +180,6 @@ export function ChatLayout({ children }: { children: ReactNode }) {
                     {currentSessionTitle}
                   </div>
                 </div>
-                <SessionTaskIndicator />
                 <button
                   onClick={() => setMediaPanelOpen((v) => !v)}
                   className={`glass-icon-button relative rounded-[12px] p-2.5 ${
@@ -191,6 +205,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
             {/* Inline toast notification */}
             {toast && (
               <button
+                data-testid="file-notification-toast"
                 onClick={openPanel}
                 className="glass-pill absolute bottom-20 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-[12px] px-4 py-2.5 text-sm text-text shadow-lg hover:text-text-strong"
               >

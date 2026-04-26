@@ -548,6 +548,7 @@ export function createWsAdapter(
                       role: "assistant" | "user" | "system" | "tool";
                       seq?: number;
                       timestamp: string;
+                      client_message_id?: string;
                     }
                   | undefined;
                 if (message) {
