@@ -34,6 +34,7 @@ import {
   type Message,
   type MessageFile,
   type MessageMeta,
+  type ToolCallInfo,
 } from "@/store/message-store";
 import { useTasks } from "@/store/task-store";
 import type { BackgroundTaskInfo } from "@/api/types";
@@ -43,6 +44,7 @@ import * as StreamManager from "@/runtime/stream-manager";
 import { MarkdownContent } from "./markdown-renderer";
 import { ThinkingIndicator } from "./thinking-indicator";
 import { ToolProgressIndicator } from "./tool-progress-indicator";
+import { NodeCard, toolCallRendersAsNodeTree } from "./node-card";
 import { buildFileUrl } from "@/api/files";
 import { displayFilenameFromPath } from "@/lib/utils";
 import {
@@ -141,23 +143,45 @@ const AssistantBubble = memo(function AssistantBubble({
           </div>
         )}
 
-        {/* Tool calls */}
+        {/* Tool calls + per-tool-call runtime progress timeline */}
         {message.toolCalls.length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {message.toolCalls.map((tc) => (
-              <span
-                key={tc.id}
-                className={`glass-pill inline-flex items-center gap-1 rounded-[10px] px-2.5 py-1 text-[10px] font-mono ${
-                  tc.status === "running"
-                    ? "border-accent/20 bg-accent/14 text-accent animate-pulse"
-                    : tc.status === "error"
-                      ? "border-red-500/20 bg-red-500/12 text-red-400"
-                      : "text-muted"
-                }`}
-              >
-                {tc.name}
-              </span>
-            ))}
+          <div className="mt-2 flex flex-col gap-2">
+            <div className="flex flex-wrap gap-1.5">
+              {message.toolCalls.map((tc) => (
+                <span
+                  key={tc.id}
+                  data-testid="tool-call-bubble"
+                  data-tool-call-id={tc.id}
+                  data-tool-name={tc.name}
+                  data-tool-status={tc.status}
+                  className={`glass-pill inline-flex items-center gap-1 rounded-[10px] px-2.5 py-1 text-[10px] font-mono ${
+                    tc.status === "running"
+                      ? "border-accent/20 bg-accent/14 text-accent animate-pulse"
+                      : tc.status === "error"
+                        ? "border-red-500/20 bg-red-500/12 text-red-400"
+                        : "text-muted"
+                  }`}
+                >
+                  {tc.name}
+                </span>
+              ))}
+            </div>
+            {message.toolCalls.map((tc) => {
+              if (!tc.runtimeStatus || tc.runtimeStatus.length === 0) {
+                return null;
+              }
+              // M8 parity (W1.G1): render the per-node tree under
+              // run_pipeline (and any tool whose progress lines look
+              // like a node tree). Other tools keep the legacy flat
+              // timeline so spawn_only progress lines still render
+              // unchanged.
+              if (toolCallRendersAsNodeTree(tc)) {
+                return <NodeCard key={`${tc.id}-nodecard`} toolCall={tc} />;
+              }
+              return (
+                <ToolCallRuntimeTimeline key={`${tc.id}-timeline`} toolCall={tc} />
+              );
+            })}
           </div>
         )}
 
@@ -172,6 +196,107 @@ const AssistantBubble = memo(function AssistantBubble({
         {/* Message meta */}
         <MessageMetaInline message={message} />
       </div>
+    </div>
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Per-tool-call runtime progress timeline.
+//
+// Anchors strictly under the tool-call bubble that owns the tool_call_id.
+// Renders the append-only `runtimeStatus` trace produced by the
+// `tool_progress_received` reducer. When the tool is running, the latest
+// line is highlighted; when it completes, the trace stays visible so the
+// user can read the history. Auto-collapses to the last 5 lines when more
+// than 8 entries arrive (the rest sit inside a <details> block).
+// ---------------------------------------------------------------------------
+
+function formatElapsed(deltaMs: number): string {
+  if (!Number.isFinite(deltaMs) || deltaMs < 0) return "+0s";
+  const seconds = Math.floor(deltaMs / 1000);
+  if (seconds < 60) return `+${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remSeconds = seconds % 60;
+  return `+${minutes}m${remSeconds.toString().padStart(2, "0")}s`;
+}
+
+function cleanProgressLine(message: string): string {
+  // Mirror the cleanup ToolProgressIndicator does so the timeline matches
+  // the previous in-line rendering style.
+  return message.replace(/^\[(info|debug|warn|error)\]\s*/i, "");
+}
+
+const ToolCallRuntimeTimeline = memo(function ToolCallRuntimeTimeline({
+  toolCall,
+}: {
+  toolCall: ToolCallInfo;
+}) {
+  const entries = toolCall.runtimeStatus ?? [];
+  if (entries.length === 0) return null;
+
+  const baseTs = entries[0].ts;
+  const total = entries.length;
+  const collapseThreshold = 8;
+  const tailCount = 5;
+  const isCollapsed = total > collapseThreshold;
+  const tailEntries = isCollapsed ? entries.slice(total - tailCount) : entries;
+  const earlierEntries = isCollapsed ? entries.slice(0, total - tailCount) : [];
+  const isRunning = toolCall.status === "running";
+
+  return (
+    <div
+      data-testid="tool-call-runtime-timeline"
+      data-tool-call-id={toolCall.id}
+      data-tool-name={toolCall.name}
+      data-runtime-status-count={total}
+      className="ml-1 flex flex-col gap-0.5 border-l border-accent/15 pl-2 font-mono text-[10px] text-muted/80"
+    >
+      {isCollapsed && earlierEntries.length > 0 && (
+        <details className="text-muted/60">
+          <summary className="cursor-pointer select-none text-[10px] text-muted/60 hover:text-accent">
+            ... {earlierEntries.length} earlier update
+            {earlierEntries.length === 1 ? "" : "s"}
+          </summary>
+          <div className="mt-0.5 flex flex-col gap-0.5 pl-1">
+            {earlierEntries.map((entry, idx) => (
+              <div
+                key={`early-${toolCall.id}-${idx}`}
+                className="flex gap-1.5 leading-relaxed"
+              >
+                <span className="shrink-0 text-muted/50">
+                  {formatElapsed(entry.ts - baseTs)}
+                </span>
+                <span className="break-words text-muted/70">
+                  {cleanProgressLine(entry.message)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+      {tailEntries.map((entry, idx) => {
+        const isLatest = idx === tailEntries.length - 1;
+        return (
+          <div
+            key={`tail-${toolCall.id}-${idx}`}
+            data-testid={
+              isLatest ? "tool-call-runtime-latest" : undefined
+            }
+            className="flex gap-1.5 leading-relaxed"
+          >
+            <span className="shrink-0 text-muted/50">
+              {formatElapsed(entry.ts - baseTs)}
+            </span>
+            <span
+              className={`break-words ${
+                isLatest && isRunning ? "text-accent" : "text-muted/80"
+              }`}
+            >
+              {cleanProgressLine(entry.message)}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 });
