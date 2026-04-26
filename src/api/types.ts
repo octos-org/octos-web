@@ -157,7 +157,7 @@ export type SseEvent =
   | { type: "replace"; text: string }
   | { type: "tool_start"; tool: string; tool_call_id?: string; tool_id?: string }
   | { type: "tool_end"; tool: string; success: boolean; tool_call_id?: string; tool_id?: string }
-  | { type: "tool_progress"; tool: string; message: string }
+  | { type: "tool_progress"; tool: string; tool_call_id?: string; message: string }
   | { type: "stream_end" }
   | {
       type: "cost_update";
@@ -218,3 +218,39 @@ export type SseEvent =
       message: MessageInfo;
     }
   | { type: "other" };
+
+// ────────── M7.9 / W2 task supervisor exposure ──────────
+
+/**
+ * Body for POST /api/tasks/{task_id}/cancel.
+ *
+ * Empty for the initial release — the task id in the path is enough.
+ */
+export type CancelTaskRequest = Record<string, never>;
+
+/**
+ * Body for POST /api/tasks/{task_id}/restart-from-node.
+ *
+ * `node_id` is optional: when set, the supervisor relaunches starting
+ * at that DOT-graph node id (so upstream cached outputs are reused);
+ * when absent, the runtime re-runs the entire task.
+ */
+export interface RestartFromNodeRequest {
+  node_id?: string;
+}
+
+export interface CancelTaskResponse {
+  task_id: string;
+  status: "cancelled";
+}
+
+export interface RestartFromNodeResponse {
+  original_task_id: string;
+  new_task_id: string;
+  from_node?: string | null;
+}
+
+export interface ApiErrorResponse {
+  error: string;
+  task_id?: string;
+}

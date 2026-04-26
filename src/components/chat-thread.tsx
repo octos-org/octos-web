@@ -45,6 +45,10 @@ import { MarkdownContent } from "./markdown-renderer";
 import { ThinkingIndicator } from "./thinking-indicator";
 import { ToolProgressIndicator } from "./tool-progress-indicator";
 import { NodeCard, toolCallRendersAsNodeTree } from "./node-card";
+import {
+  NodeTreeActions,
+  buildNodeRestartRenderer,
+} from "./node-card-actions";
 import { buildFileUrl } from "@/api/files";
 import { displayFilenameFromPath } from "@/lib/utils";
 import {
@@ -176,7 +180,33 @@ const AssistantBubble = memo(function AssistantBubble({
               // timeline so spawn_only progress lines still render
               // unchanged.
               if (toolCallRendersAsNodeTree(tc)) {
-                return <NodeCard key={`${tc.id}-nodecard`} toolCall={tc} />;
+                // M8 parity (W2.G2/G3): plug cancel + restart-from-node
+                // controls into the NodeCard tree. The supervised
+                // background-task id lives on `message.runtime.taskId`
+                // (set by the task-anchor reducer once the supervisor
+                // emits the first `task_status` event); when absent we
+                // fall back to the tool_call_id, which the API accepts
+                // as a synonym for "cancel the run_pipeline call this
+                // bubble represents".
+                const taskId =
+                  message.runtime?.taskId ??
+                  message.runtime?.toolCallId ??
+                  tc.id;
+                const active =
+                  tc.status === "running" ||
+                  message.status === "streaming";
+                return (
+                  <div key={`${tc.id}-nodecard`}>
+                    <NodeTreeActions
+                      taskId={taskId}
+                      active={active}
+                    />
+                    <NodeCard
+                      toolCall={tc}
+                      nodeAction={buildNodeRestartRenderer(taskId)}
+                    />
+                  </div>
+                );
               }
               return (
                 <ToolCallRuntimeTimeline key={`${tc.id}-timeline`} toolCall={tc} />
