@@ -10,7 +10,80 @@ import {
   type SessionSendRequest,
 } from "@/runtime/session-context";
 import * as MessageStore from "@/store/message-store";
-import { useMessages } from "@/store/message-store";
+import { useMessages, type Message } from "@/store/message-store";
+import { useThreads, type Thread } from "@/store/thread-store";
+
+function isThreadStoreV2Enabled(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem("octos_thread_store_v2") === "1";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Read messages from whichever store is currently active. Under the
+ * v2 thread-store flag the legacy message-store is empty, so callers
+ * that do raw history lookups (e.g. SitesChat looking for the last
+ * user message to seed scaffold prompts) must read threads instead.
+ *
+ * Returns a flat list ordered by user-message send time then per-thread
+ * sequence — matches the rendered DOM order.
+ */
+function flattenThreadsToMessages(threads: Thread[]): Message[] {
+  const flatToolCalls = (
+    tcs: Array<{ id: string; name: string; status: "running" | "complete" | "error" }>,
+  ) => tcs.map((tc) => ({ id: tc.id, name: tc.name, status: tc.status, progress: [] }));
+
+  const out: Message[] = [];
+  for (const t of threads) {
+    if (t.userMsg.role !== "tool") {
+      out.push({
+        id: t.userMsg.id,
+        role: t.userMsg.role,
+        text: t.userMsg.text,
+        clientMessageId: t.id,
+        files: t.userMsg.files,
+        toolCalls: flatToolCalls(t.userMsg.toolCalls),
+        status: t.userMsg.status,
+        timestamp: t.userMsg.timestamp,
+        historySeq: t.userMsg.historySeq,
+        meta: t.userMsg.meta,
+      });
+    }
+    for (const r of t.responses) {
+      if (r.role === "tool") continue;
+      out.push({
+        id: r.id,
+        role: r.role,
+        text: r.text,
+        responseToClientMessageId: t.id,
+        files: r.files,
+        toolCalls: flatToolCalls(r.toolCalls),
+        status: r.status,
+        timestamp: r.timestamp,
+        historySeq: r.historySeq,
+        meta: r.meta,
+      });
+    }
+    if (t.pendingAssistant && t.pendingAssistant.role !== "tool") {
+      out.push({
+        id: t.pendingAssistant.id,
+        role: t.pendingAssistant.role,
+        text: t.pendingAssistant.text,
+        responseToClientMessageId: t.id,
+        files: t.pendingAssistant.files,
+        toolCalls: flatToolCalls(t.pendingAssistant.toolCalls),
+        status: t.pendingAssistant.status,
+        timestamp: t.pendingAssistant.timestamp,
+        historySeq: t.pendingAssistant.historySeq,
+        meta: t.pendingAssistant.meta,
+      });
+    }
+  }
+  return out;
+}
 
 import { buildSitePreviewUrl, hydrateSiteProjectFromSession } from "../api";
 import { useSites } from "../context/sites-context";
@@ -71,7 +144,15 @@ export function SitesChat({ sessionId }: Props) {
   const projectTitle = project?.title;
   const projectScaffolded = project?.scaffolded;
   const historyTopic = project?.preset ? `site ${project.preset}` : undefined;
-  const messages = useMessages(sessionId, historyTopic);
+  // M8.10: read from whichever store is active so the scaffold lookup
+  // for the last user message works under both flag states.
+  const flatMessages = useMessages(sessionId, historyTopic);
+  const threads = useThreads(sessionId, historyTopic);
+  const messages = useMemo(
+    () =>
+      isThreadStoreV2Enabled() ? flattenThreadsToMessages(threads) : flatMessages,
+    [flatMessages, threads],
+  );
 
   useEffect(() => {
     void MessageStore.loadHistory(sessionId, historyTopic);

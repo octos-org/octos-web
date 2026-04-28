@@ -982,11 +982,22 @@ function Composer() {
     adaptiveMode,
   } =
     useSession();
+  // M8.10: under v2 flag the message-store is empty (events flow through
+  // thread-store), so `messages.some(streaming)` is always false and the
+  // cancel button never appears. Read isRunning from whichever store is
+  // active.
   const messages = useMessages(currentSessionId, historyTopic);
-  const isRunning = useMemo(
-    () => messages.some((m) => m.status === "streaming"),
-    [messages],
-  );
+  const threadsForRunning = useThreads(currentSessionId, historyTopic);
+  const isRunning = useMemo(() => {
+    if (isThreadStoreV2Enabled()) {
+      return threadsForRunning.some(
+        (t) =>
+          t.pendingAssistant !== null &&
+          t.pendingAssistant.status === "streaming",
+      );
+    }
+    return messages.some((m) => m.status === "streaming");
+  }, [messages, threadsForRunning]);
 
   const [text, setText] = useState("");
   const [cmdFeedback, setCmdFeedback] = useState<string | null>(null);
