@@ -137,20 +137,37 @@ const AssistantBubble = memo(function AssistantBubble({
 
         {/* Tool calls */}
         {message.toolCalls.length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-1.5">
+          <div className="mt-2 flex flex-col gap-1.5">
             {message.toolCalls.map((tc) => (
-              <span
+              <div
                 key={tc.id}
-                className={`glass-pill inline-flex items-center gap-1 rounded-[10px] px-2.5 py-1 text-[10px] font-mono ${
+                data-testid="tool-call-bubble"
+                data-tool-call-id={tc.id}
+                className={`flex flex-col gap-1 rounded-[10px] px-2.5 py-1 text-[10px] font-mono ${
                   tc.status === "running"
                     ? "border-accent/20 bg-accent/14 text-accent animate-pulse"
                     : tc.status === "error"
                       ? "border-red-500/20 bg-red-500/12 text-red-400"
                       : "text-muted"
-                }`}
+                } glass-pill`}
               >
-                {tc.name}
-              </span>
+                <span>{tc.name}</span>
+                {tc.progress.length > 0 && (
+                  <ul
+                    data-testid="tool-call-runtime-timeline"
+                    className="m-0 mt-1 flex list-none flex-col gap-0.5 border-l border-current/20 pl-2"
+                  >
+                    {tc.progress.map((entry, idx) => (
+                      <li key={idx} className="opacity-80">
+                        {entry.message.replace(
+                          /^\[(info|debug|warn|error)\]\s*/i,
+                          "",
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             ))}
           </div>
         )}
