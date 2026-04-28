@@ -9,8 +9,11 @@ import {
   type SessionBeforeSendResult,
   type SessionSendRequest,
 } from "@/runtime/session-context";
-import * as MessageStore from "@/store/message-store";
-import { useMessages } from "@/store/message-store";
+import {
+  flattenThreadsToMessages,
+  loadHistory,
+  useThreads,
+} from "@/store/thread-store";
 
 import { buildSitePreviewUrl, hydrateSiteProjectFromSession } from "../api";
 import { useSites } from "../context/sites-context";
@@ -71,10 +74,11 @@ export function SitesChat({ sessionId }: Props) {
   const projectTitle = project?.title;
   const projectScaffolded = project?.scaffolded;
   const historyTopic = project?.preset ? `site ${project.preset}` : undefined;
-  const messages = useMessages(sessionId, historyTopic);
+  const threads = useThreads(sessionId, historyTopic);
+  const messages = flattenThreadsToMessages(threads);
 
   useEffect(() => {
-    void MessageStore.loadHistory(sessionId, historyTopic);
+    void loadHistory(sessionId, historyTopic);
   }, [historyTopic, sessionId]);
 
   const ensureSiteScaffolded = useCallback(

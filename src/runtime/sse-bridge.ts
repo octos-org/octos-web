@@ -1,15 +1,18 @@
 /**
  * SSE-to-store bridge.
  *
- * Replaces the assistant-ui ChatModelAdapter generator pattern.
- * On user send, writes user message to the store, starts an SSE stream
- * via StreamManager, and routes every SSE event into the message store.
+ * Translates each SSE event into a thread-store mutation. Every event the
+ * server sends carries `thread_id` (added in M8.10 PR #2) so the bridge
+ * routes by thread, not by recency or by a single "current" assistant
+ * bubble. After M8.10 PR #5 there's no flat-list fallback and no
+ * legacy `session_result` user-message merge — `thread_id` is THE routing
+ * key for every wire event.
  *
- * File events that arrive after `done` still update the message.
+ * File events that arrive after `done` still update the message via the
+ * thread store's tool-call / background-anchor indices.
  */
 
 import * as StreamManager from "./stream-manager";
-import * as MessageStore from "@/store/message-store";
 import * as ThreadStore from "@/store/thread-store";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { getMessages as fetchSessionMessages } from "@/api/sessions";
@@ -17,25 +20,8 @@ import { dispatchCrewFileEvent } from "./file-events";
 import { recordRuntimeCounter } from "./observability";
 import { eventSessionId, eventTopic } from "./event-scope";
 
-/**
- * M8.10 PR #3: feature flag — when set to "1", route SSE events through the
- * new thread-by-cmid `thread-store.ts` instead of the flat-list
- * `message-store.ts`. Default off. PR #5 flips the default and removes the
- * flat-list path. The flag is read fresh each `bindStreamToAssistant` call
- * so toggling in DevTools takes effect on the next user message without a
- * page reload.
- */
-function isThreadStoreEnabled(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    return window.localStorage.getItem("octos_thread_store_v2") === "1";
-  } catch {
-    return false;
-  }
-}
-
 // ---------------------------------------------------------------------------
-// Helpers (shared with the old adapter, kept local)
+// Helpers
 // ---------------------------------------------------------------------------
 
 function stripToolProgress(text: string): string {
@@ -129,7 +115,7 @@ export interface SendOptions {
 }
 
 /**
- * Send a user message and wire the resulting SSE stream into the message store.
+ * Send a user message and wire the resulting SSE stream into the thread store.
  *
  * Returns immediately. The store is updated reactively as events arrive.
  */
@@ -153,28 +139,14 @@ export function sendMessage(opts: SendOptions): void {
     caption: "",
   }));
 
-  // 1. Write user message to store
-  MessageStore.addMessage(sessionId, {
-    role: "user",
+  // 1. Open a new thread rooted at this user message — also creates a
+  //    pending streaming assistant bubble that the SSE handlers will fill.
+  ThreadStore.addUserMessage(sessionId, {
     text,
     clientMessageId,
     files: localFiles,
-    toolCalls: [],
-    status: "complete",
-  }, historyTopic);
-
-  // 1b. Mirror the user message into the thread store when the feature flag
-  //     is on — keeps both stores populated so the renderer can flag-switch
-  //     without losing state. PR #4 makes the thread store the rendered
-  //     source of truth; PR #5 deletes the flat-list path.
-  if (isThreadStoreEnabled()) {
-    ThreadStore.addUserMessage(sessionId, {
-      text,
-      clientMessageId,
-      files: localFiles,
-      topic: historyTopic,
-    });
-  }
+    topic: historyTopic,
+  });
 
   // Notify sidebar
   onSessionActive?.(text);
@@ -189,23 +161,12 @@ export function sendMessage(opts: SendOptions): void {
     audioUploadMode,
   );
 
-  // 3. Create the assistant message placeholder
-  const assistantMsgId = MessageStore.addMessage(sessionId, {
-    role: "assistant",
-    text: "",
-    responseToClientMessageId: clientMessageId,
-    files: [],
-    toolCalls: [],
-    status: "streaming",
-  }, historyTopic);
-
-  // 4. Subscribe to events and route into the store
+  // 3. Subscribe to events and route into the thread store.
   bindStreamToAssistant({
     sessionId,
-    assistantMsgId,
+    clientMessageId,
     onComplete,
     abortController,
-    clientMessageId,
     sentAt,
     historyTopic,
   });
@@ -218,7 +179,7 @@ export function resumeSessionStream(
 ): void {
   const abortController = new AbortController();
   StreamManager.attachStream(sessionId, historyTopic);
-  const assistantMsgId = MessageStore.ensureStreamingAssistantMessage(
+  const threadId = ThreadStore.ensureStreamingAssistantThread(
     sessionId,
     "Resuming ongoing work...",
     historyTopic,
@@ -226,7 +187,7 @@ export function resumeSessionStream(
 
   bindStreamToAssistant({
     sessionId,
-    assistantMsgId,
+    clientMessageId: threadId,
     onComplete,
     abortController,
     sentAt: Date.now(),
@@ -236,51 +197,37 @@ export function resumeSessionStream(
 
 function bindStreamToAssistant({
   sessionId,
-  assistantMsgId,
+  clientMessageId,
   onComplete,
   abortController,
-  clientMessageId,
   sentAt,
   historyTopic,
 }: {
   sessionId: string;
-  assistantMsgId: string;
+  clientMessageId: string;
   onComplete?: () => void;
   abortController: AbortController;
-  clientMessageId?: string;
   sentAt: number;
   historyTopic?: string;
 }): void {
   let rawText = "";
   let toolCallCounter = 0;
   const pendingStreamError = { current: null as string | null };
-  const toolCalls = new Map<
-    string,
-    {
-      id: string;
-      name: string;
-      status: "running" | "complete" | "error";
-      progress: { message: string; ts: number }[];
-    }
-  >();
-  /** Maps tool name to the most recent toolCall key (for tool_end matching). */
+  const toolCallNamesById = new Map<string, string>();
+  /** Maps tool name to the most recent toolCall id (for tool_end matching). */
   const activeToolByName = new Map<string, string>();
-  const normalizedHistoryTopic = historyTopic?.trim() || undefined;
-  /** Maps server-side tool_call_id to the local toolCalls map key. */
+  /** Maps server-side tool_call_id (which may be either tool_call_id or
+   *  tool_id in the wire event) to our canonical local id. */
   const keyByServerId = new Map<string, string>();
+  const normalizedHistoryTopic = historyTopic?.trim() || undefined;
+  /** Cache of every tool name we've seen this stream — fed into
+   *  registerBackgroundAnchor so post-`done` files route correctly. */
+  const seenToolNames: string[] = [];
 
-  // M8.10 PR #3: snapshot the flag once per stream so toggling mid-stream
-  // doesn't tear data across two stores. The bridge mirrors data into the
-  // thread store when on; the existing flat-list path remains authoritative
-  // until PR #5 flips the default and removes it.
-  const threadStoreEnabled = isThreadStoreEnabled();
-
-  /** Resolve the thread_id for an event. Falls back to `clientMessageId`
-   *  (the bound user message for this stream) when the server omitted the
-   *  field — that's the right answer 99% of the time because every send-
-   *  bound stream is rooted at exactly one user cmid. As a final fallback
-   *  use the cross-thread synthesizer in the store. */
-  const resolveThreadIdForEvent = (
+  /** Resolve the routing thread_id for an SSE event. Falls back to the
+   *  bound user cmid (rooted by `sendMessage` / `resumeSessionStream`),
+   *  then to the cross-thread synthesizer in the store. */
+  const resolveThreadId = (
     payloadThreadId: string | undefined,
   ): string | null => {
     if (payloadThreadId) return payloadThreadId;
@@ -311,102 +258,65 @@ function bindStreamToAssistant({
     }
 
     switch (event.type) {
-      case "token":
+      case "token": {
         rawText += event.text;
-        MessageStore.updateMessage(sessionId, assistantMsgId, {
-          text: clean(rawText),
-        }, historyTopic);
-        if (threadStoreEnabled) {
-          const tid = resolveThreadIdForEvent(event.thread_id);
-          if (tid) ThreadStore.replaceAssistantText(tid, clean(rawText));
-        }
+        const tid = resolveThreadId(event.thread_id);
+        if (tid) ThreadStore.replaceAssistantText(tid, clean(rawText));
         break;
+      }
 
-      case "replace":
+      case "replace": {
         rawText = event.text;
-        MessageStore.updateMessage(sessionId, assistantMsgId, {
-          text: clean(rawText),
-        }, historyTopic);
-        if (threadStoreEnabled) {
-          const tid = resolveThreadIdForEvent(event.thread_id);
-          if (tid) ThreadStore.replaceAssistantText(tid, clean(rawText));
-        }
+        const tid = resolveThreadId(event.thread_id);
+        if (tid) ThreadStore.replaceAssistantText(tid, clean(rawText));
         break;
+      }
 
       case "tool_start": {
-        const key = `tc_${++toolCallCounter}`;
-        // Prefer the server-issued tool_call_id (then the legacy
-        // tool_id) so tool_progress and tool_end can route by id;
-        // synthesize an id only when the backend omits both.
+        toolCallCounter += 1;
+        // Prefer the server-issued tool_call_id (then the legacy tool_id) so
+        // tool_progress and tool_end can route by id; synthesize an id only
+        // when the backend omits both.
         const tcId =
           event.tool_call_id ||
           event.tool_id ||
           `tc_${event.tool}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-        toolCalls.set(key, {
-          id: tcId,
-          name: event.tool,
-          status: "running",
-          progress: [],
-        });
-        activeToolByName.set(event.tool, key);
-        // Map every server-issued id we know about to this local key so
-        // tool_progress / tool_end events can route by either field.
-        if (event.tool_call_id) keyByServerId.set(event.tool_call_id, key);
-        if (event.tool_id) keyByServerId.set(event.tool_id, key);
-        MessageStore.updateMessage(sessionId, assistantMsgId, {
-          toolCalls: Array.from(toolCalls.values()),
-        }, historyTopic);
-        if (threadStoreEnabled) {
-          const tid = resolveThreadIdForEvent(event.thread_id);
-          if (tid) ThreadStore.addToolCall(tid, tcId, event.tool);
-        }
+        toolCallNamesById.set(tcId, event.tool);
+        activeToolByName.set(event.tool, tcId);
+        if (event.tool_call_id) keyByServerId.set(event.tool_call_id, tcId);
+        if (event.tool_id) keyByServerId.set(event.tool_id, tcId);
+        seenToolNames.push(event.tool);
+        const tid = resolveThreadId(event.thread_id);
+        if (tid) ThreadStore.addToolCall(tid, tcId, event.tool);
         break;
       }
 
       case "tool_end": {
-        const key =
+        const localId =
           (event.tool_call_id && keyByServerId.get(event.tool_call_id)) ||
           (event.tool_id && keyByServerId.get(event.tool_id)) ||
           activeToolByName.get(event.tool);
-        const tc = key ? toolCalls.get(key) : undefined;
-        if (tc) tc.status = event.success ? "complete" : "error";
-        MessageStore.updateMessage(sessionId, assistantMsgId, {
-          toolCalls: Array.from(toolCalls.values()),
-        }, historyTopic);
-        if (threadStoreEnabled && tc) {
-          const tid = resolveThreadIdForEvent(event.thread_id);
-          if (tid) {
-            ThreadStore.setToolCallStatus(
-              tid,
-              tc.id,
-              event.success ? "complete" : "error",
-            );
-          }
+        if (!localId) break;
+        const tid = resolveThreadId(event.thread_id);
+        if (tid) {
+          ThreadStore.setToolCallStatus(
+            tid,
+            localId,
+            event.success ? "complete" : "error",
+          );
         }
         break;
       }
 
       case "tool_progress": {
-        // Anchor the entry to its tool call when the backend gave us
-        // an id. Otherwise fall back to most-recent-by-name so older
-        // streams still surface something in the right bubble.
-        const key =
+        const localId =
           (event.tool_call_id && keyByServerId.get(event.tool_call_id)) ||
           (event.tool_id && keyByServerId.get(event.tool_id)) ||
           activeToolByName.get(event.tool);
-        const tc = key ? toolCalls.get(key) : undefined;
-        if (tc) {
-          tc.progress.push({ message: event.message, ts: Date.now() });
-          MessageStore.updateMessage(sessionId, assistantMsgId, {
-            toolCalls: Array.from(toolCalls.values()),
-          });
-        }
-        if (threadStoreEnabled) {
-          const tid = resolveThreadIdForEvent(event.thread_id);
-          const targetTcId = tc?.id ?? event.tool_call_id ?? event.tool_id;
-          if (tid && targetTcId) {
-            ThreadStore.appendToolProgress(tid, targetTcId, event.message);
-          }
+        const tid = resolveThreadId(event.thread_id);
+        const targetTcId = localId ?? event.tool_call_id ?? event.tool_id;
+        if (tid && targetTcId) {
+          ThreadStore.appendToolProgress(tid, targetTcId, event.message);
         }
         // Keep the legacy global indicator working for components that
         // listen to `crew:tool_progress` (project files, site preview).
@@ -459,29 +369,40 @@ function bindStreamToAssistant({
       case "file": {
         if (event.path && event.filename) {
           const caption = event.caption || "";
-
           const file = {
             filename: event.filename,
             path: event.path,
             caption,
           };
-          const attached = MessageStore.appendFileByToolCallId(
-            sessionId,
-            event.tool_call_id,
-            file,
-            historyTopic,
-          );
-          if (!attached) {
-            MessageStore.appendFileToBackgroundAnchor(
+
+          // Routing precedence:
+          //   1. event.thread_id → bind to the named thread
+          //   2. tool_call_id → bind to the tool-call's host message
+          //   3. background anchor → most recent thread that registered one
+          const tid = resolveThreadId(event.thread_id);
+          let attached = false;
+          if (tid) {
+            attached = ThreadStore.appendFileToThread(
               sessionId,
+              tid,
               file,
               historyTopic,
             );
           }
-
-          if (threadStoreEnabled) {
-            const tid = resolveThreadIdForEvent(event.thread_id);
-            if (tid) ThreadStore.appendAssistantFile(tid, file);
+          if (!attached) {
+            attached = ThreadStore.appendFileByToolCallId(
+              sessionId,
+              event.tool_call_id,
+              file,
+              historyTopic,
+            );
+          }
+          if (!attached) {
+            ThreadStore.appendFileToBackgroundAnchor(
+              sessionId,
+              file,
+              historyTopic,
+            );
           }
 
           dispatchCrewFileEvent({
@@ -496,7 +417,7 @@ function bindStreamToAssistant({
       }
 
       case "task_status": {
-        MessageStore.bindBackgroundTask(sessionId, event.task, historyTopic);
+        ThreadStore.bindBackgroundTask(sessionId, event.task, historyTopic);
         window.dispatchEvent(
           new CustomEvent("crew:task_status", {
             detail: { task: event.task, sessionId, topic: historyTopic },
@@ -506,21 +427,24 @@ function bindStreamToAssistant({
       }
 
       case "session_result": {
+        // Delivery surface for assistant-side late-binding (durable
+        // broadcast from `broadcast_session_event` for overflow assistant
+        // replies, file-delivery commits, and background notifications).
+        // After M8.10 PR #5 the user-message session_result emissions are
+        // gone — every event the bridge sees here is for an assistant or
+        // tool message. Run it through the standard history-merge path so
+        // it lands in the right thread by `response_to_client_message_id`.
         if (event.message) {
-          const previousSeq = MessageStore.getMaxHistorySeq(sessionId, historyTopic);
-          const merged = MessageStore.mergeHistoryMessageIntoMessage(
+          const previousSeq = ThreadStore.getMaxHistorySeq(sessionId, historyTopic);
+          ThreadStore.appendHistoryMessages(
             sessionId,
-            assistantMsgId,
-            event.message,
+            [event.message],
             historyTopic,
           );
-          if (!merged) {
-            MessageStore.appendHistoryMessages(sessionId, [event.message], historyTopic);
-          }
           const observedSeq =
             typeof event.message.seq === "number"
               ? event.message.seq
-              : MessageStore.getMaxHistorySeq(sessionId, historyTopic);
+              : ThreadStore.getMaxHistorySeq(sessionId, historyTopic);
           if (observedSeq > previousSeq + 1) {
             void fetchSessionMessages(
               sessionId,
@@ -530,7 +454,7 @@ function bindStreamToAssistant({
               historyTopic,
             )
               .then((messages) => {
-                MessageStore.appendHistoryMessages(sessionId, messages, historyTopic);
+                ThreadStore.appendHistoryMessages(sessionId, messages, historyTopic);
               })
               .catch(() => {});
           }
@@ -552,39 +476,26 @@ function bindStreamToAssistant({
           rawText = event.content;
         }
         const finalText = clean(rawText);
-        MessageStore.updateMessage(sessionId, assistantMsgId, {
-          text: finalText,
-          status: "complete",
-        }, historyTopic);
-
-        if (threadStoreEnabled) {
-          const tid = resolveThreadIdForEvent(event.thread_id);
-          if (tid) {
-            // Replace text first so the finalized message holds the cleaned
-            // final text rather than the raw token stream.
-            ThreadStore.replaceAssistantText(tid, finalText);
-            ThreadStore.finalizeAssistant(tid, {
-              committedSeq: event.committed_seq,
-              meta:
-                event.model || event.tokens_in || event.tokens_out
-                  ? {
-                      model: event.model || "",
-                      tokens_in: event.tokens_in || 0,
-                      tokens_out: event.tokens_out || 0,
-                      duration_s: event.duration_s || 0,
-                    }
-                  : undefined,
-            });
-          }
+        const tid = resolveThreadId(event.thread_id);
+        if (tid) {
+          // Replace text first so the finalized message holds the cleaned
+          // final text rather than the raw token stream.
+          ThreadStore.replaceAssistantText(tid, finalText);
+          ThreadStore.finalizeAssistant(tid, {
+            committedSeq: event.committed_seq,
+            meta:
+              event.model || event.tokens_in || event.tokens_out
+                ? {
+                    model: event.model || "",
+                    tokens_in: event.tokens_in || 0,
+                    tokens_out: event.tokens_out || 0,
+                    duration_s: event.duration_s || 0,
+                  }
+                : undefined,
+          });
         }
 
         if (event.model || event.tokens_in || event.tokens_out) {
-          MessageStore.setMessageMeta(sessionId, assistantMsgId, {
-            model: event.model || "",
-            tokens_in: event.tokens_in || 0,
-            tokens_out: event.tokens_out || 0,
-            duration_s: event.duration_s || 0,
-          }, historyTopic);
           window.dispatchEvent(
             new CustomEvent("crew:message_meta", {
               detail: {
@@ -595,7 +506,7 @@ function bindStreamToAssistant({
                 duration_s: event.duration_s || 0,
                 sessionId,
                 topic: normalizedHistoryTopic,
-                messageId: assistantMsgId,
+                threadId: tid ?? clientMessageId,
               },
             }),
           );
@@ -617,15 +528,14 @@ function bindStreamToAssistant({
         );
 
         // Background task and deferred-file synchronization is owned by the
-        // session runtime's incremental sync loop (appendHistoryMessages).
-        // We no longer call replaceHistory here — it races with the sync loop
-        // and can wipe optimistic messages or create duplicates.
-        if (event.has_bg_tasks) {
-          MessageStore.registerBackgroundAnchor(
+        // session runtime's incremental sync loop. Flag this thread as a
+        // background anchor so post-done files route to it.
+        if (event.has_bg_tasks && tid) {
+          ThreadStore.registerBackgroundAnchor(
             sessionId,
-            assistantMsgId,
+            tid,
             historyTopic,
-            Array.from(toolCalls.values()).map((toolCall) => toolCall.name),
+            seenToolNames,
           );
           window.dispatchEvent(
             new CustomEvent("crew:bg_tasks", {
@@ -664,15 +574,14 @@ function bindStreamToAssistant({
   if (unsub) {
     setupCleanup(
       sessionId,
-      assistantMsgId,
       unsub,
-      rawText,
       historyTopic,
       onComplete,
       abortController,
       clientMessageId,
       sentAt,
       pendingStreamError,
+      toolCallCounter,
     );
   }
 }
@@ -680,19 +589,15 @@ function bindStreamToAssistant({
 /** Unsubscribe when stream ends and poll if no content arrived. */
 function setupCleanup(
   sessionId: string,
-  assistantMsgId: string,
   _unsub: () => void,
-  _rawText: string,
-  historyTopic?: string,
-  _onComplete?: () => void,
-  _abortController?: AbortController,
-  clientMessageId?: string,
-  sentAt?: number,
-  pendingStreamError?: { current: string | null },
+  historyTopic: string | undefined,
+  _onComplete: (() => void) | undefined,
+  _abortController: AbortController | undefined,
+  clientMessageId: string,
+  sentAt: number,
+  pendingStreamError: { current: string | null },
+  toolCallCounter: number,
 ): void {
-  // The subscriber is automatically cleaned up when the stream ends
-  // (StreamManager clears subscribers). We also listen for stream_state
-  // to handle the case where the stream ends without a done event.
   const normalizedHistoryTopic = historyTopic?.trim() || undefined;
   const handler = (e: Event) => {
     const detail = (e as CustomEvent).detail;
@@ -708,14 +613,17 @@ function setupCleanup(
       window.removeEventListener("crew:stream_state", handler);
       _unsub();
 
-      // If the message is still streaming (no done event received), check if we got content
-      const msgs = MessageStore.getMessages(sessionId, historyTopic);
-      const assistantMsg = msgs.find((m) => m.id === assistantMsgId);
-      if (assistantMsg && assistantMsg.status === "streaming") {
-        if (pendingStreamError?.current) {
+      // Check if the bound thread still has a streaming assistant. If so,
+      // either flag an error or poll for the committed reply via /messages.
+      const threads = ThreadStore.getThreads(sessionId, historyTopic);
+      const thread = threads.find((t) => t.id === clientMessageId);
+      const stillStreaming =
+        thread?.pendingAssistant?.status === "streaming";
+
+      if (stillStreaming) {
+        if (pendingStreamError.current) {
           pollForResponse(
             sessionId,
-            assistantMsgId,
             clientMessageId,
             sentAt,
             historyTopic,
@@ -726,16 +634,16 @@ function setupCleanup(
               errorMessage: pendingStreamError.current,
             },
           ).then(() => _onComplete?.());
-        } else if (assistantMsg.text) {
-          MessageStore.updateMessage(sessionId, assistantMsgId, {
-            status: "complete",
-          }, historyTopic);
+        } else if (thread?.pendingAssistant?.text) {
+          ThreadStore.finalizeAssistant(clientMessageId, { status: "complete" });
+          _onComplete?.();
+        } else if (toolCallCounter > 0) {
+          // Some tool activity — keep the bubble around but mark complete.
+          ThreadStore.finalizeAssistant(clientMessageId, { status: "complete" });
           _onComplete?.();
         } else {
-          // No content — poll for response
           pollForResponse(
             sessionId,
-            assistantMsgId,
             clientMessageId,
             sentAt,
             historyTopic,
@@ -751,11 +659,10 @@ function setupCleanup(
 /** Poll for a response if the stream ended without content. */
 async function pollForResponse(
   sessionId: string,
-  assistantMsgId: string,
-  clientMessageId?: string,
-  sentAt?: number,
-  historyTopic?: string,
-  abortSignal?: AbortSignal,
+  clientMessageId: string,
+  sentAt: number | undefined,
+  historyTopic: string | undefined,
+  abortSignal: AbortSignal | undefined,
   options?: {
     maxAttempts?: number;
     intervalMs?: number;
@@ -783,7 +690,6 @@ async function pollForResponse(
         if (clientMessageId) {
           return message.response_to_client_message_id === clientMessageId;
         }
-
         if (!sentAt) return false;
         const messageTime = Date.parse(message.timestamp);
         if (Number.isNaN(messageTime)) return false;
@@ -791,19 +697,11 @@ async function pollForResponse(
       });
 
       if (matchedAssistant) {
-        const merged = MessageStore.mergeHistoryMessageIntoMessage(
+        ThreadStore.appendHistoryMessages(
           sessionId,
-          assistantMsgId,
-          matchedAssistant,
+          [matchedAssistant],
           historyTopic,
         );
-        if (!merged) {
-          MessageStore.appendHistoryMessages(sessionId, [matchedAssistant], historyTopic);
-          MessageStore.updateMessage(sessionId, assistantMsgId, {
-            text: matchedAssistant.content,
-            status: "complete",
-          }, historyTopic);
-        }
         return true;
       }
     } catch {
@@ -811,16 +709,15 @@ async function pollForResponse(
     }
   }
   if (!options?.errorMessage) {
-    MessageStore.updateMessage(sessionId, assistantMsgId, {
-      text: "No response received.",
-      status: "error",
-    }, historyTopic);
+    ThreadStore.replaceAssistantText(clientMessageId, "No response received.");
+    ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
     return false;
   }
 
-  MessageStore.updateMessage(sessionId, assistantMsgId, {
-    text: `Error: ${options.errorMessage}`,
-    status: "error",
-  }, historyTopic);
+  ThreadStore.replaceAssistantText(
+    clientMessageId,
+    `Error: ${options.errorMessage}`,
+  );
+  ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
   return false;
 }

@@ -11,7 +11,7 @@ import { SessionProvider, useSession } from "./session-context";
 import * as StreamManager from "./stream-manager";
 import { resumeSessionStream } from "./sse-bridge";
 import * as FileStore from "@/store/file-store";
-import * as MessageStore from "@/store/message-store";
+import * as ThreadStore from "@/store/thread-store";
 import * as TaskStore from "@/store/task-store";
 import { getSessionStatus } from "@/api/sessions";
 import type { BackgroundTaskInfo } from "@/api/types";
@@ -34,7 +34,7 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
 
   // Load message history into the store when a session is activated
   useEffect(() => {
-    MessageStore.loadHistory(currentSessionId, historyTopic);
+    ThreadStore.loadHistory(currentSessionId, historyTopic);
     void FileStore.loadSessionFiles(currentSessionId);
     mountedRef.current.add(currentSessionId);
 
@@ -43,7 +43,7 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
       for (const id of mountedRef.current) {
         if (id !== currentSessionId && !StreamManager.isActive(id)) {
           mountedRef.current.delete(id);
-          MessageStore.clearMessages(id);
+          ThreadStore.clearMessages(id);
           TaskStore.clearTasks(id);
           break;
         }
@@ -71,7 +71,7 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
 
         // Resume an active stream the server is still working on.
         if (status.active && !StreamManager.isActive(currentSessionId)) {
-          MessageStore.ensureStreamingAssistantMessage(
+          ThreadStore.ensureStreamingAssistantThread(
             currentSessionId,
             "Resuming ongoing work...",
             historyTopic,
@@ -89,7 +89,7 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
           );
         }
 
-        MessageStore.reconcileRecoveredStreamingMessages(
+        ThreadStore.reconcileRecoveredStreamingThreads(
           currentSessionId,
           historyTopic,
           { streamActive: status.active },
@@ -127,7 +127,7 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
       const task = detail?.task as BackgroundTaskInfo | undefined;
       if (task) {
         TaskStore.mergeTask(sessionId, task, topic);
-        MessageStore.bindBackgroundTask(sessionId, task, topic);
+        ThreadStore.bindBackgroundTask(sessionId, task, topic);
         const hasActiveTasks = TaskStore.getTasks(sessionId, topic).some(
           (candidate) =>
             candidate.status === "spawned" || candidate.status === "running",
