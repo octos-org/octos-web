@@ -10,11 +10,29 @@
 
 import * as StreamManager from "./stream-manager";
 import * as MessageStore from "@/store/message-store";
+import * as ThreadStore from "@/store/thread-store";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { getMessages as fetchSessionMessages } from "@/api/sessions";
 import { dispatchCrewFileEvent } from "./file-events";
 import { recordRuntimeCounter } from "./observability";
 import { eventSessionId, eventTopic } from "./event-scope";
+
+/**
+ * M8.10 PR #3: feature flag — when set to "1", route SSE events through the
+ * new thread-by-cmid `thread-store.ts` instead of the flat-list
+ * `message-store.ts`. Default off. PR #5 flips the default and removes the
+ * flat-list path. The flag is read fresh each `bindStreamToAssistant` call
+ * so toggling in DevTools takes effect on the next user message without a
+ * page reload.
+ */
+function isThreadStoreEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem("octos_thread_store_v2") === "1";
+  } catch {
+    return false;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers (shared with the old adapter, kept local)
@@ -145,6 +163,19 @@ export function sendMessage(opts: SendOptions): void {
     status: "complete",
   }, historyTopic);
 
+  // 1b. Mirror the user message into the thread store when the feature flag
+  //     is on — keeps both stores populated so the renderer can flag-switch
+  //     without losing state. PR #4 makes the thread store the rendered
+  //     source of truth; PR #5 deletes the flat-list path.
+  if (isThreadStoreEnabled()) {
+    ThreadStore.addUserMessage(sessionId, {
+      text,
+      clientMessageId,
+      files: localFiles,
+      topic: historyTopic,
+    });
+  }
+
   // Notify sidebar
   onSessionActive?.(text);
 
@@ -238,6 +269,29 @@ function bindStreamToAssistant({
   /** Maps server-side tool_call_id to the local toolCalls map key. */
   const keyByServerId = new Map<string, string>();
 
+  // M8.10 PR #3: snapshot the flag once per stream so toggling mid-stream
+  // doesn't tear data across two stores. The bridge mirrors data into the
+  // thread store when on; the existing flat-list path remains authoritative
+  // until PR #5 flips the default and removes it.
+  const threadStoreEnabled = isThreadStoreEnabled();
+
+  /** Resolve the thread_id for an event. Falls back to `clientMessageId`
+   *  (the bound user message for this stream) when the server omitted the
+   *  field — that's the right answer 99% of the time because every send-
+   *  bound stream is rooted at exactly one user cmid. As a final fallback
+   *  use the cross-thread synthesizer in the store. */
+  const resolveThreadIdForEvent = (
+    payloadThreadId: string | undefined,
+  ): string | null => {
+    if (payloadThreadId) return payloadThreadId;
+    if (clientMessageId) return clientMessageId;
+    return ThreadStore.resolveEventThreadId(
+      sessionId,
+      normalizedHistoryTopic,
+      undefined,
+    );
+  };
+
   const handleEvent = (evt: StreamManager.StreamEvent) => {
     const event = evt.raw;
     const scopedSessionId = eventSessionId(event);
@@ -262,6 +316,10 @@ function bindStreamToAssistant({
         MessageStore.updateMessage(sessionId, assistantMsgId, {
           text: clean(rawText),
         }, historyTopic);
+        if (threadStoreEnabled) {
+          const tid = resolveThreadIdForEvent(event.thread_id);
+          if (tid) ThreadStore.replaceAssistantText(tid, clean(rawText));
+        }
         break;
 
       case "replace":
@@ -269,6 +327,10 @@ function bindStreamToAssistant({
         MessageStore.updateMessage(sessionId, assistantMsgId, {
           text: clean(rawText),
         }, historyTopic);
+        if (threadStoreEnabled) {
+          const tid = resolveThreadIdForEvent(event.thread_id);
+          if (tid) ThreadStore.replaceAssistantText(tid, clean(rawText));
+        }
         break;
 
       case "tool_start": {
@@ -294,6 +356,10 @@ function bindStreamToAssistant({
         MessageStore.updateMessage(sessionId, assistantMsgId, {
           toolCalls: Array.from(toolCalls.values()),
         }, historyTopic);
+        if (threadStoreEnabled) {
+          const tid = resolveThreadIdForEvent(event.thread_id);
+          if (tid) ThreadStore.addToolCall(tid, tcId, event.tool);
+        }
         break;
       }
 
@@ -307,6 +373,16 @@ function bindStreamToAssistant({
         MessageStore.updateMessage(sessionId, assistantMsgId, {
           toolCalls: Array.from(toolCalls.values()),
         }, historyTopic);
+        if (threadStoreEnabled && tc) {
+          const tid = resolveThreadIdForEvent(event.thread_id);
+          if (tid) {
+            ThreadStore.setToolCallStatus(
+              tid,
+              tc.id,
+              event.success ? "complete" : "error",
+            );
+          }
+        }
         break;
       }
 
@@ -324,6 +400,13 @@ function bindStreamToAssistant({
           MessageStore.updateMessage(sessionId, assistantMsgId, {
             toolCalls: Array.from(toolCalls.values()),
           });
+        }
+        if (threadStoreEnabled) {
+          const tid = resolveThreadIdForEvent(event.thread_id);
+          const targetTcId = tc?.id ?? event.tool_call_id ?? event.tool_id;
+          if (tid && targetTcId) {
+            ThreadStore.appendToolProgress(tid, targetTcId, event.message);
+          }
         }
         // Keep the legacy global indicator working for components that
         // listen to `crew:tool_progress` (project files, site preview).
@@ -394,6 +477,11 @@ function bindStreamToAssistant({
               file,
               historyTopic,
             );
+          }
+
+          if (threadStoreEnabled) {
+            const tid = resolveThreadIdForEvent(event.thread_id);
+            if (tid) ThreadStore.appendAssistantFile(tid, file);
           }
 
           dispatchCrewFileEvent({
@@ -468,6 +556,27 @@ function bindStreamToAssistant({
           text: finalText,
           status: "complete",
         }, historyTopic);
+
+        if (threadStoreEnabled) {
+          const tid = resolveThreadIdForEvent(event.thread_id);
+          if (tid) {
+            // Replace text first so the finalized message holds the cleaned
+            // final text rather than the raw token stream.
+            ThreadStore.replaceAssistantText(tid, finalText);
+            ThreadStore.finalizeAssistant(tid, {
+              committedSeq: event.committed_seq,
+              meta:
+                event.model || event.tokens_in || event.tokens_out
+                  ? {
+                      model: event.model || "",
+                      tokens_in: event.tokens_in || 0,
+                      tokens_out: event.tokens_out || 0,
+                      duration_s: event.duration_s || 0,
+                    }
+                  : undefined,
+            });
+          }
+        }
 
         if (event.model || event.tokens_in || event.tokens_out) {
           MessageStore.setMessageMeta(sessionId, assistantMsgId, {

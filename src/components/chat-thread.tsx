@@ -35,6 +35,7 @@ import {
   type MessageFile,
   type MessageMeta,
 } from "@/store/message-store";
+import { useThreads } from "@/store/thread-store";
 import { uploadFiles } from "@/api/chat";
 import { sendMessage as bridgeSend } from "@/runtime/sse-bridge";
 import * as StreamManager from "@/runtime/stream-manager";
@@ -506,9 +507,64 @@ function isFileOnlyAssistantMessage(message: Message): boolean {
   );
 }
 
+/** M8.10 PR #3: opt-in to the new thread-by-cmid renderer via DevTools.
+ *  When the flag is on, render a stub placeholder — the real threaded UI
+ *  ships in PR #4. The flat-list path below remains the default. */
+function isThreadStoreV2Enabled(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem("octos_thread_store_v2") === "1";
+  } catch {
+    return false;
+  }
+}
+
 export function ChatThread({
   hideFileOnlyAssistantMessages = false,
 }: ChatThreadProps = {}) {
+  if (isThreadStoreV2Enabled()) {
+    return <ChatThreadV2Stub />;
+  }
+  return (
+    <ChatThreadFlatList
+      hideFileOnlyAssistantMessages={hideFileOnlyAssistantMessages}
+    />
+  );
+}
+
+/** Flag-on renderer stub. PR #4 replaces this with the real threaded UI. */
+function ChatThreadV2Stub() {
+  const { currentSessionId, historyTopic } = useSession();
+  const threads = useThreads(currentSessionId, historyTopic);
+
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-transparent">
+      <div
+        data-testid="chat-thread-v2-stub"
+        className="flex min-h-0 flex-1 flex-col items-center justify-center px-6"
+      >
+        <div className="glass-section animate-shell-rise max-w-xl rounded-[12px] px-7 py-9 text-center">
+          <div className="shell-kicker">Thread store v2 enabled</div>
+          <h1 className="mb-3 mt-3 text-2xl font-light tracking-tight text-text-strong">
+            (thread store enabled — renderer in PR #4)
+          </h1>
+          <p className="text-sm text-muted">
+            {threads.length === 0
+              ? "No threads yet."
+              : `${threads.length} thread(s) loaded. Disable the flag in DevTools to return to the classic view: localStorage.removeItem("octos_thread_store_v2").`}
+          </p>
+        </div>
+      </div>
+      <div className="shrink-0">
+        <Composer />
+      </div>
+    </div>
+  );
+}
+
+function ChatThreadFlatList({
+  hideFileOnlyAssistantMessages = false,
+}: ChatThreadProps) {
   const { currentSessionId, historyTopic } = useSession();
   const messages = useMessages(currentSessionId, historyTopic);
   const visibleMessages = useMemo(
