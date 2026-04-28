@@ -37,6 +37,7 @@ import {
 } from "@/store/message-store";
 import {
   useThreads,
+  loadHistory as loadThreadHistory,
   type Thread,
   type ThreadMessage,
   type ThreadToolCall,
@@ -840,6 +841,43 @@ function ChatThreadV2({
   const { currentSessionId, historyTopic } = useSession();
   const threads = useThreads(currentSessionId, historyTopic);
   const hasThreads = threads.length > 0;
+
+  // M8.10 follow-up (#633): rehydrate thread store from server history on mount
+  // and on session/topic change. The flat-list path loads history via
+  // `runtime-provider.tsx`'s `MessageStore.loadHistory(...)` effect; under the
+  // v2 flag the runtime provider also triggers MessageStore but the thread
+  // store stays empty after reload, so a session with prior chat history
+  // renders as an empty conversation.
+  //
+  // The reload path is also racy with server persistence: the SSE `done`
+  // event fires before the JSONL is fully committed, so an immediate reload
+  // gets back only the user messages. Schedule a small number of forced
+  // re-fetches over the first ~12s so the assistant messages catch up once
+  // the server commits them. The retries no-op as soon as the loaded thread
+  // count stops growing, so the cost is at most 3 extra requests in the
+  // worst case.
+  useEffect(() => {
+    let cancelled = false;
+    void loadThreadHistory(currentSessionId, historyTopic);
+
+    const retryDelaysMs = [2_000, 5_000, 12_000];
+    const timers: number[] = [];
+    for (const delay of retryDelaysMs) {
+      timers.push(
+        window.setTimeout(() => {
+          if (cancelled) return;
+          void loadThreadHistory(currentSessionId, historyTopic, {
+            force: true,
+          });
+        }, delay),
+      );
+    }
+
+    return () => {
+      cancelled = true;
+      for (const t of timers) window.clearTimeout(t);
+    };
+  }, [currentSessionId, historyTopic]);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-transparent">
