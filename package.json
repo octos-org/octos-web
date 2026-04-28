@@ -9,6 +9,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "npx playwright test",
+    "test:unit": "vitest run",
+    "test:unit:watch": "vitest",
     "test:live:long": "npx playwright test tests/deep-research.spec.ts tests/tts-no-duplicates.spec.ts",
     "test:live:smoke": "npx playwright test tests/live-long-smoke.spec.ts",
     "test:headed": "npx playwright test --headed",
@@ -52,9 +54,11 @@
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
     "playwright": "^1.58.2",
+    "jsdom": "^25.0.1",
     "tailwindcss": "^4.2.1",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.48.0",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "vitest": "^1.6.1"
   }
 }

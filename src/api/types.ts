@@ -26,6 +26,7 @@ export interface MessageInfo {
   client_message_id?: string;
   response_to_client_message_id?: string;
   tool_call_id?: string;
+  thread_id?: string;
   timestamp: string;
   media?: string[];
   tool_calls?: { id?: string; name?: string }[];
@@ -117,27 +118,57 @@ export interface AuthMeResponse {
 }
 
 // SSE event types
+//
+// PR #2 of M8.10 (#629) added a `thread_id` field on every emitted SSE
+// payload (= the originating user message's `client_message_id`) so web
+// clients with multiple in-flight threads can demultiplex events into the
+// right per-thread bubble. The `done` event additionally carries
+// `committed_seq` — the per-thread sequence the just-finalized assistant
+// message holds in storage. Both fields are additive: legacy daemons may
+// still emit events without them.
 export type SseEvent =
-  | { type: "token"; text: string }
-  | { type: "replace"; text: string }
-  | { type: "tool_start"; tool: string; tool_call_id?: string; tool_id?: string }
-  | { type: "tool_end"; tool: string; success: boolean; tool_call_id?: string; tool_id?: string }
-  | { type: "tool_progress"; tool: string; message: string; tool_call_id?: string; tool_id?: string }
-  | { type: "stream_end" }
+  | { type: "token"; text: string; thread_id?: string }
+  | { type: "replace"; text: string; thread_id?: string }
+  | {
+      type: "tool_start";
+      tool: string;
+      tool_call_id?: string;
+      tool_id?: string;
+      thread_id?: string;
+    }
+  | {
+      type: "tool_end";
+      tool: string;
+      success: boolean;
+      tool_call_id?: string;
+      tool_id?: string;
+      thread_id?: string;
+    }
+  | {
+      type: "tool_progress";
+      tool: string;
+      message: string;
+      tool_call_id?: string;
+      tool_id?: string;
+      thread_id?: string;
+    }
+  | { type: "stream_end"; thread_id?: string }
   | {
       type: "cost_update";
       input_tokens: number;
       output_tokens: number;
       session_cost: number | null;
+      thread_id?: string;
     }
-  | { type: "thinking"; iteration: number }
-  | { type: "response"; iteration: number }
+  | { type: "thinking"; iteration: number; thread_id?: string }
+  | { type: "response"; iteration: number; thread_id?: string }
   | {
       type: "file";
       path: string;
       filename: string;
       caption: string;
       tool_call_id?: string;
+      thread_id?: string;
     }
   | {
       type: "done";
@@ -148,8 +179,10 @@ export type SseEvent =
       session_cost?: number | null;
       duration_s?: number;
       has_bg_tasks?: boolean;
+      thread_id?: string;
+      committed_seq?: number;
     }
-  | { type: "error"; message: string }
+  | { type: "error"; message: string; thread_id?: string }
   | {
       type: "task_status";
       task: {
@@ -163,9 +196,11 @@ export type SseEvent =
         error: string | null;
         session_key?: string;
       };
+      thread_id?: string;
     }
   | {
       type: "session_result";
       message: MessageInfo;
+      thread_id?: string;
     }
   | { type: "other" };
