@@ -589,12 +589,26 @@ export function replayHistory(
 // History loading
 // ---------------------------------------------------------------------------
 
+export interface LoadHistoryOptions {
+  /**
+   * Bypass the per-session "already loaded" cache and force a fresh fetch.
+   * Used to recover from server persistence latency on reload — when the
+   * client loads /messages immediately after a streaming `done` event the
+   * JSONL may still be catching up, so the first fetch returns the user
+   * messages but not the assistant ones. The mount effect retries with
+   * `force: true` after a short delay to re-hydrate assistants once the
+   * server commits them.
+   */
+  force?: boolean;
+}
+
 export function loadHistory(
   sessionId: string,
   topic?: string,
+  options: LoadHistoryOptions = {},
 ): Promise<void> {
   const key = storeKey(sessionId, topic);
-  if (loadedSessions.has(key)) return Promise.resolve();
+  if (!options.force && loadedSessions.has(key)) return Promise.resolve();
 
   const existing = loadingPromises.get(key);
   if (existing) return existing;
