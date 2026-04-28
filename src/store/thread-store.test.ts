@@ -21,6 +21,7 @@ import * as ThreadStore from "./thread-store";
 
 afterEach(() => {
   ThreadStore.__resetForTests();
+  vi.unstubAllGlobals();
 });
 
 const SESSION = "sess-test";
@@ -326,5 +327,141 @@ describe("thread-store", () => {
     expect(
       ThreadStore.resolveEventThreadId("unknown-session", undefined, undefined),
     ).toBeNull();
+  });
+
+  // ---------------------------------------------------------------------------
+  // History rehydration on mount (M8.10 follow-up, issue #633)
+  //
+  // ChatThreadV2 needs `loadHistory` to populate the thread store from the
+  // server's per-session messages endpoint. Without these tests the bug
+  // identified in #633 (v2 page reload renders empty chat) regresses.
+  // ---------------------------------------------------------------------------
+
+  it("loadHistory_replays_into_threads_grouped_by_thread_id", async () => {
+    // 4-message history → 2 threads, every record carries thread_id.
+    const messages = [
+      {
+        seq: 0,
+        role: "user",
+        content: "Q1",
+        client_message_id: "cmid-1",
+        thread_id: "cmid-1",
+        timestamp: "2026-04-28T10:00:00Z",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "A1",
+        response_to_client_message_id: "cmid-1",
+        thread_id: "cmid-1",
+        timestamp: "2026-04-28T10:00:05Z",
+      },
+      {
+        seq: 2,
+        role: "user",
+        content: "Q2",
+        client_message_id: "cmid-2",
+        thread_id: "cmid-2",
+        timestamp: "2026-04-28T10:01:00Z",
+      },
+      {
+        seq: 3,
+        role: "assistant",
+        content: "A2",
+        response_to_client_message_id: "cmid-2",
+        thread_id: "cmid-2",
+        timestamp: "2026-04-28T10:01:05Z",
+      },
+    ];
+
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const path = typeof url === "string" ? url : url.toString();
+      expect(path).toContain(
+        `/api/sessions/${encodeURIComponent(SESSION)}/messages`,
+      );
+      return new Response(JSON.stringify(messages), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await ThreadStore.loadHistory(SESSION);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const threads = ThreadStore.getThreads(SESSION);
+    expect(threads.map((t) => t.id)).toEqual(["cmid-1", "cmid-2"]);
+    expect(threads[0].userMsg.text).toBe("Q1");
+    expect(threads[0].responses).toHaveLength(1);
+    expect(threads[0].responses[0].text).toBe("A1");
+    expect(threads[1].userMsg.text).toBe("Q2");
+    expect(threads[1].responses).toHaveLength(1);
+    expect(threads[1].responses[0].text).toBe("A2");
+
+    // Second call is a no-op — already loaded for this session/topic key.
+    await ThreadStore.loadHistory(SESSION);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // `force: true` bypasses the cache so the mount-effect retry can recover
+    // from server persistence latency that returned a partial first fetch.
+    await ThreadStore.loadHistory(SESSION, undefined, { force: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("loadHistory_synthesizes_threads_for_legacy_records_without_thread_id", async () => {
+    // Legacy daemon: no thread_id on any record. Synthesizer must derive one
+    // per user-message role-flip so the chat still groups into 2 threads.
+    const messages = [
+      {
+        seq: 0,
+        role: "user",
+        content: "old Q1",
+        client_message_id: "cm-old-1",
+        timestamp: "2026-04-01T00:00:00Z",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "old A1",
+        timestamp: "2026-04-01T00:00:10Z",
+      },
+      {
+        seq: 2,
+        role: "user",
+        content: "old Q2",
+        client_message_id: "cm-old-2",
+        timestamp: "2026-04-01T00:01:00Z",
+      },
+      {
+        seq: 3,
+        role: "assistant",
+        content: "old A2",
+        timestamp: "2026-04-01T00:01:10Z",
+      },
+    ];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify(messages), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      ),
+    );
+
+    await ThreadStore.loadHistory(SESSION);
+
+    const threads = ThreadStore.getThreads(SESSION);
+    expect(threads).toHaveLength(2);
+    expect(threads[0].id).toBe("cm-old-1");
+    expect(threads[0].userMsg.text).toBe("old Q1");
+    expect(threads[0].responses).toHaveLength(1);
+    expect(threads[0].responses[0].text).toBe("old A1");
+    expect(threads[1].id).toBe("cm-old-2");
+    expect(threads[1].userMsg.text).toBe("old Q2");
+    expect(threads[1].responses).toHaveLength(1);
+    expect(threads[1].responses[0].text).toBe("old A2");
   });
 });
