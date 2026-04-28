@@ -122,7 +122,7 @@ export type SseEvent =
   | { type: "replace"; text: string }
   | { type: "tool_start"; tool: string; tool_call_id?: string; tool_id?: string }
   | { type: "tool_end"; tool: string; success: boolean; tool_call_id?: string; tool_id?: string }
-  | { type: "tool_progress"; tool: string; message: string }
+  | { type: "tool_progress"; tool: string; message: string; tool_call_id?: string; tool_id?: string }
   | { type: "stream_end" }
   | {
       type: "cost_update";

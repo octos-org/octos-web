@@ -18,10 +18,23 @@ import { recordRuntimeCounter } from "@/runtime/observability";
 // Types
 // ---------------------------------------------------------------------------
 
+export interface ToolProgressEntry {
+  message: string;
+  ts: number;
+}
+
 export interface ToolCallInfo {
   id: string;
   name: string;
   status: "running" | "complete" | "error";
+  /**
+   * Per-tool runtime progress events captured from the SSE
+   * `tool_progress` stream, keyed to this call by `tool_call_id`. Used
+   * by the chat thread to render a timeline inside the tool-call bubble
+   * so users see what a long-running tool (e.g. `run_pipeline`,
+   * `deep_search`) is doing while it runs.
+   */
+  progress: ToolProgressEntry[];
 }
 
 export interface MessageFile {
@@ -556,6 +569,7 @@ function convertApiMessage(m: MessageInfo): Message | null {
       id: tc.id || "",
       name: tc.name || "",
       status: "complete" as const,
+      progress: [],
     })) ?? [];
 
   return {
@@ -900,6 +914,7 @@ export function bindBackgroundTask(
     id: toolCallId,
     name: normalizedToolName || task.tool_name || "background_task",
     status: taskToolStatus(task),
+    progress: [],
   });
 
   indexTaskForMessage(key, task, list[targetIndex].id);

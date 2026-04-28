@@ -417,6 +417,7 @@ export function createWsAdapter(
                     id: tc.toolCallId,
                     name: tc.toolName,
                     status: tc.status as "running" | "complete" | "error",
+                    progress: [],
                   })),
                 }, historyTopic);
                 yield buildResult(text, toolCalls);
@@ -435,6 +436,7 @@ export function createWsAdapter(
                     id: t.toolCallId,
                     name: t.toolName,
                     status: t.status as "running" | "complete" | "error",
+                    progress: [],
                   })),
                 }, historyTopic);
                 yield buildResult(text, toolCalls);

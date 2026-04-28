@@ -225,11 +225,18 @@ function bindStreamToAssistant({
   const pendingStreamError = { current: null as string | null };
   const toolCalls = new Map<
     string,
-    { id: string; name: string; status: "running" | "complete" | "error" }
+    {
+      id: string;
+      name: string;
+      status: "running" | "complete" | "error";
+      progress: { message: string; ts: number }[];
+    }
   >();
   /** Maps tool name to the most recent toolCall key (for tool_end matching). */
   const activeToolByName = new Map<string, string>();
   const normalizedHistoryTopic = historyTopic?.trim() || undefined;
+  /** Maps server-side tool_call_id to the local toolCalls map key. */
+  const keyByServerId = new Map<string, string>();
 
   const handleEvent = (evt: StreamManager.StreamEvent) => {
     const event = evt.raw;
@@ -266,12 +273,24 @@ function bindStreamToAssistant({
 
       case "tool_start": {
         const key = `tc_${++toolCallCounter}`;
+        // Prefer the server-issued tool_call_id (then the legacy
+        // tool_id) so tool_progress and tool_end can route by id;
+        // synthesize an id only when the backend omits both.
         const tcId =
           event.tool_call_id ||
           event.tool_id ||
           `tc_${event.tool}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-        toolCalls.set(key, { id: tcId, name: event.tool, status: "running" });
+        toolCalls.set(key, {
+          id: tcId,
+          name: event.tool,
+          status: "running",
+          progress: [],
+        });
         activeToolByName.set(event.tool, key);
+        // Map every server-issued id we know about to this local key so
+        // tool_progress / tool_end events can route by either field.
+        if (event.tool_call_id) keyByServerId.set(event.tool_call_id, key);
+        if (event.tool_id) keyByServerId.set(event.tool_id, key);
         MessageStore.updateMessage(sessionId, assistantMsgId, {
           toolCalls: Array.from(toolCalls.values()),
         }, historyTopic);
@@ -279,7 +298,10 @@ function bindStreamToAssistant({
       }
 
       case "tool_end": {
-        const key = activeToolByName.get(event.tool);
+        const key =
+          (event.tool_call_id && keyByServerId.get(event.tool_call_id)) ||
+          (event.tool_id && keyByServerId.get(event.tool_id)) ||
+          activeToolByName.get(event.tool);
         const tc = key ? toolCalls.get(key) : undefined;
         if (tc) tc.status = event.success ? "complete" : "error";
         MessageStore.updateMessage(sessionId, assistantMsgId, {
@@ -288,7 +310,23 @@ function bindStreamToAssistant({
         break;
       }
 
-      case "tool_progress":
+      case "tool_progress": {
+        // Anchor the entry to its tool call when the backend gave us
+        // an id. Otherwise fall back to most-recent-by-name so older
+        // streams still surface something in the right bubble.
+        const key =
+          (event.tool_call_id && keyByServerId.get(event.tool_call_id)) ||
+          (event.tool_id && keyByServerId.get(event.tool_id)) ||
+          activeToolByName.get(event.tool);
+        const tc = key ? toolCalls.get(key) : undefined;
+        if (tc) {
+          tc.progress.push({ message: event.message, ts: Date.now() });
+          MessageStore.updateMessage(sessionId, assistantMsgId, {
+            toolCalls: Array.from(toolCalls.values()),
+          });
+        }
+        // Keep the legacy global indicator working for components that
+        // listen to `crew:tool_progress` (project files, site preview).
         window.dispatchEvent(
           new CustomEvent("crew:tool_progress", {
             detail: {
@@ -296,10 +334,12 @@ function bindStreamToAssistant({
               message: event.message,
               sessionId,
               topic: historyTopic,
+              tool_call_id: event.tool_call_id,
             },
           }),
         );
         break;
+      }
 
       case "thinking":
         window.dispatchEvent(
