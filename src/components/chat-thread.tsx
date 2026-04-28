@@ -35,7 +35,12 @@ import {
   type MessageFile,
   type MessageMeta,
 } from "@/store/message-store";
-import { useThreads } from "@/store/thread-store";
+import {
+  useThreads,
+  type Thread,
+  type ThreadMessage,
+  type ThreadToolCall,
+} from "@/store/thread-store";
 import { uploadFiles } from "@/api/chat";
 import { sendMessage as bridgeSend } from "@/runtime/sse-bridge";
 import * as StreamManager from "@/runtime/stream-manager";
@@ -523,7 +528,11 @@ export function ChatThread({
   hideFileOnlyAssistantMessages = false,
 }: ChatThreadProps = {}) {
   if (isThreadStoreV2Enabled()) {
-    return <ChatThreadV2Stub />;
+    return (
+      <ChatThreadV2
+        hideFileOnlyAssistantMessages={hideFileOnlyAssistantMessages}
+      />
+    );
   }
   return (
     <ChatThreadFlatList
@@ -532,29 +541,326 @@ export function ChatThread({
   );
 }
 
-/** Flag-on renderer stub. PR #4 replaces this with the real threaded UI. */
-function ChatThreadV2Stub() {
+// ---------------------------------------------------------------------------
+// ChatThreadV2 (M8.10 PR #4): real threaded renderer behind the v2 flag.
+//
+// Iterates threads from `useThreads(sessionId, topic)`. For each thread:
+//   - renders the user message (right-aligned, glass-pill)
+//   - renders assistant + tool responses ordered by intra_thread_seq
+//   - renders the pending assistant inline at the end (with streaming dots)
+// Tool retries collapse into a single tool-call bubble with retryCount;
+// the bubble renders a "×N" badge when retryCount >= 1.
+// ---------------------------------------------------------------------------
+
+function threadMessageVisibleText(message: ThreadMessage): string {
+  if (message.files.length === 0) return message.text;
+  const trimmed = message.text.trim();
+  if (/^\[Attached: .*\]$/u.test(trimmed)) return "";
+  if (trimmed === "[User sent an image]") return "";
+  return message.text;
+}
+
+const ThreadUserBubble = memo(function ThreadUserBubble({
+  message,
+}: {
+  message: ThreadMessage;
+}) {
+  const visibleText = threadMessageVisibleText(message);
+  return (
+    <div className="flex justify-end px-4 py-3">
+      <div className="flex max-w-[74%] flex-col items-end">
+        {visibleText && (
+          <div
+            data-testid="user-message"
+            className="message-card message-card-user rounded-[14px] rounded-br-[4px] px-4 py-2.5 text-sm leading-relaxed text-text"
+          >
+            {visibleText}
+          </div>
+        )}
+        {message.files.length > 0 && (
+          <div className={`${visibleText ? "mt-2" : ""} flex flex-wrap gap-2`}>
+            {message.files.map((f) => (
+              <FileAttachment key={f.path} file={f} />
+            ))}
+          </div>
+        )}
+        <div className="mt-1.5 px-1 text-[10px] text-muted/50 select-none">
+          {formatTimestamp(message.timestamp)}
+        </div>
+      </div>
+    </div>
+  );
+});
+
+function ToolCallBubble({ toolCall }: { toolCall: ThreadToolCall }) {
+  const retryBadge =
+    toolCall.retryCount >= 1 ? (
+      <span
+        data-testid="tool-call-retry-badge"
+        data-tool-call-retry-count={toolCall.retryCount}
+        className="ml-1 rounded-full bg-amber-500/20 px-1.5 py-px text-[9px] font-semibold text-amber-300"
+        title={`Retried ${toolCall.retryCount} time${toolCall.retryCount === 1 ? "" : "s"}`}
+      >
+        ×{toolCall.retryCount + 1}
+      </span>
+    ) : null;
+
+  return (
+    <div
+      data-testid="tool-call-bubble"
+      data-tool-call-id={toolCall.id}
+      data-tool-call-retry-count={toolCall.retryCount}
+      className={`flex flex-col gap-1 rounded-[10px] px-2.5 py-1 text-[10px] font-mono ${
+        toolCall.status === "running"
+          ? "border-accent/20 bg-accent/14 text-accent animate-pulse"
+          : toolCall.status === "error"
+            ? "border-red-500/20 bg-red-500/12 text-red-400"
+            : "text-muted"
+      } glass-pill`}
+    >
+      <span>
+        {toolCall.name || "tool"}
+        {retryBadge}
+      </span>
+      {toolCall.progress.length > 0 && (
+        <ul
+          data-testid="tool-call-runtime-timeline"
+          className="m-0 mt-1 flex list-none flex-col gap-0.5 border-l border-current/20 pl-2"
+        >
+          {toolCall.progress.map((entry, idx) => (
+            <li key={idx} className="opacity-80">
+              {entry.message.replace(
+                /^\[(info|debug|warn|error)\]\s*/i,
+                "",
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
+  message,
+  isStreaming,
+  showLiveIndicators,
+}: {
+  message: ThreadMessage;
+  isStreaming: boolean;
+  showLiveIndicators: boolean;
+}) {
+  return (
+    <div className="flex px-4 py-3">
+      <div
+        data-testid="assistant-message"
+        data-thread-id={message.responseToClientMessageId ?? ""}
+        className="message-card message-card-assistant animate-shell-rise max-w-[88%] rounded-[14px] rounded-bl-[4px] px-4 py-3 text-sm leading-relaxed text-text"
+      >
+        {message.text ? (
+          <MarkdownContent
+            text={message.text}
+            className="prose prose-invert prose-sm max-w-none min-w-0 break-words"
+          />
+        ) : isStreaming ? (
+          <span className="inline-flex items-center gap-1">
+            <span className="h-2 w-2 rounded-full bg-accent/60 animate-pulse" />
+            <span className="h-2 w-2 rounded-full bg-accent/60 animate-pulse [animation-delay:150ms]" />
+            <span className="h-2 w-2 rounded-full bg-accent/60 animate-pulse [animation-delay:300ms]" />
+          </span>
+        ) : null}
+
+        {/* Inline file attachments */}
+        {message.files.length > 0 && (
+          <div className="mt-3 flex flex-col gap-2">
+            {message.files.map((f) => (
+              <FileAttachment key={f.path} file={f} />
+            ))}
+          </div>
+        )}
+
+        {/* Tool calls (retry-collapsed) */}
+        {message.toolCalls.length > 0 && (
+          <div className="mt-2 flex flex-col gap-1.5">
+            {message.toolCalls.map((tc) => (
+              <ToolCallBubble key={tc.id} toolCall={tc} />
+            ))}
+          </div>
+        )}
+
+        {/* Thinking + tool progress (only for the in-flight pending assistant) */}
+        {showLiveIndicators && (
+          <>
+            <ThinkingIndicator />
+            <ToolProgressIndicator />
+          </>
+        )}
+
+        {/* Message meta */}
+        <ThreadMessageMeta message={message} />
+      </div>
+    </div>
+  );
+});
+
+function ThreadMessageMeta({ message }: { message: ThreadMessage }) {
+  const meta: MessageMeta | undefined = message.meta;
+
+  const parts: string[] = [];
+  if (meta) {
+    if (meta.model) parts.push(meta.model);
+    if (meta.tokens_in) parts.push(`${formatTokens(meta.tokens_in)} in`);
+    if (meta.tokens_out) parts.push(`${formatTokens(meta.tokens_out)} out`);
+    if (meta.duration_s) parts.push(`${meta.duration_s}s`);
+  }
+  parts.push(formatTimestamp(message.timestamp));
+
+  if (meta && (meta.model || meta.tokens_in || meta.tokens_out)) {
+    return (
+      <div className="mt-1.5 flex items-center gap-1.5 text-[10px] text-muted/60 select-none">
+        <span className="inline-block h-1.5 w-1.5 rounded-full bg-accent/40" />
+        {parts.join(" · ")}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-1.5 text-[10px] text-muted/60 select-none">
+      {formatTimestamp(message.timestamp)}
+    </div>
+  );
+}
+
+function isVisibleResponse(
+  message: ThreadMessage,
+  hideFileOnlyAssistantMessages: boolean,
+): boolean {
+  if (message.role === "system") return false;
+  // Tool result messages get folded into their originating tool-call bubble
+  // on the assistant message; rendering them as standalone bubbles would
+  // duplicate output (the assistant already shows tool-call status + progress).
+  if (message.role === "tool") return false;
+  if (
+    hideFileOnlyAssistantMessages &&
+    message.role === "assistant" &&
+    !message.text.trim() &&
+    message.files.length > 0 &&
+    message.toolCalls.length === 0
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function ThreadView({
+  thread,
+  hideFileOnlyAssistantMessages,
+}: {
+  thread: Thread;
+  hideFileOnlyAssistantMessages: boolean;
+}) {
+  const visibleResponses = thread.responses.filter((r) =>
+    isVisibleResponse(r, hideFileOnlyAssistantMessages),
+  );
+  return (
+    <div data-testid="chat-thread-bundle" data-thread-id={thread.id}>
+      <ThreadUserBubble message={thread.userMsg} />
+      {visibleResponses.map((response) => (
+        <ThreadAssistantBubble
+          key={response.id}
+          message={response}
+          isStreaming={false}
+          showLiveIndicators={false}
+        />
+      ))}
+      {thread.pendingAssistant && (
+        <ThreadAssistantBubble
+          key={thread.pendingAssistant.id}
+          message={thread.pendingAssistant}
+          isStreaming={thread.pendingAssistant.status === "streaming"}
+          showLiveIndicators={thread.pendingAssistant.status === "streaming"}
+        />
+      )}
+    </div>
+  );
+}
+
+function ThreadList({
+  threads,
+  hideFileOnlyAssistantMessages,
+}: {
+  threads: Thread[];
+  hideFileOnlyAssistantMessages: boolean;
+}) {
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
+
+  // Detect whether user has scrolled up (passive for performance)
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const handleScroll = () => {
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      stickToBottomRef.current = distanceFromBottom < 80;
+    };
+    el.addEventListener("scroll", handleScroll, { passive: true });
+    return () => el.removeEventListener("scroll", handleScroll);
+  }, []);
+
+  // Auto-scroll when threads update
+  useEffect(() => {
+    if (stickToBottomRef.current && viewportRef.current) {
+      viewportRef.current.scrollTop = viewportRef.current.scrollHeight;
+    }
+  }, [threads]);
+
+  return (
+    <div
+      data-testid="chat-thread"
+      data-thread-renderer="v2"
+      ref={viewportRef}
+      className="flex-1 min-h-0 overflow-y-auto overscroll-contain"
+    >
+      <div className="mx-auto max-w-4xl py-6">
+        {threads.map((thread) => (
+          <ThreadView
+            key={thread.id}
+            thread={thread}
+            hideFileOnlyAssistantMessages={hideFileOnlyAssistantMessages}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ChatThreadV2({
+  hideFileOnlyAssistantMessages = false,
+}: ChatThreadProps) {
   const { currentSessionId, historyTopic } = useSession();
   const threads = useThreads(currentSessionId, historyTopic);
+  const hasThreads = threads.length > 0;
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-transparent">
-      <div
-        data-testid="chat-thread-v2-stub"
-        className="flex min-h-0 flex-1 flex-col items-center justify-center px-6"
-      >
-        <div className="glass-section animate-shell-rise max-w-xl rounded-[12px] px-7 py-9 text-center">
-          <div className="shell-kicker">Thread store v2 enabled</div>
-          <h1 className="mb-3 mt-3 text-2xl font-light tracking-tight text-text-strong">
-            (thread store enabled — renderer in PR #4)
-          </h1>
-          <p className="text-sm text-muted">
-            {threads.length === 0
-              ? "No threads yet."
-              : `${threads.length} thread(s) loaded. Disable the flag in DevTools to return to the classic view: localStorage.removeItem("octos_thread_store_v2").`}
-          </p>
+      {hasThreads ? (
+        <ThreadList
+          threads={threads}
+          hideFileOnlyAssistantMessages={hideFileOnlyAssistantMessages}
+        />
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6">
+          <div className="glass-section animate-shell-rise max-w-xl rounded-[12px] px-7 py-9 text-center">
+            <div className="shell-kicker">Conversation Studio</div>
+            <h1 className="mb-3 mt-3 text-3xl font-light tracking-tight text-text-strong">
+              What can I help with?
+            </h1>
+            <p className="text-sm text-muted">
+              Ask anything, attach files, or record a voice message.
+            </p>
+          </div>
         </div>
-      </div>
+      )}
       <div className="shrink-0">
         <Composer />
       </div>
