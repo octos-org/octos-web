@@ -12,7 +12,7 @@ import {
 } from "@/api/sessions";
 import { buildApiHeaders } from "@/api/client";
 import { API_BASE } from "@/lib/constants";
-import * as MessageStore from "@/store/message-store";
+import * as ThreadStore from "@/store/thread-store";
 import * as TaskStore from "@/store/task-store";
 import * as FileStore from "@/store/file-store";
 import { displayFilenameFromPath } from "@/lib/utils";
@@ -97,7 +97,7 @@ function persistWatchedSessions(): void {
       topic: entry.topic,
       lastCommittedSeq: Math.max(
         entry.lastCommittedSeq,
-        MessageStore.getMaxHistorySeq(entry.sessionId, entry.topic),
+        ThreadStore.getMaxHistorySeq(entry.sessionId, entry.topic),
       ),
       updatedAt: Date.now(),
     }));
@@ -121,9 +121,9 @@ function seedWatchedSession(entry: {
 
   const topic = entry.topic?.trim() || undefined;
   const knownPaths = new Set(
-    MessageStore.getMessages(entry.sessionId, topic).flatMap((message) =>
-      message.files.map((file) => file.path),
-    ),
+    ThreadStore.flattenThreadsToMessages(
+      ThreadStore.getThreads(entry.sessionId, topic),
+    ).flatMap((message) => message.files.map((file) => file.path)),
   );
 
   watchedSessions.set(key, {
@@ -131,7 +131,7 @@ function seedWatchedSession(entry: {
     topic,
     lastCommittedSeq: Math.max(
       entry.lastCommittedSeq,
-      MessageStore.getMaxHistorySeq(entry.sessionId, topic),
+      ThreadStore.getMaxHistorySeq(entry.sessionId, topic),
     ),
     knownPaths,
     activeIds: new Set(),
@@ -221,7 +221,7 @@ function applyCommittedMessages(
   if (messages.length === 0) return;
   entry.lastCommittedSeq = Math.max(
     entry.lastCommittedSeq,
-    MessageStore.appendHistoryMessages(sessionId, messages, entry.topic),
+    ThreadStore.appendHistoryMessages(sessionId, messages, entry.topic),
   );
   emitNewFileEvents(sessionId, entry.topic, messages, entry.knownPaths);
   void FileStore.loadSessionFiles(sessionId);
@@ -257,7 +257,7 @@ export function watchSession(sessionId: string, topic?: string): void {
     const entry = watchedSessions.get(key)!;
     entry.lastCommittedSeq = Math.max(
       entry.lastCommittedSeq,
-      MessageStore.getMaxHistorySeq(sessionId, currentTopic),
+      ThreadStore.getMaxHistorySeq(sessionId, currentTopic),
     );
     entry.terminalSince = null;
     persistWatchedSessions();
@@ -269,7 +269,7 @@ export function watchSession(sessionId: string, topic?: string): void {
   seedWatchedSession({
     sessionId,
     topic: currentTopic,
-    lastCommittedSeq: MessageStore.getMaxHistorySeq(sessionId, currentTopic),
+    lastCommittedSeq: ThreadStore.getMaxHistorySeq(sessionId, currentTopic),
   });
   persistWatchedSessions();
   ensureEventStream(key);
