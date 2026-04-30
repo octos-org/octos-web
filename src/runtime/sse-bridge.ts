@@ -35,6 +35,82 @@ function isThreadStoreEnabled(): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Session-scoped tool-call key map (M8.10 follow-up #649).
+//
+// Background tasks (spawn_only tools) start a tool_call inside one stream
+// and finalize via tool_progress / tool_end / file events that may arrive
+// **after** the originating stream closed — possibly minutes later, on a
+// different SSE connection bound to a newer user turn. The earlier per-
+// stream `keyByServerId` map evaporated when its closure went out of
+// scope, so the late event lost its server-id → local-key mapping and
+// fell through to `activeToolByName` lookups inside the *new* stream
+// closure, mis-binding the result to the latest user bubble.
+//
+// Hoisting the map to a module-level, per-session container keeps the
+// mapping live for the lifetime of the session so late events still find
+// their bubble. Cleared explicitly only when a session is closed (no need
+// to GC: real sessions hold ≤ a few hundred tool calls and the entries
+// are tiny strings).
+// ---------------------------------------------------------------------------
+
+/** Per-session map: server-issued tool_call_id (or tool_id) → local key. */
+const sessionKeyByServerId = new Map<string, Map<string, string>>();
+/** Per-session map: local key → tool call snapshot (id, name, status, progress). */
+interface ToolCallSnapshot {
+  id: string;
+  name: string;
+  status: "running" | "complete" | "error";
+  progress: { message: string; ts: number }[];
+}
+const sessionToolCalls = new Map<string, Map<string, ToolCallSnapshot>>();
+
+function sessionScopeKey(sessionId: string, topic?: string): string {
+  const t = topic?.trim();
+  return t ? `${sessionId}#${t}` : sessionId;
+}
+
+function getKeyByServerIdMap(scope: string): Map<string, string> {
+  let m = sessionKeyByServerId.get(scope);
+  if (!m) {
+    m = new Map();
+    sessionKeyByServerId.set(scope, m);
+  }
+  return m;
+}
+
+function getToolCallsMap(scope: string): Map<string, ToolCallSnapshot> {
+  let m = sessionToolCalls.get(scope);
+  if (!m) {
+    m = new Map();
+    sessionToolCalls.set(scope, m);
+  }
+  return m;
+}
+
+/** Drop the session-scoped tool-call maps. Call when a session is closed
+ *  / reset to free memory. Safe to omit — the maps are tiny. */
+export function clearSessionToolMaps(sessionId: string, topic?: string): void {
+  const t = topic?.trim();
+  if (t) {
+    const scope = sessionScopeKey(sessionId, t);
+    sessionKeyByServerId.delete(scope);
+    sessionToolCalls.delete(scope);
+    return;
+  }
+  // No topic → drop the bare session and any per-topic descendants.
+  for (const k of [...sessionKeyByServerId.keys()]) {
+    if (k === sessionId || k.startsWith(`${sessionId}#`)) {
+      sessionKeyByServerId.delete(k);
+    }
+  }
+  for (const k of [...sessionToolCalls.keys()]) {
+    if (k === sessionId || k.startsWith(`${sessionId}#`)) {
+      sessionToolCalls.delete(k);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers (shared with the old adapter, kept local)
 // ---------------------------------------------------------------------------
 
@@ -254,20 +330,28 @@ function bindStreamToAssistant({
   let rawText = "";
   let toolCallCounter = 0;
   const pendingStreamError = { current: null as string | null };
-  const toolCalls = new Map<
-    string,
-    {
-      id: string;
-      name: string;
-      status: "running" | "complete" | "error";
-      progress: { message: string; ts: number }[];
-    }
-  >();
-  /** Maps tool name to the most recent toolCall key (for tool_end matching). */
-  const activeToolByName = new Map<string, string>();
   const normalizedHistoryTopic = historyTopic?.trim() || undefined;
-  /** Maps server-side tool_call_id to the local toolCalls map key. */
-  const keyByServerId = new Map<string, string>();
+  const scope = sessionScopeKey(sessionId, normalizedHistoryTopic);
+  // Session-scoped maps survive across stream closures — necessary for
+  // spawn_only / background tasks whose tool_progress / tool_end / file
+  // events can arrive minutes after the originating stream ended (#649).
+  const toolCalls = getToolCallsMap(scope);
+  const keyByServerId = getKeyByServerIdMap(scope);
+  /** Per-stream snapshot of just the tool calls started in THIS stream.
+   *  Drives the legacy MessageStore assistant-bubble rendering (which
+   *  expects per-message tool calls, not per-session). The v2 ThreadStore
+   *  path uses the session-scoped `toolCalls` above instead. */
+  const streamLocalToolCallKeys = new Set<string>();
+  /** Maps tool name to the most recent toolCall key (for tool_end matching).
+   *  Per-stream by design: this is only used as a *fallback* for legacy
+   *  daemons that omit tool_call_id. Cross-stream tool name collisions
+   *  would mis-route, so we keep this scoped to the current stream. */
+  const activeToolByName = new Map<string, string>();
+
+  const streamToolCallsForLegacyView = (): ToolCallSnapshot[] =>
+    Array.from(streamLocalToolCallKeys)
+      .map((k) => toolCalls.get(k))
+      .filter((tc): tc is ToolCallSnapshot => tc !== undefined);
 
   // M8.10 PR #3: snapshot the flag once per stream so toggling mid-stream
   // doesn't tear data across two stores. The bridge mirrors data into the
@@ -275,11 +359,19 @@ function bindStreamToAssistant({
   // until PR #5 flips the default and removes it.
   const threadStoreEnabled = isThreadStoreEnabled();
 
-  /** Resolve the thread_id for an event. Falls back to `clientMessageId`
-   *  (the bound user message for this stream) when the server omitted the
-   *  field — that's the right answer 99% of the time because every send-
-   *  bound stream is rooted at exactly one user cmid. As a final fallback
-   *  use the cross-thread synthesizer in the store. */
+  /** Resolve the thread_id for an event.
+   *
+   * Trust `event.thread_id` whenever it is present — the daemon now stamps
+   * it on every emitted SSE event (octos PRs #664 wire + #673 persisted)
+   * so the client must NOT override it with the active-stream cmid.
+   * Sticky-stream cmid was the M8.10 thread-binding bug: a late
+   * background-task tool_progress arriving on a stream rooted at a
+   * different turn would adopt that newer turn's cmid and the result
+   * would render under the wrong user bubble.
+   *
+   * The clientMessageId fallback only fires when the server omitted the
+   * field (legacy daemons / theoretical edge case — should be never on
+   * the post-#664+#673 wire). The synthesizer is a last resort. */
   const resolveThreadIdForEvent = (
     payloadThreadId: string | undefined,
   ): string | null => {
@@ -334,7 +426,6 @@ function bindStreamToAssistant({
         break;
 
       case "tool_start": {
-        const key = `tc_${++toolCallCounter}`;
         // Prefer the server-issued tool_call_id (then the legacy
         // tool_id) so tool_progress and tool_end can route by id;
         // synthesize an id only when the backend omits both.
@@ -342,19 +433,28 @@ function bindStreamToAssistant({
           event.tool_call_id ||
           event.tool_id ||
           `tc_${event.tool}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        // Re-use the local key when we already saw this server id (e.g.
+        // a tool_start replay) so the entry doesn't duplicate. Otherwise
+        // derive a stable key from the server id so cross-stream lookups
+        // resolve consistently.
+        const key =
+          (event.tool_call_id && keyByServerId.get(event.tool_call_id)) ||
+          (event.tool_id && keyByServerId.get(event.tool_id)) ||
+          `tc_${tcId}_${++toolCallCounter}`;
         toolCalls.set(key, {
           id: tcId,
           name: event.tool,
           status: "running",
-          progress: [],
+          progress: toolCalls.get(key)?.progress ?? [],
         });
+        streamLocalToolCallKeys.add(key);
         activeToolByName.set(event.tool, key);
         // Map every server-issued id we know about to this local key so
         // tool_progress / tool_end events can route by either field.
         if (event.tool_call_id) keyByServerId.set(event.tool_call_id, key);
         if (event.tool_id) keyByServerId.set(event.tool_id, key);
         MessageStore.updateMessage(sessionId, assistantMsgId, {
-          toolCalls: Array.from(toolCalls.values()),
+          toolCalls: streamToolCallsForLegacyView(),
         }, historyTopic);
         if (threadStoreEnabled) {
           const tid = resolveThreadIdForEvent(event.thread_id);
@@ -371,14 +471,18 @@ function bindStreamToAssistant({
         const tc = key ? toolCalls.get(key) : undefined;
         if (tc) tc.status = event.success ? "complete" : "error";
         MessageStore.updateMessage(sessionId, assistantMsgId, {
-          toolCalls: Array.from(toolCalls.values()),
+          toolCalls: streamToolCallsForLegacyView(),
         }, historyTopic);
-        if (threadStoreEnabled && tc) {
+        if (threadStoreEnabled) {
           const tid = resolveThreadIdForEvent(event.thread_id);
-          if (tid) {
+          // Use the server-issued id first so a late tool_end on a
+          // different stream still finds the right entry by id, even
+          // if the local snapshot was already finalized away.
+          const targetTcId = event.tool_call_id ?? event.tool_id ?? tc?.id;
+          if (tid && targetTcId) {
             ThreadStore.setToolCallStatus(
               tid,
-              tc.id,
+              targetTcId,
               event.success ? "complete" : "error",
             );
           }
@@ -389,7 +493,10 @@ function bindStreamToAssistant({
       case "tool_progress": {
         // Anchor the entry to its tool call when the backend gave us
         // an id. Otherwise fall back to most-recent-by-name so older
-        // streams still surface something in the right bubble.
+        // streams still surface something in the right bubble. The
+        // session-scoped maps mean late tool_progress events for a
+        // background task whose tool_start fired in an earlier stream
+        // still resolve to the right local entry.
         const key =
           (event.tool_call_id && keyByServerId.get(event.tool_call_id)) ||
           (event.tool_id && keyByServerId.get(event.tool_id)) ||
@@ -398,12 +505,14 @@ function bindStreamToAssistant({
         if (tc) {
           tc.progress.push({ message: event.message, ts: Date.now() });
           MessageStore.updateMessage(sessionId, assistantMsgId, {
-            toolCalls: Array.from(toolCalls.values()),
-          });
+            toolCalls: streamToolCallsForLegacyView(),
+          }, historyTopic);
         }
         if (threadStoreEnabled) {
           const tid = resolveThreadIdForEvent(event.thread_id);
-          const targetTcId = tc?.id ?? event.tool_call_id ?? event.tool_id;
+          // Prefer the server-issued ids first so the entry matches the
+          // tool_start (which writes them into the thread store).
+          const targetTcId = event.tool_call_id ?? event.tool_id ?? tc?.id;
           if (tid && targetTcId) {
             ThreadStore.appendToolProgress(tid, targetTcId, event.message);
           }
@@ -625,7 +734,7 @@ function bindStreamToAssistant({
             sessionId,
             assistantMsgId,
             historyTopic,
-            Array.from(toolCalls.values()).map((toolCall) => toolCall.name),
+            streamToolCallsForLegacyView().map((toolCall) => toolCall.name),
           );
           window.dispatchEvent(
             new CustomEvent("crew:bg_tasks", {

@@ -143,6 +143,98 @@ function synthesizeThreadIdForOrphan(state: SessionState): string | null {
   return null;
 }
 
+/** Lookup a thread by id across every active session. Used by mutators
+ *  that take a thread_id without an explicit session — the cmid is
+ *  globally unique so this is unambiguous. */
+function findThreadById(
+  threadId: string,
+): { state: SessionState; thread: Thread } | null {
+  for (const state of sessionsByKey.values()) {
+    const thread = state.byId.get(threadId);
+    if (thread) return { state, thread };
+  }
+  return null;
+}
+
+/** Pick a "best guess" session to host a brand-new orphan thread bucket
+ *  created in response to a late background event whose user message we
+ *  never saw (page reload, multi-tab, etc.). Picks the session with the
+ *  most-recent thread; falls back to the only-known session. Returns null
+ *  when no sessions are tracked at all. */
+function pickHostSessionForOrphan(): SessionState | null {
+  let best: { state: SessionState; ts: number } | null = null;
+  for (const state of sessionsByKey.values()) {
+    if (state.threads.length === 0) {
+      if (!best) best = { state, ts: 0 };
+      continue;
+    }
+    const lastTs = state.threads[state.threads.length - 1].userMsg.timestamp;
+    if (!best || lastTs > best.ts) best = { state, ts: lastTs };
+  }
+  return best?.state ?? null;
+}
+
+/** Create an orphan thread bucket for a late event whose user message
+ *  was never added to the store (e.g. mid-stream page reload, late
+ *  background tool_progress that arrives after history hydration). The
+ *  user bubble shows as a placeholder so the conversation stays visible
+ *  and the late assistant content lands in the right place. */
+function ensureOrphanThread(threadId: string): {
+  state: SessionState;
+  thread: Thread;
+} | null {
+  const found = findThreadById(threadId);
+  if (found) return found;
+  const host = pickHostSessionForOrphan();
+  if (!host) return null;
+  const placeholderUser: ThreadMessage = {
+    id: nextId(),
+    role: "user",
+    text: "",
+    files: [],
+    toolCalls: [],
+    status: "complete",
+    timestamp: Date.now(),
+    clientMessageId: threadId,
+  };
+  const thread: Thread = {
+    id: threadId,
+    userMsg: placeholderUser,
+    responses: [],
+    pendingAssistant: null,
+  };
+  insertThreadInTimestampOrder(host, thread);
+  recordRuntimeCounter("octos_thread_orphan_created_total", {
+    surface: "thread_store",
+  });
+  return { state: host, thread };
+}
+
+/** Pick the assistant slot to mutate for a late event on this thread.
+ *  Prefer the in-flight `pendingAssistant`; fall back to the most recent
+ *  finalized assistant response so background tool_progress / file
+ *  events that arrive AFTER `done` still land on the right bubble.
+ *  Returns null if neither exists (caller may decide to create a new
+ *  pending). */
+function pickAssistantSlot(thread: Thread): ThreadMessage | null {
+  if (thread.pendingAssistant) return thread.pendingAssistant;
+  for (let i = thread.responses.length - 1; i >= 0; i -= 1) {
+    if (thread.responses[i].role === "assistant") return thread.responses[i];
+  }
+  return null;
+}
+
+/** Get-or-create the in-flight assistant slot for a thread. Used when
+ *  fresh assistant content (token / replace) arrives after the original
+ *  pending was finalized — we open a follow-on pending so the new text
+ *  has somewhere to render. */
+function ensurePendingAssistant(thread: Thread): ThreadMessage {
+  if (!thread.pendingAssistant) {
+    thread.pendingAssistant = makeAssistantPlaceholder(thread.id);
+  }
+  return thread.pendingAssistant;
+}
+
 function makeUserMessage(opts: {
   text: string;
   clientMessageId: string;
@@ -230,17 +322,50 @@ export function addUserMessage(
   });
   const pendingAssistant = makeAssistantPlaceholder(opts.clientMessageId);
 
-  // If a thread already exists with this id (e.g. the user already typed and
-  // it was hydrated from history), don't double-insert. Replace the pending
-  // assistant so the new turn has a fresh in-flight bubble.
+  // If a thread already exists with this id, adopt it instead of
+  // double-inserting. Two flavours:
+  //  • Orphan bucket — created earlier by a late background event whose
+  //    user message hadn't been added yet. Preserve its `responses` and
+  //    in-flight `pendingAssistant` (codex review #2: replacing them
+  //    with an empty placeholder would discard runtime progress).
+  //  • Hydrated history thread — `responses` is already populated and
+  //    `pendingAssistant` is null. Open a fresh pending for the new turn.
   const existing = state.byId.get(opts.clientMessageId);
   if (existing) {
     existing.userMsg = userMsg;
-    existing.pendingAssistant = pendingAssistant;
+    if (!existing.pendingAssistant) {
+      existing.pendingAssistant = pendingAssistant;
+    }
     notify();
     return {
       threadId: opts.clientMessageId,
-      pendingAssistantId: pendingAssistant.id,
+      pendingAssistantId: existing.pendingAssistant.id,
+    };
+  }
+
+  // Adopt any orphan thread bucket that was created earlier (a late
+  // background event arrived ahead of the user message) — even if it
+  // landed in a different session's state. Carry over its responses
+  // and in-flight pending so the runtime progress isn't dropped.
+  for (const otherState of sessionsByKey.values()) {
+    if (otherState === state) continue;
+    const orphan = otherState.byId.get(opts.clientMessageId);
+    if (!orphan) continue;
+    const adopted: Thread = {
+      id: opts.clientMessageId,
+      userMsg,
+      responses: orphan.responses,
+      pendingAssistant: orphan.pendingAssistant ?? pendingAssistant,
+    };
+    // Detach from the wrong session.
+    otherState.byId.delete(opts.clientMessageId);
+    const idx = otherState.threads.indexOf(orphan);
+    if (idx !== -1) otherState.threads.splice(idx, 1);
+    insertThreadInTimestampOrder(state, adopted);
+    notify();
+    return {
+      threadId: adopted.id,
+      pendingAssistantId: adopted.pendingAssistant!.id,
     };
   }
 
@@ -259,23 +384,21 @@ export function addUserMessage(
 }
 
 export function appendAssistantToken(threadId: string, token: string): void {
-  for (const state of sessionsByKey.values()) {
-    const thread = state.byId.get(threadId);
-    if (!thread || !thread.pendingAssistant) continue;
-    thread.pendingAssistant.text += token;
-    notify();
-    return;
-  }
+  const found = ensureOrphanThread(threadId);
+  if (!found) return;
+  // New text means a new turn — open a fresh pending slot if the old one
+  // was already finalized (background follow-up message).
+  const slot = ensurePendingAssistant(found.thread);
+  slot.text += token;
+  notify();
 }
 
 export function replaceAssistantText(threadId: string, text: string): void {
-  for (const state of sessionsByKey.values()) {
-    const thread = state.byId.get(threadId);
-    if (!thread || !thread.pendingAssistant) continue;
-    thread.pendingAssistant.text = text;
-    notify();
-    return;
-  }
+  const found = ensureOrphanThread(threadId);
+  if (!found) return;
+  const slot = ensurePendingAssistant(found.thread);
+  slot.text = text;
+  notify();
 }
 
 /**
@@ -292,44 +415,70 @@ export function addToolCall(
   toolCallId: string,
   name: string,
 ): void {
-  for (const state of sessionsByKey.values()) {
-    const thread = state.byId.get(threadId);
-    if (!thread || !thread.pendingAssistant) continue;
-
-    const tcs = thread.pendingAssistant.toolCalls;
-    // Already known by id → idempotent (re-issued tool_start, replay).
-    const byId = tcs.findIndex((tc) => tc.id === toolCallId);
-    if (byId !== -1) {
-      tcs[byId] = { ...tcs[byId], status: "running" };
-      notify();
-      return;
-    }
-
-    // Collapse retry: most recent call has same name → bump retryCount.
-    const last = tcs[tcs.length - 1];
-    if (last && last.name === name) {
-      tcs[tcs.length - 1] = {
-        ...last,
-        id: toolCallId,
+  const found = ensureOrphanThread(threadId);
+  if (!found) return;
+  // Prefer an existing assistant slot — the in-flight pending or the
+  // most recent finalized response. Late/replayed tool_start events
+  // arriving after finalize attach to the existing finalized response
+  // rather than spawning a phantom streaming bubble that never gets a
+  // `done` (codex review #1).
+  let slot = pickAssistantSlot(found.thread);
+  // Idempotency: if the tool_call_id is already attached to ANY
+  // assistant slot in this thread, just update its status. Avoids
+  // double-renders when a tool_start replays.
+  for (const candidate of [
+    found.thread.pendingAssistant,
+    ...[...found.thread.responses].reverse(),
+  ]) {
+    if (!candidate) continue;
+    const idx = candidate.toolCalls.findIndex((tc) => tc.id === toolCallId);
+    if (idx !== -1) {
+      candidate.toolCalls[idx] = {
+        ...candidate.toolCalls[idx],
         status: "running",
-        retryCount: last.retryCount + 1,
-        // Carry forward progress so the user keeps the running narration.
-        progress: last.progress,
       };
       notify();
       return;
     }
+  }
+  // No assistant ever existed on this thread (orphan with no responses
+  // at all) → bootstrap a pending so the tool has somewhere to render.
+  if (!slot) {
+    slot = ensurePendingAssistant(found.thread);
+  }
 
-    tcs.push({
-      id: toolCallId,
-      name,
-      status: "running",
-      progress: [],
-      retryCount: 0,
-    });
+  const tcs = slot.toolCalls;
+  // Already known by id → idempotent (re-issued tool_start, replay).
+  const byId = tcs.findIndex((tc) => tc.id === toolCallId);
+  if (byId !== -1) {
+    tcs[byId] = { ...tcs[byId], status: "running" };
     notify();
     return;
   }
+
+  // Collapse retry: most recent call has same name → bump retryCount.
+  const last = tcs[tcs.length - 1];
+  if (last && last.name === name) {
+    tcs[tcs.length - 1] = {
+      ...last,
+      id: toolCallId,
+      status: "running",
+      retryCount: last.retryCount + 1,
+      // Carry forward progress so the user keeps the running narration.
+      progress: last.progress,
+    };
+    notify();
+    return;
+  }
+
+  tcs.push({
+    id: toolCallId,
+    name,
+    status: "running",
+    progress: [],
+    retryCount: 0,
+  });
+  notify();
 }
 
 export function appendToolProgress(
@@ -337,28 +486,32 @@ export function appendToolProgress(
   toolCallId: string,
   message: string,
 ): void {
-  for (const state of sessionsByKey.values()) {
-    const thread = state.byId.get(threadId);
-    if (!thread || !thread.pendingAssistant) continue;
+  const found = ensureOrphanThread(threadId);
+  if (!found) return;
+  // Prefer the in-flight pending; fall back to the most recent finalized
+  // assistant so a late spawn_only tool_progress (#649) still updates
+  // the bubble even after `done` finalized the turn.
+  const slot = pickAssistantSlot(found.thread);
+  // No assistant slot at all yet (e.g. orphan thread, never had one) —
+  // open a new pending so the progress has somewhere to render.
+  const target = slot ?? ensurePendingAssistant(found.thread);
 
-    const tcs = thread.pendingAssistant.toolCalls;
-    let target = tcs.find((tc) => tc.id === toolCallId);
-    if (!target) {
-      // Late-arriving progress for a tool whose start we missed (e.g. SSE
-      // resumed mid-stream). Create a stub call so the progress isn't lost.
-      target = {
-        id: toolCallId,
-        name: "",
-        status: "running",
-        progress: [],
-        retryCount: 0,
-      };
-      tcs.push(target);
-    }
-    target.progress.push({ message, ts: Date.now() });
-    notify();
-    return;
+  const tcs = target.toolCalls;
+  let entry = tcs.find((tc) => tc.id === toolCallId);
+  if (!entry) {
+    // Late-arriving progress for a tool whose start we missed (e.g. SSE
+    // resumed mid-stream). Create a stub call so the progress isn't lost.
+    entry = {
+      id: toolCallId,
+      name: "",
+      status: "running",
+      progress: [],
+      retryCount: 0,
+    };
+    tcs.push(entry);
   }
+  entry.progress.push({ message, ts: Date.now() });
+  notify();
 }
 
 export function setToolCallStatus(
@@ -366,36 +519,32 @@ export function setToolCallStatus(
   toolCallId: string,
   status: ThreadToolCall["status"],
 ): void {
-  for (const state of sessionsByKey.values()) {
-    const thread = state.byId.get(threadId);
-    if (!thread || !thread.pendingAssistant) continue;
-
-    const tcs = thread.pendingAssistant.toolCalls;
-    const idx = tcs.findIndex((tc) => tc.id === toolCallId);
-    if (idx === -1) return;
-    tcs[idx] = { ...tcs[idx], status };
-    notify();
-    return;
-  }
+  const found = ensureOrphanThread(threadId);
+  if (!found) return;
+  const slot = pickAssistantSlot(found.thread);
+  if (!slot) return;
+  const tcs = slot.toolCalls;
+  const idx = tcs.findIndex((tc) => tc.id === toolCallId);
+  if (idx === -1) return;
+  tcs[idx] = { ...tcs[idx], status };
+  notify();
 }
 
-/** Append a delivered file to the current pending assistant in the thread. */
+/** Append a delivered file to the assistant slot in the thread (pending
+ *  in-flight, or the most recent finalized response if the turn has
+ *  already ended — the late-arrival case for spawn_only background
+ *  tasks). */
 export function appendAssistantFile(
   threadId: string,
   file: MessageFile,
 ): boolean {
-  for (const state of sessionsByKey.values()) {
-    const thread = state.byId.get(threadId);
-    if (!thread || !thread.pendingAssistant) continue;
-    if (thread.pendingAssistant.files.some((f) => f.path === file.path)) return true;
-    thread.pendingAssistant.files = [
-      ...thread.pendingAssistant.files,
-      file,
-    ];
-    notify();
-    return true;
-  }
-  return false;
+  const found = ensureOrphanThread(threadId);
+  if (!found) return false;
+  const slot = pickAssistantSlot(found.thread) ?? ensurePendingAssistant(found.thread);
+  if (slot.files.some((f) => f.path === file.path)) return true;
+  slot.files = [...slot.files, file];
+  notify();
+  return true;
 }
 
 export interface FinalizeAssistantOptions {
@@ -521,6 +670,17 @@ export function replayHistory(
   topic?: string,
 ): void {
   const key = storeKey(sessionId, topic);
+  // Carry over any in-flight pending assistants from the previous state
+  // so a replay triggered by retry-fetch (or by a tab regaining focus)
+  // doesn't wipe runtime progress that hasn't been persisted yet.
+  // Codex review #2.
+  const previous = sessionsByKey.get(key);
+  const carryPending = new Map<string, ThreadMessage>();
+  if (previous) {
+    for (const t of previous.threads) {
+      if (t.pendingAssistant) carryPending.set(t.id, t.pendingAssistant);
+    }
+  }
   const state = { threads: [] as Thread[], byId: new Map<string, Thread>() };
 
   const ctx = { currentThreadId: null as string | null };
@@ -540,7 +700,7 @@ export function replayHistory(
           id: threadId,
           userMsg,
           responses: [],
-          pendingAssistant: null,
+          pendingAssistant: carryPending.get(threadId) ?? null,
         };
         state.byId.set(threadId, thread);
         state.threads.push(thread);
@@ -566,13 +726,34 @@ export function replayHistory(
         id: threadId,
         userMsg: placeholderUser,
         responses: [],
-        pendingAssistant: null,
+        pendingAssistant: carryPending.get(threadId) ?? null,
       };
       state.byId.set(threadId, thread);
       state.threads.push(thread);
     }
 
     thread.responses.push(buildResponseFromApi(apiMessage));
+  }
+
+  // Re-attach any in-flight pendings that didn't surface in the API
+  // response yet (e.g. a fresh background turn whose user message lives
+  // only in the live store). They show up as user-rooted threads carried
+  // forward verbatim.
+  for (const [tid, pending] of carryPending) {
+    if (state.byId.has(tid)) continue;
+    if (previous) {
+      const prevThread = previous.byId.get(tid);
+      if (prevThread) {
+        const carried: Thread = {
+          id: tid,
+          userMsg: prevThread.userMsg,
+          responses: prevThread.responses,
+          pendingAssistant: pending,
+        };
+        state.byId.set(tid, carried);
+        state.threads.push(carried);
+      }
+    }
   }
 
   // Sort threads by user-msg timestamp; sort responses within each thread by
