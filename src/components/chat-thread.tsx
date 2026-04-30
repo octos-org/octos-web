@@ -563,8 +563,10 @@ function threadMessageVisibleText(message: ThreadMessage): string {
 
 const ThreadUserBubble = memo(function ThreadUserBubble({
   message,
+  threadId,
 }: {
   message: ThreadMessage;
+  threadId: string;
 }) {
   const visibleText = threadMessageVisibleText(message);
   return (
@@ -573,6 +575,7 @@ const ThreadUserBubble = memo(function ThreadUserBubble({
         {visibleText && (
           <div
             data-testid="user-message"
+            data-thread-id={threadId}
             className="message-card message-card-user rounded-[14px] rounded-br-[4px] px-4 py-2.5 text-sm leading-relaxed text-text"
           >
             {visibleText}
@@ -593,7 +596,13 @@ const ThreadUserBubble = memo(function ThreadUserBubble({
   );
 });
 
-function ToolCallBubble({ toolCall }: { toolCall: ThreadToolCall }) {
+function ToolCallBubble({
+  toolCall,
+  threadId,
+}: {
+  toolCall: ThreadToolCall;
+  threadId: string;
+}) {
   const retryBadge =
     toolCall.retryCount >= 1 ? (
       <span
@@ -609,6 +618,7 @@ function ToolCallBubble({ toolCall }: { toolCall: ThreadToolCall }) {
   return (
     <div
       data-testid="tool-call-bubble"
+      data-thread-id={threadId}
       data-tool-call-id={toolCall.id}
       data-tool-call-retry-count={toolCall.retryCount}
       className={`flex flex-col gap-1 rounded-[10px] px-2.5 py-1 text-[10px] font-mono ${
@@ -626,6 +636,7 @@ function ToolCallBubble({ toolCall }: { toolCall: ThreadToolCall }) {
       {toolCall.progress.length > 0 && (
         <ul
           data-testid="tool-call-runtime-timeline"
+          data-thread-id={threadId}
           className="m-0 mt-1 flex list-none flex-col gap-0.5 border-l border-current/20 pl-2"
         >
           {toolCall.progress.map((entry, idx) => (
@@ -646,16 +657,22 @@ const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
   message,
   isStreaming,
   showLiveIndicators,
+  threadId,
 }: {
   message: ThreadMessage;
   isStreaming: boolean;
   showLiveIndicators: boolean;
+  threadId: string;
 }) {
+  // Prefer the explicit thread.id passed by the renderer over the
+  // message's own backref so a finalized assistant whose origin tid
+  // got rewritten still tags its DOM with the canonical thread bucket.
+  const tid = threadId || message.responseToClientMessageId || "";
   return (
     <div className="flex px-4 py-3">
       <div
         data-testid="assistant-message"
-        data-thread-id={message.responseToClientMessageId ?? ""}
+        data-thread-id={tid}
         className="message-card message-card-assistant animate-shell-rise max-w-[88%] rounded-[14px] rounded-bl-[4px] px-4 py-3 text-sm leading-relaxed text-text"
       >
         {message.text ? (
@@ -684,7 +701,7 @@ const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
         {message.toolCalls.length > 0 && (
           <div className="mt-2 flex flex-col gap-1.5">
             {message.toolCalls.map((tc) => (
-              <ToolCallBubble key={tc.id} toolCall={tc} />
+              <ToolCallBubble key={tc.id} toolCall={tc} threadId={tid} />
             ))}
           </div>
         )}
@@ -765,13 +782,14 @@ function ThreadView({
   );
   return (
     <div data-testid="chat-thread-bundle" data-thread-id={thread.id}>
-      <ThreadUserBubble message={thread.userMsg} />
+      <ThreadUserBubble message={thread.userMsg} threadId={thread.id} />
       {visibleResponses.map((response) => (
         <ThreadAssistantBubble
           key={response.id}
           message={response}
           isStreaming={false}
           showLiveIndicators={false}
+          threadId={thread.id}
         />
       ))}
       {thread.pendingAssistant && (
@@ -780,6 +798,7 @@ function ThreadView({
           message={thread.pendingAssistant}
           isStreaming={thread.pendingAssistant.status === "streaming"}
           showLiveIndicators={thread.pendingAssistant.status === "streaming"}
+          threadId={thread.id}
         />
       )}
     </div>
