@@ -464,4 +464,116 @@ describe("thread-store", () => {
     expect(threads[1].responses).toHaveLength(1);
     expect(threads[1].responses[0].text).toBe("old A2");
   });
+
+  // ---------------------------------------------------------------------------
+  // overflow-stress regression (mini1, post-#680): phantom assistant bubble
+  //
+  // Production failure mode: under tight concurrent windows, the daemon emits
+  // a `token` or `replace` event tagged with thread_id=cmid-X, but cmid-X has
+  // already been finalized (its `done` arrived earlier). Pre-fix, the thread
+  // store called `ensurePendingAssistant` unconditionally — creating a SECOND
+  // assistant slot for an already-finalized thread. The DOM then rendered an
+  // extra bubble (`filled=8/5` on a 5-message scenario) that never paired
+  // with any user prompt.
+  //
+  // The right behaviour: late streaming chunks for an already-finalized
+  // thread are cross-talk artifacts. Drop them and bump a counter rather
+  // than silently spawn a phantom bubble.
+  // ---------------------------------------------------------------------------
+
+  it("appendAssistantToken_does_not_spawn_phantom_after_finalize", () => {
+    makeUser("Q1", "cmid-1");
+    ThreadStore.appendAssistantToken("cmid-1", "Done.");
+    ThreadStore.finalizeAssistant("cmid-1", { committedSeq: 1 });
+
+    // Late cross-talk token arrives for the already-finalized thread.
+    ThreadStore.appendAssistantToken("cmid-1", " stray late chunk");
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(
+      thread.pendingAssistant,
+      "late token must NOT spawn a phantom pending — that bubble would render as an extra assistant in the DOM",
+    ).toBeNull();
+    expect(thread.responses).toHaveLength(1);
+    expect(thread.responses[0].text).toBe("Done.");
+  });
+
+  it("replaceAssistantText_does_not_spawn_phantom_after_finalize", () => {
+    makeUser("Q1", "cmid-1");
+    ThreadStore.replaceAssistantText("cmid-1", "Final answer.");
+    ThreadStore.finalizeAssistant("cmid-1", { committedSeq: 1 });
+
+    // Late cross-talk replace arrives for the already-finalized thread.
+    ThreadStore.replaceAssistantText("cmid-1", "Stale replace from another stream");
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(
+      thread.pendingAssistant,
+      "late replace must NOT spawn a phantom pending",
+    ).toBeNull();
+    expect(thread.responses).toHaveLength(1);
+    expect(thread.responses[0].text).toBe("Final answer.");
+  });
+
+  it("late_tool_progress_after_finalize_attaches_to_finalized_response_not_phantom", () => {
+    // spawn_only background flow: tool_start fires during the stream, then
+    // `done` finalizes. tool_progress / file events keep arriving for the
+    // background task minutes later. They must update the finalized
+    // response's tool call entry — never spawn a fresh pending bubble.
+    makeUser("run deep_research", "cmid-1");
+    ThreadStore.addToolCall("cmid-1", "tc-research-1", "deep_research");
+    ThreadStore.replaceAssistantText("cmid-1", "Researching...");
+    ThreadStore.finalizeAssistant("cmid-1", { committedSeq: 5 });
+
+    // Late progress for the spawn_only tool — must attach to the existing
+    // finalized response, not create a phantom pending bubble.
+    ThreadStore.appendToolProgress(
+      "cmid-1",
+      "tc-research-1",
+      "[info] late progress chunk",
+    );
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(
+      thread.pendingAssistant,
+      "late tool_progress must update the finalized response's tool call, not phantom-spawn",
+    ).toBeNull();
+    expect(thread.responses).toHaveLength(1);
+    const tcs = thread.responses[0].toolCalls;
+    expect(tcs).toHaveLength(1);
+    expect(tcs[0].progress.map((p) => p.message)).toContain(
+      "[info] late progress chunk",
+    );
+  });
+
+  it("five_concurrent_threads_do_not_spawn_phantom_bubbles_under_late_cross_talk", () => {
+    // The exact production scenario: 5 user messages spawn 5 threads;
+    // they finalize independently; then late cross-talk events fire.
+    // The DOM must only show 5 assistant bubbles — never 6+.
+    const cmids = ["cm-1", "cm-2", "cm-3", "cm-4", "cm-5"];
+    for (const cmid of cmids) {
+      makeUser(`Q-${cmid}`, cmid);
+      ThreadStore.replaceAssistantText(cmid, `A-${cmid}`);
+      ThreadStore.finalizeAssistant(cmid, { committedSeq: 1 });
+    }
+
+    // Cross-talk: a stray token tagged with cmid-2 arrives long after
+    // cmid-2 finalized. Pre-fix, this would phantom-spawn an extra
+    // assistant bubble inside cmid-2's thread.
+    ThreadStore.appendAssistantToken("cm-2", " stray late chunk");
+    ThreadStore.replaceAssistantText("cm-4", "Stale replace text");
+
+    const threads = ThreadStore.getThreads(SESSION);
+    // Each thread should have exactly one finalized response and zero
+    // pending assistants — total assistant bubbles in DOM == 5.
+    let totalAssistants = 0;
+    for (const t of threads) {
+      expect(t.pendingAssistant).toBeNull();
+      totalAssistants += t.responses.filter((r) => r.role === "assistant").length;
+    }
+    expect(
+      totalAssistants,
+      "5 user messages must yield exactly 5 assistant bubbles, not 6+ phantom bubbles from late cross-talk",
+    ).toBe(5);
+  });
 });

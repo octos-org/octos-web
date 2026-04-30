@@ -383,11 +383,32 @@ export function addUserMessage(
   };
 }
 
+/** Late streaming chunks (`token` / `replace`) for an already-finalized
+ *  thread are cross-talk artifacts from concurrent same-chat streams.
+ *  Pre-fix, `ensurePendingAssistant` unconditionally created a fresh
+ *  pending slot for them — which the renderer painted as a phantom
+ *  assistant bubble (`filled=8/5` on a 5-message scenario, observed on
+ *  mini1 after #680). Drop the event and bump a counter instead.
+ *
+ *  A thread is "finalized" when it has at least one assistant response
+ *  AND no in-flight pending. New turns on the same chat get their OWN
+ *  thread (rooted at a fresh client_message_id) — there is no legitimate
+ *  case where streaming text should reopen a finalized thread bucket. */
+function isFinalizedAndIdle(thread: Thread): boolean {
+  if (thread.pendingAssistant) return false;
+  return thread.responses.some((r) => r.role === "assistant");
+}
+
 export function appendAssistantToken(threadId: string, token: string): void {
   const found = ensureOrphanThread(threadId);
   if (!found) return;
-  // New text means a new turn — open a fresh pending slot if the old one
-  // was already finalized (background follow-up message).
+  if (isFinalizedAndIdle(found.thread)) {
+    recordRuntimeCounter("octos_thread_phantom_chunk_dropped_total", {
+      surface: "thread_store",
+      kind: "token",
+    });
+    return;
+  }
   const slot = ensurePendingAssistant(found.thread);
   slot.text += token;
   notify();
@@ -396,6 +417,13 @@ export function appendAssistantToken(threadId: string, token: string): void {
 export function replaceAssistantText(threadId: string, text: string): void {
   const found = ensureOrphanThread(threadId);
   if (!found) return;
+  if (isFinalizedAndIdle(found.thread)) {
+    recordRuntimeCounter("octos_thread_phantom_chunk_dropped_total", {
+      surface: "thread_store",
+      kind: "replace",
+    });
+    return;
+  }
   const slot = ensurePendingAssistant(found.thread);
   slot.text = text;
   notify();

@@ -53,6 +53,16 @@ function isThreadStoreEnabled(): boolean {
 // are tiny strings).
 // ---------------------------------------------------------------------------
 
+/** Per-session map of per-thread streaming-text accumulators. Keyed by
+ *  the same `sessionScopeKey` as the tool maps so a thread's accumulated
+ *  text survives bridge closure churn (e.g. tab refocus, page reload,
+ *  retry-fetch creating a fresh `bindStreamToAssistant`). Without this
+ *  durability, a `replace` on connection 1 would set `Hello`, the
+ *  bridge would tear down, and a `token` ` there` arriving on connection
+ *  2 would overwrite ThreadStore with just ` there` — the codex 2nd-
+ *  opinion split-connection regression. */
+const sessionRawTextByThread = new Map<string, Map<string, string>>();
+
 /** Per-session map: server-issued tool_call_id (or tool_id) → local key. */
 const sessionKeyByServerId = new Map<string, Map<string, string>>();
 /** Per-session map: local key → tool call snapshot (id, name, status, progress). */
@@ -87,6 +97,15 @@ function getToolCallsMap(scope: string): Map<string, ToolCallSnapshot> {
   return m;
 }
 
+function getRawTextByThreadMap(scope: string): Map<string, string> {
+  let m = sessionRawTextByThread.get(scope);
+  if (!m) {
+    m = new Map();
+    sessionRawTextByThread.set(scope, m);
+  }
+  return m;
+}
+
 /** Drop the session-scoped tool-call maps. Call when a session is closed
  *  / reset to free memory. Safe to omit — the maps are tiny. */
 export function clearSessionToolMaps(sessionId: string, topic?: string): void {
@@ -95,6 +114,7 @@ export function clearSessionToolMaps(sessionId: string, topic?: string): void {
     const scope = sessionScopeKey(sessionId, t);
     sessionKeyByServerId.delete(scope);
     sessionToolCalls.delete(scope);
+    sessionRawTextByThread.delete(scope);
     return;
   }
   // No topic → drop the bare session and any per-topic descendants.
@@ -106,6 +126,11 @@ export function clearSessionToolMaps(sessionId: string, topic?: string): void {
   for (const k of [...sessionToolCalls.keys()]) {
     if (k === sessionId || k.startsWith(`${sessionId}#`)) {
       sessionToolCalls.delete(k);
+    }
+  }
+  for (const k of [...sessionRawTextByThread.keys()]) {
+    if (k === sessionId || k.startsWith(`${sessionId}#`)) {
+      sessionRawTextByThread.delete(k);
     }
   }
 }
@@ -138,6 +163,62 @@ function stripThink(text: string): string {
 
 function clean(text: string): string {
   return stripToolProgress(stripThink(text));
+}
+
+/**
+ * Per-thread streaming-text accumulator.
+ *
+ * Called from the SSE bridge for each `token` / `replace` event the
+ * subscriber observes. Returns the FULL post-event text for that
+ * thread so the caller can route it to ThreadStore.replaceAssistantText
+ * with the right (thread_id, text) pair.
+ *
+ * Pre-fix the bridge accumulated into a single `rawText` variable per
+ * stream closure — when two concurrent turns on the same chat
+ * interleaved, the wrong turn's rawText got passed to ThreadStore. The
+ * overflow-stress mini1 (#680 follow-up) regression. Codex review caught
+ * this in 2nd-opinion.
+ *
+ * Exported for unit testing.
+ */
+export function applyPerThreadTextEvent(
+  acc: Map<string, string>,
+  threadId: string,
+  kind: "token" | "replace",
+  text: string,
+): string {
+  if (kind === "replace") {
+    acc.set(threadId, text);
+    return text;
+  }
+  // kind === "token"
+  const next = (acc.get(threadId) ?? "") + text;
+  acc.set(threadId, next);
+  return next;
+}
+
+/**
+ * Test-only accessor for the session-scoped per-thread streaming-text
+ * accumulator map. Exposed so the regression test for split-connection
+ * persistence (codex 2nd-opinion follow-up) can drive the scope key
+ * directly without reaching through `bindStreamToAssistant` and the
+ * full SSE plumbing.
+ */
+export function __getRawTextByThreadMapForTest(
+  sessionId: string,
+  topic?: string,
+): Map<string, string> {
+  return getRawTextByThreadMap(sessionScopeKey(sessionId, topic));
+}
+
+/**
+ * Test-only reset for the session-scoped maps. Mirrors
+ * `clearSessionToolMaps` plus the per-thread raw text map.
+ */
+export function __resetSessionStateForTest(): void {
+  sessionKeyByServerId.clear();
+  sessionToolCalls.clear();
+  sessionRawTextByThread.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +408,23 @@ function bindStreamToAssistant({
   sentAt: number;
   historyTopic?: string;
 }): void {
+  // Per-thread streaming-text accumulator. Pre-fix this was a single
+  // `rawText` shared across every event the subscriber saw, so when two
+  // concurrent turns on the same chat interleaved their `token` /
+  // `replace` events the wrong turn's text bled into the right turn's
+  // bubble (overflow-stress mini1 #680 follow-up; codex review).
+  // The MessageStore (legacy flat-list) path still uses the legacy
+  // `assistantMsgId` key, so we keep one accumulator for it (the
+  // dominant-turn `rawText`) and one per-thread map for ThreadStore.
+  // The legacy path is gated behind the v2 flag — when v2 is on, the
+  // ThreadStore values are authoritative. When v2 is off, only `rawText`
+  // is consulted (concurrent same-chat overflow is a v2-only invariant).
+  // Codex 2nd-opinion follow-up: the per-thread accumulator must be
+  // session-scoped (NOT per-bridge-closure). A turn whose `replace`
+  // arrives on connection 1 and `token` deltas on connection 2 (page
+  // reload, retry-fetch, multi-tab) needs the prior text to persist —
+  // a fresh closure-local Map would lose the prefix and overwrite the
+  // thread's text with just the suffix.
   let rawText = "";
   let toolCallCounter = 0;
   const pendingStreamError = { current: null as string | null };
@@ -337,6 +435,11 @@ function bindStreamToAssistant({
   // events can arrive minutes after the originating stream ended (#649).
   const toolCalls = getToolCallsMap(scope);
   const keyByServerId = getKeyByServerIdMap(scope);
+  /** Session-scoped per-thread streaming-text accumulator. Survives
+   *  bridge closure churn (page reload, retry-fetch, tab refocus) so
+   *  a turn whose `replace` arrived on a previous connection still
+   *  has its prefix when a `token` delta arrives on a new one. */
+  const rawTextByThread = getRawTextByThreadMap(scope);
   /** Per-stream snapshot of just the tool calls started in THIS stream.
    *  Drives the legacy MessageStore assistant-bubble rendering (which
    *  expects per-message tool calls, not per-session). The v2 ThreadStore
@@ -403,27 +506,57 @@ function bindStreamToAssistant({
     }
 
     switch (event.type) {
-      case "token":
-        rawText += event.text;
-        MessageStore.updateMessage(sessionId, assistantMsgId, {
-          text: clean(rawText),
-        }, historyTopic);
-        if (threadStoreEnabled) {
-          const tid = resolveThreadIdForEvent(event.thread_id);
-          if (tid) ThreadStore.replaceAssistantText(tid, clean(rawText));
+      case "token": {
+        // Resolve the event's thread_id BEFORE mutating the legacy
+        // single `rawText`. Per-thread accumulation via the helper:
+        // only the matching thread's text advances, so concurrent
+        // same-chat turns can never bleed text across each other.
+        const tid = resolveThreadIdForEvent(event.thread_id);
+        if (tid) {
+          const next = applyPerThreadTextEvent(
+            rawTextByThread,
+            tid,
+            "token",
+            event.text,
+          );
+          if (threadStoreEnabled) {
+            ThreadStore.replaceAssistantText(tid, clean(next));
+          }
+        }
+        // Legacy MessageStore path: only advance the per-stream rawText
+        // when this event matches THIS bridge's bound clientMessageId.
+        // Otherwise we would splice another turn's text into this
+        // bubble (the overflow-stress content-mispair signature).
+        if (!clientMessageId || tid === clientMessageId) {
+          rawText += event.text;
+          MessageStore.updateMessage(sessionId, assistantMsgId, {
+            text: clean(rawText),
+          }, historyTopic);
         }
         break;
+      }
 
-      case "replace":
-        rawText = event.text;
-        MessageStore.updateMessage(sessionId, assistantMsgId, {
-          text: clean(rawText),
-        }, historyTopic);
-        if (threadStoreEnabled) {
-          const tid = resolveThreadIdForEvent(event.thread_id);
-          if (tid) ThreadStore.replaceAssistantText(tid, clean(rawText));
+      case "replace": {
+        const tid = resolveThreadIdForEvent(event.thread_id);
+        if (tid) {
+          const next = applyPerThreadTextEvent(
+            rawTextByThread,
+            tid,
+            "replace",
+            event.text,
+          );
+          if (threadStoreEnabled) {
+            ThreadStore.replaceAssistantText(tid, clean(next));
+          }
+        }
+        if (!clientMessageId || tid === clientMessageId) {
+          rawText = event.text;
+          MessageStore.updateMessage(sessionId, assistantMsgId, {
+            text: clean(rawText),
+          }, historyTopic);
         }
         break;
+      }
 
       case "tool_start": {
         // Prefer the server-issued tool_call_id (then the legacy
@@ -657,21 +790,41 @@ function bindStreamToAssistant({
       }
 
       case "done": {
-        if (event.content) {
+        const tid = resolveThreadIdForEvent(event.thread_id);
+        // `ownsLegacy` gates every legacy MessageStore side effect of
+        // `done` — including the bubble status flip, meta annotation,
+        // background-anchor registration, and the `onComplete` callback.
+        // Without this gate, a `done` for sibling thread A would still
+        // mark THIS bridge's bubble (bound to clientMessageId B) as
+        // complete and fire B's onComplete, even though B's own done
+        // hasn't arrived yet. Codex 2nd-opinion review.
+        const ownsLegacy = !clientMessageId || tid === clientMessageId;
+
+        // Use the per-thread accumulator for ThreadStore — never the
+        // legacy chat-wide `rawText` which may hold a sibling turn's
+        // content. The chat-wide `rawText` continues to drive the
+        // legacy MessageStore path, but is only advanced for matching
+        // events (token/replace handlers above).
+        const threadRaw =
+          (tid && rawTextByThread.get(tid)) ||
+          (event.content ?? (ownsLegacy ? rawText : ""));
+        const finalThreadText = clean(threadRaw);
+        if (event.content && ownsLegacy) {
           rawText = event.content;
         }
-        const finalText = clean(rawText);
-        MessageStore.updateMessage(sessionId, assistantMsgId, {
-          text: finalText,
-          status: "complete",
-        }, historyTopic);
+        const finalLegacyText = clean(rawText);
+        if (ownsLegacy) {
+          MessageStore.updateMessage(sessionId, assistantMsgId, {
+            text: finalLegacyText,
+            status: "complete",
+          }, historyTopic);
+        }
 
         if (threadStoreEnabled) {
-          const tid = resolveThreadIdForEvent(event.thread_id);
           if (tid) {
             // Replace text first so the finalized message holds the cleaned
             // final text rather than the raw token stream.
-            ThreadStore.replaceAssistantText(tid, finalText);
+            ThreadStore.replaceAssistantText(tid, finalThreadText);
             ThreadStore.finalizeAssistant(tid, {
               committedSeq: event.committed_seq,
               meta:
@@ -684,10 +837,16 @@ function bindStreamToAssistant({
                     }
                   : undefined,
             });
+            // Drop the per-thread accumulator now that this thread has
+            // finalized — keeps the session map bounded and prevents a
+            // stale prefix from contaminating any future re-bind on the
+            // same cmid (which shouldn't happen by design, but guards
+            // against double-finalize replays).
+            rawTextByThread.delete(tid);
           }
         }
 
-        if (event.model || event.tokens_in || event.tokens_out) {
+        if (ownsLegacy && (event.model || event.tokens_in || event.tokens_out)) {
           MessageStore.setMessageMeta(sessionId, assistantMsgId, {
             model: event.model || "",
             tokens_in: event.tokens_in || 0,
@@ -710,10 +869,15 @@ function bindStreamToAssistant({
           );
         }
 
-        // Detect queue/adaptive mode changes from command responses
-        detectModeUpdate(finalText, sessionId);
+        // Detect queue/adaptive mode changes from command responses.
+        // Use the legacy text — the global mode-update detector is keyed
+        // off whichever turn's done event fires; it's not thread-scoped.
+        if (ownsLegacy) {
+          detectModeUpdate(finalLegacyText, sessionId);
+        }
 
-        // Clear thinking state
+        // Clear thinking state — global per-session, fires on every done
+        // (any turn's completion ends the "thinking" indicator).
         window.dispatchEvent(
           new CustomEvent("crew:thinking", {
             detail: {
@@ -729,7 +893,7 @@ function bindStreamToAssistant({
         // session runtime's incremental sync loop (appendHistoryMessages).
         // We no longer call replaceHistory here — it races with the sync loop
         // and can wipe optimistic messages or create duplicates.
-        if (event.has_bg_tasks) {
+        if (ownsLegacy && event.has_bg_tasks) {
           MessageStore.registerBackgroundAnchor(
             sessionId,
             assistantMsgId,
@@ -743,7 +907,9 @@ function bindStreamToAssistant({
           );
         }
 
-        onComplete?.();
+        if (ownsLegacy) {
+          onComplete?.();
+        }
         break;
       }
 
