@@ -288,7 +288,18 @@ function upsertToolCall(
   const existingById = message.toolCalls.findIndex((tc) => tc.id === toolCall.id);
   if (existingById !== -1) {
     const nextToolCalls = [...message.toolCalls];
-    nextToolCalls[existingById] = { ...nextToolCalls[existingById], ...toolCall };
+    const existing = nextToolCalls[existingById];
+    // Preserve the accumulated runtime progress timeline when the
+    // upsert delivers an empty `progress` (e.g. `bindBackgroundTask`
+    // rebinding a status update). Wiping it would erase the in-bubble
+    // timeline every time a `task_status` event lands.
+    const mergedProgress =
+      toolCall.progress.length > 0 ? toolCall.progress : existing.progress;
+    nextToolCalls[existingById] = {
+      ...existing,
+      ...toolCall,
+      progress: mergedProgress,
+    };
     return { ...message, toolCalls: nextToolCalls };
   }
 
@@ -921,6 +932,79 @@ export function bindBackgroundTask(
   messagesByKey.set(key, [...list]);
   notify();
   return list[targetIndex].id;
+}
+
+/** Maximum runtime progress entries kept per tool call. Old entries are
+ *  evicted FIFO so a long-running pipeline that emits hundreds of
+ *  `tool_progress` events (or replayed `task_status` mirrors) cannot
+ *  blow up the per-bubble timeline render cost or grow memory without
+ *  bound. */
+const MAX_TOOL_PROGRESS_ENTRIES = 100;
+
+/**
+ * Append a runtime progress entry to the tool call identified by
+ * `toolCallId` inside the assistant message that owns it. Returns true
+ * when the routing target was found and the entry was either appended
+ * or skipped because it was an exact-duplicate of the previous line.
+ * Returns false when no matching tool call could be located (e.g. the
+ * call is owned by a different session, or has not yet been registered
+ * in this store).
+ *
+ * Used by the task-watcher pathway: when the daemon emits a
+ * `task_status` SSE event for a backgrounded subagent (e.g.
+ * deep_research / run_pipeline), the SSE chat stream does NOT relay the
+ * subagent's per-step `tool_progress` events back to the parent chat
+ * stream. Instead, the per-session `events/stream` carries `task_status`
+ * transitions. This helper lets the runtime provider synthesize a
+ * progress line ("running", "completed", "failed: …") from each
+ * task_status transition so the per-tool-call runtime timeline still
+ * renders inside the bubble owning that tool_call_id.
+ */
+export function appendToolProgressByCallId(
+  sessionId: string,
+  toolCallId: string | undefined,
+  message: string,
+  topic?: string,
+): boolean {
+  if (!toolCallId || !message) return false;
+
+  const key = storeKey(sessionId, topic);
+  const list = messagesByKey.get(key);
+  if (!list) return false;
+
+  const mappedMessageId = toolCallMessageByKey.get(key)?.get(toolCallId);
+  let targetIndex = mappedMessageId
+    ? findMessageIndexById(list, mappedMessageId)
+    : -1;
+  if (targetIndex === -1) {
+    targetIndex = findMessageIndexByToolCallId(list, toolCallId);
+  }
+  if (targetIndex === -1) return false;
+
+  const target = list[targetIndex];
+  const tcIdx = target.toolCalls.findIndex((tc) => tc.id === toolCallId);
+  if (tcIdx === -1) return false;
+
+  const existing = target.toolCalls[tcIdx];
+  // Idempotency guard: skip exact-duplicate consecutive entries so a
+  // task_status replay (e.g. on stream reconnect) doesn't double-render
+  // the same line in the timeline.
+  const lastEntry = existing.progress[existing.progress.length - 1];
+  if (lastEntry && lastEntry.message === message) return true;
+
+  const appended = [...existing.progress, { message, ts: Date.now() }];
+  // Cap the timeline so a long-running pipeline cannot grow the array
+  // without bound; evict oldest entries first.
+  const capped =
+    appended.length > MAX_TOOL_PROGRESS_ENTRIES
+      ? appended.slice(appended.length - MAX_TOOL_PROGRESS_ENTRIES)
+      : appended;
+  const nextToolCalls = [...target.toolCalls];
+  nextToolCalls[tcIdx] = { ...existing, progress: capped };
+  list[targetIndex] = { ...target, toolCalls: nextToolCalls };
+  messagesByKey.set(key, [...list]);
+  notify();
+  return true;
 }
 
 export function appendFileByToolCallId(
