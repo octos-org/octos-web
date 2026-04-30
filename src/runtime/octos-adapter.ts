@@ -134,8 +134,16 @@ export function createOctosAdapter(
 
               case "tool_start": {
                 const key = `tc_${++toolCallCounter}`;
+                // Use the server-issued tool_call_id verbatim — never
+                // synthesize. See sse-bridge.ts tool_start for rationale.
+                const tcId =
+                  (event as { tool_call_id?: string; tool_id?: string })
+                    .tool_call_id ||
+                  (event as { tool_call_id?: string; tool_id?: string })
+                    .tool_id ||
+                  "";
                 toolCalls.set(key, {
-                  toolCallId: `tc_${event.tool}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                  toolCallId: tcId,
                   toolName: event.tool,
                   status: "running",
                 });

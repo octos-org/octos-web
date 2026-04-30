@@ -285,26 +285,38 @@ function upsertToolCall(
   message: Message,
   toolCall: ToolCallInfo,
 ): Message {
-  const existingById = message.toolCalls.findIndex((tc) => tc.id === toolCall.id);
-  if (existingById !== -1) {
-    const nextToolCalls = [...message.toolCalls];
-    const existing = nextToolCalls[existingById];
-    // Preserve the accumulated runtime progress timeline when the
-    // upsert delivers an empty `progress` (e.g. `bindBackgroundTask`
-    // rebinding a status update). Wiping it would erase the in-bubble
-    // timeline every time a `task_status` event lands.
-    const mergedProgress =
-      toolCall.progress.length > 0 ? toolCall.progress : existing.progress;
-    nextToolCalls[existingById] = {
-      ...existing,
-      ...toolCall,
-      progress: mergedProgress,
-    };
-    return { ...message, toolCalls: nextToolCalls };
+  // Match by id only when the incoming id is non-empty. Empty ids exist now
+  // because we no longer synthesize a fake `tc_<tool>_<ts>_<rand>` for
+  // server events that omit `tool_call_id` (PR #682 follow-up). Without
+  // this guard a `findIndex(tc => tc.id === "")` call would collapse two
+  // unrelated empty-id entries.
+  if (toolCall.id) {
+    const existingById = message.toolCalls.findIndex((tc) => tc.id === toolCall.id);
+    if (existingById !== -1) {
+      const nextToolCalls = [...message.toolCalls];
+      const existing = nextToolCalls[existingById];
+      // Preserve the accumulated runtime progress timeline when the
+      // upsert delivers an empty `progress` (e.g. `bindBackgroundTask`
+      // rebinding a status update). Wiping it would erase the in-bubble
+      // timeline every time a `task_status` event lands.
+      const mergedProgress =
+        toolCall.progress.length > 0 ? toolCall.progress : existing.progress;
+      nextToolCalls[existingById] = {
+        ...existing,
+        ...toolCall,
+        progress: mergedProgress,
+      };
+      return { ...message, toolCalls: nextToolCalls };
+    }
   }
 
+  // Replace an existing local placeholder by tool name. Treat both
+  // legacy `tc_<...>`-prefixed locals AND empty-id locals (the new shape
+  // for server events without `tool_call_id`) as placeholders eligible
+  // for replacement when the authoritative `task_status` upsert arrives.
   const existingLocalByName = message.toolCalls.findIndex(
-    (tc) => tc.name === toolCall.name && tc.id.startsWith("tc_"),
+    (tc) =>
+      tc.name === toolCall.name && (!tc.id || tc.id.startsWith("tc_")),
   );
   if (existingLocalByName !== -1) {
     const nextToolCalls = [...message.toolCalls];

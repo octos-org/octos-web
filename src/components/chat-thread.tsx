@@ -145,11 +145,18 @@ const AssistantBubble = memo(function AssistantBubble({
         {/* Tool calls */}
         {message.toolCalls.length > 0 && (
           <div className="mt-2 flex flex-col gap-1.5">
-            {message.toolCalls.map((tc) => (
+            {message.toolCalls.map((tc, idx) => (
               <div
-                key={tc.id}
+                // Fall back to index when the server omitted a
+                // tool_call_id so React still has a stable per-render
+                // key without us minting a synthetic id.
+                key={tc.id || `idx-${idx}`}
                 data-testid="tool-call-bubble"
-                data-tool-call-id={tc.id}
+                // Render only when the server actually issued a
+                // tool_call_id. Falling back to a synthetic shape would
+                // break external correlation (e.g. specs comparing the
+                // bubble's id to /api/sessions/:id/tasks[i].tool_call_id).
+                data-tool-call-id={tc.id || undefined}
                 className={`flex flex-col gap-1 rounded-[10px] px-2.5 py-1 text-[10px] font-mono ${
                   tc.status === "running"
                     ? "border-accent/20 bg-accent/14 text-accent animate-pulse"
@@ -619,7 +626,11 @@ function ToolCallBubble({
     <div
       data-testid="tool-call-bubble"
       data-thread-id={threadId}
-      data-tool-call-id={toolCall.id}
+      // Render only when the server actually issued a tool_call_id.
+      // Falling back to a synthetic shape would break external
+      // correlation (e.g. specs comparing the bubble's id to
+      // /api/sessions/:id/tasks[i].tool_call_id).
+      data-tool-call-id={toolCall.id || undefined}
       data-tool-call-retry-count={toolCall.retryCount}
       className={`flex flex-col gap-1 rounded-[10px] px-2.5 py-1 text-[10px] font-mono ${
         toolCall.status === "running"
@@ -700,8 +711,11 @@ const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
         {/* Tool calls (retry-collapsed) */}
         {message.toolCalls.length > 0 && (
           <div className="mt-2 flex flex-col gap-1.5">
-            {message.toolCalls.map((tc) => (
-              <ToolCallBubble key={tc.id} toolCall={tc} threadId={tid} />
+            {message.toolCalls.map((tc, idx) => (
+              // Fall back to index when the server omitted a
+              // tool_call_id so React still has a stable per-render
+              // key without us minting a synthetic id.
+              <ToolCallBubble key={tc.id || `idx-${idx}`} toolCall={tc} threadId={tid} />
             ))}
           </div>
         )}
