@@ -13,12 +13,81 @@ import { resumeSessionStream } from "./sse-bridge";
 import * as FileStore from "@/store/file-store";
 import * as MessageStore from "@/store/message-store";
 import * as TaskStore from "@/store/task-store";
+import * as ThreadStore from "@/store/thread-store";
 import { getSessionStatus } from "@/api/sessions";
 import type { BackgroundTaskInfo } from "@/api/types";
 import { restoreWatchedSessions, unwatchSession, watchSession } from "./task-watcher";
 import { eventSessionId, eventTopic } from "./event-scope";
 /** Max sessions kept in memory simultaneously. */
 const MAX_CACHED = 5;
+
+/** Last task_status seen per `task.id`. Used to suppress synthesizing a
+ *  duplicate progress line on replays/oscillations — only emit a line
+ *  when the status actually changes for that task. Per-task scoping
+ *  also means two unrelated tasks sharing one `tool_call_id` (rare but
+ *  possible across reconnects) each contribute exactly one entry per
+ *  transition rather than collapsing into the previous task's line.
+ */
+const lastTaskStatusById = new Map<string, BackgroundTaskInfo["status"]>();
+
+/** Cap individual task labels and error suffixes so a pathological
+ *  payload cannot bloat the in-bubble timeline. The bubble renders
+ *  monospace at small text sizes — long single-line failures are
+ *  unreadable. */
+const MAX_TASK_LABEL_CHARS = 64;
+const MAX_PROGRESS_LINE_CHARS = 320;
+
+function clip(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 1))}…`;
+}
+
+/** Display-form a snake_case tool name. Mirrors the simplification in
+ *  `session-task-dock.tsx`'s `taskDisplayName` so the same task surfaces
+ *  with the same label everywhere ("deep_research" → "deep research").
+ *  Capped to a reasonable width. */
+function displayTaskName(tool: string): string {
+  const stripped = (tool || "task").replace(/_/g, " ").trim();
+  return clip(stripped || "task", MAX_TASK_LABEL_CHARS);
+}
+
+/** Build a human-readable progress line for a task_status transition.
+ *  Returns null when the status carries no useful narration (e.g. the
+ *  daemon emitted an unknown status string), or when this exact status
+ *  was already seen for this task and a duplicate line should be
+ *  suppressed at the source. */
+function synthesizeTaskProgressLine(
+  task: BackgroundTaskInfo,
+): string | null {
+  const previous = lastTaskStatusById.get(task.id);
+  if (previous === task.status) return null;
+  // Record the new status BEFORE returning the line so re-entrant
+  // dispatches (within the same tick) can short-circuit on the second
+  // call. Failures still record so a `failed -> failed` replay is
+  // suppressed too.
+  lastTaskStatusById.set(task.id, task.status);
+
+  const label = displayTaskName(task.tool_name);
+  switch (task.status) {
+    case "spawned":
+      return clip(`${label} started`, MAX_PROGRESS_LINE_CHARS);
+    case "running":
+      return clip(`${label} running`, MAX_PROGRESS_LINE_CHARS);
+    case "completed":
+      return clip(`${label} completed`, MAX_PROGRESS_LINE_CHARS);
+    case "failed": {
+      // Single-line normalize the error: collapse newlines/whitespace
+      // so the bubble doesn't line-break inside a tiny mono pill.
+      const detail = task.error
+        ? task.error.replace(/\s+/g, " ").trim()
+        : "";
+      const line = detail ? `${label} failed: ${detail}` : `${label} failed`;
+      return clip(line, MAX_PROGRESS_LINE_CHARS);
+    }
+    default:
+      return null;
+  }
+}
 
 /** Tracks which sessions have been mounted so we can evict old ones. */
 function RuntimeWithSession({ children }: { children: ReactNode }) {
@@ -128,6 +197,45 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
       if (task) {
         TaskStore.mergeTask(sessionId, task, topic);
         MessageStore.bindBackgroundTask(sessionId, task, topic);
+        // Mirror the status as a synthetic progress line into the
+        // tool-call's runtime timeline. Background subagents (e.g.
+        // deep_research / run_pipeline) emit their per-step
+        // `tool_progress` SSE events on the spawned task's own stream,
+        // not the parent chat stream — without this mirror the
+        // tool-call bubble in the parent thread renders empty even
+        // when the task is actively running. Only synthesize a line
+        // when the bubble has a stable id to anchor against; the
+        // helper de-duplicates consecutive identical entries so we
+        // tolerate task_status replays without doubling the timeline.
+        const progressLine = synthesizeTaskProgressLine(task);
+        if (progressLine && task.tool_call_id) {
+          MessageStore.appendToolProgressByCallId(
+            sessionId,
+            task.tool_call_id,
+            progressLine,
+            topic,
+          );
+          // Mirror into the v2 thread store when it already knows
+          // about this tool_call_id (i.e. tool_start arrived before
+          // task_status). When the lookup misses we deliberately drop
+          // the synthetic progress for v2 rather than synthesize an
+          // orphan thread — the v1 path is still authoritative until
+          // the v2 flag is flipped, and creating phantom threads for
+          // every backgrounded task on first paint would race with
+          // the real tool_start that arrives moments later.
+          const threadId = ThreadStore.findThreadIdForToolCall(
+            sessionId,
+            topic,
+            task.tool_call_id,
+          );
+          if (threadId) {
+            ThreadStore.appendToolProgress(
+              threadId,
+              task.tool_call_id,
+              progressLine,
+            );
+          }
+        }
         const hasActiveTasks = TaskStore.getTasks(sessionId, topic).some(
           (candidate) =>
             candidate.status === "spawned" || candidate.status === "running",
