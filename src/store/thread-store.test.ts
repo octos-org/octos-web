@@ -408,6 +408,86 @@ describe("thread-store", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  // ---------------------------------------------------------------------------
+  // tool_call_id propagation (PR #682 follow-up)
+  //
+  // The tool-call bubble's `data-tool-call-id` must reflect the SERVER-issued
+  // `tool_call_id` exactly. When the backend omits one, the entry must carry
+  // an empty `id` so the renderer can drop the DOM attribute rather than
+  // synthesizing a fake shape that no external consumer can correlate.
+  // ---------------------------------------------------------------------------
+
+  it("addToolCall_preserves_server_tool_call_id_verbatim", () => {
+    makeUser("call something", "cmid-1");
+    ThreadStore.addToolCall("cmid-1", "call_abc123", "run_pipeline");
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const tc = thread.pendingAssistant?.toolCalls?.[0];
+    expect(tc?.id).toBe("call_abc123");
+    // Important: id must NOT be a synthetic shape like "run_pipeline_0" or
+    // "tc_run_pipeline_<ts>_<rand>".
+    expect(tc?.id).not.toMatch(/^tc_/);
+    expect(tc?.id).not.toMatch(/^run_pipeline_\d+$/);
+  });
+
+  it("addToolCall_keeps_id_empty_when_server_omits_tool_call_id", () => {
+    makeUser("legacy backend", "cmid-1");
+    // Legacy daemon: server doesn't send `tool_call_id`, so the bridge
+    // forwards an empty string. The store must keep it empty (no synthesis).
+    ThreadStore.addToolCall("cmid-1", "", "run_pipeline");
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const tc = thread.pendingAssistant?.toolCalls?.[0];
+    expect(tc?.id).toBe("");
+    expect(tc?.name).toBe("run_pipeline");
+  });
+
+  it("appendToolProgress_routes_by_name_when_id_is_empty", () => {
+    makeUser("legacy backend", "cmid-1");
+    ThreadStore.addToolCall("cmid-1", "", "run_pipeline");
+    // Legacy progress events also omit the id — we still want them to land
+    // on the right bubble. Fallback: most recent tool call by name.
+    ThreadStore.appendToolProgress(
+      "cmid-1",
+      "",
+      "[info] step 1",
+      "run_pipeline",
+    );
+    ThreadStore.appendToolProgress(
+      "cmid-1",
+      "",
+      "[info] step 2",
+      "run_pipeline",
+    );
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const tcs = thread.pendingAssistant?.toolCalls ?? [];
+    expect(tcs).toHaveLength(1);
+    expect(tcs[0].progress.map((p) => p.message)).toEqual([
+      "[info] step 1",
+      "[info] step 2",
+    ]);
+  });
+
+  it("addToolCall_with_empty_ids_keeps_distinct_names_separate", () => {
+    makeUser("legacy backend", "cmid-1");
+    ThreadStore.addToolCall("cmid-1", "", "run_pipeline");
+    ThreadStore.addToolCall("cmid-1", "", "fm_tts");
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const tcs = thread.pendingAssistant?.toolCalls ?? [];
+    // Two different tools with empty ids must NOT collapse — only same-name
+    // retries collapse via the existing retryCount path.
+    expect(tcs.map((tc) => tc.name)).toEqual(["run_pipeline", "fm_tts"]);
+    expect(tcs.every((tc) => tc.id === "")).toBe(true);
+  });
+
+  it("setToolCallStatus_routes_by_name_when_id_is_empty", () => {
+    makeUser("legacy backend", "cmid-1");
+    ThreadStore.addToolCall("cmid-1", "", "run_pipeline");
+    ThreadStore.setToolCallStatus("cmid-1", "", "complete", "run_pipeline");
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const tcs = thread.pendingAssistant?.toolCalls ?? [];
+    expect(tcs).toHaveLength(1);
+    expect(tcs[0].status).toBe("complete");
+  });
+
   it("loadHistory_synthesizes_threads_for_legacy_records_without_thread_id", async () => {
     // Legacy daemon: no thread_id on any record. Synthesizer must derive one
     // per user-message role-flip so the chat still groups into 2 threads.

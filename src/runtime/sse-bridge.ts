@@ -559,21 +559,21 @@ function bindStreamToAssistant({
       }
 
       case "tool_start": {
-        // Prefer the server-issued tool_call_id (then the legacy
-        // tool_id) so tool_progress and tool_end can route by id;
-        // synthesize an id only when the backend omits both.
-        const tcId =
-          event.tool_call_id ||
-          event.tool_id ||
-          `tc_${event.tool}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        // Use the server-issued tool_call_id (or the legacy tool_id)
+        // verbatim — never synthesize. External consumers (specs,
+        // /api/sessions/:id/tasks) correlate by this exact value, so
+        // a fabricated client-side id would break correlation. When
+        // both are absent we keep `tcId` empty; the renderer drops
+        // the `data-tool-call-id` DOM attribute in that case.
+        const tcId = event.tool_call_id || event.tool_id || "";
         // Re-use the local key when we already saw this server id (e.g.
         // a tool_start replay) so the entry doesn't duplicate. Otherwise
-        // derive a stable key from the server id so cross-stream lookups
-        // resolve consistently.
+        // derive a stable key from the server id (when present) so
+        // cross-stream lookups resolve consistently.
         const key =
           (event.tool_call_id && keyByServerId.get(event.tool_call_id)) ||
           (event.tool_id && keyByServerId.get(event.tool_id)) ||
-          `tc_${tcId}_${++toolCallCounter}`;
+          `tc_${tcId || event.tool}_${++toolCallCounter}`;
         toolCalls.set(key, {
           id: tcId,
           name: event.tool,
@@ -617,6 +617,7 @@ function bindStreamToAssistant({
               tid,
               targetTcId,
               event.success ? "complete" : "error",
+              event.tool,
             );
           }
         }
@@ -644,10 +645,18 @@ function bindStreamToAssistant({
         if (threadStoreEnabled) {
           const tid = resolveThreadIdForEvent(event.thread_id);
           // Prefer the server-issued ids first so the entry matches the
-          // tool_start (which writes them into the thread store).
-          const targetTcId = event.tool_call_id ?? event.tool_id ?? tc?.id;
-          if (tid && targetTcId) {
-            ThreadStore.appendToolProgress(tid, targetTcId, event.message);
+          // tool_start (which writes them into the thread store). Pass the
+          // server id verbatim — never synthesized. Empty-id legacy case
+          // is routed by tool name.
+          const targetTcId =
+            event.tool_call_id || event.tool_id || tc?.id || "";
+          if (tid) {
+            ThreadStore.appendToolProgress(
+              tid,
+              targetTcId,
+              event.message,
+              event.tool,
+            );
           }
         }
         // Keep the legacy global indicator working for components that

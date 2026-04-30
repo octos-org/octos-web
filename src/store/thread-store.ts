@@ -454,19 +454,24 @@ export function addToolCall(
   // Idempotency: if the tool_call_id is already attached to ANY
   // assistant slot in this thread, just update its status. Avoids
   // double-renders when a tool_start replays.
-  for (const candidate of [
-    found.thread.pendingAssistant,
-    ...[...found.thread.responses].reverse(),
-  ]) {
-    if (!candidate) continue;
-    const idx = candidate.toolCalls.findIndex((tc) => tc.id === toolCallId);
-    if (idx !== -1) {
-      candidate.toolCalls[idx] = {
-        ...candidate.toolCalls[idx],
-        status: "running",
-      };
-      notify();
-      return;
+  // Skip the by-id match when id is empty (legacy server path) so we
+  // don't accidentally collapse two distinct calls that both lack an
+  // id; fall through to the by-name retry-collapse instead.
+  if (toolCallId) {
+    for (const candidate of [
+      found.thread.pendingAssistant,
+      ...[...found.thread.responses].reverse(),
+    ]) {
+      if (!candidate) continue;
+      const idx = candidate.toolCalls.findIndex((tc) => tc.id === toolCallId);
+      if (idx !== -1) {
+        candidate.toolCalls[idx] = {
+          ...candidate.toolCalls[idx],
+          status: "running",
+        };
+        notify();
+        return;
+      }
     }
   }
   // No assistant ever existed on this thread (orphan with no responses
@@ -477,11 +482,14 @@ export function addToolCall(
 
   const tcs = slot.toolCalls;
   // Already known by id → idempotent (re-issued tool_start, replay).
-  const byId = tcs.findIndex((tc) => tc.id === toolCallId);
-  if (byId !== -1) {
-    tcs[byId] = { ...tcs[byId], status: "running" };
-    notify();
-    return;
+  // Skip when id is empty so two distinct empty-id calls don't collapse.
+  if (toolCallId) {
+    const byId = tcs.findIndex((tc) => tc.id === toolCallId);
+    if (byId !== -1) {
+      tcs[byId] = { ...tcs[byId], status: "running" };
+      notify();
+      return;
+    }
   }
 
   // Collapse retry: most recent call has same name → bump retryCount.
@@ -520,6 +528,7 @@ export function appendToolProgress(
   threadId: string,
   toolCallId: string,
   message: string,
+  toolName?: string,
 ): void {
   if (!message) return;
   const found = ensureOrphanThread(threadId);
@@ -533,13 +542,26 @@ export function appendToolProgress(
   const target = slot ?? ensurePendingAssistant(found.thread);
 
   const tcs = target.toolCalls;
-  let entry = tcs.find((tc) => tc.id === toolCallId);
+  let entry: ThreadToolCall | undefined;
+  if (toolCallId) {
+    entry = tcs.find((tc) => tc.id === toolCallId);
+  } else if (toolName) {
+    // Server omitted tool_call_id (legacy daemon). Route by tool name to
+    // the most recent matching call so progress still lands on the right
+    // bubble — no synthesized id required.
+    for (let i = tcs.length - 1; i >= 0; i -= 1) {
+      if (tcs[i].name === toolName) {
+        entry = tcs[i];
+        break;
+      }
+    }
+  }
   if (!entry) {
     // Late-arriving progress for a tool whose start we missed (e.g. SSE
     // resumed mid-stream). Create a stub call so the progress isn't lost.
     entry = {
       id: toolCallId,
-      name: "",
+      name: toolName ?? "",
       status: "running",
       progress: [],
       retryCount: 0,
@@ -568,13 +590,25 @@ export function setToolCallStatus(
   threadId: string,
   toolCallId: string,
   status: ThreadToolCall["status"],
+  toolName?: string,
 ): void {
   const found = ensureOrphanThread(threadId);
   if (!found) return;
   const slot = pickAssistantSlot(found.thread);
   if (!slot) return;
   const tcs = slot.toolCalls;
-  const idx = tcs.findIndex((tc) => tc.id === toolCallId);
+  let idx = -1;
+  if (toolCallId) {
+    idx = tcs.findIndex((tc) => tc.id === toolCallId);
+  } else if (toolName) {
+    // Legacy daemon path — route by tool name to the most recent match.
+    for (let i = tcs.length - 1; i >= 0; i -= 1) {
+      if (tcs[i].name === toolName) {
+        idx = i;
+        break;
+      }
+    }
+  }
   if (idx === -1) return;
   tcs[idx] = { ...tcs[idx], status };
   notify();

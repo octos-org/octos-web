@@ -402,10 +402,12 @@ export function createWsAdapter(
               case "tool_start": {
                 const toolName = event.tool as string;
                 const key = `tc_${++toolCallCounter}`;
+                // Use the server-issued id verbatim — never synthesize.
+                // See sse-bridge.ts tool_start for rationale.
                 const tcId =
                   (event.tool_call_id as string | undefined) ||
                   (event.tool_id as string | undefined) ||
-                  `tc_${toolName}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+                  "";
                 toolCalls.set(key, {
                   toolCallId: tcId,
                   toolName,
