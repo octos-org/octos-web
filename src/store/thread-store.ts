@@ -481,11 +481,19 @@ export function addToolCall(
   notify();
 }
 
+/** Maximum runtime progress entries kept per tool call. Old entries are
+ *  evicted FIFO so a long-running pipeline that emits hundreds of
+ *  `tool_progress` events (or replayed `task_status` mirrors) cannot
+ *  blow up the per-bubble timeline render cost or grow memory without
+ *  bound. */
+const MAX_TOOL_PROGRESS_ENTRIES = 100;
+
 export function appendToolProgress(
   threadId: string,
   toolCallId: string,
   message: string,
 ): void {
+  if (!message) return;
   const found = ensureOrphanThread(threadId);
   if (!found) return;
   // Prefer the in-flight pending; fall back to the most recent finalized
@@ -510,7 +518,21 @@ export function appendToolProgress(
     };
     tcs.push(entry);
   }
+  // Idempotency guard: skip exact-duplicate consecutive entries so a
+  // task_status replay (e.g. on stream reconnect) doesn't double-render
+  // the same line in the timeline. Mirrors the logic in
+  // `MessageStore.appendToolProgressByCallId`.
+  const lastEntry = entry.progress[entry.progress.length - 1];
+  if (lastEntry && lastEntry.message === message) {
+    return;
+  }
   entry.progress.push({ message, ts: Date.now() });
+  if (entry.progress.length > MAX_TOOL_PROGRESS_ENTRIES) {
+    entry.progress.splice(
+      0,
+      entry.progress.length - MAX_TOOL_PROGRESS_ENTRIES,
+    );
+  }
   notify();
 }
 
@@ -854,6 +876,44 @@ export function useThreads(sessionId: string, topic?: string): Thread[] {
     () => getThreads(sessionId, topic),
     () => getThreads(sessionId, topic),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Tool-call → thread_id reverse lookup
+// ---------------------------------------------------------------------------
+
+/**
+ * Find the thread_id that owns the given `toolCallId` in this session, if
+ * any. Returns null when the tool call has not been registered (yet) or
+ * when the v2 thread store is empty for the session.
+ *
+ * Scans `pendingAssistant` first (in-flight turn) then finalized
+ * `responses` (most-recent-first) so a still-running deep_research bubble
+ * resolves before its post-completion sibling. Used by the runtime
+ * provider to mirror task_status transitions into the corresponding
+ * tool-call's progress timeline (issue #649 follow-up).
+ */
+export function findThreadIdForToolCall(
+  sessionId: string,
+  topic: string | undefined,
+  toolCallId: string,
+): string | null {
+  if (!toolCallId) return null;
+  const key = storeKey(sessionId, topic);
+  const state = sessionsByKey.get(key);
+  if (!state) return null;
+  for (let i = state.threads.length - 1; i >= 0; i -= 1) {
+    const thread = state.threads[i];
+    if (thread.pendingAssistant?.toolCalls.some((tc) => tc.id === toolCallId)) {
+      return thread.id;
+    }
+    for (let j = thread.responses.length - 1; j >= 0; j -= 1) {
+      if (thread.responses[j].toolCalls.some((tc) => tc.id === toolCallId)) {
+        return thread.id;
+      }
+    }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
