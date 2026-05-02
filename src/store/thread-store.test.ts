@@ -656,4 +656,215 @@ describe("thread-store", () => {
       "5 user messages must yield exactly 5 assistant bubbles, not 6+ phantom bubbles from late cross-talk",
     ).toBe(5);
   });
+
+  // ---------------------------------------------------------------------------
+  // PR J Fix 1: Adjacent media-only companion coalescing
+  //
+  // After reload: assistant text record N (e.g. Chinese-language deep-research
+  // report) followed by record N+1 carrying just the report's audio/podcast
+  // as files (no new text) renders as ONE bubble — not two duplicate bubbles
+  // where the second is empty with just files.
+  // ---------------------------------------------------------------------------
+
+  it("replayHistory_merges_adjacent_media_only_companion_into_text_record", () => {
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 0,
+        role: "user",
+        content: "深度研究今日中美关系",
+        client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:00Z",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "## 深度研究报告\n今日要点……",
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:05Z",
+      },
+      {
+        seq: 2,
+        role: "assistant",
+        content: "",
+        media: ["/tmp/report.mp3"],
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:06Z",
+      },
+    ]);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(
+      thread.responses,
+      "Chinese report + media-only companion should render as ONE bubble, not two",
+    ).toHaveLength(1);
+    expect(thread.responses[0].text).toContain("深度研究报告");
+    expect(thread.responses[0].files.map((f) => f.path)).toEqual([
+      "/tmp/report.mp3",
+    ]);
+    expect(
+      thread.responses[0].historySeq,
+      "merged record must keep max(historySeq) so later messages stay ordered",
+    ).toBe(2);
+  });
+
+  it("replayHistory_merges_companion_with_only_file_marker_text", () => {
+    // Companion text contains only a `[file:...]` placeholder line — also
+    // counts as media-only since the marker is not user-visible content.
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 0,
+        role: "user",
+        content: "make me a podcast",
+        client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:00Z",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "Here is your podcast.",
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:05Z",
+      },
+      {
+        seq: 2,
+        role: "assistant",
+        content: "[file: podcast.mp3]",
+        media: ["/tmp/podcast.mp3"],
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:06Z",
+      },
+    ]);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses).toHaveLength(1);
+    expect(thread.responses[0].text).toBe("Here is your podcast.");
+    expect(thread.responses[0].files.map((f) => f.path)).toEqual([
+      "/tmp/podcast.mp3",
+    ]);
+  });
+
+  it("replayHistory_does_not_merge_when_seq_is_not_adjacent", () => {
+    // Gap in seq → not the deep_research-companion pattern, keep separate.
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 0,
+        role: "user",
+        content: "Q",
+        client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:00Z",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "Text answer.",
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:05Z",
+      },
+      {
+        seq: 5,
+        role: "assistant",
+        content: "",
+        media: ["/tmp/standalone.mp3"],
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:30Z",
+      },
+    ]);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(
+      thread.responses,
+      "non-adjacent seq must NOT collapse — that media bubble is from a different background task",
+    ).toHaveLength(2);
+  });
+
+  it("replayHistory_does_not_merge_across_threads", () => {
+    // Companion shape but on a different thread → two threads, no merge.
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 0,
+        role: "user",
+        content: "Q1",
+        client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:00Z",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "Text answer.",
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:05Z",
+      },
+      {
+        seq: 2,
+        role: "user",
+        content: "Q2",
+        client_message_id: "cm-2",
+        thread_id: "cm-2",
+        timestamp: "2026-04-28T10:00:06Z",
+      },
+      {
+        seq: 3,
+        role: "assistant",
+        content: "",
+        media: ["/tmp/cross.mp3"],
+        response_to_client_message_id: "cm-2",
+        thread_id: "cm-2",
+        timestamp: "2026-04-28T10:00:07Z",
+      },
+    ]);
+
+    const threads = ThreadStore.getThreads(SESSION);
+    expect(threads).toHaveLength(2);
+    expect(threads[0].responses).toHaveLength(1);
+    expect(threads[0].responses[0].files).toHaveLength(0);
+    expect(threads[1].responses).toHaveLength(1);
+    expect(threads[1].responses[0].files.map((f) => f.path)).toEqual([
+      "/tmp/cross.mp3",
+    ]);
+  });
+
+  it("replayHistory_does_not_merge_when_companion_has_text_content", () => {
+    // Both records have text → real two-bubble conversation, never merge.
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 0,
+        role: "user",
+        content: "Q",
+        client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:00Z",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "First answer.",
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:05Z",
+      },
+      {
+        seq: 2,
+        role: "assistant",
+        content: "Follow-up note.",
+        media: ["/tmp/extra.mp3"],
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:06Z",
+      },
+    ]);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses).toHaveLength(2);
+  });
 });

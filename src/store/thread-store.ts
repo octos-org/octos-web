@@ -681,6 +681,47 @@ function fileFromMediaPath(path: string): MessageFile {
   };
 }
 
+/** Detect a "media-only companion" assistant record — a follow-on bubble
+ *  that carries just the report's audio/podcast/etc. with no original text
+ *  of its own. Common shapes:
+ *    • completely empty content
+ *    • content is only a `[file: ...]` placeholder line
+ *    • content is just whitespace
+ *  Used by adjacent-merge in `replayHistory` to fold the companion into
+ *  its preceding text record so the user sees one bubble, not two. */
+function isMediaOnlyCompanion(m: ThreadMessage): boolean {
+  if (m.files.length === 0) return false;
+  if (m.toolCalls.length > 0) return false;
+  const trimmed = m.text.trim();
+  if (trimmed.length === 0) return true;
+  // Strip [file: ...] markers; if nothing else remains it's media-only.
+  const stripped = trimmed.replace(/\[file:[^\]]*\]/gi, "").trim();
+  return stripped.length === 0;
+}
+
+/** Merge a media-only companion's files into the preceding assistant
+ *  record. Dedupes by `path`, preserves
+ *  `historySeq = max(prev.historySeq, companion.historySeq)` so later
+ *  ordering stays correct. */
+function mergeMediaCompanionInto(
+  prev: ThreadMessage,
+  companion: ThreadMessage,
+): void {
+  const seenPaths = new Set(prev.files.map((f) => f.path));
+  for (const f of companion.files) {
+    if (!seenPaths.has(f.path)) {
+      prev.files.push(f);
+      seenPaths.add(f.path);
+    }
+  }
+  const prevSeq = prev.historySeq ?? Number.NEGATIVE_INFINITY;
+  const compSeq = companion.historySeq ?? Number.NEGATIVE_INFINITY;
+  if (compSeq > prevSeq) {
+    prev.historySeq = companion.historySeq;
+    prev.intra_thread_seq = companion.intra_thread_seq ?? prev.intra_thread_seq;
+  }
+}
+
 function buildResponseFromApi(m: MessageInfo): ThreadMessage {
   const role: ThreadMessage["role"] =
     m.role === "user"
@@ -816,7 +857,38 @@ export function replayHistory(
       state.threads.push(thread);
     }
 
-    thread.responses.push(buildResponseFromApi(apiMessage));
+    const built = buildResponseFromApi(apiMessage);
+
+    // Adjacent media-only companion coalescing: deep_research returns a
+    // text report (record N) immediately followed by a media-only file
+    // delivery (record N+1) that carries the audio/podcast as files but
+    // no new text of its own. Render them as ONE bubble with text +
+    // attached files instead of two.
+    //
+    // Conditions: both records are assistant-role on the same thread,
+    // historySeq is exactly +1 (no other records between them), and the
+    // incoming record matches `isMediaOnlyCompanion`.
+    if (
+      built.role === "assistant" &&
+      isMediaOnlyCompanion(built) &&
+      thread.responses.length > 0
+    ) {
+      const last = thread.responses[thread.responses.length - 1];
+      const lastSeq = last.historySeq;
+      const builtSeq = built.historySeq;
+      if (
+        last.role === "assistant" &&
+        typeof lastSeq === "number" &&
+        typeof builtSeq === "number" &&
+        builtSeq === lastSeq + 1 &&
+        last.text.trim().length > 0
+      ) {
+        mergeMediaCompanionInto(last, built);
+        continue;
+      }
+    }
+
+    thread.responses.push(built);
   }
 
   // Re-attach any in-flight pendings that didn't surface in the API
