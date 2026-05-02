@@ -11,6 +11,7 @@ import { SlidesEditorPage } from "./slides/pages/slides-editor-page";
 import { SlidesPresentPage } from "./slides/pages/slides-present-page";
 import { SitesGalleryPage } from "./sites/pages/sites-gallery-page";
 import { SitesEditorPage } from "./sites/pages/sites-editor-page";
+import { CodingWorkspacePage } from "./coding/coding-workspace-page";
 
 function ChatPage() {
   return (
@@ -42,6 +43,7 @@ export function App() {
           <Route element={<AuthGuard />}>
             <Route path="/" element={<HomePage />} />
             <Route path="/chat/*" element={<ChatPage />} />
+            <Route path="/coding" element={<CodingWorkspacePage />} />
             <Route path="/studio/*" element={<Navigate to="/" replace />} />
             <Route path="/settings" element={<RedirectToAdminSettings />} />
             <Route path="/slides" element={<SlidesGalleryPage />} />

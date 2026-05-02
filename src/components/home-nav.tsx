@@ -1,6 +1,6 @@
 import { useAuth } from "@/auth/auth-context";
 import { useTheme } from "@/hooks/use-theme";
-import { LogOut, Sun, Moon, MessageSquare, Settings } from "lucide-react";
+import { LogOut, Sun, Moon, MessageSquare, Code2, Settings } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 export function HomeNav() {
@@ -27,6 +27,13 @@ export function HomeNav() {
       >
         <MessageSquare size={16} />
         Chat
+      </button>
+      <button
+        onClick={() => navigate("/coding")}
+        className="flex items-center gap-2 rounded-xl bg-surface-container px-4 py-2.5 text-sm text-text hover:bg-surface-elevated"
+      >
+        <Code2 size={16} />
+        Coding
       </button>
       {portal?.can_access_admin_portal && (
         <button
