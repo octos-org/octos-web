@@ -1003,6 +1003,165 @@ export function replayHistory(
   notify();
 }
 
+/**
+ * Ingest a single persisted `MessageInfo` (e.g. from a `session_result` SSE
+ * event) into the appropriate thread without replaying the whole session.
+ *
+ * Closes the M8.10 wave-6 leak: pre-fix, late `session_result` events for
+ * deep_research / mofa / run_pipeline turns landed only in the legacy
+ * MessageStore — which the v2 renderer ignores — leaving the v2 UI stuck on
+ * the finalized spawn-ack. Now the `sse-bridge` handler also calls this
+ * helper so the persisted record reaches `ThreadStore.responses`.
+ *
+ * Routing:
+ *   • Use `message.thread_id` when present (server stamps it for both the
+ *     non-media and media-bearing `_session_result` paths).
+ *   • Fall back to `deriveLegacyThreadId` for legacy daemons that omit it.
+ *
+ * Merge: applies the same media-only-companion and duplicate-assistant-file
+ * rules `replayHistory` uses against the existing tail of the thread, so a
+ * late audio/podcast delivery folds into the spawn-ack assistant bubble
+ * instead of producing an orphan duplicate.
+ *
+ * Idempotent: a second call for the same `historySeq` (from a replay) is a
+ * no-op.
+ *
+ * Notes:
+ *   • Does NOT touch `pendingAssistant` — a different turn in the same
+ *     thread may still be running (rare but possible during overlap).
+ *   • Skips `system` messages (mirrors `replayHistory`).
+ */
+export function appendPersistedMessage(
+  sessionId: string,
+  topic: string | undefined,
+  message: MessageInfo,
+): void {
+  if (message.role === "system") return;
+
+  // Prefer the explicit thread_id stamped by the server. For legacy
+  // daemons that omit it, walk the obvious fallbacks before reaching for
+  // `deriveLegacyThreadId` (which synthesizes a fresh id for an
+  // assistant record with no ambient context — wrong for a single late
+  // session_result delivery).
+  const directThreadId =
+    message.thread_id ||
+    message.response_to_client_message_id ||
+    (message.role === "user" ? message.client_message_id : undefined);
+  const ctx = { currentThreadId: null as string | null };
+  const threadId = directThreadId || deriveLegacyThreadId(message, ctx);
+  if (!threadId) return;
+
+  const key = storeKey(sessionId, topic);
+  let state = sessionsByKey.get(key);
+
+  // Locate (or adopt) the thread. Prefer the live session's bucket; fall
+  // back to a globally-known thread (e.g. orphan bucket created earlier on
+  // a different scope key); finally synthesize a placeholder so the late
+  // record is at least visible.
+  let thread: Thread | undefined = state?.byId.get(threadId);
+  if (!thread) {
+    const found = findThreadById(threadId);
+    if (found) {
+      state = found.state;
+      thread = found.thread;
+    }
+  }
+  if (!thread) {
+    if (!state) {
+      state = ensureSession(key);
+    }
+    const placeholderUser: ThreadMessage = {
+      id: nextId(),
+      role: "user",
+      text: "",
+      files: [],
+      toolCalls: [],
+      status: "complete",
+      timestamp: message.timestamp
+        ? new Date(message.timestamp).getTime()
+        : Date.now(),
+      clientMessageId: threadId,
+    };
+    thread = {
+      id: threadId,
+      userMsg: placeholderUser,
+      responses: [],
+      pendingAssistant: null,
+    };
+    insertThreadInTimestampOrder(state, thread);
+  }
+
+  if (message.role === "user") {
+    // Persisted user record echoing back through session_result — only
+    // adopt its text/files if the existing user bubble is the empty
+    // placeholder (orphan thread case). Don't clobber a real send.
+    if (thread.userMsg.text === "" && thread.userMsg.files.length === 0) {
+      const built = buildResponseFromApi(message);
+      thread.userMsg = {
+        ...thread.userMsg,
+        text: built.text,
+        files: built.files,
+        historySeq: built.historySeq,
+        intra_thread_seq: built.intra_thread_seq,
+        clientMessageId: message.client_message_id ?? threadId,
+      };
+      notify();
+    }
+    return;
+  }
+
+  // Idempotency: skip if a response with the same historySeq is already in
+  // the thread. The server-side seq is per-session monotonic so this is a
+  // safe identity check — and the only one available since `MessageInfo`
+  // has no stable id field.
+  const incomingSeq = typeof message.seq === "number" ? message.seq : undefined;
+  if (incomingSeq !== undefined) {
+    for (const r of thread.responses) {
+      if (r.historySeq === incomingSeq) return;
+    }
+  }
+
+  const built = buildResponseFromApi(message);
+
+  // Adjacent media-only companion: late media-bearing record whose text is
+  // empty / a `[file:...]` marker folds into the prior text response on
+  // this thread. Mirrors the `replayHistory` rule so the runtime path
+  // produces the same shape as a fresh page load.
+  if (
+    built.role === "assistant" &&
+    isMediaOnlyCompanion(built) &&
+    thread.responses.length > 0
+  ) {
+    const last = thread.responses[thread.responses.length - 1];
+    if (last.role === "assistant" && last.text.trim().length > 0) {
+      mergeMediaCompanionInto(last, built);
+      notify();
+      return;
+    }
+  }
+
+  // Duplicate assistant+file collapse: a prior response on the same thread
+  // already carries this media. Mirrors `replayHistory` so a streamed
+  // snapshot followed by a persisted final delivery doesn't produce two
+  // bubbles holding the same MP3/PNG.
+  if (
+    built.role === "assistant" &&
+    built.files.length > 0 &&
+    thread.responses.length > 0
+  ) {
+    const dupIdx = findDuplicateAssistantWithFile(thread.responses, built);
+    if (dupIdx !== -1) {
+      mergeDuplicateAssistantFile(thread.responses[dupIdx], built);
+      notify();
+      return;
+    }
+  }
+
+  thread.responses.push(built);
+  sortResponsesInThread(thread);
+  notify();
+}
+
 // ---------------------------------------------------------------------------
 // History loading
 // ---------------------------------------------------------------------------

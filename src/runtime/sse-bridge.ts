@@ -757,6 +757,23 @@ function bindStreamToAssistant({
       }
 
       case "session_result": {
+        // M8.10 wave-6 fix (PR M): the v2 renderer reads ONLY ThreadStore
+        // and ignores MessageStore. Without this branch a late
+        // session_result for a deep_research / mofa / run_pipeline turn
+        // landed solely in the legacy store, leaving the v2 UI frozen on
+        // the finalized spawn-ack. Server stamps `message.thread_id` for
+        // both non-media and media-bearing paths; we use it directly and
+        // fall through to `deriveLegacyThreadId` inside the helper for
+        // the legacy-daemon edge case.
+        if (threadStoreEnabled && event.message) {
+          const tid =
+            event.message.thread_id ?? (event as { thread_id?: string }).thread_id;
+          ThreadStore.appendPersistedMessage(
+            sessionId,
+            historyTopic,
+            tid ? { ...event.message, thread_id: tid } : event.message,
+          );
+        }
         if (event.message) {
           const previousSeq = MessageStore.getMaxHistorySeq(sessionId, historyTopic);
           const merged = MessageStore.mergeHistoryMessageIntoMessage(
