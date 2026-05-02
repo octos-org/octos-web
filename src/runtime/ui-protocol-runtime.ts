@@ -23,6 +23,18 @@ interface ActiveBridge {
 
 let active: ActiveBridge | null = null;
 
+/**
+ * Monotonic generation counter. Each `startBridgeForSession` /
+ * `stopActiveBridge` call increments it; in-flight `start()` resolutions
+ * compare their captured generation against the live one before publishing
+ * themselves as `active`. A stale start (a newer call ran while we were
+ * awaiting the WebSocket handshake) is responsible for stopping its own
+ * bridge and discarding the result. Codex review must-fix #4: avoids the
+ * pre-fix race where rapid session switches could leak bridges or — worse —
+ * have an older `start()` resolution overwrite a newer bridge in `active`.
+ */
+let generation = 0;
+
 function sameScope(a: ActiveBridge, sessionId: string, topic?: string): boolean {
   const t = topic?.trim() || undefined;
   const at = a.topic?.trim() || undefined;
@@ -34,6 +46,12 @@ function sameScope(a: ActiveBridge, sessionId: string, topic?: string): boolean 
  * for the same scope, returns the existing one (idempotent across StrictMode
  * remounts). When called for a different scope, the previous bridge is
  * stopped first.
+ *
+ * Race-safe: each call captures the current `generation` before awaiting
+ * `bridge.start()`. If a newer call (or `stopActiveBridge`) bumped the
+ * generation while we were awaiting, this start is stale — we stop the
+ * orphaned bridge and either return the now-current `active` bridge (when
+ * scope matches) or throw, rather than overwrite `active`.
  */
 export async function startBridgeForSession(
   sessionId: string,
@@ -45,8 +63,35 @@ export async function startBridgeForSession(
   if (active) {
     await stopActiveBridge();
   }
+  const myGeneration = ++generation;
   const bridge = createUiProtocolBridge();
-  await bridge.start({ sessionId });
+  try {
+    await bridge.start({ sessionId });
+  } catch (err) {
+    if (myGeneration === generation) {
+      // No newer start raced us; surface the failure.
+      throw err;
+    }
+    // Newer start has already run — swallow; the new bridge is what
+    // callers will get from `getActiveBridge`.
+    return active?.bridge ?? Promise.reject(err);
+  }
+  if (myGeneration !== generation) {
+    // A newer `startBridgeForSession` or `stopActiveBridge` ran while
+    // we were awaiting the handshake. This bridge is now orphaned —
+    // stop it and defer to whatever the live `active` slot holds.
+    try {
+      await bridge.stop();
+    } catch {
+      // best-effort
+    }
+    if (active && sameScope(active, sessionId, topic)) {
+      return active.bridge;
+    }
+    throw new Error(
+      "ui-protocol-runtime: bridge start superseded by a newer session",
+    );
+  }
   const attachment = attachRouter(bridge, { sessionId, topic });
   active = { sessionId, topic, bridge, attachment };
   return bridge;
@@ -66,8 +111,12 @@ export function getActiveBridge(
   return active.bridge;
 }
 
-/** Stop the currently-active bridge and detach the router. Idempotent. */
+/** Stop the currently-active bridge and detach the router. Idempotent.
+ *  Bumps the generation counter so any in-flight `startBridgeForSession`
+ *  awaiting a handshake recognizes itself as superseded and stops its
+ *  orphaned bridge instead of publishing it. */
 export async function stopActiveBridge(): Promise<void> {
+  generation++;
   if (!active) return;
   const handle = active;
   active = null;
@@ -83,6 +132,7 @@ export async function stopActiveBridge(): Promise<void> {
 /** Test-only reset. */
 export function __resetUiProtocolRuntimeForTest(): void {
   active = null;
+  generation = 0;
 }
 
 /** Test-only injection so unit tests can drive a mock bridge into the

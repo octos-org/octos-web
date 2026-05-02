@@ -37,11 +37,31 @@ async function sendMessageV1(opts: SendOptions): Promise<void> {
     sessionId,
     historyTopic,
     text,
+    requestText,
     media,
     clientMessageId = crypto.randomUUID(),
     onSessionActive,
     onComplete,
   } = opts;
+
+  // Codex review must-fix #5A: TurnStartInput v1 only carries text. Media
+  // (image / voice) and `requestText !== text` (e.g. /commands rewrite)
+  // need the legacy /api/chat upload pre-step that the SSE bridge owns.
+  // Falling back keeps the user's input intact; the next turn picks the
+  // v1 transport back up. A `console.info` makes the path switch
+  // observable in DevTools without surfacing as a warning.
+  const hasMedia = media.length > 0;
+  const hasRewrite = requestText !== undefined && requestText !== text;
+  if (hasMedia || hasRewrite) {
+    if (typeof console !== "undefined" && console.info) {
+      console.info(
+        "ui-protocol-send: v1 path does not yet support media/requestText; falling back to legacy",
+        { hasMedia, hasRewrite },
+      );
+    }
+    legacySendMessage(opts);
+    return;
+  }
 
   const bridge = getActiveBridge(sessionId, historyTopic);
   if (!bridge) {
@@ -72,12 +92,39 @@ async function sendMessageV1(opts: SendOptions): Promise<void> {
 
   onSessionActive?.(text);
 
+  // Codex review must-fix #5B: subscribe to the turn lifecycle BEFORE
+  // calling `sendTurn`. A fast turn/completed (or turn/error) can fire
+  // between the RPC ack and the post-await `finally` block, leaving
+  // `sendingRef` (the chat input lock) stuck-true if we install the
+  // listener afterwards. The handler also fires `onComplete` on RPC
+  // rejection so the input never spins forever on a network failure.
+  let completed = false;
+  const fireComplete = () => {
+    if (completed) return;
+    completed = true;
+    onComplete?.();
+  };
+  const off = bridge.onTurnLifecycle((e) => {
+    if (e.turn_id !== clientMessageId) return;
+    // The bridge emits all three lifecycle variants through one channel.
+    // We fire on `completed` and `error`; `started` is a no-op here.
+    if ("error" in e) {
+      off();
+      fireComplete();
+      return;
+    }
+    if ("reason" in e) {
+      off();
+      fireComplete();
+    }
+  });
+
   try {
     await bridge.sendTurn(clientMessageId, [
       { kind: "text", text },
-      // File / voice attachments stay on REST in C-2 — the bridge schema
-      // already accepts a TurnStartInput[] so a future PR can add file
-      // references here without changing this call site.
+      // File / voice attachments stay on REST — see fallback above. The
+      // bridge schema already accepts a TurnStartInput[] so a future PR
+      // can add file references here without changing this call site.
     ]);
   } catch {
     // Surface as an error message in the thread so the user isn't left
@@ -85,18 +132,7 @@ async function sendMessageV1(opts: SendOptions): Promise<void> {
     // `warning` for transport-level failures; this just guarantees the
     // thread terminates rather than spinning forever.
     ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
-  } finally {
-    // The v1 path's `onComplete` resolves on `turn/completed` rather than
-    // when the RPC returns (the RPC just acks acceptance). Wire a one-
-    // shot listener for the completed event scoped to this turn id.
-    if (onComplete) {
-      const off = bridge.onTurnLifecycle((e) => {
-        if (e.turn_id !== clientMessageId) return;
-        if ("reason" in e || "error" in e) {
-          off();
-          onComplete();
-        }
-      });
-    }
+    off();
+    fireComplete();
   }
 }

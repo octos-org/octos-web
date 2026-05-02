@@ -95,6 +95,8 @@ function persistedToMessageInfo(m: PersistedMessage): MessageInfo {
     tool_call_id: m.source_tool_call_id,
     timestamp: m.timestamp ?? new Date().toISOString(),
     seq: typeof m.history_seq === "number" ? m.history_seq : undefined,
+    intra_thread_seq:
+      typeof m.intra_thread_seq === "number" ? m.intra_thread_seq : undefined,
     media: (m.files ?? []).map((f) => f.path),
     tool_calls: m.tool_calls?.map((tc) => {
       const o = tc as { id?: unknown; name?: unknown };
@@ -120,11 +122,80 @@ export function handleMessagePersisted(
   cfg: RouterConfig,
   event: MessagePersistedEvent,
 ): void {
+  const m = event.message;
+  // Codex review #2: when an assistant `message/persisted` arrives for a
+  // thread with an in-flight `pendingAssistant`, promote the pending
+  // bubble into the persisted record instead of appending a separate
+  // response. This avoids duplicate bubbles when the server emits
+  // streamed deltas + persisted + completed for the same turn.
+  //
+  // Match conditions:
+  //   - role === "assistant" (tool/user persists are independent records)
+  //   - the thread's pendingAssistant exists in the live store
+  //
+  // When matched: overwrite the pending text/files with the canonical
+  // persisted content (server is authoritative on final text) and call
+  // `finalizeAssistant` with the persisted seq. The downstream
+  // `turn/completed` then no-ops because `pendingAssistant` is null.
+  //
+  // When unmatched (no pending, e.g. late artifact, or non-assistant
+  // role): fall through to `appendPersistedMessage` — the PR M
+  // late-artifact path.
+  if (m.role === "assistant" && m.thread_id) {
+    const promoted = tryPromotePendingFromPersisted(
+      cfg.sessionId,
+      cfg.topic,
+      m,
+    );
+    if (promoted) return;
+  }
   ThreadStore.appendPersistedMessage(
     cfg.sessionId,
     cfg.topic,
-    persistedToMessageInfo(event.message),
+    persistedToMessageInfo(m),
   );
+}
+
+/**
+ * If the live thread for `m.thread_id` has an in-flight pendingAssistant,
+ * overwrite its content/files with the persisted record and finalize.
+ * Returns true when promotion happened (caller should NOT also append).
+ */
+function tryPromotePendingFromPersisted(
+  sessionId: string,
+  topic: string | undefined,
+  m: PersistedMessage,
+): boolean {
+  const threads = ThreadStore.getThreads(sessionId, topic);
+  const thread = threads.find((t) => t.id === m.thread_id);
+  if (!thread || !thread.pendingAssistant) return false;
+  // Replace pending text + files with the persisted content. Files
+  // from the persisted record win; the streamed pending text was a
+  // best-effort approximation of what's now authoritative.
+  ThreadStore.replaceAssistantText(m.thread_id, m.content);
+  // appendAssistantFile is path-deduped, so re-adding a streamed file
+  // is a no-op. Persisted files that weren't already attached land here.
+  for (const f of m.files ?? []) {
+    ThreadStore.appendAssistantFile(m.thread_id, {
+      filename: filenameFromPath(f.path),
+      path: f.path,
+      caption: "",
+    });
+  }
+  ThreadStore.finalizeAssistant(m.thread_id, {
+    committedSeq:
+      typeof m.intra_thread_seq === "number"
+        ? m.intra_thread_seq
+        : typeof m.history_seq === "number"
+          ? m.history_seq
+          : undefined,
+  });
+  return true;
+}
+
+function filenameFromPath(path: string): string {
+  const idx = path.lastIndexOf("/");
+  return idx === -1 ? path : path.slice(idx + 1);
 }
 
 export function handleTaskUpdated(

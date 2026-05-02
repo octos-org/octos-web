@@ -177,4 +177,124 @@ describe("sendMessage flag-ON path", () => {
     lifecycleHandler?.({ turn_id: "cmid-complete", reason: "stop" });
     expect(onComplete).toHaveBeenCalledTimes(1);
   });
+
+  // Codex review must-fix #5A: media-bearing turns must NOT silently
+  // drop on the v1 path (TurnStartInput.kind === "text" only). Falling
+  // back to legacy keeps voice/image uploads working under the flag.
+  it("falls back to legacy when media is present", () => {
+    const bridge = makeBridge();
+    __setActiveBridgeForTest(SESSION, bridge);
+    sendMessage({
+      sessionId: SESSION,
+      text: "with image",
+      media: ["/tmp/foo.png"],
+      clientMessageId: "cmid-media",
+    });
+    expect(legacySendSpy).toHaveBeenCalledTimes(1);
+    expect(bridge.sendTurn).not.toHaveBeenCalled();
+    // The thread store must NOT be pre-populated by the v1 mirror —
+    // the legacy bridge handles its own ThreadStore mirroring (gated
+    // by isThreadStoreEnabled() which now also reads chat_app_ui_v1).
+    expect(ThreadStore.getThreads(SESSION)).toHaveLength(0);
+  });
+
+  // Codex review must-fix #5A: requestText !== text means a /command
+  // rewrite. Legacy posts requestText to /api/chat; the v1 path only
+  // takes a plain text input. Fall back so the rewrite isn't silently
+  // dropped.
+  it("falls back to legacy when requestText differs from text", () => {
+    const bridge = makeBridge();
+    __setActiveBridgeForTest(SESSION, bridge);
+    sendMessage({
+      sessionId: SESSION,
+      text: "/queue interrupt",
+      requestText: "rewritten request",
+      media: [],
+      clientMessageId: "cmid-rewrite",
+    });
+    expect(legacySendSpy).toHaveBeenCalledTimes(1);
+    expect(bridge.sendTurn).not.toHaveBeenCalled();
+  });
+
+  // Codex review must-fix #5B: the lifecycle subscription must be
+  // installed BEFORE `sendTurn` resolves. A fast turn/completed firing
+  // between the RPC ack and the awaited resolution would otherwise leave
+  // `sendingRef.current` stuck-true (chat input lock).
+  it("onComplete fires even when turn/completed arrives before sendTurn resolves", async () => {
+    const bridge = makeBridge();
+    __setActiveBridgeForTest(SESSION, bridge);
+    const onComplete = vi.fn();
+
+    let lifecycleHandler:
+      | ((e: { turn_id: string; reason?: string; error?: unknown }) => void)
+      | undefined;
+    (bridge.onTurnLifecycle as ReturnType<typeof vi.fn>).mockImplementation(
+      (h: (e: { turn_id: string; reason?: string; error?: unknown }) => void) => {
+        lifecycleHandler = h;
+        return () => {
+          lifecycleHandler = undefined;
+        };
+      },
+    );
+
+    let resolveSendTurn: (() => void) | null = null;
+    (bridge.sendTurn as ReturnType<typeof vi.fn>).mockImplementation(
+      () =>
+        new Promise<{ accepted: true }>((res) => {
+          resolveSendTurn = () => res({ accepted: true });
+        }),
+    );
+
+    sendMessage({
+      sessionId: SESSION,
+      text: "fast",
+      media: [],
+      clientMessageId: "cmid-fast",
+      onComplete,
+    });
+
+    // Let the sync portion of sendMessageV1 run (it awaits getActiveBridge
+    // path → the sendTurn call). The lifecycle subscription should be
+    // installed BEFORE the await on sendTurn, so the handler is live now.
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+    expect(lifecycleHandler).toBeDefined();
+
+    // Fire turn/completed BEFORE sendTurn resolves.
+    lifecycleHandler?.({ turn_id: "cmid-fast", reason: "stop" });
+    expect(onComplete).toHaveBeenCalledTimes(1);
+
+    // Now let sendTurn resolve. onComplete must NOT fire a second time.
+    resolveSendTurn?.();
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+    expect(onComplete).toHaveBeenCalledTimes(1);
+  });
+
+  // Codex review must-fix #5B: an RPC failure (network drop, server
+  // error) must also fire onComplete so the chat input lock clears
+  // instead of spinning forever.
+  it("onComplete fires when bridge.sendTurn rejects", async () => {
+    const bridge = makeBridge();
+    __setActiveBridgeForTest(SESSION, bridge);
+    const onComplete = vi.fn();
+
+    (bridge.sendTurn as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      Promise.reject(new Error("rpc-broken")),
+    );
+
+    sendMessage({
+      sessionId: SESSION,
+      text: "boom",
+      media: [],
+      clientMessageId: "cmid-rpcfail",
+      onComplete,
+    });
+
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    // The thread should be marked errored, not stuck pending.
+    const threads = ThreadStore.getThreads(SESSION);
+    expect(threads).toHaveLength(1);
+    expect(threads[0].pendingAssistant).toBeNull();
+    expect(threads[0].responses[0]?.status).toBe("error");
+  });
 });

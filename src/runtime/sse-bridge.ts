@@ -28,7 +28,12 @@ import { eventSessionId, eventTopic } from "./event-scope";
 function isThreadStoreEnabled(): boolean {
   if (typeof window === "undefined") return false;
   try {
-    return window.localStorage.getItem("octos_thread_store_v2") === "1";
+    if (window.localStorage.getItem("octos_thread_store_v2") === "1") return true;
+    // Phase C-2 (codex review #1): chat_app_ui_v1 forces ThreadStore
+    // mirroring on the legacy SSE path so the renderer (also forced to
+    // v2 under v1) stays consistent during the bridge-not-yet-mounted
+    // fallback window.
+    return window.localStorage.getItem("chat_app_ui_v1") === "1";
   } catch {
     return false;
   }

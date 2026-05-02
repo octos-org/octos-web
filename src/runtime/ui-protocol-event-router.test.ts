@@ -299,6 +299,75 @@ describe("router event mapping", () => {
 // handlers and assert the ThreadStore terminal state matches.
 // ---------------------------------------------------------------------------
 
+describe("router lifecycle de-dup", () => {
+  // Codex review: the server emits message/delta + message/persisted +
+  // turn/completed for the same turn. Pre-fix, the router appended the
+  // persisted record as an additional response on top of the streamed
+  // pending bubble — duplicate bubbles in the UI. The fix promotes the
+  // pending into the persisted record on `message/persisted` arrival.
+  it("emits a single response for delta + persisted + completed on the same turn", () => {
+    const cmid = "cmid-dedup";
+    seedThread(cmid, "ask");
+    handleMessageDelta(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: cmid, delta: "partial" },
+    );
+    handleMessagePersisted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        message: {
+          id: "msg-dedup",
+          thread_id: cmid,
+          role: "assistant",
+          content: "Final",
+          history_seq: 11,
+          intra_thread_seq: 2,
+        },
+      },
+    );
+    handleTurnCompleted(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: cmid, reason: "stop" },
+    );
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses).toHaveLength(1);
+    expect(thread.responses[0].text).toBe("Final");
+    expect(thread.responses[0].status).toBe("complete");
+    expect(thread.pendingAssistant).toBeNull();
+  });
+});
+
+describe("router intra_thread_seq preservation", () => {
+  // Codex review #3: PersistedMessage carries an explicit per-thread
+  // sequence that may differ from history_seq (per-session). Both axes
+  // should land on the response so re-orderers downstream can pick the
+  // right one.
+  it("persisted message with intra_thread_seq != history_seq preserves both", () => {
+    const cmid = "cmid-seq";
+    handleMessagePersisted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        message: {
+          id: "msg-seq",
+          thread_id: cmid,
+          role: "assistant",
+          content: "ok",
+          history_seq: 42,
+          intra_thread_seq: 3,
+        },
+      },
+    );
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const last = thread.responses[thread.responses.length - 1];
+    expect(last?.historySeq).toBe(42);
+    expect(last?.intra_thread_seq).toBe(3);
+  });
+});
+
 describe("router parity with SSE bridge", () => {
   it("v1 stream lands on the same ThreadStore state as the SSE equivalent", () => {
     // Both transports start from the same user message.
@@ -348,6 +417,99 @@ describe("router parity with SSE bridge", () => {
     };
 
     expect(v1Snapshot).toEqual(sseSnapshot);
+  });
+
+  it("persisted-then-completed lands on the same ThreadStore state both ways", () => {
+    const cmid = "cmid-parity-persisted";
+
+    // === v1: message/persisted (promotes pending) + turn/completed
+    //     (no-op since pending was already finalized). ===
+    seedThread(cmid, "ask");
+    handleMessagePersisted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        message: {
+          id: "msg-p",
+          thread_id: cmid,
+          role: "assistant",
+          content: "Persisted answer",
+          history_seq: 5,
+        },
+      },
+    );
+    handleTurnCompleted(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: cmid, reason: "stop" },
+    );
+    const v1 = ThreadStore.getThreads(SESSION);
+    const v1Snap = {
+      threads: v1.length,
+      responses: v1[0].responses.length,
+      text: v1[0].responses[v1[0].responses.length - 1]?.text,
+      status: v1[0].responses[v1[0].responses.length - 1]?.status,
+      pending: v1[0].pendingAssistant,
+    };
+
+    ThreadStore.__resetForTests();
+
+    // === Legacy path: SSE done + replace/finalize land on the same
+    //     terminal state (one finalized response, no pending). ===
+    seedThread(cmid, "ask");
+    ThreadStore.replaceAssistantText(cmid, "Persisted answer");
+    ThreadStore.finalizeAssistant(cmid, { committedSeq: 5 });
+    const sse = ThreadStore.getThreads(SESSION);
+    const sseSnap = {
+      threads: sse.length,
+      responses: sse[0].responses.length,
+      text: sse[0].responses[sse[0].responses.length - 1]?.text,
+      status: sse[0].responses[sse[0].responses.length - 1]?.status,
+      pending: sse[0].pendingAssistant,
+    };
+
+    expect(v1Snap).toEqual(sseSnap);
+  });
+
+  it("error turn lands on the same ThreadStore state both ways", () => {
+    const cmid = "cmid-parity-error";
+
+    // === v1: deltas + turn/error ===
+    seedThread(cmid, "ask");
+    handleMessageDelta(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: cmid, delta: "partial" },
+    );
+    handleTurnError(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        error: { code: -1, message: "boom" },
+      },
+    );
+    const v1 = ThreadStore.getThreads(SESSION);
+    const v1Snap = {
+      text: v1[0].responses[0]?.text,
+      status: v1[0].responses[0]?.status,
+      pending: v1[0].pendingAssistant,
+    };
+
+    ThreadStore.__resetForTests();
+
+    // === Legacy path: SSE token + finalize-as-error mirrors the v1
+    //     terminal state (status=error, partial text retained). ===
+    seedThread(cmid, "ask");
+    ThreadStore.appendAssistantToken(cmid, "partial");
+    ThreadStore.finalizeAssistant(cmid, { status: "error" });
+    const sse = ThreadStore.getThreads(SESSION);
+    const sseSnap = {
+      text: sse[0].responses[0]?.text,
+      status: sse[0].responses[0]?.status,
+      pending: sse[0].pendingAssistant,
+    };
+
+    expect(v1Snap).toEqual(sseSnap);
   });
 });
 

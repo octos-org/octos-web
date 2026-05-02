@@ -16,7 +16,10 @@ import { useThreads, type Thread } from "@/store/thread-store";
 function isThreadStoreV2Enabled(): boolean {
   if (typeof window === "undefined") return false;
   try {
-    return window.localStorage.getItem("octos_thread_store_v2") === "1";
+    if (window.localStorage.getItem("octos_thread_store_v2") === "1") return true;
+    // Phase C-2 (codex review #1): chat_app_ui_v1 forces v2 renderer so
+    // sites-chat reads from the same store /chat does.
+    return window.localStorage.getItem("chat_app_ui_v1") === "1";
   } catch {
     return false;
   }
