@@ -656,4 +656,502 @@ describe("thread-store", () => {
       "5 user messages must yield exactly 5 assistant bubbles, not 6+ phantom bubbles from late cross-talk",
     ).toBe(5);
   });
+
+  // ---------------------------------------------------------------------------
+  // PR J Fix 1: Adjacent media-only companion coalescing
+  //
+  // After reload: assistant text record N (e.g. Chinese-language deep-research
+  // report) followed by record N+1 carrying just the report's audio/podcast
+  // as files (no new text) renders as ONE bubble — not two duplicate bubbles
+  // where the second is empty with just files.
+  // ---------------------------------------------------------------------------
+
+  it("replayHistory_merges_adjacent_media_only_companion_into_text_record", () => {
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 0,
+        role: "user",
+        content: "深度研究今日中美关系",
+        client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:00Z",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "## 深度研究报告\n今日要点……",
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:05Z",
+      },
+      {
+        seq: 2,
+        role: "assistant",
+        content: "",
+        media: ["/tmp/report.mp3"],
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:06Z",
+      },
+    ]);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(
+      thread.responses,
+      "Chinese report + media-only companion should render as ONE bubble, not two",
+    ).toHaveLength(1);
+    expect(thread.responses[0].text).toContain("深度研究报告");
+    expect(thread.responses[0].files.map((f) => f.path)).toEqual([
+      "/tmp/report.mp3",
+    ]);
+    expect(
+      thread.responses[0].historySeq,
+      "merged record must keep max(historySeq) so later messages stay ordered",
+    ).toBe(2);
+  });
+
+  it("replayHistory_merges_companion_with_only_file_marker_text", () => {
+    // Companion text contains only a `[file:...]` placeholder line — also
+    // counts as media-only since the marker is not user-visible content.
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 0,
+        role: "user",
+        content: "make me a podcast",
+        client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:00Z",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "Here is your podcast.",
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:05Z",
+      },
+      {
+        seq: 2,
+        role: "assistant",
+        content: "[file: podcast.mp3]",
+        media: ["/tmp/podcast.mp3"],
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:06Z",
+      },
+    ]);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses).toHaveLength(1);
+    expect(thread.responses[0].text).toBe("Here is your podcast.");
+    expect(thread.responses[0].files.map((f) => f.path)).toEqual([
+      "/tmp/podcast.mp3",
+    ]);
+  });
+
+  it("replayHistory_does_not_merge_when_seq_is_not_adjacent", () => {
+    // Gap in seq → not the deep_research-companion pattern, keep separate.
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 0,
+        role: "user",
+        content: "Q",
+        client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:00Z",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "Text answer.",
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:05Z",
+      },
+      {
+        seq: 5,
+        role: "assistant",
+        content: "",
+        media: ["/tmp/standalone.mp3"],
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:30Z",
+      },
+    ]);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(
+      thread.responses,
+      "non-adjacent seq must NOT collapse — that media bubble is from a different background task",
+    ).toHaveLength(2);
+  });
+
+  it("replayHistory_does_not_merge_across_threads", () => {
+    // Companion shape but on a different thread → two threads, no merge.
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 0,
+        role: "user",
+        content: "Q1",
+        client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:00Z",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "Text answer.",
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:05Z",
+      },
+      {
+        seq: 2,
+        role: "user",
+        content: "Q2",
+        client_message_id: "cm-2",
+        thread_id: "cm-2",
+        timestamp: "2026-04-28T10:00:06Z",
+      },
+      {
+        seq: 3,
+        role: "assistant",
+        content: "",
+        media: ["/tmp/cross.mp3"],
+        response_to_client_message_id: "cm-2",
+        thread_id: "cm-2",
+        timestamp: "2026-04-28T10:00:07Z",
+      },
+    ]);
+
+    const threads = ThreadStore.getThreads(SESSION);
+    expect(threads).toHaveLength(2);
+    expect(threads[0].responses).toHaveLength(1);
+    expect(threads[0].responses[0].files).toHaveLength(0);
+    expect(threads[1].responses).toHaveLength(1);
+    expect(threads[1].responses[0].files.map((f) => f.path)).toEqual([
+      "/tmp/cross.mp3",
+    ]);
+  });
+
+  // ---------------------------------------------------------------------------
+  // PR J Fix 2: Sweep still-running tool chips on `done` without `tool_end`
+  //
+  // If the server emits `done` for an assistant turn without a preceding
+  // explicit `tool_end` for some tool calls (suppressed/lost terminal event),
+  // the tool chips would otherwise stay visually "running" forever.
+  // ---------------------------------------------------------------------------
+
+  it("finalizeAssistant_sweeps_running_tool_calls_to_complete", () => {
+    makeUser("kick off pipeline", "cmid-1");
+    ThreadStore.addToolCall("cmid-1", "call_A", "run_pipeline");
+    ThreadStore.appendToolProgress("cmid-1", "call_A", "[info] step 1");
+    // No tool_end fires — server omits it. `done` arrives.
+    ThreadStore.finalizeAssistant("cmid-1", { committedSeq: 3 });
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.pendingAssistant).toBeNull();
+    expect(thread.responses).toHaveLength(1);
+    const tcs = thread.responses[0].toolCalls;
+    expect(tcs).toHaveLength(1);
+    expect(
+      tcs[0].status,
+      "running tool chip must flip to complete on done — never stay spinning",
+    ).toBe("complete");
+    expect(tcs[0].id).toBe("call_A");
+  });
+
+  it("finalizeAssistant_does_not_regress_already_complete_tool_calls", () => {
+    makeUser("call_with_proper_tool_end", "cmid-1");
+    ThreadStore.addToolCall("cmid-1", "call_A", "run_pipeline");
+    ThreadStore.setToolCallStatus("cmid-1", "call_A", "complete");
+    ThreadStore.finalizeAssistant("cmid-1", { committedSeq: 3 });
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const tcs = thread.responses[0].toolCalls;
+    expect(tcs[0].status).toBe("complete");
+  });
+
+  it("finalizeAssistant_preserves_error_status_on_tool_calls", () => {
+    // Errors must NOT be silently overwritten to "complete" by the sweep —
+    // that would hide a user-visible failure.
+    makeUser("call_that_failed", "cmid-1");
+    ThreadStore.addToolCall("cmid-1", "call_A", "run_pipeline");
+    ThreadStore.setToolCallStatus("cmid-1", "call_A", "error");
+    ThreadStore.finalizeAssistant("cmid-1", { committedSeq: 3 });
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses[0].toolCalls[0].status).toBe("error");
+  });
+
+  it("finalizeAssistant_sweeps_when_done_arrives_with_no_progress_no_end", () => {
+    // Edge case: tool_start fires, but no tool_progress and no tool_end —
+    // `done` is the only terminal signal we get. Chip must still complete.
+    makeUser("instant tool", "cmid-1");
+    ThreadStore.addToolCall("cmid-1", "call_A", "fast_tool");
+    ThreadStore.finalizeAssistant("cmid-1", { committedSeq: 1 });
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const tc = thread.responses[0].toolCalls[0];
+    expect(tc.status).toBe("complete");
+    expect(tc.id).toBe("call_A");
+  });
+
+  it("finalizeAssistant_sweeps_multiple_running_tool_calls_in_one_turn", () => {
+    makeUser("parallel tools", "cmid-1");
+    ThreadStore.addToolCall("cmid-1", "call_A", "search");
+    ThreadStore.addToolCall("cmid-1", "call_B", "fetch");
+    ThreadStore.setToolCallStatus("cmid-1", "call_A", "complete");
+    // call_B never gets a tool_end — sweep should clean it up.
+    ThreadStore.finalizeAssistant("cmid-1", { committedSeq: 2 });
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const tcs = thread.responses[0].toolCalls;
+    expect(tcs.find((tc) => tc.id === "call_A")?.status).toBe("complete");
+    expect(tcs.find((tc) => tc.id === "call_B")?.status).toBe("complete");
+  });
+
+  it("replayHistory_does_not_merge_when_companion_has_text_content", () => {
+    // Both records have text → real two-bubble conversation, never merge.
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 0,
+        role: "user",
+        content: "Q",
+        client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:00Z",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "First answer.",
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:05Z",
+      },
+      {
+        seq: 2,
+        role: "assistant",
+        content: "Follow-up note.",
+        media: ["/tmp/extra.mp3"],
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:06Z",
+      },
+    ]);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses).toHaveLength(2);
+  });
+
+  // ---------------------------------------------------------------------------
+  // PR J Fix 3: Media + upload hardening
+  //
+  // (a) Duplicate assistant+file collapse: same thread, overlapping file
+  //     paths, compatible text → ONE bubble after replay.
+  // (b) historySeq max preservation across any file-merge operation.
+  // (c) User upload combo (image + audio) — both attach to the user bubble.
+  // ---------------------------------------------------------------------------
+
+  it("replayHistory_collapses_duplicate_assistant_records_with_overlapping_file", () => {
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 0,
+        role: "user",
+        content: "make audio",
+        client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:00Z",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "Here is your audio.",
+        media: ["/a.mp3"],
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:05Z",
+      },
+      {
+        seq: 2,
+        role: "assistant",
+        content: "Here is your audio.",
+        media: ["/a.mp3"],
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:06Z",
+      },
+    ]);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses).toHaveLength(1);
+    expect(thread.responses[0].files.map((f) => f.path)).toEqual(["/a.mp3"]);
+  });
+
+  it("replayHistory_preserves_max_historySeq_after_duplicate_file_merge", () => {
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 5,
+        role: "user",
+        content: "Q",
+        client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:00Z",
+      },
+      {
+        seq: 6,
+        role: "assistant",
+        content: "Answer with a file.",
+        media: ["/a.mp3"],
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:05Z",
+      },
+      {
+        seq: 10,
+        role: "assistant",
+        content: "Answer with a file.",
+        media: ["/a.mp3", "/b.mp3"],
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:08Z",
+      },
+    ]);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses).toHaveLength(1);
+    expect(thread.responses[0].historySeq).toBe(10);
+    // Files unioned, no duplicates.
+    expect(thread.responses[0].files.map((f) => f.path).sort()).toEqual([
+      "/a.mp3",
+      "/b.mp3",
+    ]);
+  });
+
+  it("replayHistory_does_not_collapse_assistant_records_with_distinct_files", () => {
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 0,
+        role: "user",
+        content: "Q",
+        client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:00Z",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "First file.",
+        media: ["/a.mp3"],
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:05Z",
+      },
+      {
+        seq: 2,
+        role: "assistant",
+        content: "Second file.",
+        media: ["/b.mp3"],
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:08Z",
+      },
+    ]);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    // Distinct file paths AND distinct text → two real bubbles, no merge.
+    expect(thread.responses).toHaveLength(2);
+  });
+
+  it("replayHistory_keeps_max_historySeq_after_media_companion_merge", () => {
+    // Re-assert Fix 1's seq invariant using a wider seq gap so the test
+    // is decisive: companion at seq 12 must produce a merged bubble whose
+    // historySeq is 12, not the prior 11.
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 10,
+        role: "user",
+        content: "research",
+        client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:00Z",
+      },
+      {
+        seq: 11,
+        role: "assistant",
+        content: "Report body.",
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:05Z",
+      },
+      {
+        seq: 12,
+        role: "assistant",
+        content: "",
+        media: ["/r.mp3"],
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:06Z",
+      },
+    ]);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses).toHaveLength(1);
+    expect(thread.responses[0].historySeq).toBe(12);
+    expect(thread.responses[0].intra_thread_seq).toBe(12);
+  });
+
+  it("user_message_with_image_and_audio_attaches_both_files_to_user_bubble", () => {
+    // Issue: image+voice combined upload regressed — only one of the two
+    // files attached to the user bubble. Fix is at the `addUserMessage`
+    // level — both paths must end up on `userMsg.files`.
+    const result = ThreadStore.addUserMessage(SESSION, {
+      text: "look at this",
+      clientMessageId: "cm-1",
+      files: [
+        { filename: "photo.png", path: "/uploads/photo.png", caption: "" },
+        { filename: "voice.m4a", path: "/uploads/voice.m4a", caption: "" },
+      ],
+    });
+    expect(result.threadId).toBe("cm-1");
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const paths = thread.userMsg.files.map((f) => f.path);
+    expect(
+      paths,
+      "image+voice upload regression: both files must attach to the user bubble",
+    ).toEqual(["/uploads/photo.png", "/uploads/voice.m4a"]);
+    expect(thread.userMsg.role).toBe("user");
+  });
+
+  it("replayHistory_user_message_with_image_and_audio_preserves_both_files", () => {
+    // History reload of an image+voice user turn: both media paths must
+    // round-trip onto `thread.userMsg.files`.
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 0,
+        role: "user",
+        content: "look at this",
+        client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:00Z",
+        media: ["/uploads/photo.png", "/uploads/voice.m4a"],
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "OK",
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:01Z",
+      },
+    ]);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.userMsg.files.map((f) => f.path)).toEqual([
+      "/uploads/photo.png",
+      "/uploads/voice.m4a",
+    ]);
+  });
 });
