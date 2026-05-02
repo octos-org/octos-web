@@ -50,8 +50,12 @@ function sameScope(a: ActiveBridge, sessionId: string, topic?: string): boolean 
  * Race-safe: each call captures the current `generation` before awaiting
  * `bridge.start()`. If a newer call (or `stopActiveBridge`) bumped the
  * generation while we were awaiting, this start is stale — we stop the
- * orphaned bridge and either return the now-current `active` bridge (when
- * scope matches) or throw, rather than overwrite `active`.
+ * orphaned bridge and ALWAYS THROW, even when a newer same-scope active
+ * exists. The throw signals the caller "you did NOT publish this active";
+ * callers depending on the published-by-me invariant (e.g. the provider's
+ * scope-aware cleanup) can branch on it. Callers wanting "give me the
+ * active bridge for this scope, regardless of who published" should use
+ * `getActiveBridge(sessionId, topic)` instead.
  */
 export async function startBridgeForSession(
   sessionId: string,
@@ -72,21 +76,21 @@ export async function startBridgeForSession(
       // No newer start raced us; surface the failure.
       throw err;
     }
-    // Newer start has already run — swallow; the new bridge is what
-    // callers will get from `getActiveBridge`.
-    return active?.bridge ?? Promise.reject(err);
+    // Newer start raced us. Throw rather than masquerade as the publisher.
+    throw new Error(
+      "ui-protocol-runtime: bridge start superseded during handshake error",
+    );
   }
   if (myGeneration !== generation) {
     // A newer `startBridgeForSession` or `stopActiveBridge` ran while
     // we were awaiting the handshake. This bridge is now orphaned —
-    // stop it and defer to whatever the live `active` slot holds.
+    // stop it and ALWAYS THROW so the caller does not assume ownership
+    // of whatever the live `active` slot holds (it belongs to a newer
+    // start, not us).
     try {
       await bridge.stop();
     } catch {
       // best-effort
-    }
-    if (active && sameScope(active, sessionId, topic)) {
-      return active.bridge;
     }
     throw new Error(
       "ui-protocol-runtime: bridge start superseded by a newer session",
