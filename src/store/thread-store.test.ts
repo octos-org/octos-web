@@ -944,4 +944,214 @@ describe("thread-store", () => {
     const [thread] = ThreadStore.getThreads(SESSION);
     expect(thread.responses).toHaveLength(2);
   });
+
+  // ---------------------------------------------------------------------------
+  // PR J Fix 3: Media + upload hardening
+  //
+  // (a) Duplicate assistant+file collapse: same thread, overlapping file
+  //     paths, compatible text → ONE bubble after replay.
+  // (b) historySeq max preservation across any file-merge operation.
+  // (c) User upload combo (image + audio) — both attach to the user bubble.
+  // ---------------------------------------------------------------------------
+
+  it("replayHistory_collapses_duplicate_assistant_records_with_overlapping_file", () => {
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 0,
+        role: "user",
+        content: "make audio",
+        client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:00Z",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "Here is your audio.",
+        media: ["/a.mp3"],
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:05Z",
+      },
+      {
+        seq: 2,
+        role: "assistant",
+        content: "Here is your audio.",
+        media: ["/a.mp3"],
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:06Z",
+      },
+    ]);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses).toHaveLength(1);
+    expect(thread.responses[0].files.map((f) => f.path)).toEqual(["/a.mp3"]);
+  });
+
+  it("replayHistory_preserves_max_historySeq_after_duplicate_file_merge", () => {
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 5,
+        role: "user",
+        content: "Q",
+        client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:00Z",
+      },
+      {
+        seq: 6,
+        role: "assistant",
+        content: "Answer with a file.",
+        media: ["/a.mp3"],
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:05Z",
+      },
+      {
+        seq: 10,
+        role: "assistant",
+        content: "Answer with a file.",
+        media: ["/a.mp3", "/b.mp3"],
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:08Z",
+      },
+    ]);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses).toHaveLength(1);
+    expect(thread.responses[0].historySeq).toBe(10);
+    // Files unioned, no duplicates.
+    expect(thread.responses[0].files.map((f) => f.path).sort()).toEqual([
+      "/a.mp3",
+      "/b.mp3",
+    ]);
+  });
+
+  it("replayHistory_does_not_collapse_assistant_records_with_distinct_files", () => {
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 0,
+        role: "user",
+        content: "Q",
+        client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:00Z",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "First file.",
+        media: ["/a.mp3"],
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:05Z",
+      },
+      {
+        seq: 2,
+        role: "assistant",
+        content: "Second file.",
+        media: ["/b.mp3"],
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:08Z",
+      },
+    ]);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    // Distinct file paths AND distinct text → two real bubbles, no merge.
+    expect(thread.responses).toHaveLength(2);
+  });
+
+  it("replayHistory_keeps_max_historySeq_after_media_companion_merge", () => {
+    // Re-assert Fix 1's seq invariant using a wider seq gap so the test
+    // is decisive: companion at seq 12 must produce a merged bubble whose
+    // historySeq is 12, not the prior 11.
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 10,
+        role: "user",
+        content: "research",
+        client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:00Z",
+      },
+      {
+        seq: 11,
+        role: "assistant",
+        content: "Report body.",
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:05Z",
+      },
+      {
+        seq: 12,
+        role: "assistant",
+        content: "",
+        media: ["/r.mp3"],
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:06Z",
+      },
+    ]);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses).toHaveLength(1);
+    expect(thread.responses[0].historySeq).toBe(12);
+    expect(thread.responses[0].intra_thread_seq).toBe(12);
+  });
+
+  it("user_message_with_image_and_audio_attaches_both_files_to_user_bubble", () => {
+    // Issue: image+voice combined upload regressed — only one of the two
+    // files attached to the user bubble. Fix is at the `addUserMessage`
+    // level — both paths must end up on `userMsg.files`.
+    const result = ThreadStore.addUserMessage(SESSION, {
+      text: "look at this",
+      clientMessageId: "cm-1",
+      files: [
+        { filename: "photo.png", path: "/uploads/photo.png", caption: "" },
+        { filename: "voice.m4a", path: "/uploads/voice.m4a", caption: "" },
+      ],
+    });
+    expect(result.threadId).toBe("cm-1");
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const paths = thread.userMsg.files.map((f) => f.path);
+    expect(
+      paths,
+      "image+voice upload regression: both files must attach to the user bubble",
+    ).toEqual(["/uploads/photo.png", "/uploads/voice.m4a"]);
+    expect(thread.userMsg.role).toBe("user");
+  });
+
+  it("replayHistory_user_message_with_image_and_audio_preserves_both_files", () => {
+    // History reload of an image+voice user turn: both media paths must
+    // round-trip onto `thread.userMsg.files`.
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 0,
+        role: "user",
+        content: "look at this",
+        client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:00Z",
+        media: ["/uploads/photo.png", "/uploads/voice.m4a"],
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "OK",
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-04-28T10:00:01Z",
+      },
+    ]);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.userMsg.files.map((f) => f.path)).toEqual([
+      "/uploads/photo.png",
+      "/uploads/voice.m4a",
+    ]);
+  });
 });

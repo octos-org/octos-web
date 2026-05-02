@@ -732,6 +732,58 @@ function mergeMediaCompanionInto(
   }
 }
 
+/** Locate a prior assistant response in the same thread that already
+ *  carries at least one of the incoming record's file paths AND whose
+ *  text either matches the incoming text verbatim or is empty (in
+ *  either direction). Returns -1 when no duplicate exists. */
+function findDuplicateAssistantWithFile(
+  responses: ThreadMessage[],
+  incoming: ThreadMessage,
+): number {
+  const incomingPaths = new Set(incoming.files.map((f) => f.path));
+  if (incomingPaths.size === 0) return -1;
+  const incomingText = incoming.text.trim();
+  for (let i = responses.length - 1; i >= 0; i -= 1) {
+    const r = responses[i];
+    if (r.role !== "assistant") continue;
+    if (r.files.length === 0) continue;
+    const hasOverlap = r.files.some((f) => incomingPaths.has(f.path));
+    if (!hasOverlap) continue;
+    const rText = r.text.trim();
+    const textsCompatible =
+      rText === incomingText ||
+      rText.length === 0 ||
+      incomingText.length === 0;
+    if (textsCompatible) return i;
+  }
+  return -1;
+}
+
+/** Merge `incoming` into `prev` for the duplicate-file collapse: union
+ *  the file lists by path, prefer non-empty text, and preserve
+ *  `historySeq = max(...)`. */
+function mergeDuplicateAssistantFile(
+  prev: ThreadMessage,
+  incoming: ThreadMessage,
+): void {
+  const seenPaths = new Set(prev.files.map((f) => f.path));
+  for (const f of incoming.files) {
+    if (!seenPaths.has(f.path)) {
+      prev.files.push(f);
+      seenPaths.add(f.path);
+    }
+  }
+  if (prev.text.trim().length === 0 && incoming.text.trim().length > 0) {
+    prev.text = incoming.text;
+  }
+  const prevSeq = prev.historySeq ?? Number.NEGATIVE_INFINITY;
+  const incSeq = incoming.historySeq ?? Number.NEGATIVE_INFINITY;
+  if (incSeq > prevSeq) {
+    prev.historySeq = incoming.historySeq;
+    prev.intra_thread_seq = incoming.intra_thread_seq ?? prev.intra_thread_seq;
+  }
+}
+
 function buildResponseFromApi(m: MessageInfo): ThreadMessage {
   const role: ThreadMessage["role"] =
     m.role === "user"
@@ -894,6 +946,25 @@ export function replayHistory(
         last.text.trim().length > 0
       ) {
         mergeMediaCompanionInto(last, built);
+        continue;
+      }
+    }
+
+    // Duplicate assistant+file collapse: a prior assistant record on the
+    // same thread already carries one or more of the incoming record's
+    // file paths (overlap) AND the text either matches verbatim or one
+    // side is empty. This handles the replay shape where the persistence
+    // layer wrote both a streaming snapshot and a final delivery for the
+    // same file. Without this, the user sees two assistant bubbles with
+    // the same MP3/PNG attached.
+    if (
+      built.role === "assistant" &&
+      built.files.length > 0 &&
+      thread.responses.length > 0
+    ) {
+      const dupIdx = findDuplicateAssistantWithFile(thread.responses, built);
+      if (dupIdx !== -1) {
+        mergeDuplicateAssistantFile(thread.responses[dupIdx], built);
         continue;
       }
     }
