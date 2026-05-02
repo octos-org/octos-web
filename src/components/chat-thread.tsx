@@ -43,7 +43,7 @@ import {
   type ThreadToolCall,
 } from "@/store/thread-store";
 import { uploadFiles } from "@/api/chat";
-import { sendMessage as bridgeSend } from "@/runtime/sse-bridge";
+import { sendMessage as bridgeSend } from "@/runtime/ui-protocol-send";
 import * as StreamManager from "@/runtime/stream-manager";
 import { MarkdownContent } from "./markdown-renderer";
 import { ThinkingIndicator } from "./thinking-indicator";

@@ -18,6 +18,11 @@ import { getSessionStatus } from "@/api/sessions";
 import type { BackgroundTaskInfo } from "@/api/types";
 import { restoreWatchedSessions, unwatchSession, watchSession } from "./task-watcher";
 import { eventSessionId, eventTopic } from "./event-scope";
+import { isChatAppUiV1Enabled } from "@/lib/feature-flags";
+import {
+  startBridgeForSession,
+  stopActiveBridge,
+} from "./ui-protocol-runtime";
 /** Max sessions kept in memory simultaneously. */
 const MAX_CACHED = 5;
 
@@ -118,6 +123,32 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
         }
       }
     }
+  }, [currentSessionId, historyTopic]);
+
+  // Phase C-2 (#68): when the chat_app_ui_v1 flag is on, mount a
+  // `ui-protocol-bridge` on top of the existing SSE+REST runtime. The
+  // bridge owns the streaming-turn slice; the router fans bridge events
+  // out to ThreadStore mutations. Flag-OFF (the default) leaves this
+  // effect a no-op so the legacy path is bit-for-bit preserved.
+  useEffect(() => {
+    if (!isChatAppUiV1Enabled()) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        await startBridgeForSession(currentSessionId, historyTopic);
+      } catch {
+        // Bridge start failures are surfaced by the bridge's own
+        // `warning` events; the SSE path remains operational.
+      }
+      if (cancelled) {
+        // Session changed mid-start; tear down what we just brought up.
+        await stopActiveBridge();
+      }
+    })();
+    return () => {
+      cancelled = true;
+      void stopActiveBridge();
+    };
   }, [currentSessionId, historyTopic]);
 
   // Check for active background work on session mount and register with
