@@ -21,7 +21,7 @@ import { eventSessionId, eventTopic } from "./event-scope";
 import { isChatAppUiV1Enabled } from "@/lib/feature-flags";
 import {
   startBridgeForSession,
-  stopActiveBridge,
+  stopActiveBridgeIfScope,
 } from "./ui-protocol-runtime";
 /** Max sessions kept in memory simultaneously. */
 const MAX_CACHED = 5;
@@ -133,21 +133,31 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!isChatAppUiV1Enabled()) return;
     let cancelled = false;
+    let mineStarted = false;
     void (async () => {
       try {
         await startBridgeForSession(currentSessionId, historyTopic);
+        mineStarted = true;
       } catch {
-        // Bridge start failures are surfaced by the bridge's own
-        // `warning` events; the SSE path remains operational.
+        // Either a real start failure (surfaced via the bridge's own
+        // `warning` events) OR a stale-generation throw (newer call
+        // already won and `startBridgeForSession` cleaned up its own
+        // orphan). In either case we did NOT publish; leave whatever
+        // is currently active (likely the newer effect's bridge) alone.
       }
-      if (cancelled) {
-        // Session changed mid-start; tear down what we just brought up.
-        await stopActiveBridge();
+      if (cancelled && mineStarted) {
+        // We successfully published, but the effect was already cancelled
+        // mid-resolve. Only stop if WE are still the active scope —
+        // a newer effect may have already taken over by now.
+        await stopActiveBridgeIfScope(currentSessionId, historyTopic);
       }
     })();
     return () => {
       cancelled = true;
-      void stopActiveBridge();
+      if (mineStarted) {
+        // Only tear down our own scope. A newer effect's bridge stays.
+        void stopActiveBridgeIfScope(currentSessionId, historyTopic);
+      }
     };
   }, [currentSessionId, historyTopic]);
 

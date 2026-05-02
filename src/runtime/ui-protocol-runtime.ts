@@ -129,6 +129,32 @@ export async function stopActiveBridge(): Promise<void> {
   }
 }
 
+/** Stop the active bridge ONLY if its scope matches the requested
+ *  (sessionId, topic). Returns true if a stop happened, false otherwise.
+ *  Used by `runtime-provider.tsx` to safely tear down a scoped bridge
+ *  without accidentally stopping a newer effect's active bridge — the
+ *  generation counter already prevents stale starts from publishing,
+ *  but the provider's cleanup also needs to avoid stopping a sibling. */
+export async function stopActiveBridgeIfScope(
+  sessionId: string,
+  topic?: string,
+): Promise<boolean> {
+  if (!active) return false;
+  if (!sameScope(active, sessionId, topic)) return false;
+  // Match — bump generation so any in-flight start sees itself as stale,
+  // then perform the same stop as `stopActiveBridge`.
+  generation++;
+  const handle = active;
+  active = null;
+  handle.attachment.detach();
+  try {
+    await handle.bridge.stop();
+  } catch {
+    // best-effort
+  }
+  return true;
+}
+
 /** Test-only reset. */
 export function __resetUiProtocolRuntimeForTest(): void {
   active = null;
