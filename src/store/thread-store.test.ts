@@ -1154,4 +1154,148 @@ describe("thread-store", () => {
       "/uploads/voice.m4a",
     ]);
   });
+
+  // -------------------------------------------------------------------------
+  // appendPersistedMessage — M8.10 wave-6 leak (PR M, session_result routing)
+  // -------------------------------------------------------------------------
+
+  it("appendPersistedMessage_routes_late_assistant_into_existing_thread", () => {
+    // Fixture: deep_research turn whose spawn-ack assistant has already
+    // finalized. The late session_result carrying the actual report must
+    // land in the SAME thread's responses, not a new orphan.
+    makeUser("deep research today's news", "cm-deep");
+    ThreadStore.replaceAssistantText("cm-deep", "spawned");
+    ThreadStore.finalizeAssistant("cm-deep", { committedSeq: 1 });
+
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 5,
+      role: "assistant",
+      content: "## Today\nReport body...",
+      response_to_client_message_id: "cm-deep",
+      thread_id: "cm-deep",
+      timestamp: "2026-04-28T10:05:00Z",
+    });
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.id).toBe("cm-deep");
+    expect(thread.responses).toHaveLength(2);
+    expect(thread.responses[1].text).toContain("Report body");
+    expect(thread.responses[1].historySeq).toBe(5);
+  });
+
+  it("appendPersistedMessage_with_media_only_companion_merges_into_text_response", () => {
+    // Late media-only delivery (e.g. podcast.mp3) must fold into the
+    // previous text response on the same thread — same rule replayHistory
+    // applies on a fresh page load.
+    makeUser("make me a podcast", "cm-pod");
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 1,
+      role: "assistant",
+      content: "Here is your podcast.",
+      response_to_client_message_id: "cm-pod",
+      thread_id: "cm-pod",
+      timestamp: "2026-04-28T10:00:05Z",
+    });
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 2,
+      role: "assistant",
+      content: "",
+      media: ["/tmp/podcast.mp3"],
+      response_to_client_message_id: "cm-pod",
+      thread_id: "cm-pod",
+      timestamp: "2026-04-28T10:00:06Z",
+    });
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses).toHaveLength(1);
+    expect(thread.responses[0].text).toBe("Here is your podcast.");
+    expect(thread.responses[0].files.map((f) => f.path)).toEqual([
+      "/tmp/podcast.mp3",
+    ]);
+  });
+
+  it("appendPersistedMessage_idempotent", () => {
+    makeUser("Q", "cm-1");
+    const msg = {
+      seq: 7,
+      role: "assistant" as const,
+      content: "Answer.",
+      response_to_client_message_id: "cm-1",
+      thread_id: "cm-1",
+      timestamp: "2026-04-28T10:00:05Z",
+    };
+    ThreadStore.appendPersistedMessage(SESSION, undefined, msg);
+    ThreadStore.appendPersistedMessage(SESSION, undefined, msg);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const finalized = thread.responses.filter((r) => r.role === "assistant");
+    expect(
+      finalized,
+      "second call with same seq must be a no-op",
+    ).toHaveLength(1);
+  });
+
+  it("appendPersistedMessage_falls_back_to_legacy_thread_id_when_thread_id_missing", () => {
+    // Legacy daemon: server omits thread_id. Helper must derive it from
+    // client_message_id / response_to_client_message_id and find the
+    // existing thread anyway.
+    makeUser("Q", "cm-legacy");
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 3,
+      role: "assistant",
+      content: "Late answer.",
+      response_to_client_message_id: "cm-legacy",
+      timestamp: "2026-04-28T10:00:05Z",
+    });
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.id).toBe("cm-legacy");
+    expect(thread.responses).toHaveLength(1);
+    expect(thread.responses[0].text).toBe("Late answer.");
+  });
+
+  it("appendPersistedMessage_does_not_disturb_pendingAssistant_for_other_thread", () => {
+    // Thread A still streaming, thread B receives a late session_result.
+    // A's pendingAssistant must be untouched.
+    makeUser("slow Q", "cm-A");
+    makeUser("fast Q", "cm-B");
+    ThreadStore.appendAssistantToken("cm-A", "still typing");
+
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 9,
+      role: "assistant",
+      content: "B's answer.",
+      response_to_client_message_id: "cm-B",
+      thread_id: "cm-B",
+      timestamp: "2026-04-28T10:00:05Z",
+    });
+
+    const threads = ThreadStore.getThreads(SESSION);
+    const a = threads.find((t) => t.id === "cm-A")!;
+    const b = threads.find((t) => t.id === "cm-B")!;
+    expect(a.pendingAssistant?.text).toBe("still typing");
+    expect(a.pendingAssistant?.status).toBe("streaming");
+    expect(b.responses).toHaveLength(1);
+    expect(b.responses[0].text).toBe("B's answer.");
+  });
+
+  it("appendPersistedMessage_creates_orphan_thread_when_thread_unknown", () => {
+    // Late session_result for a thread we never saw open (e.g. mid-stream
+    // page reload). Helper must synthesize a placeholder thread so the
+    // record is at least visible — no silent drop.
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 4,
+      role: "assistant",
+      content: "Orphan late answer.",
+      response_to_client_message_id: "cm-unseen",
+      thread_id: "cm-unseen",
+      timestamp: "2026-04-28T10:00:05Z",
+    });
+
+    const threads = ThreadStore.getThreads(SESSION);
+    expect(threads).toHaveLength(1);
+    expect(threads[0].id).toBe("cm-unseen");
+    expect(threads[0].responses).toHaveLength(1);
+    expect(threads[0].responses[0].text).toBe("Orphan late answer.");
+  });
 });
