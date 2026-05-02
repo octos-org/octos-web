@@ -1133,7 +1133,17 @@ export function appendPersistedMessage(
     thread.responses.length > 0
   ) {
     const last = thread.responses[thread.responses.length - 1];
-    if (last.role === "assistant" && last.text.trim().length > 0) {
+    const lastSeq = last.historySeq;
+    const builtSeq = built.historySeq;
+    const adjacent =
+      typeof lastSeq === "number" &&
+      typeof builtSeq === "number" &&
+      builtSeq === lastSeq + 1;
+    if (
+      adjacent &&
+      last.role === "assistant" &&
+      last.text.trim().length > 0
+    ) {
       mergeMediaCompanionInto(last, built);
       notify();
       return;
