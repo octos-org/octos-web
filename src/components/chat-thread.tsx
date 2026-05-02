@@ -43,7 +43,7 @@ import {
   type ThreadToolCall,
 } from "@/store/thread-store";
 import { uploadFiles } from "@/api/chat";
-import { sendMessage as bridgeSend } from "@/runtime/sse-bridge";
+import { sendMessage as bridgeSend } from "@/runtime/ui-protocol-send";
 import * as StreamManager from "@/runtime/stream-manager";
 import { MarkdownContent } from "./markdown-renderer";
 import { ThinkingIndicator } from "./thinking-indicator";
@@ -522,11 +522,19 @@ function isFileOnlyAssistantMessage(message: Message): boolean {
 
 /** M8.10 PR #3: opt-in to the new thread-by-cmid renderer via DevTools.
  *  When the flag is on, render a stub placeholder — the real threaded UI
- *  ships in PR #4. The flat-list path below remains the default. */
+ *  ships in PR #4. The flat-list path below remains the default.
+ *
+ *  Phase C-2 (codex review #1): the chat_app_ui_v1 send path writes only
+ *  to ThreadStore (`ui-protocol-send.ts`). To avoid a renderer/store
+ *  mismatch (writes to ThreadStore, reads from MessageStore = empty
+ *  /chat), v1=ON also forces the v2 renderer regardless of the v2 flag.
+ *  This does NOT change v2 flag semantics or default — v2 OFF + v1 OFF
+ *  remains the legacy flat-list path. */
 function isThreadStoreV2Enabled(): boolean {
   if (typeof window === "undefined") return false;
   try {
-    return window.localStorage.getItem("octos_thread_store_v2") === "1";
+    if (window.localStorage.getItem("octos_thread_store_v2") === "1") return true;
+    return window.localStorage.getItem("chat_app_ui_v1") === "1";
   } catch {
     return false;
   }

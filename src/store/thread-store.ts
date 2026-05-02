@@ -812,7 +812,16 @@ function buildResponseFromApi(m: MessageInfo): ThreadMessage {
     status: "complete",
     timestamp: m.timestamp ? new Date(m.timestamp).getTime() : Date.now(),
     historySeq: typeof m.seq === "number" ? m.seq : undefined,
-    intra_thread_seq: typeof m.seq === "number" ? m.seq : undefined,
+    // Codex review #3: prefer the explicit per-thread sequence when the
+    // server emitted one (UI Protocol v1 PersistedMessage). Legacy REST
+    // history responses don't carry a separate intra_thread_seq, so
+    // `m.seq` (per-session) is the only axis available — fall back to it.
+    intra_thread_seq:
+      typeof m.intra_thread_seq === "number"
+        ? m.intra_thread_seq
+        : typeof m.seq === "number"
+          ? m.seq
+          : undefined,
     responseToClientMessageId: m.response_to_client_message_id,
     clientMessageId: m.client_message_id,
     sourceToolCallId: m.tool_call_id,

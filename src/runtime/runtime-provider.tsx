@@ -18,6 +18,11 @@ import { getSessionStatus } from "@/api/sessions";
 import type { BackgroundTaskInfo } from "@/api/types";
 import { restoreWatchedSessions, unwatchSession, watchSession } from "./task-watcher";
 import { eventSessionId, eventTopic } from "./event-scope";
+import { isChatAppUiV1Enabled } from "@/lib/feature-flags";
+import {
+  startBridgeForSession,
+  stopActiveBridgeIfScope,
+} from "./ui-protocol-runtime";
 /** Max sessions kept in memory simultaneously. */
 const MAX_CACHED = 5;
 
@@ -118,6 +123,42 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
         }
       }
     }
+  }, [currentSessionId, historyTopic]);
+
+  // Phase C-2 (#68): when the chat_app_ui_v1 flag is on, mount a
+  // `ui-protocol-bridge` on top of the existing SSE+REST runtime. The
+  // bridge owns the streaming-turn slice; the router fans bridge events
+  // out to ThreadStore mutations. Flag-OFF (the default) leaves this
+  // effect a no-op so the legacy path is bit-for-bit preserved.
+  useEffect(() => {
+    if (!isChatAppUiV1Enabled()) return;
+    let cancelled = false;
+    let mineStarted = false;
+    void (async () => {
+      try {
+        await startBridgeForSession(currentSessionId, historyTopic);
+        mineStarted = true;
+      } catch {
+        // Either a real start failure (surfaced via the bridge's own
+        // `warning` events) OR a stale-generation throw (newer call
+        // already won and `startBridgeForSession` cleaned up its own
+        // orphan). In either case we did NOT publish; leave whatever
+        // is currently active (likely the newer effect's bridge) alone.
+      }
+      if (cancelled && mineStarted) {
+        // We successfully published, but the effect was already cancelled
+        // mid-resolve. Only stop if WE are still the active scope —
+        // a newer effect may have already taken over by now.
+        await stopActiveBridgeIfScope(currentSessionId, historyTopic);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (mineStarted) {
+        // Only tear down our own scope. A newer effect's bridge stays.
+        void stopActiveBridgeIfScope(currentSessionId, historyTopic);
+      }
+    };
   }, [currentSessionId, historyTopic]);
 
   // Check for active background work on session mount and register with
