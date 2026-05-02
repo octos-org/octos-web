@@ -653,8 +653,18 @@ export function finalizeAssistant(
     const thread = state.byId.get(threadId);
     if (!thread || !thread.pendingAssistant) continue;
 
+    // Sweep any still-running tool calls to "complete" — the assistant
+    // turn ended, so a tool whose explicit `tool_end` was suppressed or
+    // lost over the wire would otherwise leave the chip spinning forever.
+    // Only flip running → complete; preserve "error" and existing
+    // "complete" entries (tool_end already arrived for those).
+    const sweptToolCalls = thread.pendingAssistant.toolCalls.map((tc) =>
+      tc.status === "running" ? { ...tc, status: "complete" as const } : tc,
+    );
+
     const finalized: ThreadMessage = {
       ...thread.pendingAssistant,
+      toolCalls: sweptToolCalls,
       status: opts.status ?? "complete",
       historySeq: opts.committedSeq ?? thread.pendingAssistant.historySeq,
       intra_thread_seq:

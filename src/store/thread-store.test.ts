@@ -834,6 +834,83 @@ describe("thread-store", () => {
     ]);
   });
 
+  // ---------------------------------------------------------------------------
+  // PR J Fix 2: Sweep still-running tool chips on `done` without `tool_end`
+  //
+  // If the server emits `done` for an assistant turn without a preceding
+  // explicit `tool_end` for some tool calls (suppressed/lost terminal event),
+  // the tool chips would otherwise stay visually "running" forever.
+  // ---------------------------------------------------------------------------
+
+  it("finalizeAssistant_sweeps_running_tool_calls_to_complete", () => {
+    makeUser("kick off pipeline", "cmid-1");
+    ThreadStore.addToolCall("cmid-1", "call_A", "run_pipeline");
+    ThreadStore.appendToolProgress("cmid-1", "call_A", "[info] step 1");
+    // No tool_end fires — server omits it. `done` arrives.
+    ThreadStore.finalizeAssistant("cmid-1", { committedSeq: 3 });
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.pendingAssistant).toBeNull();
+    expect(thread.responses).toHaveLength(1);
+    const tcs = thread.responses[0].toolCalls;
+    expect(tcs).toHaveLength(1);
+    expect(
+      tcs[0].status,
+      "running tool chip must flip to complete on done — never stay spinning",
+    ).toBe("complete");
+    expect(tcs[0].id).toBe("call_A");
+  });
+
+  it("finalizeAssistant_does_not_regress_already_complete_tool_calls", () => {
+    makeUser("call_with_proper_tool_end", "cmid-1");
+    ThreadStore.addToolCall("cmid-1", "call_A", "run_pipeline");
+    ThreadStore.setToolCallStatus("cmid-1", "call_A", "complete");
+    ThreadStore.finalizeAssistant("cmid-1", { committedSeq: 3 });
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const tcs = thread.responses[0].toolCalls;
+    expect(tcs[0].status).toBe("complete");
+  });
+
+  it("finalizeAssistant_preserves_error_status_on_tool_calls", () => {
+    // Errors must NOT be silently overwritten to "complete" by the sweep —
+    // that would hide a user-visible failure.
+    makeUser("call_that_failed", "cmid-1");
+    ThreadStore.addToolCall("cmid-1", "call_A", "run_pipeline");
+    ThreadStore.setToolCallStatus("cmid-1", "call_A", "error");
+    ThreadStore.finalizeAssistant("cmid-1", { committedSeq: 3 });
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses[0].toolCalls[0].status).toBe("error");
+  });
+
+  it("finalizeAssistant_sweeps_when_done_arrives_with_no_progress_no_end", () => {
+    // Edge case: tool_start fires, but no tool_progress and no tool_end —
+    // `done` is the only terminal signal we get. Chip must still complete.
+    makeUser("instant tool", "cmid-1");
+    ThreadStore.addToolCall("cmid-1", "call_A", "fast_tool");
+    ThreadStore.finalizeAssistant("cmid-1", { committedSeq: 1 });
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const tc = thread.responses[0].toolCalls[0];
+    expect(tc.status).toBe("complete");
+    expect(tc.id).toBe("call_A");
+  });
+
+  it("finalizeAssistant_sweeps_multiple_running_tool_calls_in_one_turn", () => {
+    makeUser("parallel tools", "cmid-1");
+    ThreadStore.addToolCall("cmid-1", "call_A", "search");
+    ThreadStore.addToolCall("cmid-1", "call_B", "fetch");
+    ThreadStore.setToolCallStatus("cmid-1", "call_A", "complete");
+    // call_B never gets a tool_end — sweep should clean it up.
+    ThreadStore.finalizeAssistant("cmid-1", { committedSeq: 2 });
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const tcs = thread.responses[0].toolCalls;
+    expect(tcs.find((tc) => tc.id === "call_A")?.status).toBe("complete");
+    expect(tcs.find((tc) => tc.id === "call_B")?.status).toBe("complete");
+  });
+
   it("replayHistory_does_not_merge_when_companion_has_text_content", () => {
     // Both records have text → real two-bubble conversation, never merge.
     ThreadStore.replayHistory(SESSION, [
