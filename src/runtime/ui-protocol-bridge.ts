@@ -755,12 +755,12 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
 
     let ws: WebSocket;
     try {
-      // Some browsers may permit setting the bearer via the WS subprotocol;
-      // we offer it AND the ?token= fallback so the server can pick whichever
-      // path made it through.
-      const token = this.cfg.getToken();
-      const protocols = token ? [`octos.bearer.${token}`] : undefined;
-      ws = new this.cfg.webSocketImpl(this.buildUrl(), protocols);
+      // Auth flows via `?token=` query param (set by buildUrl). We do NOT
+      // pass a Sec-WebSocket-Protocol subprotocol: Chrome aborts the
+      // handshake when the client requests one and the server does not
+      // echo a chosen protocol in the response, and the axum handler at
+      // /api/ui-protocol/ws does not currently negotiate subprotocols.
+      ws = new this.cfg.webSocketImpl(this.buildUrl());
     } catch (err) {
       this.setState("error");
       throw err instanceof Error ? err : new Error(String(err));

@@ -360,7 +360,11 @@ describe("connection lifecycle", () => {
     // notifications on this feature, so dropping it would silently
     // disable spawn_only attachment delivery.
     expect(ws.url).toContain("ui_feature=event.message_persisted.v1");
-    expect(ws.protocols).toEqual(["octos.bearer.test-token"]);
+    // Regression-pin: do NOT pass Sec-WebSocket-Protocol. Chrome aborts the
+    // handshake when the client requests a subprotocol the server does not
+    // echo back, and the axum WS handler does not negotiate subprotocols.
+    // Auth flows entirely via the `?token=` query param above.
+    expect(ws.protocols).toBeUndefined();
   });
 
   it("session/open params include profile_id when provided to start()", async () => {
