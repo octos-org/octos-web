@@ -194,28 +194,64 @@ describe("type guards (fail-closed)", () => {
     });
   });
 
-  it("rejects message/persisted whose message lacks thread_id", () => {
+  it("rejects message/persisted with no seq (UPCR-2026-012 flat shape)", () => {
     expect(
       guards.guardMessagePersisted({
         session_id: "s",
-        turn_id: "t",
-        message: { id: "m", role: "assistant", content: "" },
+        role: "assistant",
+        message_id: "m",
+        source: "assistant",
+        cursor: { stream: "s", seq: 1 },
+        persisted_at: "2026-05-04T00:00:00Z",
       }),
     ).toBeNull();
   });
 
-  it("accepts message/persisted with thread_id", () => {
+  it("rejects message/persisted with unknown role", () => {
+    expect(
+      guards.guardMessagePersisted({
+        session_id: "s",
+        seq: 1,
+        role: "narrator",
+        message_id: "m",
+        source: "assistant",
+        cursor: { stream: "s", seq: 1 },
+        persisted_at: "2026-05-04T00:00:00Z",
+      }),
+    ).toBeNull();
+  });
+
+  it("accepts the flat UPCR-2026-012 shape with thread_id", () => {
     const ev = guards.guardMessagePersisted({
       session_id: "s",
       turn_id: "t",
-      message: {
-        id: "m",
-        thread_id: "th",
-        role: "assistant",
-        content: "hi",
-      },
+      thread_id: "th",
+      seq: 18,
+      role: "assistant",
+      message_id: "m",
+      source: "assistant",
+      cursor: { stream: "s", seq: 18 },
+      persisted_at: "2026-05-04T00:00:00Z",
     });
-    expect(ev?.message.thread_id).toBe("th");
+    expect(ev?.thread_id).toBe("th");
+    expect(ev?.seq).toBe(18);
+    expect(ev?.media).toBeUndefined();
+  });
+
+  it("accepts message/persisted with media (P1.3 server PR #767)", () => {
+    const ev = guards.guardMessagePersisted({
+      session_id: "s",
+      turn_id: "t",
+      thread_id: "th",
+      seq: 19,
+      role: "assistant",
+      message_id: "m2",
+      source: "background",
+      cursor: { stream: "s", seq: 19 },
+      persisted_at: "2026-05-04T00:00:00Z",
+      media: ["research/_report.md"],
+    });
+    expect(ev?.media).toEqual(["research/_report.md"]);
   });
 
   it("rejects task/updated without task_id", () => {
@@ -594,12 +630,13 @@ describe("notification dispatch", () => {
       params: {
         session_id: "sess-1",
         turn_id: "t1",
-        message: {
-          id: "m1",
-          thread_id: "th1",
-          role: "assistant",
-          content: "ok",
-        },
+        thread_id: "th1",
+        seq: 18,
+        role: "assistant",
+        message_id: "m1",
+        source: "assistant",
+        cursor: { stream: "sess-1", seq: 18 },
+        persisted_at: "2026-05-04T00:00:00Z",
       },
     });
     ws.triggerMessage({
@@ -624,7 +661,8 @@ describe("notification dispatch", () => {
     });
 
     expect(persisted).toHaveLength(1);
-    expect(persisted[0].message.thread_id).toBe("th1");
+    expect(persisted[0].thread_id).toBe("th1");
+    expect(persisted[0].seq).toBe(18);
     expect(tasks[0].task_id).toBe("task-A");
     expect(outputs[0].chunk).toBe("log line");
   });

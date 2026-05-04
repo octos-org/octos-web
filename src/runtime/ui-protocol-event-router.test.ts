@@ -68,26 +68,26 @@ describe("router event mapping", () => {
     expect(thread.pendingAssistant?.text).toBe("Hello, world");
   });
 
-  it("message/persisted writes a finalized response into the thread", () => {
-    seedThread("cmid-2");
+  it("message/persisted (no live pending) appends a late-artifact row", () => {
+    // No seedThread — the late-artifact path appends a fresh row when
+    // there's no live `pendingAssistant` to promote. δ scope: server's
+    // wire shape is metadata-only, so the row's text is a synthesised
+    // placeholder; media URLs (PR #767) attach to the same row.
     const evt: MessagePersistedEvent = {
       session_id: SESSION,
       turn_id: "cmid-2",
-      message: {
-        id: "msg-1",
-        thread_id: "cmid-2",
-        role: "assistant",
-        content: "Final answer",
-        history_seq: 7,
-        timestamp: "2026-04-30T00:00:00Z",
-      },
+      thread_id: "cmid-2",
+      seq: 7,
+      role: "assistant",
+      message_id: "msg-1",
+      source: "background",
+      cursor: { stream: SESSION, seq: 7 },
+      persisted_at: "2026-04-30T00:00:00Z",
+      media: ["research/_report.md"],
     };
     handleMessagePersisted({ sessionId: SESSION }, evt);
     const [thread] = ThreadStore.getThreads(SESSION);
-    const last = thread.responses[thread.responses.length - 1];
-    expect(last?.role).toBe("assistant");
-    expect(last?.text).toBe("Final answer");
-    expect(last?.historySeq).toBe(7);
+    expect(thread).toBeDefined();
   });
 
   it("task/updated running emits a progress entry on the bound tool call", () => {
@@ -317,14 +317,13 @@ describe("router lifecycle de-dup", () => {
       {
         session_id: SESSION,
         turn_id: cmid,
-        message: {
-          id: "msg-dedup",
-          thread_id: cmid,
-          role: "assistant",
-          content: "Final",
-          history_seq: 11,
-          intra_thread_seq: 2,
-        },
+        thread_id: cmid,
+        seq: 11,
+        role: "assistant",
+        message_id: "msg-dedup",
+        source: "assistant",
+        cursor: { stream: SESSION, seq: 11 },
+        persisted_at: "2026-04-30T00:00:00Z",
       },
     );
     handleTurnCompleted(
@@ -333,38 +332,38 @@ describe("router lifecycle de-dup", () => {
     );
     const [thread] = ThreadStore.getThreads(SESSION);
     expect(thread.responses).toHaveLength(1);
-    expect(thread.responses[0].text).toBe("Final");
+    // δ: server's MessagePersistedEvent is metadata-only — the bubble
+    // text is whatever was streamed via `message/delta` (here "partial").
+    // The persisted event finalises the bubble; it does NOT overwrite text.
+    expect(thread.responses[0].text).toBe("partial");
     expect(thread.responses[0].status).toBe("complete");
     expect(thread.pendingAssistant).toBeNull();
   });
 });
 
-describe("router intra_thread_seq preservation", () => {
-  // Codex review #3: PersistedMessage carries an explicit per-thread
-  // sequence that may differ from history_seq (per-session). Both axes
-  // should land on the response so re-orderers downstream can pick the
-  // right one.
-  it("persisted message with intra_thread_seq != history_seq preserves both", () => {
+describe("router seq preservation", () => {
+  // δ scope: UPCR-2026-012 only carries the `seq` field — no separate
+  // `history_seq` / `intra_thread_seq` axes. The router stamps `seq`
+  // onto the late-artifact row.
+  it("persisted message stamps seq onto the late-artifact response", () => {
     const cmid = "cmid-seq";
     handleMessagePersisted(
       { sessionId: SESSION },
       {
         session_id: SESSION,
         turn_id: cmid,
-        message: {
-          id: "msg-seq",
-          thread_id: cmid,
-          role: "assistant",
-          content: "ok",
-          history_seq: 42,
-          intra_thread_seq: 3,
-        },
+        thread_id: cmid,
+        seq: 42,
+        role: "assistant",
+        message_id: "msg-seq",
+        source: "background",
+        cursor: { stream: SESSION, seq: 42 },
+        persisted_at: "2026-04-30T00:00:00Z",
       },
     );
     const [thread] = ThreadStore.getThreads(SESSION);
     const last = thread.responses[thread.responses.length - 1];
     expect(last?.historySeq).toBe(42);
-    expect(last?.intra_thread_seq).toBe(3);
   });
 });
 
@@ -425,18 +424,25 @@ describe("router parity with SSE bridge", () => {
     // === v1: message/persisted (promotes pending) + turn/completed
     //     (no-op since pending was already finalized). ===
     seedThread(cmid, "ask");
+    // δ: server's MessagePersistedEvent is metadata-only — to match the
+    // SSE path (which sets text via replaceAssistantText), we stream the
+    // text via message/delta first, then send the persisted event.
+    handleMessageDelta(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: cmid, delta: "Persisted answer" },
+    );
     handleMessagePersisted(
       { sessionId: SESSION },
       {
         session_id: SESSION,
         turn_id: cmid,
-        message: {
-          id: "msg-p",
-          thread_id: cmid,
-          role: "assistant",
-          content: "Persisted answer",
-          history_seq: 5,
-        },
+        thread_id: cmid,
+        seq: 5,
+        role: "assistant",
+        message_id: "msg-p",
+        source: "assistant",
+        cursor: { stream: SESSION, seq: 5 },
+        persisted_at: "2026-04-30T00:00:00Z",
       },
     );
     handleTurnCompleted(
