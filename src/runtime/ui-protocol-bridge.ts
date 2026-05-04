@@ -306,6 +306,8 @@ function guardMessagePersisted(p: unknown): MessagePersistedEvent | null {
   if (
     !isPlainObject(p.cursor) ||
     typeof p.cursor.seq !== "number" ||
+    !Number.isFinite(p.cursor.seq) ||
+    p.cursor.seq < 0 ||
     !isString(p.cursor.stream)
   ) {
     return null;

@@ -94,13 +94,15 @@ function defaultDispatch(event: Event): void {
  */
 function eventToMessageInfo(event: MessagePersistedEvent): MessageInfo {
   const media = event.media ?? [];
-  const content =
-    media.length > 0 && event.role === "assistant"
-      ? "📎 attachment"
-      : "";
+  // Empty `content` (NOT a synthesised placeholder) is required so
+  // `ThreadStore.appendPersistedMessage` recognises this as a
+  // media-only companion row and merges it into the existing assistant
+  // response — the merge predicate only treats empty/whitespace or
+  // `[file: ...]` marker text as media-only (`thread-store.ts:702`).
+  // The attachment renderer makes the bubble visible without text.
   return {
     role: event.role,
-    content,
+    content: "",
     thread_id: event.thread_id,
     client_message_id: event.client_message_id,
     response_to_client_message_id: undefined,
