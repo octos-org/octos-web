@@ -71,8 +71,10 @@ describe("router event mapping", () => {
   it("message/persisted (no live pending) appends a late-artifact row", () => {
     // No seedThread — the late-artifact path appends a fresh row when
     // there's no live `pendingAssistant` to promote. δ scope: server's
-    // wire shape is metadata-only, so the row's text is a synthesised
-    // placeholder; media URLs (PR #767) attach to the same row.
+    // wire shape is metadata-only, so the row is recorded with empty
+    // content and ThreadStore's media-only-merge predicate folds it
+    // into the existing assistant response when media is present
+    // (PR #767 added the `media` field on the wire).
     const evt: MessagePersistedEvent = {
       session_id: SESSION,
       turn_id: "cmid-2",

@@ -355,6 +355,11 @@ describe("connection lifecycle", () => {
     expect(ws.url).toContain("token=test-token");
     expect(ws.url).toContain("ui_feature=approval.typed.v1");
     expect(ws.url).toContain("ui_feature=pane.snapshots.v1");
+    // Regression-pin for the P1.3 capability negotiation: server gates
+    // both live broadcast and cursor replay of `message/persisted`
+    // notifications on this feature, so dropping it would silently
+    // disable spawn_only attachment delivery.
+    expect(ws.url).toContain("ui_feature=event.message_persisted.v1");
     expect(ws.protocols).toEqual(["octos.bearer.test-token"]);
   });
 
