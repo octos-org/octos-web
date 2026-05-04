@@ -90,6 +90,15 @@ export const METHODS = {
 export const UI_PROTOCOL_FEATURES = [
   "approval.typed.v1",
   "pane.snapshots.v1",
+  // P1.3 (server PR #767, web PR aligning the wire shape): the server
+  // explicitly filters both live broadcast and cursor replay of
+  // `message/persisted` notifications unless this capability was
+  // negotiated at session/open. Without this feature in the
+  // `ui_feature` query, the bridge's new media-aware
+  // `guardMessagePersisted` + `handleMessagePersisted` path is
+  // unreachable in production. See server `ui_protocol.rs:1941` and
+  // `ui_protocol.rs:2075` for the gating logic.
+  "event.message_persisted.v1",
 ] as const;
 
 const JSON_RPC_VERSION = "2.0";
@@ -276,19 +285,71 @@ function guardMessageDelta(p: unknown): MessageDeltaEvent | null {
 }
 
 function guardMessagePersisted(p: unknown): MessagePersistedEvent | null {
+  // Validates the flat `UPCR-2026-012` wire shape. Earlier versions of this
+  // guard expected a nested `{ message: { id, thread_id, content, role } }`
+  // payload that no real server has ever sent — it would reject every
+  // production event. This rewrite accepts what the server actually emits.
   if (!isPlainObject(p)) return null;
-  if (!isString(p.session_id) || !isString(p.turn_id)) return null;
-  if (!isPlainObject(p.message)) return null;
-  const m = p.message;
-  if (!isString(m.id) || !isString(m.thread_id)) return null;
-  if (typeof m.content !== "string") return null;
-  if (m.role !== "assistant" && m.role !== "user" && m.role !== "tool") {
+  if (!isString(p.session_id)) return null;
+  if (typeof p.seq !== "number" || !Number.isFinite(p.seq) || p.seq < 0) {
     return null;
+  }
+  if (!isString(p.message_id) || !p.message_id) return null;
+  if (
+    p.role !== "system" &&
+    p.role !== "user" &&
+    p.role !== "assistant" &&
+    p.role !== "tool"
+  ) {
+    return null;
+  }
+  if (
+    p.source !== "user" &&
+    p.source !== "assistant" &&
+    p.source !== "tool" &&
+    p.source !== "background" &&
+    p.source !== "recovery"
+  ) {
+    return null;
+  }
+  if (
+    !isPlainObject(p.cursor) ||
+    typeof p.cursor.seq !== "number" ||
+    !Number.isFinite(p.cursor.seq) ||
+    p.cursor.seq < 0 ||
+    !isString(p.cursor.stream)
+  ) {
+    return null;
+  }
+  if (!isString(p.persisted_at)) return null;
+  // Optional fields — present-shape-checked but not required.
+  const turn_id =
+    typeof p.turn_id === "string" && p.turn_id.length > 0 ? p.turn_id : undefined;
+  const thread_id =
+    typeof p.thread_id === "string" && p.thread_id.length > 0
+      ? p.thread_id
+      : undefined;
+  const client_message_id =
+    typeof p.client_message_id === "string" && p.client_message_id.length > 0
+      ? p.client_message_id
+      : undefined;
+  let media: string[] | undefined;
+  if (Array.isArray(p.media)) {
+    const filtered = p.media.filter((u): u is string => isString(u) && u.length > 0);
+    if (filtered.length > 0) media = filtered;
   }
   return {
     session_id: p.session_id,
-    turn_id: p.turn_id,
-    message: m as unknown as MessagePersistedEvent["message"],
+    turn_id,
+    thread_id,
+    seq: p.seq,
+    role: p.role,
+    message_id: p.message_id,
+    client_message_id,
+    source: p.source,
+    cursor: { stream: p.cursor.stream, seq: p.cursor.seq },
+    persisted_at: p.persisted_at,
+    media,
   };
 }
 

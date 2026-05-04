@@ -26,7 +26,6 @@ import type {
   ApprovalRequestedEvent,
   MessageDeltaEvent,
   MessagePersistedEvent,
-  PersistedMessage,
   TaskOutputDeltaEvent,
   TaskUpdatedEvent,
   TurnCompletedEvent,
@@ -80,31 +79,40 @@ function defaultDispatch(event: Event): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Translate the bridge's `PersistedMessage` shape into the `MessageInfo`
- * shape that `ThreadStore.appendPersistedMessage` expects. Only the fields
- * the store actually consults are filled in — extras are dropped because
- * the helper validates by role + thread_id and ignores unknown keys.
+ * Translate the flat `MessagePersistedEvent` (UPCR-2026-012 wire shape;
+ * server P1.3 fix in PR #767) into the `MessageInfo` shape that
+ * `ThreadStore.appendPersistedMessage` expects, for the late-artifact
+ * path (no live `pendingAssistant` to promote).
+ *
+ * The wire shape is metadata-only — there is no `content` field. The
+ * row's `content` is set to the empty string in both branches:
+ *   - media-bearing rows: ThreadStore's media-only-merge predicate
+ *     treats empty content as a companion row and merges the file into
+ *     the existing assistant response;
+ *   - text-only rows with no live pending: the row is still recorded
+ *     with its seq/role so `session/hydrate` can later replace it with
+ *     the canonical text.
  */
-function persistedToMessageInfo(m: PersistedMessage): MessageInfo {
+function eventToMessageInfo(event: MessagePersistedEvent): MessageInfo {
+  const media = event.media ?? [];
+  // Empty `content` (NOT a synthesised placeholder) is required so
+  // `ThreadStore.appendPersistedMessage` recognises this as a
+  // media-only companion row and merges it into the existing assistant
+  // response — the merge predicate only treats empty/whitespace or
+  // `[file: ...]` marker text as media-only (`thread-store.ts:702`).
+  // The attachment renderer makes the bubble visible without text.
   return {
-    role: m.role,
-    content: m.content,
-    thread_id: m.thread_id,
-    client_message_id: m.client_message_id,
-    response_to_client_message_id: m.response_to_client_message_id,
-    tool_call_id: m.source_tool_call_id,
-    timestamp: m.timestamp ?? new Date().toISOString(),
-    seq: typeof m.history_seq === "number" ? m.history_seq : undefined,
-    intra_thread_seq:
-      typeof m.intra_thread_seq === "number" ? m.intra_thread_seq : undefined,
-    media: (m.files ?? []).map((f) => f.path),
-    tool_calls: m.tool_calls?.map((tc) => {
-      const o = tc as { id?: unknown; name?: unknown };
-      return {
-        id: typeof o?.id === "string" ? o.id : undefined,
-        name: typeof o?.name === "string" ? o.name : undefined,
-      };
-    }),
+    role: event.role,
+    content: "",
+    thread_id: event.thread_id,
+    client_message_id: event.client_message_id,
+    response_to_client_message_id: undefined,
+    tool_call_id: undefined,
+    timestamp: event.persisted_at,
+    seq: event.seq,
+    intra_thread_seq: undefined,
+    media,
+    tool_calls: undefined,
   };
 }
 
@@ -122,73 +130,73 @@ export function handleMessagePersisted(
   cfg: RouterConfig,
   event: MessagePersistedEvent,
 ): void {
-  const m = event.message;
-  // Codex review #2: when an assistant `message/persisted` arrives for a
-  // thread with an in-flight `pendingAssistant`, promote the pending
-  // bubble into the persisted record instead of appending a separate
-  // response. This avoids duplicate bubbles when the server emits
-  // streamed deltas + persisted + completed for the same turn.
+  // The wire shape per UPCR-2026-012 is metadata-only — there is no
+  // `content` field. Final text is the streamed `pendingAssistant.text`
+  // accumulated from `message/delta`; this event finalises the bubble
+  // and (since server PR #767) carries the row's `media` attachments.
   //
-  // Match conditions:
-  //   - role === "assistant" (tool/user persists are independent records)
-  //   - the thread's pendingAssistant exists in the live store
+  // Two cases:
   //
-  // When matched: overwrite the pending text/files with the canonical
-  // persisted content (server is authoritative on final text) and call
-  // `finalizeAssistant` with the persisted seq. The downstream
-  // `turn/completed` then no-ops because `pendingAssistant` is null.
+  //   (1) Match condition (assistant role + thread_id resolves to a
+  //       thread with `pendingAssistant`): keep the streamed text,
+  //       append each `media` URL to the pending bubble, then finalise
+  //       with the event's `seq`. The downstream `turn/completed`
+  //       no-ops because `pendingAssistant` is null after this.
   //
-  // When unmatched (no pending, e.g. late artifact, or non-assistant
-  // role): fall through to `appendPersistedMessage` — the PR M
-  // late-artifact path.
-  if (m.role === "assistant" && m.thread_id) {
+  //   (2) Unmatched (no pending — late artifact, non-assistant role,
+  //       or assistant whose live pending was lost across reconnect):
+  //       fall through to `appendPersistedMessage` so a fresh row
+  //       appears in the thread. With empty content + non-empty
+  //       `media`, ThreadStore merges this into the existing
+  //       assistant response as a companion row; the attachment
+  //       renderer makes the file URL visible.
+  if (event.role === "assistant" && event.thread_id) {
     const promoted = tryPromotePendingFromPersisted(
       cfg.sessionId,
       cfg.topic,
-      m,
+      event,
     );
     if (promoted) return;
   }
   ThreadStore.appendPersistedMessage(
     cfg.sessionId,
     cfg.topic,
-    persistedToMessageInfo(m),
+    eventToMessageInfo(event),
   );
 }
 
 /**
- * If the live thread for `m.thread_id` has an in-flight pendingAssistant,
- * overwrite its content/files with the persisted record and finalize.
- * Returns true when promotion happened (caller should NOT also append).
+ * If the live thread for `event.thread_id` has an in-flight
+ * pendingAssistant, append the event's `media` URLs to the pending
+ * bubble and finalise it with the event's `seq`. Returns true when
+ * promotion happened (caller should NOT also append a fresh row).
+ *
+ * Unlike the original promotion path, this DOES NOT overwrite the
+ * pending text — the server's `MessagePersistedEvent` carries no
+ * `content` field, so the streamed `message/delta` text is
+ * authoritative for the bubble's body.
  */
 function tryPromotePendingFromPersisted(
   sessionId: string,
   topic: string | undefined,
-  m: PersistedMessage,
+  event: MessagePersistedEvent,
 ): boolean {
+  const threadId = event.thread_id;
+  if (!threadId) return false;
   const threads = ThreadStore.getThreads(sessionId, topic);
-  const thread = threads.find((t) => t.id === m.thread_id);
+  const thread = threads.find((t) => t.id === threadId);
   if (!thread || !thread.pendingAssistant) return false;
-  // Replace pending text + files with the persisted content. Files
-  // from the persisted record win; the streamed pending text was a
-  // best-effort approximation of what's now authoritative.
-  ThreadStore.replaceAssistantText(m.thread_id, m.content);
-  // appendAssistantFile is path-deduped, so re-adding a streamed file
-  // is a no-op. Persisted files that weren't already attached land here.
-  for (const f of m.files ?? []) {
-    ThreadStore.appendAssistantFile(m.thread_id, {
-      filename: filenameFromPath(f.path),
-      path: f.path,
+  // appendAssistantFile is path-deduped, so re-adding a streamed file is
+  // a no-op. New media URLs that weren't already attached land here.
+  for (const path of event.media ?? []) {
+    ThreadStore.appendAssistantFile(threadId, {
+      filename: filenameFromPath(path),
+      path,
       caption: "",
     });
   }
-  ThreadStore.finalizeAssistant(m.thread_id, {
-    committedSeq:
-      typeof m.intra_thread_seq === "number"
-        ? m.intra_thread_seq
-        : typeof m.history_seq === "number"
-          ? m.history_seq
-          : undefined,
+  ThreadStore.finalizeAssistant(threadId, {
+    committedSeq: event.seq,
   });
   return true;
 }
