@@ -84,13 +84,14 @@ function defaultDispatch(event: Event): void {
  * `ThreadStore.appendPersistedMessage` expects, for the late-artifact
  * path (no live `pendingAssistant` to promote).
  *
- * The wire shape is metadata-only — there is no `content` field. We
- * synthesize a minimal placeholder when `media` is present so the bubble
- * has visible text alongside the `<a href>` (the file URL itself is
- * carried via `MessageInfo.media`). For text-only persists with no live
- * pending and no media, we synthesise an empty `content` — the row is
- * still recorded with its seq/role so `session/hydrate` can later replace
- * it with the canonical text.
+ * The wire shape is metadata-only — there is no `content` field. The
+ * row's `content` is set to the empty string in both branches:
+ *   - media-bearing rows: ThreadStore's media-only-merge predicate
+ *     treats empty content as a companion row and merges the file into
+ *     the existing assistant response;
+ *   - text-only rows with no live pending: the row is still recorded
+ *     with its seq/role so `session/hydrate` can later replace it with
+ *     the canonical text.
  */
 function eventToMessageInfo(event: MessagePersistedEvent): MessageInfo {
   const media = event.media ?? [];
@@ -145,8 +146,10 @@ export function handleMessagePersisted(
   //   (2) Unmatched (no pending — late artifact, non-assistant role,
   //       or assistant whose live pending was lost across reconnect):
   //       fall through to `appendPersistedMessage` so a fresh row
-  //       appears in the thread. The bubble shows the synthesised
-  //       placeholder content + the `media` URL.
+  //       appears in the thread. With empty content + non-empty
+  //       `media`, ThreadStore merges this into the existing
+  //       assistant response as a companion row; the attachment
+  //       renderer makes the file URL visible.
   if (event.role === "assistant" && event.thread_id) {
     const promoted = tryPromotePendingFromPersisted(
       cfg.sessionId,

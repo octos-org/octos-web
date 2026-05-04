@@ -90,6 +90,15 @@ export const METHODS = {
 export const UI_PROTOCOL_FEATURES = [
   "approval.typed.v1",
   "pane.snapshots.v1",
+  // P1.3 (server PR #767, web PR aligning the wire shape): the server
+  // explicitly filters both live broadcast and cursor replay of
+  // `message/persisted` notifications unless this capability was
+  // negotiated at session/open. Without this feature in the
+  // `ui_feature` query, the bridge's new media-aware
+  // `guardMessagePersisted` + `handleMessagePersisted` path is
+  // unreachable in production. See server `ui_protocol.rs:1941` and
+  // `ui_protocol.rs:2075` for the gating logic.
+  "event.message_persisted.v1",
 ] as const;
 
 const JSON_RPC_VERSION = "2.0";
