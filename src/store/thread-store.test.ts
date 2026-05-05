@@ -1425,6 +1425,45 @@ describe("thread-store", () => {
     expect(thread.responses[0].historySeq).toBe(14);
   });
 
+  it("appendCompletionBubble_upgrades_media_bearing_persisted_placeholder", () => {
+    // Codex round-3 P2: `message/persisted` for a spawn row CAN carry
+    // media (P1.3 server PR #767). When that row arrives first, the
+    // placeholder has empty text but non-empty files. The spawn envelope
+    // must still upgrade the row (filling text + merging media) rather
+    // than treating it as a duplicate, otherwise the user sees a
+    // file-only bubble with no body text.
+    makeUser("ask", "cmid-c-merge");
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 21,
+      role: "assistant",
+      content: "",
+      thread_id: "cmid-c-merge",
+      response_to_client_message_id: "cmid-c-merge",
+      timestamp: "2026-04-30T00:00:00Z",
+      media: ["bg/early.md"],
+    });
+    let [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses[0].text).toBe("");
+    expect(thread.responses[0].files.map((f) => f.path)).toEqual([
+      "bg/early.md",
+    ]);
+
+    ThreadStore.appendCompletionBubble("cmid-c-merge", {
+      text: "Real result body.",
+      media: ["bg/early.md", "bg/late.md"],
+      spawnComplete: true,
+      historySeq: 21,
+    });
+    [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses).toHaveLength(1);
+    expect(thread.responses[0].text).toBe("Real result body.");
+    // Files unioned by path — early.md is not duplicated.
+    expect(thread.responses[0].files.map((f) => f.path)).toEqual([
+      "bg/early.md",
+      "bg/late.md",
+    ]);
+  });
+
   it("appendCompletionBubble_does_not_upgrade_already_full_row_on_replay", () => {
     // Defensive symmetry to the upgrade-in-place case: when the existing
     // row at the matching seq already has full content (true replay

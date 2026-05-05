@@ -714,20 +714,32 @@ export function appendCompletionBubble(
     for (let i = 0; i < thread.responses.length; i += 1) {
       const r = thread.responses[i];
       if (r.historySeq !== opts.historySeq) continue;
-      // Treat the existing row as a placeholder ONLY when it has
-      // neither text nor files — that's the exact shape
-      // `appendPersistedMessage` produces from a metadata-only
-      // `message/persisted` (where `content` is `""` and `media` is
-      // empty). Any non-empty row at the matching seq is the
-      // legitimate completion (or a finalized assistant) and must
-      // not be overwritten.
-      const isPlaceholder = r.text.length === 0 && r.files.length === 0;
-      if (!isPlaceholder) return true;
+      // Treat the existing row as a placeholder when it has no text
+      // (regardless of whether files were attached). Two shapes from
+      // `appendPersistedMessage` are placeholders the spawn envelope
+      // must upgrade:
+      //   • metadata-only persisted: text "" + files []
+      //   • media-bearing persisted: text "" + files [...]
+      //     (P1.3 server PR #767 added `media` to the wire)
+      // A row with non-empty `text` is the legitimate completion (or
+      // a finalized assistant) — return early.
+      if (r.text.length > 0) return true;
 
+      // Merge: union the placeholder's existing files with the
+      // spawn envelope's media (dedupe by path) so a file already
+      // landed by the persisted row isn't dropped or duplicated.
+      const incomingFiles = opts.media.map(fileFromMediaPath);
+      const seen = new Set<string>();
+      const mergedFiles: MessageFile[] = [];
+      for (const f of [...r.files, ...incomingFiles]) {
+        if (seen.has(f.path)) continue;
+        seen.add(f.path);
+        mergedFiles.push(f);
+      }
       thread.responses[i] = {
         ...r,
         text: opts.text,
-        files: opts.media.map(fileFromMediaPath),
+        files: mergedFiles,
         intra_thread_seq: opts.historySeq,
         responseToClientMessageId:
           opts.sourceClientMessageId ?? r.responseToClientMessageId ?? threadId,
