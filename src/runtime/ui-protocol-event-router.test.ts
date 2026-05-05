@@ -19,6 +19,7 @@ import {
   handleApprovalRequested,
   handleMessageDelta,
   handleMessagePersisted,
+  handleSpawnComplete,
   handleTaskOutputDelta,
   handleTaskUpdated,
   handleTurnCompleted,
@@ -33,6 +34,7 @@ import type {
   TaskUpdatedEvent,
   TurnCompletedEvent,
   TurnErrorEvent,
+  TurnSpawnCompleteEvent,
   TurnStartedEvent,
   UiProtocolBridge,
 } from "./ui-protocol-bridge";
@@ -270,6 +272,218 @@ describe("router event mapping", () => {
     expect(thread.responses[0].status).toBe("error");
     expect(thread.responses[0].text).toBe("partial");
     expect(dispatched.some((e) => e.type === "crew:turn_error")).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // M10 Phase 2: turn/spawn_complete envelope handler
+  // -------------------------------------------------------------------------
+
+  it("turn/spawn_complete appends a NEW assistant row (no merge)", () => {
+    const cmid = "cmid-spawn-1";
+    seedThread(cmid, "Run deep research");
+    // Simulate streamed ack text + finalize (the spawn-ack bubble lands
+    // first, then the late spawn_complete envelope arrives).
+    ThreadStore.appendAssistantToken(cmid, "Background work started.");
+    ThreadStore.finalizeAssistant(cmid, { committedSeq: 5 });
+
+    const evt: TurnSpawnCompleteEvent = {
+      session_id: SESSION,
+      turn_id: "turn-1",
+      thread_id: cmid,
+      task_id: "task_abc",
+      response_to_client_message_id: cmid,
+      seq: 12,
+      message_id: "msg-spawn-1",
+      source: "background",
+      cursor: { stream: SESSION, seq: 12 },
+      persisted_at: "2026-05-04T00:00:00Z",
+      content: "Research complete: 3 sources reviewed.",
+      media: ["research/_report.md"],
+    };
+    handleSpawnComplete({ sessionId: SESSION }, evt);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    // EXACTLY two assistant rows under one user prompt: the original
+    // spawn-ack and the new completion envelope. NO merge.
+    expect(thread.responses).toHaveLength(2);
+    expect(thread.responses[0].text).toBe("Background work started.");
+    expect(thread.responses[1].text).toBe("Research complete: 3 sources reviewed.");
+    expect(thread.responses[1].files.map((f) => f.path)).toEqual([
+      "research/_report.md",
+    ]);
+    expect(thread.responses[1].historySeq).toBe(12);
+    expect(thread.responses[1].status).toBe("complete");
+    // Pending bubble stays untouched (no in-flight turn).
+    expect(thread.pendingAssistant).toBeNull();
+  });
+
+  it("turn/spawn_complete falls back to response_to_client_message_id when thread_id missing", () => {
+    const cmid = "cmid-spawn-fallback";
+    seedThread(cmid, "ask");
+    ThreadStore.finalizeAssistant(cmid);
+
+    const evt: TurnSpawnCompleteEvent = {
+      session_id: SESSION,
+      task_id: "task_xyz",
+      response_to_client_message_id: cmid,
+      seq: 9,
+      message_id: "msg-spawn-2",
+      source: "background",
+      cursor: { stream: SESSION, seq: 9 },
+      persisted_at: "2026-05-04T00:00:00Z",
+      content: "Done via fallback.",
+    };
+    handleSpawnComplete({ sessionId: SESSION }, evt);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    // The completion row is present in the thread under the same user
+    // prompt — the fallback used `response_to_client_message_id` as the
+    // placement key when `thread_id` was absent.
+    expect(thread.responses.some((r) => r.text === "Done via fallback.")).toBe(
+      true,
+    );
+    expect(
+      thread.responses.find((r) => r.text === "Done via fallback.")?.historySeq,
+    ).toBe(9);
+  });
+
+  it("turn/spawn_complete with neither thread_id nor response_to_client_message_id is dropped", () => {
+    seedThread("cmid-spawn-orphan", "ask");
+    const evt: TurnSpawnCompleteEvent = {
+      session_id: SESSION,
+      task_id: "task_zzz",
+      seq: 1,
+      message_id: "msg-spawn-orphan",
+      source: "background",
+      cursor: { stream: SESSION, seq: 1 },
+      persisted_at: "2026-05-04T00:00:00Z",
+      content: "orphan",
+    };
+    handleSpawnComplete({ sessionId: SESSION }, evt);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    // Original placeholder pendingAssistant only; no completion row added.
+    expect(thread.responses).toHaveLength(0);
+  });
+
+  it("turn/spawn_complete with unknown thread_id lands in the ACTIVE session, not a stale one (codex P2 fix)", () => {
+    // Reproduces codex's P2 finding: with a stale session bucket
+    // present in `sessionsByKey`, an envelope for an unknown thread_id
+    // could be hosted in the stale session by `pickHostSessionForOrphan`.
+    // The fix passes `cfg.sessionId` into `appendCompletionBubble` so
+    // the orphan creates inside the router's active session.
+    const STALE = "sess-stale-A";
+    const ACTIVE = "sess-active-B";
+    // Seed both sessions so `sessionsByKey` is non-empty for both.
+    ThreadStore.addUserMessage(STALE, {
+      text: "old",
+      clientMessageId: "cmid-stale",
+    });
+    ThreadStore.addUserMessage(ACTIVE, {
+      text: "new",
+      clientMessageId: "cmid-active",
+    });
+
+    const evt: TurnSpawnCompleteEvent = {
+      session_id: ACTIVE,
+      thread_id: "cmid-unknown-bg",
+      task_id: "task_orphan",
+      seq: 11,
+      message_id: "msg-orphan",
+      source: "background",
+      cursor: { stream: ACTIVE, seq: 11 },
+      persisted_at: "2026-05-04T00:00:00Z",
+      content: "Late background result.",
+    };
+    handleSpawnComplete({ sessionId: ACTIVE }, evt);
+
+    const activeThreads = ThreadStore.getThreads(ACTIVE);
+    const staleThreads = ThreadStore.getThreads(STALE);
+    expect(
+      activeThreads.find((t) => t.id === "cmid-unknown-bg"),
+    ).toBeDefined();
+    expect(
+      staleThreads.find((t) => t.id === "cmid-unknown-bg"),
+    ).toBeUndefined();
+
+    // Cleanup the extra session we created so the global afterEach
+    // reset still leaves a clean slate.
+    ThreadStore.clearSession(STALE);
+    ThreadStore.clearSession(ACTIVE);
+  });
+
+  it("turn/spawn_complete is idempotent on replay (same seq => single row)", () => {
+    const cmid = "cmid-spawn-replay";
+    seedThread(cmid, "ask");
+    ThreadStore.finalizeAssistant(cmid);
+
+    const evt: TurnSpawnCompleteEvent = {
+      session_id: SESSION,
+      thread_id: cmid,
+      task_id: "task_replay",
+      seq: 33,
+      message_id: "msg-spawn-replay",
+      source: "background",
+      cursor: { stream: SESSION, seq: 33 },
+      persisted_at: "2026-05-04T00:00:00Z",
+      content: "Once and only once.",
+    };
+    handleSpawnComplete({ sessionId: SESSION }, evt);
+    handleSpawnComplete({ sessionId: SESSION }, evt);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const completions = thread.responses.filter(
+      (r) => r.text === "Once and only once.",
+    );
+    expect(completions).toHaveLength(1);
+  });
+
+  // ---- M10 Phase 2 regression-pin: lock the architecture ------------------
+  //
+  // This test fixes the failure mode that motivated M10. The legacy splice
+  // path (`appendAssistantFile` media-only-merge predicate, deleted in
+  // Phase 5) treats an existing assistant bubble whose content contains a
+  // bare `[file: ...]` marker as a "media-only companion" and merges late
+  // file deliveries INTO it. With the new envelope path the same scenario
+  // MUST instead create a NEW row in the same thread. If a future refactor
+  // accidentally re-routes spawn_complete through the splice predicate,
+  // this test fails — the wave-6c-onward bug class would be back.
+  it("turn/spawn_complete creates a NEW row even when a finalized [file:] marker bubble exists", () => {
+    const cmid = "cmid-regression-pin";
+    seedThread(cmid, "ask");
+    // Stream a bare `[file: ...]` marker into the spawn-ack bubble — the
+    // exact shape the legacy `isMediaOnlyCompanion` predicate matches.
+    ThreadStore.appendAssistantToken(cmid, "[file: research/_report.md]");
+    ThreadStore.finalizeAssistant(cmid, { committedSeq: 4 });
+    const before = ThreadStore.getThreads(SESSION)[0];
+    const beforeRows = before.responses.length;
+    expect(beforeRows).toBe(1);
+
+    handleSpawnComplete(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        thread_id: cmid,
+        task_id: "task_pin",
+        seq: 5,
+        message_id: "msg-pin",
+        source: "background",
+        cursor: { stream: SESSION, seq: 5 },
+        persisted_at: "2026-05-04T00:00:00Z",
+        content: "Real research result.",
+        media: ["research/_report.md"],
+      },
+    );
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    // CRITICAL: the new envelope creates a NEW row. NOT a merge into the
+    // existing `[file:]` bubble.
+    expect(thread.responses).toHaveLength(beforeRows + 1);
+    expect(thread.responses[0].text).toBe("[file: research/_report.md]");
+    expect(thread.responses[1].text).toBe("Real research result.");
+    expect(thread.responses[1].files.map((f) => f.path)).toEqual([
+      "research/_report.md",
+    ]);
   });
 
   it("approval/requested dispatches a CustomEvent with the typed payload", () => {
@@ -528,6 +742,7 @@ describe("router parity with SSE bridge", () => {
 class FakeBridge implements UiProtocolBridge {
   emitMessageDelta?: (e: MessageDeltaEvent) => void;
   emitMessagePersisted?: (e: MessagePersistedEvent) => void;
+  emitSpawnComplete?: (e: TurnSpawnCompleteEvent) => void;
   emitTaskUpdated?: (e: TaskUpdatedEvent) => void;
   emitTaskOutputDelta?: (e: TaskOutputDeltaEvent) => void;
   emitTurnLifecycle?: (
@@ -555,6 +770,12 @@ class FakeBridge implements UiProtocolBridge {
     this.emitMessagePersisted = h;
     return () => {
       this.emitMessagePersisted = undefined;
+    };
+  }
+  onSpawnComplete(h: (e: TurnSpawnCompleteEvent) => void) {
+    this.emitSpawnComplete = h;
+    return () => {
+      this.emitSpawnComplete = undefined;
     };
   }
   onTaskUpdated(h: (e: TaskUpdatedEvent) => void) {
@@ -598,6 +819,7 @@ describe("attachRouter", () => {
 
     expect(bridge.emitMessageDelta).toBeDefined();
     expect(bridge.emitMessagePersisted).toBeDefined();
+    expect(bridge.emitSpawnComplete).toBeDefined();
     expect(bridge.emitTaskUpdated).toBeDefined();
     expect(bridge.emitTaskOutputDelta).toBeDefined();
     expect(bridge.emitTurnLifecycle).toBeDefined();
@@ -606,6 +828,7 @@ describe("attachRouter", () => {
     att.detach();
     expect(bridge.emitMessageDelta).toBeUndefined();
     expect(bridge.emitMessagePersisted).toBeUndefined();
+    expect(bridge.emitSpawnComplete).toBeUndefined();
     expect(bridge.emitTaskUpdated).toBeUndefined();
     expect(bridge.emitTaskOutputDelta).toBeUndefined();
     expect(bridge.emitTurnLifecycle).toBeUndefined();

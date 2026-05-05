@@ -29,6 +29,7 @@ import type {
   TurnCompletedEvent,
   TurnErrorEvent,
   TurnInterruptResult,
+  TurnSpawnCompleteEvent,
   TurnStartInput,
   TurnStartResult,
   TurnStartedEvent,
@@ -52,6 +53,7 @@ export type {
   TurnCompletedEvent,
   TurnErrorEvent,
   TurnInterruptResult,
+  TurnSpawnCompleteEvent,
   TurnStartInput,
   TurnStartResult,
   TurnStartedEvent,
@@ -83,6 +85,7 @@ export const METHODS = {
   TURN_STARTED: "turn/started",
   TURN_COMPLETED: "turn/completed",
   TURN_ERROR: "turn/error",
+  TURN_SPAWN_COMPLETE: "turn/spawn_complete",
   APPROVAL_REQUESTED: "approval/requested",
   WARNING: "warning",
 } as const;
@@ -99,6 +102,14 @@ export const UI_PROTOCOL_FEATURES = [
   // unreachable in production. See server `ui_protocol.rs:1941` and
   // `ui_protocol.rs:2075` for the gating logic.
   "event.message_persisted.v1",
+  // M10 Phase 1 (server PR #772): server only emits the new
+  // `turn/spawn_complete` envelope when this capability is negotiated at
+  // session/open. Without it, late `spawn_only` results continue to flow
+  // through the legacy `message/persisted` row (and the splice-merge
+  // predicate in ThreadStore). Phase 5 will delete the legacy path; this
+  // PR (Phase 2) only ADDS the new envelope handling so the migration is
+  // backward-compatible during rollout.
+  "event.spawn_complete.v1",
 ] as const;
 
 const JSON_RPC_VERSION = "2.0";
@@ -157,6 +168,7 @@ export interface UiProtocolBridge {
 
   onMessageDelta(handler: (e: MessageDeltaEvent) => void): () => void;
   onMessagePersisted(handler: (e: MessagePersistedEvent) => void): () => void;
+  onSpawnComplete(handler: (e: TurnSpawnCompleteEvent) => void): () => void;
   onTaskUpdated(handler: (e: TaskUpdatedEvent) => void): () => void;
   onTaskOutputDelta(handler: (e: TaskOutputDeltaEvent) => void): () => void;
   onTurnLifecycle(
@@ -353,6 +365,87 @@ function guardMessagePersisted(p: unknown): MessagePersistedEvent | null {
   };
 }
 
+function guardSpawnComplete(p: unknown): TurnSpawnCompleteEvent | null {
+  // M10 Phase 1 envelope. Required-field invariants per the server-side
+  // `TurnSpawnCompleteEvent` struct (`crates/octos-core/src/ui_protocol.rs`):
+  //   - session_id, task_id, message_id, source, persisted_at — non-empty strings
+  //   - seq                                                    — finite non-negative number
+  //   - cursor.{stream, seq}                                   — non-empty string + finite number
+  //   - content                                                — REQUIRED non-empty string
+  //   - turn_id, thread_id, response_to_client_message_id      — optional strings
+  //   - media                                                  — optional string[]
+  //
+  // The `content` non-empty check is the load-bearing distinguisher from
+  // a spawn-ack `message/persisted` row whose content is a short ack
+  // message — a `turn/spawn_complete` with empty content is either a
+  // server bug or the wrong wire shape entirely; either way, fail closed.
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.session_id)) return null;
+  if (!isString(p.task_id)) return null;
+  if (typeof p.seq !== "number" || !Number.isFinite(p.seq) || p.seq < 0) {
+    return null;
+  }
+  if (!isString(p.message_id)) return null;
+  if (!isString(p.source)) return null;
+  if (
+    !isPlainObject(p.cursor) ||
+    typeof p.cursor.seq !== "number" ||
+    !Number.isFinite(p.cursor.seq) ||
+    p.cursor.seq < 0 ||
+    !isString(p.cursor.stream)
+  ) {
+    return null;
+  }
+  if (!isString(p.persisted_at)) return null;
+  // `content` must BE A STRING (present, correct type). It MAY be empty
+  // when `media` is non-empty — that's the file-only completion path
+  // (server-side spawn_only tool whose result is purely artefactual).
+  // Codex round-4 P2 caught this: rejecting empty-content envelopes
+  // would silently drop file-only completions for upgraded clients,
+  // because the server suppresses the legacy `message/persisted`
+  // fallback once `event.spawn_complete.v1` is negotiated.
+  if (typeof p.content !== "string") return null;
+
+  let media: string[] | undefined;
+  if (Array.isArray(p.media)) {
+    const filtered = p.media.filter(
+      (u): u is string => isString(u) && u.length > 0,
+    );
+    if (filtered.length > 0) media = filtered;
+  }
+  // Reject only when BOTH content and media are empty — truly nothing
+  // to render, which is a server bug (the original spec's "distinguish
+  // from spawn-ack" intent is now enforced by the `turn/spawn_complete`
+  // method name rather than by content non-emptiness).
+  if (p.content.length === 0 && (!media || media.length === 0)) {
+    return null;
+  }
+  return {
+    session_id: p.session_id,
+    turn_id:
+      typeof p.turn_id === "string" && p.turn_id.length > 0
+        ? p.turn_id
+        : undefined,
+    thread_id:
+      typeof p.thread_id === "string" && p.thread_id.length > 0
+        ? p.thread_id
+        : undefined,
+    task_id: p.task_id,
+    response_to_client_message_id:
+      typeof p.response_to_client_message_id === "string" &&
+      p.response_to_client_message_id.length > 0
+        ? p.response_to_client_message_id
+        : undefined,
+    seq: p.seq,
+    message_id: p.message_id,
+    source: p.source,
+    cursor: { stream: p.cursor.stream, seq: p.cursor.seq },
+    persisted_at: p.persisted_at,
+    content: p.content,
+    media,
+  };
+}
+
 function guardTaskUpdated(p: unknown): TaskUpdatedEvent | null {
   if (!isPlainObject(p)) return null;
   if (!isString(p.session_id) || !isString(p.turn_id) || !isString(p.task_id)) {
@@ -505,6 +598,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
 
   private readonly subMessageDelta = new Subscribers<MessageDeltaEvent>();
   private readonly subMessagePersisted = new Subscribers<MessagePersistedEvent>();
+  private readonly subSpawnComplete = new Subscribers<TurnSpawnCompleteEvent>();
   private readonly subTaskUpdated = new Subscribers<TaskUpdatedEvent>();
   private readonly subTaskOutputDelta = new Subscribers<TaskOutputDeltaEvent>();
   private readonly subTurnLifecycle = new Subscribers<
@@ -528,6 +622,10 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     [METHODS.MESSAGE_PERSISTED]: {
       guard: guardMessagePersisted,
       emit: (v) => this.subMessagePersisted.emit(v as MessagePersistedEvent),
+    },
+    [METHODS.TURN_SPAWN_COMPLETE]: {
+      guard: guardSpawnComplete,
+      emit: (v) => this.subSpawnComplete.emit(v as TurnSpawnCompleteEvent),
     },
     [METHODS.TASK_UPDATED]: {
       guard: guardTaskUpdated,
@@ -624,6 +722,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.sendQueue.length = 0;
     this.subMessageDelta.clear();
     this.subMessagePersisted.clear();
+    this.subSpawnComplete.clear();
     this.subTaskUpdated.clear();
     this.subTaskOutputDelta.clear();
     this.subTurnLifecycle.clear();
@@ -689,6 +788,9 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   }
   onMessagePersisted(handler: Listener<MessagePersistedEvent>): () => void {
     return this.subMessagePersisted.add(handler);
+  }
+  onSpawnComplete(handler: Listener<TurnSpawnCompleteEvent>): () => void {
+    return this.subSpawnComplete.add(handler);
   }
   onTaskUpdated(handler: Listener<TaskUpdatedEvent>): () => void {
     return this.subTaskUpdated.add(handler);
@@ -1085,6 +1187,7 @@ export function createUiProtocolBridge(
 export const __INTERNAL_GUARDS_FOR_TEST__ = {
   guardMessageDelta,
   guardMessagePersisted,
+  guardSpawnComplete,
   guardTaskUpdated,
   guardTaskOutputDelta,
   guardTurnStarted,

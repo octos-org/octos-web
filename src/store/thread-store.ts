@@ -614,6 +614,242 @@ export function setToolCallStatus(
   notify();
 }
 
+/**
+ * M10 Phase 2 (server PR #772): append a NEW assistant row to the thread
+ * for a `turn/spawn_complete` envelope. Distinct from `appendAssistantFile`
+ * + `appendPersistedMessage`, which both splice late media into the
+ * existing assistant bubble — that splice-merge predicate is the bug
+ * surface M10 deletes (Phase 5). This function ALWAYS adds a fresh
+ * `ThreadMessage` to `thread.responses` so multiple assistant bubbles
+ * render under the originating user prompt (the renderer's
+ * `responses.map` already supports N-bubbles per user message).
+ *
+ * Returns `true` when a row was appended, `false` when the thread could
+ * not be located and could not be created (no live sessions). Idempotent
+ * by `(threadId, historySeq)` when `historySeq` is provided — a replayed
+ * envelope on reconnect does not produce a duplicate row.
+ */
+export interface AppendCompletionBubbleOptions {
+  text: string;
+  media: string[];
+  /** Marker so the renderer can style spawn-completion bubbles distinctly
+   *  (Phase 3, optional). */
+  spawnComplete: true;
+  /** Originating user prompt cmid, when available (Phase 4 will populate
+   *  it server-side). Captured for future audit / hover tooltips. */
+  sourceClientMessageId?: string;
+  /** Server-assigned per-session seq for dedupe on reconnect replay. */
+  historySeq?: number;
+  /** Server-assigned message id for stable identity across replays. */
+  messageId?: string;
+  /** Server-side `persisted_at` (RFC 3339). When supplied, the row's
+   *  display timestamp uses this server-authoritative value rather than
+   *  client receipt time, so reconnect/replay produces a stable order
+   *  matching the hydrated history. Codex round-4 P3 (delivered envelopes
+   *  whose `persisted_at` differed from receipt time would render with
+   *  a moving timestamp). */
+  persistedAt?: string;
+  /** Active router scope. When the envelope's `thread_id` does not
+   *  already exist in any session, the orphan-bucket helper creates it
+   *  HERE rather than picking an arbitrary host session — without this,
+   *  a stale previously-loaded session in `sessionsByKey` could swallow
+   *  the bubble (codex P2: orphan completions misplaced after
+   *  reload/session-switch). */
+  sessionId?: string;
+  topic?: string;
+}
+
+export function appendCompletionBubble(
+  threadId: string,
+  opts: AppendCompletionBubbleOptions,
+): boolean {
+  // Resolve the host thread. Prefer an exact match anywhere in the
+  // store (M8.10 cross-session cmid semantics). When no match exists,
+  // create the orphan inside the router's active session so
+  // session-switch / reload scenarios don't silently route the bubble
+  // into a stale session bucket.
+  let host = findThreadById(threadId);
+  if (!host) {
+    if (opts.sessionId) {
+      const state = ensureSession(storeKey(opts.sessionId, opts.topic));
+      const placeholderUser: ThreadMessage = {
+        id: nextId(),
+        role: "user",
+        text: "",
+        files: [],
+        toolCalls: [],
+        status: "complete",
+        timestamp: Date.now(),
+        clientMessageId: threadId,
+      };
+      const orphan: Thread = {
+        id: threadId,
+        userMsg: placeholderUser,
+        responses: [],
+        pendingAssistant: null,
+      };
+      insertThreadInTimestampOrder(state, orphan);
+      recordRuntimeCounter("octos_thread_orphan_created_total", {
+        surface: "thread_store_completion",
+      });
+      host = { state, thread: orphan };
+    } else {
+      // No router scope provided — fall back to legacy orphan placement
+      // (covers test paths that don't supply sessionId; production
+      // callers should always pass it).
+      host = ensureOrphanThread(threadId);
+    }
+  }
+  if (!host) return false;
+  const { thread } = host;
+
+  // Identity / upgrade-in-place. A replayed envelope on reconnect
+  // MUST NOT produce a duplicate row. Two stable identities exist:
+  //
+  //   • messageId  — Phase 1 P2-B fix reuses the persisted row's
+  //                  `message_id` on the envelope, so the spawn-complete
+  //                  envelope's id MATCHES its companion `message/persisted`
+  //                  but is DISTINCT from the spawn-ack's id. This is
+  //                  the strongest dedupe key.
+  //   • historySeq — `seq` is a per-session committed-row index. Robust
+  //                  for clean cases; but see the codex round-5 edge:
+  //                  legacy `replayHistory` (via `mergeMediaCompanionInto`)
+  //                  can MOVE a media-only companion's `historySeq` onto
+  //                  the preceding ack bubble, so finding `historySeq=N`
+  //                  on a non-empty row does NOT prove that row IS the
+  //                  spawn-complete row.
+  //
+  // Strategy: prefer `messageId` for the identity check. Fall back to
+  // `historySeq` only as a placeholder-upgrade hint — when we find a
+  // row with the same seq AND it has empty text (the persisted-only
+  // placeholder shape), upgrade in place. Non-empty-text rows at the
+  // matching seq are NOT considered duplicates: they may be merged ack
+  // rows whose seq was donated by a media-only companion. In that case
+  // we proceed to append a fresh row, which is the correct M10
+  // separate-bubble semantic.
+
+  if (opts.messageId) {
+    for (let i = 0; i < thread.responses.length; i += 1) {
+      const r = thread.responses[i];
+      if (r.id !== opts.messageId) continue;
+      // True identity match — this row IS the spawn-complete row.
+      // Upgrade-in-place if it's a placeholder (the persisted-only
+      // shape), no-op if it's already the full completion.
+      if (r.text.length > 0) return true;
+      thread.responses[i] = upgradePlaceholderRow(r, opts, threadId);
+      sortResponsesInThread(thread);
+      notify();
+      return true;
+    }
+    if (thread.pendingAssistant?.id === opts.messageId) return true;
+  }
+
+  if (typeof opts.historySeq === "number") {
+    for (let i = 0; i < thread.responses.length; i += 1) {
+      const r = thread.responses[i];
+      if (r.historySeq !== opts.historySeq) continue;
+      // Only a PLACEHOLDER row at the matching seq is the legitimate
+      // upgrade target. If the row has non-empty text it is either:
+      //   (a) a merged-ack row whose seq was donated by replayHistory's
+      //       media-only-companion merge — NOT this completion, so
+      //       fall through to append a fresh row;
+      //   (b) the spawn-complete row already filled in by an earlier
+      //       call (true replay; messageId match would have caught it
+      //       above unless callers omit messageId — test paths).
+      // We can't distinguish (a) from (b) reliably without messageId,
+      // so we fall through and let the append path take care of it.
+      // For (b) test-path callers, the next-best identity is "same
+      // text + same media list"; if that matches, treat as no-op.
+      if (r.text.length > 0) {
+        if (rowMatchesCompletionContent(r, opts)) return true;
+        continue; // (a): merged-ack row, not our target
+      }
+      thread.responses[i] = upgradePlaceholderRow(r, opts, threadId);
+      sortResponsesInThread(thread);
+      notify();
+      return true;
+    }
+    if (thread.pendingAssistant?.historySeq === opts.historySeq) return true;
+  }
+
+  const completion: ThreadMessage = {
+    id: opts.messageId ?? nextId(),
+    role: "assistant",
+    text: opts.text,
+    files: opts.media.map(fileFromMediaPath),
+    toolCalls: [],
+    status: "complete",
+    // Prefer the server-side commit time. Falling back to client
+    // receipt time for callers that don't supply it (test paths) is
+    // safe; production callers always set `persistedAt` from the
+    // envelope's `persisted_at` field.
+    timestamp: parsePersistedAt(opts.persistedAt),
+    historySeq: opts.historySeq,
+    intra_thread_seq: opts.historySeq,
+    responseToClientMessageId: opts.sourceClientMessageId ?? threadId,
+  };
+  thread.responses.push(completion);
+  sortResponsesInThread(thread);
+  notify();
+  return true;
+}
+
+function parsePersistedAt(persistedAt: string | undefined): number {
+  if (!persistedAt) return Date.now();
+  const t = new Date(persistedAt).getTime();
+  return Number.isFinite(t) ? t : Date.now();
+}
+
+/** Replace a placeholder row's empty text + (optional) files with the
+ *  spawn-complete envelope's authoritative content, unioning files by
+ *  path so a file already landed by the persisted-only row isn't lost
+ *  or duplicated. Used for both `messageId` and `historySeq` upgrade
+ *  paths. */
+function upgradePlaceholderRow(
+  existing: ThreadMessage,
+  opts: AppendCompletionBubbleOptions,
+  threadId: string,
+): ThreadMessage {
+  const incomingFiles = opts.media.map(fileFromMediaPath);
+  const seen = new Set<string>();
+  const mergedFiles: MessageFile[] = [];
+  for (const f of [...existing.files, ...incomingFiles]) {
+    if (seen.has(f.path)) continue;
+    seen.add(f.path);
+    mergedFiles.push(f);
+  }
+  return {
+    ...existing,
+    text: opts.text,
+    files: mergedFiles,
+    historySeq: opts.historySeq ?? existing.historySeq,
+    intra_thread_seq: opts.historySeq ?? existing.intra_thread_seq,
+    responseToClientMessageId:
+      opts.sourceClientMessageId ??
+      existing.responseToClientMessageId ??
+      threadId,
+  };
+}
+
+/** Best-effort content match for the dedupe-by-historySeq fallback
+ *  when callers omit `messageId`. Same text and same file path set
+ *  means this row IS the spawn-complete row already (true replay,
+ *  no-op). Different content means the seq was likely donated by
+ *  legacy `replayHistory` media-only-companion merging — in that case
+ *  the caller should append a fresh row, not dedupe. */
+function rowMatchesCompletionContent(
+  row: ThreadMessage,
+  opts: AppendCompletionBubbleOptions,
+): boolean {
+  if (row.text !== opts.text) return false;
+  if (row.files.length !== opts.media.length) return false;
+  const rowPaths = new Set(row.files.map((f) => f.path));
+  for (const path of opts.media) {
+    if (!rowPaths.has(path)) return false;
+  }
+  return true;
+}
+
 /** Append a delivered file to the assistant slot in the thread (pending
  *  in-flight, or the most recent finalized response if the turn has
  *  already ended — the late-arrival case for spawn_only background

@@ -127,6 +127,74 @@ export interface MessagePersistedEvent {
   media?: string[];
 }
 
+/**
+ * `turn/spawn_complete` notification per M10 Phase 1 (server PR #772).
+ *
+ * Emitted by the server when a `spawn_only` background tool finishes. Each
+ * envelope is structurally complete on arrival — the client renders it as a
+ * NEW assistant bubble under the originating user prompt rather than
+ * splice-merging late content into an existing bubble (the bug class M10
+ * eliminates: sticky-map drift, phantom-chunk drop, etc.).
+ *
+ * Capability gated: server only emits when the client has negotiated
+ * `event.spawn_complete.v1` at session/open. Older clients without the
+ * capability continue to receive the legacy `message/persisted` row for
+ * backward compatibility.
+ *
+ * Wire shape mirrors `MessagePersistedEvent` with two distinguishing
+ * additions:
+ *   - `task_id` is REQUIRED (every spawn_complete has an originating
+ *     `spawn_only` task; a row without one is a server bug).
+ *   - `content` is REQUIRED (carries the full assistant text inline so the
+ *     client renders the new bubble atomically without a follow-up fetch).
+ *     This is what distinguishes the envelope from a spawn-ack persisted
+ *     row, whose content is a short ack message.
+ *
+ * Note on `response_to_client_message_id`: Phase 1 server populates this
+ * from the same identifier that `message/persisted.thread_id` carries on
+ * the same persisted row. Phase 4 will introduce a typed
+ * `originating_client_message_id` to remove the semantic ambiguity. Until
+ * then, the SPA reducer keys placement off `thread_id` (server-carried
+ * since PR #680) and treats `response_to_client_message_id` as advisory.
+ */
+export interface TurnSpawnCompleteEvent {
+  session_id: string;
+  /** Optional per server-side schema; `None` from `run_standalone_turn`
+   *  until Phase 4 plumbing surfaces a real turn id. */
+  turn_id?: string;
+  /** Optional per server-side schema; absent on legacy callers. */
+  thread_id?: string;
+  /** Always populated. Identifies the originating `spawn_only` task —
+   *  used by Phase 4's `read_task_output` flow. */
+  task_id: string;
+  /** Optional in Phase 1 (server emits a thread-id-flavoured value); used
+   *  as advisory placement only. Phase 4 will populate this with the real
+   *  user-prompt cmid. */
+  response_to_client_message_id?: string;
+  /** Per-session committed-row index (matches `MessagePersistedEvent.seq`
+   *  for the same row). Strictly monotonic. */
+  seq: number;
+  /** Server-assigned message id reused from the persisted row (since
+   *  Phase 1 codex round 3 fix). Stable across replays. */
+  message_id: string;
+  /** Source of the completion. Always `"background"` today; reserved as
+   *  string so future variants (`"recovery_background"`, etc.) extend the
+   *  vocabulary without a wire-breaking change. */
+  source: string;
+  /** Durable cursor pointing at this commit in the UI ledger. */
+  cursor: UiCursor;
+  /** RFC 3339 wall-clock time the row was committed. */
+  persisted_at: string;
+  /** REQUIRED. Full assistant text for the completion bubble. Distinct
+   *  from `MessagePersistedEvent` (where `content` lives only in the
+   *  session ledger), this event carries the text inline. */
+  content: string;
+  /** File attachments persisted with this completion (e.g.
+   *  `_report.md`, `output.mp3`, `.pptx`). Same convention as
+   *  `MessagePersistedEvent.media`. */
+  media?: string[];
+}
+
 export interface TaskUpdatedEvent {
   session_id: string;
   turn_id: string;
