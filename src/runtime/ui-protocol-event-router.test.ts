@@ -94,6 +94,80 @@ describe("router event mapping", () => {
     expect(thread).toBeDefined();
   });
 
+  it("message/persisted (assistant, no media, empty pending) leaves pending alive for the late delta", () => {
+    // M10 Phase 5b empty-placeholder fix: when an assistant
+    // `message/persisted` lands BEFORE the streamed `message/delta`
+    // (durable-then-ephemeral race the server emits routinely), the
+    // pre-fix promotion code finalised the pending bubble empty and
+    // then `appendAssistantToken` dropped the late delta as a phantom
+    // chunk. Post-fix: the persist event is acknowledged but the
+    // pending stays alive because it has no content to render yet.
+    // The subsequent delta lands in the pending slot; a follow-up
+    // `turn/completed` finalises with text.
+    const cmid = "cmid-empty-place";
+    seedThread(cmid, "ask the model");
+    const persistedFirst: MessagePersistedEvent = {
+      session_id: SESSION,
+      turn_id: cmid,
+      thread_id: cmid,
+      seq: 13,
+      role: "assistant",
+      message_id: "msg-empty-1",
+      source: "assistant",
+      cursor: { stream: SESSION, seq: 13 },
+      persisted_at: "2026-05-04T00:00:00Z",
+      media: [],
+    };
+    handleMessagePersisted({ sessionId: SESSION }, persistedFirst);
+    const afterPersist = ThreadStore.getThreads(SESSION)[0];
+    expect(afterPersist.pendingAssistant).not.toBeNull();
+    expect(afterPersist.pendingAssistant?.text).toBe("");
+    expect(afterPersist.responses).toHaveLength(0);
+    // The persist event's seq is stamped onto the pending so that a
+    // later `turn/completed` (which doesn't carry a per-message seq)
+    // still finalises with the durable per-thread sequence.
+    expect(afterPersist.pendingAssistant?.historySeq).toBe(13);
+
+    // Now the delayed delta arrives — must land in the pending slot
+    // (not be dropped as a phantom chunk).
+    handleMessageDelta(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: cmid, delta: "Background work started." },
+    );
+    const afterDelta = ThreadStore.getThreads(SESSION)[0];
+    expect(afterDelta.pendingAssistant?.text).toBe("Background work started.");
+    expect(afterDelta.pendingAssistant?.historySeq).toBe(13);
+  });
+
+  it("message/persisted (assistant, with media, empty pending) finalises with media", () => {
+    // The fix preserves the legitimate finalisation case: when the
+    // persist event carries media (the legacy file-delivery shape),
+    // the pending bubble has something concrete to show, so the
+    // promotion path finalises with the file attached.
+    const cmid = "cmid-with-media";
+    seedThread(cmid, "make a podcast");
+    const evt: MessagePersistedEvent = {
+      session_id: SESSION,
+      turn_id: cmid,
+      thread_id: cmid,
+      seq: 7,
+      role: "assistant",
+      message_id: "msg-media-1",
+      source: "assistant",
+      cursor: { stream: SESSION, seq: 7 },
+      persisted_at: "2026-05-04T00:00:00Z",
+      media: ["/tmp/podcast.mp3"],
+    };
+    handleMessagePersisted({ sessionId: SESSION }, evt);
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.pendingAssistant).toBeNull();
+    expect(thread.responses).toHaveLength(1);
+    expect(thread.responses[0].files.map((f) => f.path)).toEqual([
+      "/tmp/podcast.mp3",
+    ]);
+    expect(thread.responses[0].historySeq).toBe(7);
+  });
+
   it("task/updated running emits a progress entry on the bound tool call", () => {
     seedThread("cmid-3");
     const dispatched: Event[] = [];

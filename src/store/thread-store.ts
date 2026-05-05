@@ -867,6 +867,34 @@ export function appendAssistantFile(
   return true;
 }
 
+/**
+ * M10 Phase 5b: stamp the per-thread server seq onto the in-flight
+ * `pendingAssistant` without finalising it. Used by the v1 router's
+ * empty-placeholder defence: when an assistant `message/persisted`
+ * event arrives BEFORE the streamed `message/delta`, we acknowledge
+ * the seq (so a later finalise without a seq from `turn/completed`
+ * still picks up the durable identity) but leave the bubble in its
+ * `pendingAssistant` slot so subsequent deltas can land in it.
+ *
+ * No-op when there's no pending bubble in `threadId`. Idempotent:
+ * stamping the same seq twice is safe.
+ */
+export function stampPendingHistorySeq(
+  threadId: string,
+  historySeq: number,
+): void {
+  const found = findThreadById(threadId);
+  if (!found || !found.thread.pendingAssistant) return;
+  if (found.thread.pendingAssistant.historySeq === historySeq) return;
+  found.thread.pendingAssistant = {
+    ...found.thread.pendingAssistant,
+    historySeq,
+    intra_thread_seq:
+      found.thread.pendingAssistant.intra_thread_seq ?? historySeq,
+  };
+  notify();
+}
+
 export interface FinalizeAssistantOptions {
   /** Per-thread server sequence assigned at persistence time. */
   committedSeq?: number;
@@ -1368,50 +1396,28 @@ export function appendPersistedMessage(
 
   const built = buildResponseFromApi(message);
 
-  // Adjacent media-only companion: late media-bearing record whose text is
-  // empty / a `[file:...]` marker folds into the prior text response on
-  // this thread. Mirrors the `replayHistory` rule so the runtime path
-  // produces the same shape as a fresh page load.
-  if (
-    built.role === "assistant" &&
-    isMediaOnlyCompanion(built) &&
-    thread.responses.length > 0
-  ) {
-    const last = thread.responses[thread.responses.length - 1];
-    const lastSeq = last.historySeq;
-    const builtSeq = built.historySeq;
-    const adjacent =
-      typeof lastSeq === "number" &&
-      typeof builtSeq === "number" &&
-      builtSeq === lastSeq + 1;
-    if (
-      adjacent &&
-      last.role === "assistant" &&
-      last.text.trim().length > 0
-    ) {
-      mergeMediaCompanionInto(last, built);
-      notify();
-      return;
-    }
-  }
-
-  // Duplicate assistant+file collapse: a prior response on the same thread
-  // already carries this media. Mirrors `replayHistory` so a streamed
-  // snapshot followed by a persisted final delivery doesn't produce two
-  // bubbles holding the same MP3/PNG.
-  if (
-    built.role === "assistant" &&
-    built.files.length > 0 &&
-    thread.responses.length > 0
-  ) {
-    const dupIdx = findDuplicateAssistantWithFile(thread.responses, built);
-    if (dupIdx !== -1) {
-      mergeDuplicateAssistantFile(thread.responses[dupIdx], built);
-      notify();
-      return;
-    }
-  }
-
+  // M10 Phase 5b: legacy splice-merge predicates removed.
+  //
+  // PRE-M10 contract: a late media-bearing `message/persisted` was
+  // assumed to be a "companion" of a prior text bubble. The
+  // `isMediaOnlyCompanion` + adjacent-seq + `findDuplicateAssistantWithFile`
+  // predicates folded the file into the prior bubble — preserving a
+  // single-bubble UX at the cost of a fragile splice-merge surface that
+  // produced 5+ waves of bugs (sticky-map drift, phantom-chunk drop,
+  // wrong-bubble target, etc).
+  //
+  // M10 contract: each persisted assistant row is its own bubble. The
+  // SPA's renderer already supports N>=1 assistant bubbles per user
+  // prompt via `responses.map`. For `spawn_only` completions the new
+  // `turn/spawn_complete` envelope (server PR #772, M10 Phase 1)
+  // delivers content + media in a SINGLE atomic event; the per-file
+  // companion `message/persisted` rows are filtered server-side under
+  // the `event.spawn_complete.v1` capability (PR #773, Phase 5a).
+  //
+  // Replay/hydrate (`replayHistory`) keeps its own copy of the merge
+  // predicates because the hydrate path serves both negotiated and
+  // legacy shapes — once the hydrate response carries a `source` field
+  // those predicates can be deleted too (Phase 6 follow-up).
   thread.responses.push(built);
   sortResponsesInThread(thread);
   notify();

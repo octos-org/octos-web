@@ -169,13 +169,27 @@ export function handleMessagePersisted(
 /**
  * If the live thread for `event.thread_id` has an in-flight
  * pendingAssistant, append the event's `media` URLs to the pending
- * bubble and finalise it with the event's `seq`. Returns true when
- * promotion happened (caller should NOT also append a fresh row).
+ * bubble. Returns true when ownership was claimed (caller should NOT
+ * also append a fresh row).
  *
  * Unlike the original promotion path, this DOES NOT overwrite the
  * pending text — the server's `MessagePersistedEvent` carries no
  * `content` field, so the streamed `message/delta` text is
  * authoritative for the bubble's body.
+ *
+ * M10 Phase 5b empty-placeholder fix: the persistence event for an
+ * assistant turn frequently arrives BEFORE the streamed `message/delta`
+ * carrying the bubble's text (the server emits durable
+ * `message/persisted` immediately on commit; `message/delta` is
+ * ephemeral and races). Pre-fix, finalising here would freeze an
+ * empty bubble — and the late delta would then be dropped by
+ * `appendAssistantToken`'s `isFinalizedAndIdle` guard, surfacing as
+ * a phantom-chunk-drop counter increment and an empty timestamp-only
+ * placeholder. The fix: finalise here ONLY when the bubble already has
+ * content (text already streamed, OR media on the event) — leaving
+ * the pending alive otherwise so subsequent deltas land in it. The
+ * authoritative `turn/completed` always finalises, so the bubble
+ * doesn't leak even if no delta ever arrives.
  */
 function tryPromotePendingFromPersisted(
   sessionId: string,
@@ -189,16 +203,35 @@ function tryPromotePendingFromPersisted(
   if (!thread || !thread.pendingAssistant) return false;
   // appendAssistantFile is path-deduped, so re-adding a streamed file is
   // a no-op. New media URLs that weren't already attached land here.
-  for (const path of event.media ?? []) {
+  const eventMedia = event.media ?? [];
+  for (const path of eventMedia) {
     ThreadStore.appendAssistantFile(threadId, {
       filename: filenameFromPath(path),
       path,
       caption: "",
     });
   }
-  ThreadStore.finalizeAssistant(threadId, {
-    committedSeq: event.seq,
-  });
+  // Phase 5b empty-placeholder defence: only finalise when the bubble
+  // has something to render right now. Empty pending + no-media event
+  // = wait for delta or `turn/completed` rather than freezing an empty
+  // row that drops the late delta. Code path stays idempotent: a
+  // late `message/persisted` replay for a thread already finalized
+  // returns early at the `pendingAssistant` null check above.
+  const pendingHasContent =
+    thread.pendingAssistant.text.trim().length > 0 ||
+    thread.pendingAssistant.files.length > 0 ||
+    thread.pendingAssistant.toolCalls.length > 0;
+  if (pendingHasContent || eventMedia.length > 0) {
+    ThreadStore.finalizeAssistant(threadId, {
+      committedSeq: event.seq,
+    });
+  } else {
+    // Stamp the seq onto the pending without finalising so a later
+    // `turn/completed` (which doesn't carry a per-message seq) still
+    // ends up with the durable per-thread sequence stamped on the
+    // committed row. No-op if pending already has this seq.
+    ThreadStore.stampPendingHistorySeq(threadId, event.seq);
+  }
   return true;
 }
 
