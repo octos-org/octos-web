@@ -176,6 +176,21 @@ describe("type guards (fail-closed)", () => {
     expect(
       guards.guardMessageDelta({
         session_id: "s",
+        text: "hi",
+      }),
+    ).toBeNull();
+  });
+
+  it("rejects message/delta whose text-bearing field is the legacy `delta` name (M10 Phase 6.2)", () => {
+    // The wire field is `text` (see `octos_core::ui_protocol::MessageDeltaEvent`).
+    // A payload that uses `delta:` is not what the server emits; reject it
+    // explicitly so a future regression that re-introduces the wrong name
+    // fails this guard at parse time instead of silently dropping every
+    // spawn-ack and surfacing as an empty timestamp-only bubble.
+    expect(
+      guards.guardMessageDelta({
+        session_id: "s",
+        turn_id: "t",
         delta: "hi",
       }),
     ).toBeNull();
@@ -185,12 +200,12 @@ describe("type guards (fail-closed)", () => {
     const ev = guards.guardMessageDelta({
       session_id: "s",
       turn_id: "t",
-      delta: "hi",
+      text: "hi",
     });
     expect(ev).toEqual({
       session_id: "s",
       turn_id: "t",
-      delta: "hi",
+      text: "hi",
       message_id: undefined,
     });
   });
@@ -766,7 +781,7 @@ describe("notification dispatch", () => {
     ws.triggerMessage({
       jsonrpc: "2.0",
       method: METHODS.MESSAGE_DELTA,
-      params: { session_id: "sess-1", turn_id: "t1", delta: "hi" },
+      params: { session_id: "sess-1", turn_id: "t1", text: "hi" },
     });
     expect(seen).toHaveLength(1);
     expect(seen[0].turn_id).toBe("t1");
@@ -781,7 +796,7 @@ describe("notification dispatch", () => {
     ws.triggerMessage({
       jsonrpc: "2.0",
       method: METHODS.MESSAGE_DELTA,
-      params: { session_id: "sess-1", delta: "hi" },
+      params: { session_id: "sess-1", text: "hi" },
     });
     expect(deltas).toHaveLength(0);
     expect(warnings.some((w) => w.reason === "invalid_event:message/delta")).toBe(
@@ -963,16 +978,16 @@ describe("notification dispatch", () => {
     ws.triggerMessage({
       jsonrpc: "2.0",
       method: METHODS.MESSAGE_DELTA,
-      params: { session_id: "sess-1", turn_id: "t1", delta: "a" },
+      params: { session_id: "sess-1", turn_id: "t1", text: "a" },
     });
     unsub();
     ws.triggerMessage({
       jsonrpc: "2.0",
       method: METHODS.MESSAGE_DELTA,
-      params: { session_id: "sess-1", turn_id: "t1", delta: "b" },
+      params: { session_id: "sess-1", turn_id: "t1", text: "b" },
     });
     expect(seen).toHaveLength(1);
-    expect(seen[0].delta).toBe("a");
+    expect(seen[0].text).toBe("a");
   });
 });
 

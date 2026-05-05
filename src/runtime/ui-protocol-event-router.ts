@@ -123,8 +123,11 @@ export function handleMessageDelta(
 ): void {
   // turn_id is the thread_id key per the v1 contract. The bridge already
   // rejected events with a missing/empty turn_id at the guard layer.
-  if (!event.delta) return;
-  ThreadStore.appendAssistantToken(event.turn_id, event.delta);
+  // The wire field is `text` (see `MessageDeltaEvent`) — using the wrong
+  // field name silently drops every spawn-ack delta and leaves an empty
+  // timestamp-only bubble (M10 Phase 6.2 regression).
+  if (!event.text) return;
+  ThreadStore.appendAssistantToken(event.turn_id, event.text);
 }
 
 export function handleMessagePersisted(

@@ -59,12 +59,12 @@ describe("router event mapping", () => {
     const evt: MessageDeltaEvent = {
       session_id: SESSION,
       turn_id: "cmid-1",
-      delta: "Hello",
+      text: "Hello",
     };
     handleMessageDelta({ sessionId: SESSION }, evt);
     handleMessageDelta(
       { sessionId: SESSION },
-      { ...evt, delta: ", world" },
+      { ...evt, text: ", world" },
     );
     const [thread] = ThreadStore.getThreads(SESSION);
     expect(thread.pendingAssistant?.text).toBe("Hello, world");
@@ -132,7 +132,7 @@ describe("router event mapping", () => {
     // (not be dropped as a phantom chunk).
     handleMessageDelta(
       { sessionId: SESSION },
-      { session_id: SESSION, turn_id: cmid, delta: "Background work started." },
+      { session_id: SESSION, turn_id: cmid, text: "Background work started." },
     );
     const afterDelta = ThreadStore.getThreads(SESSION)[0];
     expect(afterDelta.pendingAssistant?.text).toBe("Background work started.");
@@ -166,7 +166,7 @@ describe("router event mapping", () => {
     handleMessagePersisted({ sessionId: SESSION }, persisted);
     handleMessageDelta(
       { sessionId: SESSION },
-      { session_id: SESSION, turn_id: cmid, delta: "Hello there." },
+      { session_id: SESSION, turn_id: cmid, text: "Hello there." },
     );
     // Simulate `turn/completed` finalising without a per-message seq —
     // the stamped pending seq must propagate onto the finalised row.
@@ -606,6 +606,100 @@ describe("router event mapping", () => {
     ]);
   });
 
+  // -------------------------------------------------------------------------
+  // M10 Phase 6.2: spawn-ack rendering regression test
+  // -------------------------------------------------------------------------
+  //
+  // Pre-fix (M10 Phase 6.1 probe): the bridge guard expected `params.delta`
+  // but the server emits `params.text` (see
+  // `octos_core::ui_protocol::MessageDeltaEvent`), so the spawn-ack
+  // `message/delta` was rejected silently at the guard layer. The
+  // pendingAssistant stayed empty; subsequent finalization produced a
+  // timestamp-only ghost assistant bubble in the SPA. This test pins the
+  // corrected behaviour: the streamed text lands in the bubble, and the
+  // spawn_complete envelope appends a second bubble — two assistant rows
+  // total (the user prompt is the third), not the three observed in the
+  // wave-6m probe.
+  it(
+    "spawn-ack delta + persisted + spawn_complete renders 2 assistant bubbles (1 ack, 1 completion)",
+    () => {
+      const cmid = "cmid-spawn-ack-render";
+      seedThread(cmid, "Use deep_search to find Rust news");
+
+      // (1) message/delta — spawn-ack text streams in. With the pre-fix
+      //     guard this frame was silently rejected; with the fix the text
+      //     lands on `pendingAssistant.text`.
+      handleMessageDelta(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          text: "Background work started for `deep_search`.",
+        },
+      );
+
+      // (2) message/persisted — assistant ack row (no media). Promotion
+      //     finalises the pending bubble because it now has content.
+      handleMessagePersisted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          thread_id: cmid,
+          seq: 4,
+          role: "assistant",
+          message_id: "msg-ack",
+          source: "assistant",
+          cursor: { stream: SESSION, seq: 4 },
+          persisted_at: "2026-05-04T00:00:00Z",
+        },
+      );
+
+      // (3) turn/spawn_complete — atomic completion envelope. Appends a
+      //     fresh bubble under the same user prompt.
+      handleSpawnComplete(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          thread_id: cmid,
+          task_id: "task_deep_search_1",
+          response_to_client_message_id: cmid,
+          seq: 6,
+          message_id: "msg-spawn-complete",
+          source: "background",
+          cursor: { stream: SESSION, seq: 6 },
+          persisted_at: "2026-05-04T00:00:02Z",
+          content: "✓ deep_search completed (research/_report.md)",
+          media: ["research/_report.md"],
+        },
+      );
+
+      const [thread] = ThreadStore.getThreads(SESSION);
+      expect(thread.pendingAssistant).toBeNull();
+      // Exactly TWO assistant rows: the ack bubble (with the streamed
+      // delta text) and the spawn_complete bubble.
+      expect(thread.responses).toHaveLength(2);
+
+      // Ack bubble carries the spawn-ack text — NOT empty. This is the
+      // load-bearing assertion for Phase 6.2.
+      expect(thread.responses[0].text).toBe(
+        "Background work started for `deep_search`.",
+      );
+      expect(thread.responses[0].status).toBe("complete");
+      expect(thread.responses[0].files).toHaveLength(0);
+
+      // Completion bubble carries the spawn_complete envelope's atomic
+      // content + media list.
+      expect(thread.responses[1].text).toBe(
+        "✓ deep_search completed (research/_report.md)",
+      );
+      expect(thread.responses[1].files.map((f) => f.path)).toEqual([
+        "research/_report.md",
+      ]);
+    },
+  );
+
   it("approval/requested dispatches a CustomEvent with the typed payload", () => {
     const dispatched: Event[] = [];
     const evt: ApprovalRequestedEvent = {
@@ -646,7 +740,7 @@ describe("router lifecycle de-dup", () => {
     seedThread(cmid, "ask");
     handleMessageDelta(
       { sessionId: SESSION },
-      { session_id: SESSION, turn_id: cmid, delta: "partial" },
+      { session_id: SESSION, turn_id: cmid, text: "partial" },
     );
     handleMessagePersisted(
       { sessionId: SESSION },
@@ -716,11 +810,11 @@ describe("router parity with SSE bridge", () => {
     );
     handleMessageDelta(
       { sessionId: SESSION },
-      { session_id: SESSION, turn_id: cmid, delta: "Hello" },
+      { session_id: SESSION, turn_id: cmid, text: "Hello" },
     );
     handleMessageDelta(
       { sessionId: SESSION },
-      { session_id: SESSION, turn_id: cmid, delta: ", world" },
+      { session_id: SESSION, turn_id: cmid, text: ", world" },
     );
     handleTurnCompleted(
       { sessionId: SESSION },
@@ -765,7 +859,7 @@ describe("router parity with SSE bridge", () => {
     // text via message/delta first, then send the persisted event.
     handleMessageDelta(
       { sessionId: SESSION },
-      { session_id: SESSION, turn_id: cmid, delta: "Persisted answer" },
+      { session_id: SESSION, turn_id: cmid, text: "Persisted answer" },
     );
     handleMessagePersisted(
       { sessionId: SESSION },
@@ -820,7 +914,7 @@ describe("router parity with SSE bridge", () => {
     seedThread(cmid, "ask");
     handleMessageDelta(
       { sessionId: SESSION },
-      { session_id: SESSION, turn_id: cmid, delta: "partial" },
+      { session_id: SESSION, turn_id: cmid, text: "partial" },
     );
     handleTurnError(
       { sessionId: SESSION },

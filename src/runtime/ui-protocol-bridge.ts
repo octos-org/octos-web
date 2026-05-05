@@ -287,11 +287,16 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 function guardMessageDelta(p: unknown): MessageDeltaEvent | null {
   if (!isPlainObject(p)) return null;
   if (!isString(p.session_id) || !isString(p.turn_id)) return null;
-  if (typeof p.delta !== "string") return null;
+  // Server-side wire field is `text` (see
+  // `octos_core::ui_protocol::MessageDeltaEvent`). The previous guard
+  // required `params.delta` and silently rejected every real frame —
+  // the M10 Phase 6.2 root cause that left the spawn-ack pending
+  // empty. Accept `text` and surface it as `event.text` to the router.
+  if (typeof p.text !== "string") return null;
   return {
     session_id: p.session_id,
     turn_id: p.turn_id,
-    delta: p.delta,
+    text: p.text,
     message_id: typeof p.message_id === "string" ? p.message_id : undefined,
   };
 }
