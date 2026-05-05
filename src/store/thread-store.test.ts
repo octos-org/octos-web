@@ -1183,10 +1183,26 @@ describe("thread-store", () => {
     expect(thread.responses[1].historySeq).toBe(5);
   });
 
-  it("appendPersistedMessage_with_media_only_companion_merges_into_text_response", () => {
-    // Late media-only delivery (e.g. podcast.mp3) must fold into the
-    // previous text response on the same thread — same rule replayHistory
-    // applies on a fresh page load.
+  it("appendPersistedMessage_with_media_only_companion_appends_separate_bubble", () => {
+    // M10 Phase 5b contract change (formerly
+    // `appendPersistedMessage_with_media_only_companion_merges_into_text_response`).
+    //
+    // Pre-M10 behaviour: a media-only persisted row (empty content +
+    // file attachments) folded into the prior text bubble via the
+    // `isMediaOnlyCompanion` + adjacent-seq splice-merge predicate, so
+    // the user saw a single bubble holding both the spoken-text and the
+    // delivered file. That predicate produced 5+ waves of bugs (sticky-
+    // map drift, phantom-chunk drop, wrong-bubble target) and is gone.
+    //
+    // M10 contract: each persisted row is its own bubble. The renderer
+    // already supports N>=1 assistant bubbles per user prompt. For
+    // `spawn_only` completions the new `turn/spawn_complete` envelope
+    // (server PR #772) delivers content + media in one atomic event;
+    // the per-file companion `message/persisted` rows are filtered
+    // server-side under the `event.spawn_complete.v1` capability
+    // (PR #773, Phase 5a). Non-spawn flows that produce a media-only
+    // companion now append a fresh bubble — visually a second row
+    // showing the file, anchored under the same user prompt.
     makeUser("make me a podcast", "cm-pod");
     ThreadStore.appendPersistedMessage(SESSION, undefined, {
       seq: 1,
@@ -1207,9 +1223,11 @@ describe("thread-store", () => {
     });
 
     const [thread] = ThreadStore.getThreads(SESSION);
-    expect(thread.responses).toHaveLength(1);
+    expect(thread.responses).toHaveLength(2);
     expect(thread.responses[0].text).toBe("Here is your podcast.");
-    expect(thread.responses[0].files.map((f) => f.path)).toEqual([
+    expect(thread.responses[0].files).toHaveLength(0);
+    expect(thread.responses[1].text).toBe("");
+    expect(thread.responses[1].files.map((f) => f.path)).toEqual([
       "/tmp/podcast.mp3",
     ]);
   });
