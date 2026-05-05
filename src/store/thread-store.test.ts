@@ -1490,6 +1490,97 @@ describe("thread-store", () => {
     expect(matches[0].text).toBe("First.");
   });
 
+  it("appendCompletionBubble_appends_when_seq_was_donated_by_replayHistory_companion_merge", () => {
+    // Codex round-5 P2: legacy `replayHistory` (via
+    // `mergeMediaCompanionInto`) MOVES a media-only companion's
+    // `historySeq` onto the preceding non-empty ack bubble. After that,
+    // the spawn-complete envelope replaying with the same seq must NOT
+    // be silently dropped — the row at that seq is now the ack bubble,
+    // not the completion. Append a fresh row instead.
+    makeUser("ask", "cmid-c-merged-seq");
+    // Simulate `replayHistory`'s post-merge state: a non-empty ack
+    // bubble that has been donated the spawn-complete's seq.
+    ThreadStore.replayHistory(SESSION, [
+      {
+        role: "user",
+        content: "ask",
+        thread_id: "cmid-c-merged-seq",
+        client_message_id: "cmid-c-merged-seq",
+        seq: 0,
+        timestamp: "2026-04-30T00:00:00Z",
+      },
+      {
+        role: "assistant",
+        content: "Background work started.",
+        thread_id: "cmid-c-merged-seq",
+        response_to_client_message_id: "cmid-c-merged-seq",
+        seq: 1,
+        timestamp: "2026-04-30T00:00:01Z",
+      },
+      {
+        // Media-only companion — replayHistory will fold this into the
+        // ack bubble and donate seq=2 to it.
+        role: "assistant",
+        content: "",
+        thread_id: "cmid-c-merged-seq",
+        response_to_client_message_id: "cmid-c-merged-seq",
+        seq: 2,
+        timestamp: "2026-04-30T00:00:02Z",
+        media: ["bg/_report.md"],
+      },
+    ]);
+    let [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses).toHaveLength(1);
+    expect(thread.responses[0].text).toBe("Background work started.");
+    // The merge donated seq=2 onto the ack bubble.
+    expect(thread.responses[0].historySeq).toBe(2);
+
+    // Now the live spawn-complete envelope replays with seq=2.
+    ThreadStore.appendCompletionBubble("cmid-c-merged-seq", {
+      text: "Real research result.",
+      media: ["bg/_report.md"],
+      spawnComplete: true,
+      historySeq: 2,
+      messageId: "msg-spawn-replay",
+    });
+
+    [thread] = ThreadStore.getThreads(SESSION);
+    // CRITICAL: a NEW row appears for the spawn completion. The ack
+    // bubble's text is preserved.
+    expect(thread.responses).toHaveLength(2);
+    expect(thread.responses[0].text).toBe("Background work started.");
+    expect(
+      thread.responses.some((r) => r.text === "Real research result."),
+    ).toBe(true);
+  });
+
+  it("appendCompletionBubble_dedupes_by_messageId_when_present", () => {
+    // Codex round-5: the strongest dedupe identity is the server-side
+    // `message_id` (Phase 1 P2-B fix reuses the persisted row's id on
+    // the spawn envelope). Two calls with the same messageId must
+    // collapse to a single row even if seq differs (e.g. cursor-vs-row
+    // seq confusion).
+    makeUser("ask", "cmid-c-msgid");
+    ThreadStore.appendCompletionBubble("cmid-c-msgid", {
+      text: "Result.",
+      media: [],
+      spawnComplete: true,
+      messageId: "msg-stable",
+      historySeq: 5,
+    });
+    ThreadStore.appendCompletionBubble("cmid-c-msgid", {
+      text: "Result.",
+      media: [],
+      spawnComplete: true,
+      messageId: "msg-stable",
+      historySeq: 5,
+    });
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(
+      thread.responses.filter((r) => r.id === "msg-stable"),
+    ).toHaveLength(1);
+  });
+
   it("appendCompletionBubble_uses_server_persistedAt_for_display_timestamp", () => {
     // Codex round-4 P3: row timestamp must be the server's
     // `persisted_at`, not client receipt time, so reconnect/replay

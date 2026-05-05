@@ -703,54 +703,68 @@ export function appendCompletionBubble(
   if (!host) return false;
   const { thread } = host;
 
-  // Idempotency / upgrade-in-place: a replayed envelope on reconnect
-  // MUST NOT produce a duplicate row. The producer-side `seq`
-  // (Phase 1 P2-A fix) is the session-committed-row index, so it is
-  // a stable identity for this completion across restarts.
+  // Identity / upgrade-in-place. A replayed envelope on reconnect
+  // MUST NOT produce a duplicate row. Two stable identities exist:
   //
-  // Codex P2 (rollout edge case): when both
-  // `event.message_persisted.v1` AND `event.spawn_complete.v1` are
-  // negotiated, the server's per-connection suppression should send
-  // only `turn/spawn_complete`. But if the legacy `message/persisted`
-  // row arrived first via `appendPersistedMessage` (defensive: server
-  // suppression slip, mid-flight rollout, replay ordering), it lands
-  // an empty-content row with the matching seq. Don't drop the spawn
-  // envelope's authoritative content — UPGRADE the existing row in
-  // place so the completion text renders, not a blank bubble.
+  //   • messageId  — Phase 1 P2-B fix reuses the persisted row's
+  //                  `message_id` on the envelope, so the spawn-complete
+  //                  envelope's id MATCHES its companion `message/persisted`
+  //                  but is DISTINCT from the spawn-ack's id. This is
+  //                  the strongest dedupe key.
+  //   • historySeq — `seq` is a per-session committed-row index. Robust
+  //                  for clean cases; but see the codex round-5 edge:
+  //                  legacy `replayHistory` (via `mergeMediaCompanionInto`)
+  //                  can MOVE a media-only companion's `historySeq` onto
+  //                  the preceding ack bubble, so finding `historySeq=N`
+  //                  on a non-empty row does NOT prove that row IS the
+  //                  spawn-complete row.
+  //
+  // Strategy: prefer `messageId` for the identity check. Fall back to
+  // `historySeq` only as a placeholder-upgrade hint — when we find a
+  // row with the same seq AND it has empty text (the persisted-only
+  // placeholder shape), upgrade in place. Non-empty-text rows at the
+  // matching seq are NOT considered duplicates: they may be merged ack
+  // rows whose seq was donated by a media-only companion. In that case
+  // we proceed to append a fresh row, which is the correct M10
+  // separate-bubble semantic.
+
+  if (opts.messageId) {
+    for (let i = 0; i < thread.responses.length; i += 1) {
+      const r = thread.responses[i];
+      if (r.id !== opts.messageId) continue;
+      // True identity match — this row IS the spawn-complete row.
+      // Upgrade-in-place if it's a placeholder (the persisted-only
+      // shape), no-op if it's already the full completion.
+      if (r.text.length > 0) return true;
+      thread.responses[i] = upgradePlaceholderRow(r, opts, threadId);
+      sortResponsesInThread(thread);
+      notify();
+      return true;
+    }
+    if (thread.pendingAssistant?.id === opts.messageId) return true;
+  }
+
   if (typeof opts.historySeq === "number") {
     for (let i = 0; i < thread.responses.length; i += 1) {
       const r = thread.responses[i];
       if (r.historySeq !== opts.historySeq) continue;
-      // Treat the existing row as a placeholder when it has no text
-      // (regardless of whether files were attached). Two shapes from
-      // `appendPersistedMessage` are placeholders the spawn envelope
-      // must upgrade:
-      //   • metadata-only persisted: text "" + files []
-      //   • media-bearing persisted: text "" + files [...]
-      //     (P1.3 server PR #767 added `media` to the wire)
-      // A row with non-empty `text` is the legitimate completion (or
-      // a finalized assistant) — return early.
-      if (r.text.length > 0) return true;
-
-      // Merge: union the placeholder's existing files with the
-      // spawn envelope's media (dedupe by path) so a file already
-      // landed by the persisted row isn't dropped or duplicated.
-      const incomingFiles = opts.media.map(fileFromMediaPath);
-      const seen = new Set<string>();
-      const mergedFiles: MessageFile[] = [];
-      for (const f of [...r.files, ...incomingFiles]) {
-        if (seen.has(f.path)) continue;
-        seen.add(f.path);
-        mergedFiles.push(f);
+      // Only a PLACEHOLDER row at the matching seq is the legitimate
+      // upgrade target. If the row has non-empty text it is either:
+      //   (a) a merged-ack row whose seq was donated by replayHistory's
+      //       media-only-companion merge — NOT this completion, so
+      //       fall through to append a fresh row;
+      //   (b) the spawn-complete row already filled in by an earlier
+      //       call (true replay; messageId match would have caught it
+      //       above unless callers omit messageId — test paths).
+      // We can't distinguish (a) from (b) reliably without messageId,
+      // so we fall through and let the append path take care of it.
+      // For (b) test-path callers, the next-best identity is "same
+      // text + same media list"; if that matches, treat as no-op.
+      if (r.text.length > 0) {
+        if (rowMatchesCompletionContent(r, opts)) return true;
+        continue; // (a): merged-ack row, not our target
       }
-      thread.responses[i] = {
-        ...r,
-        text: opts.text,
-        files: mergedFiles,
-        intra_thread_seq: opts.historySeq,
-        responseToClientMessageId:
-          opts.sourceClientMessageId ?? r.responseToClientMessageId ?? threadId,
-      };
+      thread.responses[i] = upgradePlaceholderRow(r, opts, threadId);
       sortResponsesInThread(thread);
       notify();
       return true;
@@ -784,6 +798,56 @@ function parsePersistedAt(persistedAt: string | undefined): number {
   if (!persistedAt) return Date.now();
   const t = new Date(persistedAt).getTime();
   return Number.isFinite(t) ? t : Date.now();
+}
+
+/** Replace a placeholder row's empty text + (optional) files with the
+ *  spawn-complete envelope's authoritative content, unioning files by
+ *  path so a file already landed by the persisted-only row isn't lost
+ *  or duplicated. Used for both `messageId` and `historySeq` upgrade
+ *  paths. */
+function upgradePlaceholderRow(
+  existing: ThreadMessage,
+  opts: AppendCompletionBubbleOptions,
+  threadId: string,
+): ThreadMessage {
+  const incomingFiles = opts.media.map(fileFromMediaPath);
+  const seen = new Set<string>();
+  const mergedFiles: MessageFile[] = [];
+  for (const f of [...existing.files, ...incomingFiles]) {
+    if (seen.has(f.path)) continue;
+    seen.add(f.path);
+    mergedFiles.push(f);
+  }
+  return {
+    ...existing,
+    text: opts.text,
+    files: mergedFiles,
+    historySeq: opts.historySeq ?? existing.historySeq,
+    intra_thread_seq: opts.historySeq ?? existing.intra_thread_seq,
+    responseToClientMessageId:
+      opts.sourceClientMessageId ??
+      existing.responseToClientMessageId ??
+      threadId,
+  };
+}
+
+/** Best-effort content match for the dedupe-by-historySeq fallback
+ *  when callers omit `messageId`. Same text and same file path set
+ *  means this row IS the spawn-complete row already (true replay,
+ *  no-op). Different content means the seq was likely donated by
+ *  legacy `replayHistory` media-only-companion merging — in that case
+ *  the caller should append a fresh row, not dedupe. */
+function rowMatchesCompletionContent(
+  row: ThreadMessage,
+  opts: AppendCompletionBubbleOptions,
+): boolean {
+  if (row.text !== opts.text) return false;
+  if (row.files.length !== opts.media.length) return false;
+  const rowPaths = new Set(row.files.map((f) => f.path));
+  for (const path of opts.media) {
+    if (!rowPaths.has(path)) return false;
+  }
+  return true;
 }
 
 /** Append a delivered file to the assistant slot in the thread (pending
