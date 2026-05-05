@@ -232,7 +232,7 @@ function filenameFromPath(path: string): string {
  * under an arbitrary thread.
  */
 export function handleSpawnComplete(
-  _cfg: RouterConfig,
+  cfg: RouterConfig,
   event: TurnSpawnCompleteEvent,
 ): void {
   const placementKey =
@@ -246,6 +246,11 @@ export function handleSpawnComplete(
     sourceClientMessageId: event.response_to_client_message_id,
     historySeq: event.seq,
     messageId: event.message_id,
+    // Pass the router's active scope so unknown-thread orphan
+    // completions land in THIS session's bucket rather than an
+    // arbitrary stale one (codex P2 fix).
+    sessionId: cfg.sessionId,
+    topic: cfg.topic,
   });
 }
 

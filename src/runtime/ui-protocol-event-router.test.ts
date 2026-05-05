@@ -366,6 +366,52 @@ describe("router event mapping", () => {
     expect(thread.responses).toHaveLength(0);
   });
 
+  it("turn/spawn_complete with unknown thread_id lands in the ACTIVE session, not a stale one (codex P2 fix)", () => {
+    // Reproduces codex's P2 finding: with a stale session bucket
+    // present in `sessionsByKey`, an envelope for an unknown thread_id
+    // could be hosted in the stale session by `pickHostSessionForOrphan`.
+    // The fix passes `cfg.sessionId` into `appendCompletionBubble` so
+    // the orphan creates inside the router's active session.
+    const STALE = "sess-stale-A";
+    const ACTIVE = "sess-active-B";
+    // Seed both sessions so `sessionsByKey` is non-empty for both.
+    ThreadStore.addUserMessage(STALE, {
+      text: "old",
+      clientMessageId: "cmid-stale",
+    });
+    ThreadStore.addUserMessage(ACTIVE, {
+      text: "new",
+      clientMessageId: "cmid-active",
+    });
+
+    const evt: TurnSpawnCompleteEvent = {
+      session_id: ACTIVE,
+      thread_id: "cmid-unknown-bg",
+      task_id: "task_orphan",
+      seq: 11,
+      message_id: "msg-orphan",
+      source: "background",
+      cursor: { stream: ACTIVE, seq: 11 },
+      persisted_at: "2026-05-04T00:00:00Z",
+      content: "Late background result.",
+    };
+    handleSpawnComplete({ sessionId: ACTIVE }, evt);
+
+    const activeThreads = ThreadStore.getThreads(ACTIVE);
+    const staleThreads = ThreadStore.getThreads(STALE);
+    expect(
+      activeThreads.find((t) => t.id === "cmid-unknown-bg"),
+    ).toBeDefined();
+    expect(
+      staleThreads.find((t) => t.id === "cmid-unknown-bg"),
+    ).toBeUndefined();
+
+    // Cleanup the extra session we created so the global afterEach
+    // reset still leaves a clean slate.
+    ThreadStore.clearSession(STALE);
+    ThreadStore.clearSession(ACTIVE);
+  });
+
   it("turn/spawn_complete is idempotent on replay (same seq => single row)", () => {
     const cmid = "cmid-spawn-replay";
     seedThread(cmid, "ask");

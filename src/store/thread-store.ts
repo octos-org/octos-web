@@ -642,15 +642,59 @@ export interface AppendCompletionBubbleOptions {
   historySeq?: number;
   /** Server-assigned message id for stable identity across replays. */
   messageId?: string;
+  /** Active router scope. When the envelope's `thread_id` does not
+   *  already exist in any session, the orphan-bucket helper creates it
+   *  HERE rather than picking an arbitrary host session — without this,
+   *  a stale previously-loaded session in `sessionsByKey` could swallow
+   *  the bubble (codex P2: orphan completions misplaced after
+   *  reload/session-switch). */
+  sessionId?: string;
+  topic?: string;
 }
 
 export function appendCompletionBubble(
   threadId: string,
   opts: AppendCompletionBubbleOptions,
 ): boolean {
-  const found = ensureOrphanThread(threadId);
-  if (!found) return false;
-  const { thread } = found;
+  // Resolve the host thread. Prefer an exact match anywhere in the
+  // store (M8.10 cross-session cmid semantics). When no match exists,
+  // create the orphan inside the router's active session so
+  // session-switch / reload scenarios don't silently route the bubble
+  // into a stale session bucket.
+  let host = findThreadById(threadId);
+  if (!host) {
+    if (opts.sessionId) {
+      const state = ensureSession(storeKey(opts.sessionId, opts.topic));
+      const placeholderUser: ThreadMessage = {
+        id: nextId(),
+        role: "user",
+        text: "",
+        files: [],
+        toolCalls: [],
+        status: "complete",
+        timestamp: Date.now(),
+        clientMessageId: threadId,
+      };
+      const orphan: Thread = {
+        id: threadId,
+        userMsg: placeholderUser,
+        responses: [],
+        pendingAssistant: null,
+      };
+      insertThreadInTimestampOrder(state, orphan);
+      recordRuntimeCounter("octos_thread_orphan_created_total", {
+        surface: "thread_store_completion",
+      });
+      host = { state, thread: orphan };
+    } else {
+      // No router scope provided — fall back to legacy orphan placement
+      // (covers test paths that don't supply sessionId; production
+      // callers should always pass it).
+      host = ensureOrphanThread(threadId);
+    }
+  }
+  if (!host) return false;
+  const { thread } = host;
 
   // Idempotency: a replayed envelope on reconnect MUST NOT produce a
   // duplicate row. The producer-side `seq` (Phase 1 P2-A fix) is the
