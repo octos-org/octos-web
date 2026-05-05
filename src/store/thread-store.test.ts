@@ -1490,6 +1490,25 @@ describe("thread-store", () => {
     expect(matches[0].text).toBe("First.");
   });
 
+  it("appendCompletionBubble_uses_server_persistedAt_for_display_timestamp", () => {
+    // Codex round-4 P3: row timestamp must be the server's
+    // `persisted_at`, not client receipt time, so reconnect/replay
+    // produces a stable display order matching hydrated history.
+    makeUser("ask", "cmid-c-ts");
+    ThreadStore.appendCompletionBubble("cmid-c-ts", {
+      text: "Body.",
+      media: [],
+      spawnComplete: true,
+      historySeq: 50,
+      persistedAt: "2026-04-30T10:11:12.000Z",
+    });
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const completion = thread.responses.find((r) => r.text === "Body.");
+    expect(completion?.timestamp).toBe(
+      new Date("2026-04-30T10:11:12.000Z").getTime(),
+    );
+  });
+
   it("appendCompletionBubble_returns_false_when_no_session_exists", () => {
     // No makeUser — no host session has been created yet, so
     // ensureOrphanThread has nowhere to host the row.

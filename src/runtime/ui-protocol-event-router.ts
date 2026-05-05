@@ -246,6 +246,9 @@ export function handleSpawnComplete(
     sourceClientMessageId: event.response_to_client_message_id,
     historySeq: event.seq,
     messageId: event.message_id,
+    // Server-side commit time. Without this, the row's display timestamp
+    // is client receipt time and shifts on reconnect (codex round-4 P3).
+    persistedAt: event.persisted_at,
     // Pass the router's active scope so unknown-thread orphan
     // completions land in THIS session's bucket rather than an
     // arbitrary stale one (codex P2 fix).

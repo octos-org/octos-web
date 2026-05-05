@@ -397,7 +397,14 @@ function guardSpawnComplete(p: unknown): TurnSpawnCompleteEvent | null {
     return null;
   }
   if (!isString(p.persisted_at)) return null;
-  if (!isString(p.content)) return null;
+  // `content` must BE A STRING (present, correct type). It MAY be empty
+  // when `media` is non-empty — that's the file-only completion path
+  // (server-side spawn_only tool whose result is purely artefactual).
+  // Codex round-4 P2 caught this: rejecting empty-content envelopes
+  // would silently drop file-only completions for upgraded clients,
+  // because the server suppresses the legacy `message/persisted`
+  // fallback once `event.spawn_complete.v1` is negotiated.
+  if (typeof p.content !== "string") return null;
 
   let media: string[] | undefined;
   if (Array.isArray(p.media)) {
@@ -405,6 +412,13 @@ function guardSpawnComplete(p: unknown): TurnSpawnCompleteEvent | null {
       (u): u is string => isString(u) && u.length > 0,
     );
     if (filtered.length > 0) media = filtered;
+  }
+  // Reject only when BOTH content and media are empty — truly nothing
+  // to render, which is a server bug (the original spec's "distinguish
+  // from spawn-ack" intent is now enforced by the `turn/spawn_complete`
+  // method name rather than by content non-emptiness).
+  if (p.content.length === 0 && (!media || media.length === 0)) {
+    return null;
   }
   return {
     session_id: p.session_id,

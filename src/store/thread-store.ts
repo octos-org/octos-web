@@ -642,6 +642,13 @@ export interface AppendCompletionBubbleOptions {
   historySeq?: number;
   /** Server-assigned message id for stable identity across replays. */
   messageId?: string;
+  /** Server-side `persisted_at` (RFC 3339). When supplied, the row's
+   *  display timestamp uses this server-authoritative value rather than
+   *  client receipt time, so reconnect/replay produces a stable order
+   *  matching the hydrated history. Codex round-4 P3 (delivered envelopes
+   *  whose `persisted_at` differed from receipt time would render with
+   *  a moving timestamp). */
+  persistedAt?: string;
   /** Active router scope. When the envelope's `thread_id` does not
    *  already exist in any session, the orphan-bucket helper creates it
    *  HERE rather than picking an arbitrary host session — without this,
@@ -758,7 +765,11 @@ export function appendCompletionBubble(
     files: opts.media.map(fileFromMediaPath),
     toolCalls: [],
     status: "complete",
-    timestamp: Date.now(),
+    // Prefer the server-side commit time. Falling back to client
+    // receipt time for callers that don't supply it (test paths) is
+    // safe; production callers always set `persistedAt` from the
+    // envelope's `persisted_at` field.
+    timestamp: parsePersistedAt(opts.persistedAt),
     historySeq: opts.historySeq,
     intra_thread_seq: opts.historySeq,
     responseToClientMessageId: opts.sourceClientMessageId ?? threadId,
@@ -767,6 +778,12 @@ export function appendCompletionBubble(
   sortResponsesInThread(thread);
   notify();
   return true;
+}
+
+function parsePersistedAt(persistedAt: string | undefined): number {
+  if (!persistedAt) return Date.now();
+  const t = new Date(persistedAt).getTime();
+  return Number.isFinite(t) ? t : Date.now();
 }
 
 /** Append a delivered file to the assistant slot in the thread (pending

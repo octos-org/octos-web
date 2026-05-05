@@ -296,7 +296,7 @@ describe("type guards (fail-closed)", () => {
     ).toBeNull();
   });
 
-  it("rejects turn/spawn_complete with empty content", () => {
+  it("rejects turn/spawn_complete with empty content AND empty media (truly nothing to render)", () => {
     expect(
       guards.guardSpawnComplete({
         session_id: "sess-1",
@@ -309,6 +309,30 @@ describe("type guards (fail-closed)", () => {
         content: "",
       }),
     ).toBeNull();
+  });
+
+  it("ACCEPTS turn/spawn_complete with empty content but non-empty media (file-only completion)", () => {
+    // Codex round-4 P2: a `spawn_only` tool whose result is purely
+    // artefactual (e.g. TTS audio drop, _report.md only) legitimately
+    // produces empty `content` + non-empty `media`. Upgraded clients
+    // must accept this; rejecting it would silently drop file-only
+    // completions because the server suppresses the legacy
+    // `message/persisted` fallback once `event.spawn_complete.v1` is
+    // negotiated.
+    const ev = guards.guardSpawnComplete({
+      session_id: "sess-1",
+      task_id: "t",
+      seq: 1,
+      message_id: "m",
+      source: "background",
+      cursor: { stream: "sess-1", seq: 1 },
+      persisted_at: "2026-05-04T00:00:00Z",
+      content: "",
+      media: ["bg/result.mp3"],
+    });
+    expect(ev).not.toBeNull();
+    expect(ev?.content).toBe("");
+    expect(ev?.media).toEqual(["bg/result.mp3"]);
   });
 
   it("rejects turn/spawn_complete with missing task_id", () => {
