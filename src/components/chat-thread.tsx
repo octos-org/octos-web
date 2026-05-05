@@ -48,7 +48,7 @@ import * as StreamManager from "@/runtime/stream-manager";
 import { MarkdownContent } from "./markdown-renderer";
 import { ThinkingIndicator } from "./thinking-indicator";
 import { ToolProgressIndicator } from "./tool-progress-indicator";
-import { buildFileUrl } from "@/api/files";
+import { buildAuthenticatedFileUrl, buildFileUrl } from "@/api/files";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { nextTopicForCommand } from "@/lib/slash-commands";
 import { getToken } from "@/api/client";
@@ -303,11 +303,41 @@ function FileAttachment({ file }: { file: MessageFile }) {
     );
   }
 
-  // Generic download button
-  return (
+  // Generic file attachment — render as a real `<a href>` anchor pointing at
+  // the authenticated `/api/files/...` URL (with `?token=` query param). This
+  // gives the bubble a clickable, downloadable link whose URL preserves the
+  // file extension (so e.g. `.md` reports remain matchable by harness link
+  // predicates) while still flowing through the standard auth path. We keep
+  // the blob preflight (`useBlobUrl`) as a liveness check: if the auth or
+  // path resolution would fail, we surface that as a disabled state rather
+  // than rendering a link that 403s when clicked.
+  //
+  // External URLs (`https://…`, `http://…`) bypass `/api/files` entirely —
+  // `useBlobUrl` already short-circuits the fetch for them, and wrapping
+  // them through `buildAuthenticatedFileUrl` would point the anchor at our
+  // local file endpoint with the literal URL as the path component, which
+  // 403s. Pass the original path through untouched so legacy
+  // `[file:https://…]` deliveries keep opening.
+  const isExternalUrl = /^https?:\/\//i.test(file.path);
+  const directHref = isExternalUrl
+    ? file.path
+    : buildAuthenticatedFileUrl(file.path);
+  return blobUrl ? (
+    <a
+      href={directHref}
+      download={file.filename}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="glass-pill inline-flex max-w-full items-center gap-1.5 overflow-hidden rounded-[10px] px-3 py-2 text-xs text-link hover:text-accent"
+      data-file-attachment="true"
+    >
+      <Download size={14} className="shrink-0" />
+      <span className="truncate">{file.filename}</span>
+    </a>
+  ) : (
     <button
       onClick={handleDownload}
-      disabled={!blobUrl}
+      disabled
       className="glass-pill inline-flex max-w-full items-center gap-1.5 overflow-hidden rounded-[10px] px-3 py-2 text-xs text-link hover:text-accent disabled:opacity-50"
     >
       <Download size={14} className="shrink-0" />
