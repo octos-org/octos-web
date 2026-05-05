@@ -1298,4 +1298,106 @@ describe("thread-store", () => {
     expect(threads[0].responses).toHaveLength(1);
     expect(threads[0].responses[0].text).toBe("Orphan late answer.");
   });
+
+  // -------------------------------------------------------------------------
+  // M10 Phase 2: appendCompletionBubble
+  // -------------------------------------------------------------------------
+
+  it("appendCompletionBubble_adds_new_row_without_merging_into_pending", () => {
+    makeUser("ask", "cmid-c1");
+    // pendingAssistant is open (placeholder created by addUserMessage).
+    const before = ThreadStore.getThreads(SESSION)[0];
+    expect(before.pendingAssistant).not.toBeNull();
+    const pendingId = before.pendingAssistant!.id;
+
+    ThreadStore.appendCompletionBubble("cmid-c1", {
+      text: "Background result body.",
+      media: ["research/out.md"],
+      spawnComplete: true,
+      historySeq: 7,
+      messageId: "msg-bg-1",
+    });
+
+    const after = ThreadStore.getThreads(SESSION)[0];
+    // The pending assistant MUST stay untouched (it belongs to a
+    // different turn — possibly still in flight).
+    expect(after.pendingAssistant).not.toBeNull();
+    expect(after.pendingAssistant!.id).toBe(pendingId);
+    expect(after.pendingAssistant!.text).toBe("");
+
+    expect(after.responses).toHaveLength(1);
+    expect(after.responses[0].text).toBe("Background result body.");
+    expect(after.responses[0].files.map((f) => f.path)).toEqual([
+      "research/out.md",
+    ]);
+    expect(after.responses[0].historySeq).toBe(7);
+    expect(after.responses[0].status).toBe("complete");
+    expect(after.responses[0].id).toBe("msg-bg-1");
+  });
+
+  it("appendCompletionBubble_does_not_merge_into_existing_finalized_assistant", () => {
+    makeUser("ask", "cmid-c2");
+    ThreadStore.appendAssistantToken("cmid-c2", "Spawn-ack text.");
+    ThreadStore.finalizeAssistant("cmid-c2", { committedSeq: 3 });
+
+    ThreadStore.appendCompletionBubble("cmid-c2", {
+      text: "Late result.",
+      media: ["a.mp3"],
+      spawnComplete: true,
+      historySeq: 4,
+    });
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses).toHaveLength(2);
+    expect(thread.responses[0].text).toBe("Spawn-ack text.");
+    expect(thread.responses[0].files).toHaveLength(0); // not merged
+    expect(thread.responses[1].text).toBe("Late result.");
+    expect(thread.responses[1].files.map((f) => f.path)).toEqual(["a.mp3"]);
+  });
+
+  it("appendCompletionBubble_is_idempotent_on_replay_by_history_seq", () => {
+    makeUser("ask", "cmid-c3");
+    ThreadStore.finalizeAssistant("cmid-c3");
+
+    const opts = {
+      text: "X",
+      media: [],
+      spawnComplete: true as const,
+      historySeq: 99,
+      messageId: "msg-idem",
+    };
+    ThreadStore.appendCompletionBubble("cmid-c3", opts);
+    ThreadStore.appendCompletionBubble("cmid-c3", opts);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const matches = thread.responses.filter((r) => r.text === "X");
+    expect(matches).toHaveLength(1);
+  });
+
+  it("appendCompletionBubble_creates_orphan_thread_when_thread_unknown", () => {
+    makeUser("seed", "cmid-seed"); // ensures a host session exists
+    const ok = ThreadStore.appendCompletionBubble("cmid-late", {
+      text: "Late envelope.",
+      media: [],
+      spawnComplete: true,
+      historySeq: 5,
+    });
+    expect(ok).toBe(true);
+    const orphan = ThreadStore.getThreads(SESSION).find(
+      (t) => t.id === "cmid-late",
+    );
+    expect(orphan).toBeDefined();
+    expect(orphan?.responses[0].text).toBe("Late envelope.");
+  });
+
+  it("appendCompletionBubble_returns_false_when_no_session_exists", () => {
+    // No makeUser — no host session has been created yet, so
+    // ensureOrphanThread has nowhere to host the row.
+    const ok = ThreadStore.appendCompletionBubble("cmid-nowhere", {
+      text: "Nowhere.",
+      media: [],
+      spawnComplete: true,
+    });
+    expect(ok).toBe(false);
+  });
 });

@@ -614,6 +614,74 @@ export function setToolCallStatus(
   notify();
 }
 
+/**
+ * M10 Phase 2 (server PR #772): append a NEW assistant row to the thread
+ * for a `turn/spawn_complete` envelope. Distinct from `appendAssistantFile`
+ * + `appendPersistedMessage`, which both splice late media into the
+ * existing assistant bubble — that splice-merge predicate is the bug
+ * surface M10 deletes (Phase 5). This function ALWAYS adds a fresh
+ * `ThreadMessage` to `thread.responses` so multiple assistant bubbles
+ * render under the originating user prompt (the renderer's
+ * `responses.map` already supports N-bubbles per user message).
+ *
+ * Returns `true` when a row was appended, `false` when the thread could
+ * not be located and could not be created (no live sessions). Idempotent
+ * by `(threadId, historySeq)` when `historySeq` is provided — a replayed
+ * envelope on reconnect does not produce a duplicate row.
+ */
+export interface AppendCompletionBubbleOptions {
+  text: string;
+  media: string[];
+  /** Marker so the renderer can style spawn-completion bubbles distinctly
+   *  (Phase 3, optional). */
+  spawnComplete: true;
+  /** Originating user prompt cmid, when available (Phase 4 will populate
+   *  it server-side). Captured for future audit / hover tooltips. */
+  sourceClientMessageId?: string;
+  /** Server-assigned per-session seq for dedupe on reconnect replay. */
+  historySeq?: number;
+  /** Server-assigned message id for stable identity across replays. */
+  messageId?: string;
+}
+
+export function appendCompletionBubble(
+  threadId: string,
+  opts: AppendCompletionBubbleOptions,
+): boolean {
+  const found = ensureOrphanThread(threadId);
+  if (!found) return false;
+  const { thread } = found;
+
+  // Idempotency: a replayed envelope on reconnect MUST NOT produce a
+  // duplicate row. The producer-side `seq` (Phase 1 P2-A fix) is the
+  // session-committed-row index, so it is a stable identity for this
+  // completion across restarts. Skip the append if a response with the
+  // same seq is already present in this thread.
+  if (typeof opts.historySeq === "number") {
+    for (const r of thread.responses) {
+      if (r.historySeq === opts.historySeq) return true;
+    }
+    if (thread.pendingAssistant?.historySeq === opts.historySeq) return true;
+  }
+
+  const completion: ThreadMessage = {
+    id: opts.messageId ?? nextId(),
+    role: "assistant",
+    text: opts.text,
+    files: opts.media.map(fileFromMediaPath),
+    toolCalls: [],
+    status: "complete",
+    timestamp: Date.now(),
+    historySeq: opts.historySeq,
+    intra_thread_seq: opts.historySeq,
+    responseToClientMessageId: opts.sourceClientMessageId ?? threadId,
+  };
+  thread.responses.push(completion);
+  sortResponsesInThread(thread);
+  notify();
+  return true;
+}
+
 /** Append a delivered file to the assistant slot in the thread (pending
  *  in-flight, or the most recent finalized response if the turn has
  *  already ended — the late-arrival case for spawn_only background

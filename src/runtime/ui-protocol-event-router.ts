@@ -30,6 +30,7 @@ import type {
   TaskUpdatedEvent,
   TurnCompletedEvent,
   TurnErrorEvent,
+  TurnSpawnCompleteEvent,
   TurnStartedEvent,
   UiProtocolBridge,
 } from "./ui-protocol-bridge";
@@ -206,6 +207,48 @@ function filenameFromPath(path: string): string {
   return idx === -1 ? path : path.slice(idx + 1);
 }
 
+/**
+ * M10 Phase 2: handle the `turn/spawn_complete` envelope.
+ *
+ * Each envelope is structurally complete and represents a NEW assistant
+ * bubble under the originating user prompt — no merging into an existing
+ * bubble, no reconstruction across events. This eliminates the splice-merge
+ * bug class (sticky-map drift, phantom-chunk drop) that the legacy
+ * `appendAssistantFile` / `appendPersistedMessage` paths suffer from.
+ *
+ * Placement strategy (per the migration plan): use `event.thread_id` as
+ * the placement key — server PR #680 made `thread_id` the
+ * server-authoritative identifier on persisted rows, so the SPA reducer
+ * binds the new bubble against it directly. We deliberately do NOT key
+ * off `response_to_client_message_id`: Phase 1 server emits a
+ * thread-id-flavoured value there until Phase 4 plumbing introduces a
+ * typed `originating_client_message_id`. Reading it as advisory only
+ * matches the server's documented Phase 1 contract.
+ *
+ * Legacy fallback: if `thread_id` is missing (older callers, or paths
+ * that don't propagate origination), use `response_to_client_message_id`
+ * as a best-effort placement key. If neither is present, the envelope
+ * cannot be attributed and is dropped — better than orphaning the bubble
+ * under an arbitrary thread.
+ */
+export function handleSpawnComplete(
+  _cfg: RouterConfig,
+  event: TurnSpawnCompleteEvent,
+): void {
+  const placementKey =
+    event.thread_id ?? event.response_to_client_message_id;
+  if (!placementKey) return;
+
+  ThreadStore.appendCompletionBubble(placementKey, {
+    text: event.content,
+    media: event.media ?? [],
+    spawnComplete: true,
+    sourceClientMessageId: event.response_to_client_message_id,
+    historySeq: event.seq,
+    messageId: event.message_id,
+  });
+}
+
 export function handleTaskUpdated(
   cfg: RouterConfig,
   event: TaskUpdatedEvent,
@@ -371,6 +414,9 @@ export function attachRouter(
   const offMessagePersisted = bridge.onMessagePersisted((e) =>
     handleMessagePersisted(cfg, e),
   );
+  const offSpawnComplete = bridge.onSpawnComplete((e) =>
+    handleSpawnComplete(cfg, e),
+  );
   const offTaskUpdated = bridge.onTaskUpdated((e) => handleTaskUpdated(cfg, e));
   const offTaskOutputDelta = bridge.onTaskOutputDelta((e) =>
     handleTaskOutputDelta(cfg, e),
@@ -401,6 +447,7 @@ export function attachRouter(
       detached = true;
       offMessageDelta();
       offMessagePersisted();
+      offSpawnComplete();
       offTaskUpdated();
       offTaskOutputDelta();
       offTurnLifecycle();

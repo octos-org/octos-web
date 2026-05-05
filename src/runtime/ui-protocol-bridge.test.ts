@@ -39,6 +39,7 @@ import type {
   TaskUpdatedEvent,
   TurnCompletedEvent,
   TurnErrorEvent,
+  TurnSpawnCompleteEvent,
   TurnStartedEvent,
   WarningEvent,
 } from "./ui-protocol-types";
@@ -254,6 +255,138 @@ describe("type guards (fail-closed)", () => {
     expect(ev?.media).toEqual(["research/_report.md"]);
   });
 
+  // -------------------------------------------------------------------------
+  // M10 Phase 2: turn/spawn_complete envelope guard
+  // -------------------------------------------------------------------------
+
+  it("accepts a valid turn/spawn_complete envelope", () => {
+    const ev = guards.guardSpawnComplete({
+      session_id: "sess-1",
+      turn_id: "turn-1",
+      thread_id: "cmid-user-1",
+      task_id: "task_abc123",
+      response_to_client_message_id: "cmid-user-1",
+      seq: 42,
+      message_id: "msg-spawn-1",
+      source: "background",
+      cursor: { stream: "sess-1", seq: 42 },
+      persisted_at: "2026-05-04T00:00:00Z",
+      content: "Research complete: 3 sources reviewed.",
+      media: ["research/_report.md"],
+    });
+    expect(ev).not.toBeNull();
+    expect(ev?.task_id).toBe("task_abc123");
+    expect(ev?.content).toBe("Research complete: 3 sources reviewed.");
+    expect(ev?.media).toEqual(["research/_report.md"]);
+    expect(ev?.thread_id).toBe("cmid-user-1");
+  });
+
+  it("rejects turn/spawn_complete with missing content (distinguishes from spawn-ack)", () => {
+    expect(
+      guards.guardSpawnComplete({
+        session_id: "sess-1",
+        task_id: "t",
+        seq: 1,
+        message_id: "m",
+        source: "background",
+        cursor: { stream: "sess-1", seq: 1 },
+        persisted_at: "2026-05-04T00:00:00Z",
+        // content omitted
+      }),
+    ).toBeNull();
+  });
+
+  it("rejects turn/spawn_complete with empty content", () => {
+    expect(
+      guards.guardSpawnComplete({
+        session_id: "sess-1",
+        task_id: "t",
+        seq: 1,
+        message_id: "m",
+        source: "background",
+        cursor: { stream: "sess-1", seq: 1 },
+        persisted_at: "2026-05-04T00:00:00Z",
+        content: "",
+      }),
+    ).toBeNull();
+  });
+
+  it("rejects turn/spawn_complete with missing task_id", () => {
+    expect(
+      guards.guardSpawnComplete({
+        session_id: "sess-1",
+        seq: 1,
+        message_id: "m",
+        source: "background",
+        cursor: { stream: "sess-1", seq: 1 },
+        persisted_at: "2026-05-04T00:00:00Z",
+        content: "result",
+      }),
+    ).toBeNull();
+  });
+
+  it("rejects turn/spawn_complete with non-finite cursor.seq", () => {
+    expect(
+      guards.guardSpawnComplete({
+        session_id: "sess-1",
+        task_id: "t",
+        seq: 1,
+        message_id: "m",
+        source: "background",
+        cursor: { stream: "sess-1", seq: Number.POSITIVE_INFINITY },
+        persisted_at: "2026-05-04T00:00:00Z",
+        content: "result",
+      }),
+    ).toBeNull();
+  });
+
+  it("rejects turn/spawn_complete with malformed cursor", () => {
+    expect(
+      guards.guardSpawnComplete({
+        session_id: "sess-1",
+        task_id: "t",
+        seq: 1,
+        message_id: "m",
+        source: "background",
+        cursor: { stream: "" }, // missing seq, empty stream
+        persisted_at: "2026-05-04T00:00:00Z",
+        content: "result",
+      }),
+    ).toBeNull();
+  });
+
+  it("filters non-string media entries from turn/spawn_complete", () => {
+    const ev = guards.guardSpawnComplete({
+      session_id: "sess-1",
+      task_id: "t",
+      seq: 1,
+      message_id: "m",
+      source: "background",
+      cursor: { stream: "sess-1", seq: 1 },
+      persisted_at: "2026-05-04T00:00:00Z",
+      content: "result",
+      media: ["a/path.md", 42, null, "", "b/path.md"],
+    });
+    expect(ev?.media).toEqual(["a/path.md", "b/path.md"]);
+  });
+
+  it("accepts turn/spawn_complete with all optionals omitted", () => {
+    const ev = guards.guardSpawnComplete({
+      session_id: "sess-1",
+      task_id: "t",
+      seq: 1,
+      message_id: "m",
+      source: "background",
+      cursor: { stream: "sess-1", seq: 1 },
+      persisted_at: "2026-05-04T00:00:00Z",
+      content: "result",
+    });
+    expect(ev?.turn_id).toBeUndefined();
+    expect(ev?.thread_id).toBeUndefined();
+    expect(ev?.response_to_client_message_id).toBeUndefined();
+    expect(ev?.media).toBeUndefined();
+  });
+
   it("rejects task/updated without task_id", () => {
     expect(
       guards.guardTaskUpdated({
@@ -360,6 +493,14 @@ describe("connection lifecycle", () => {
     // notifications on this feature, so dropping it would silently
     // disable spawn_only attachment delivery.
     expect(ws.url).toContain("ui_feature=event.message_persisted.v1");
+    // Regression-pin for the M10 Phase 1 capability negotiation
+    // (server PR #772): server only emits the new
+    // `turn/spawn_complete` envelope when this capability is in the
+    // `ui_feature` query at session/open. Without it the SPA never
+    // receives the new bubble and falls back to legacy `message/persisted`
+    // splice-merge. Phase 5 deletes the splice-merge predicate; until
+    // then, this assertion locks the negotiation.
+    expect(ws.url).toContain("ui_feature=event.spawn_complete.v1");
     // Regression-pin: do NOT pass Sec-WebSocket-Protocol. Chrome aborts the
     // handshake when the client requests a subprotocol the server does not
     // echo back, and the axum WS handler does not negotiate subprotocols.
@@ -674,6 +815,60 @@ describe("notification dispatch", () => {
     expect(persisted[0].seq).toBe(18);
     expect(tasks[0].task_id).toBe("task-A");
     expect(outputs[0].chunk).toBe("log line");
+  });
+
+  it("routes turn/spawn_complete to onSpawnComplete (M10 Phase 2)", async () => {
+    const { bridge, ws } = await freshConnected();
+    const seen: TurnSpawnCompleteEvent[] = [];
+    bridge.onSpawnComplete((e) => seen.push(e));
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.TURN_SPAWN_COMPLETE,
+      params: {
+        session_id: "sess-1",
+        turn_id: "turn-A",
+        thread_id: "cmid-user-1",
+        task_id: "task_abc",
+        response_to_client_message_id: "cmid-user-1",
+        seq: 7,
+        message_id: "msg-spawn-1",
+        source: "background",
+        cursor: { stream: "sess-1", seq: 7 },
+        persisted_at: "2026-05-04T00:00:00Z",
+        content: "Background research complete.",
+        media: ["research/_report.md"],
+      },
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].task_id).toBe("task_abc");
+    expect(seen[0].content).toBe("Background research complete.");
+    expect(seen[0].media).toEqual(["research/_report.md"]);
+  });
+
+  it("emits warning when turn/spawn_complete is missing required content", async () => {
+    const { bridge, ws } = await freshConnected();
+    const warnings: WarningEvent[] = [];
+    const seen: TurnSpawnCompleteEvent[] = [];
+    bridge.onWarning((w) => warnings.push(w));
+    bridge.onSpawnComplete((e) => seen.push(e));
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.TURN_SPAWN_COMPLETE,
+      params: {
+        session_id: "sess-1",
+        task_id: "task_abc",
+        seq: 7,
+        message_id: "msg-spawn-1",
+        source: "background",
+        cursor: { stream: "sess-1", seq: 7 },
+        persisted_at: "2026-05-04T00:00:00Z",
+        // content omitted — must be rejected
+      },
+    });
+    expect(seen).toHaveLength(0);
+    expect(
+      warnings.some((w) => w.reason === "invalid_event:turn/spawn_complete"),
+    ).toBe(true);
   });
 
   it("routes turn lifecycle and approval/requested", async () => {
