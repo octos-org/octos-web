@@ -1390,6 +1390,67 @@ describe("thread-store", () => {
     expect(orphan?.responses[0].text).toBe("Late envelope.");
   });
 
+  it("appendCompletionBubble_upgrades_empty_persisted_row_with_matching_seq", () => {
+    // Codex P2 rollout-edge case: if `message/persisted` for a spawn row
+    // arrives before `turn/spawn_complete` (server suppression slip,
+    // replay ordering), `appendPersistedMessage` lands an empty-content
+    // placeholder under the same `historySeq`. The spawn envelope MUST
+    // upgrade the existing row in place rather than be skipped as a
+    // duplicate, otherwise the user sees a blank bubble.
+    makeUser("ask", "cmid-c-upgrade");
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 14,
+      role: "assistant",
+      content: "", // metadata-only persisted row
+      thread_id: "cmid-c-upgrade",
+      response_to_client_message_id: "cmid-c-upgrade",
+      timestamp: "2026-04-30T00:00:00Z",
+      media: [],
+    });
+    let [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses).toHaveLength(1);
+    expect(thread.responses[0].text).toBe("");
+
+    ThreadStore.appendCompletionBubble("cmid-c-upgrade", {
+      text: "Real spawn result.",
+      media: ["bg/out.md"],
+      spawnComplete: true,
+      historySeq: 14,
+      messageId: "msg-upgrade",
+    });
+    [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses).toHaveLength(1);
+    expect(thread.responses[0].text).toBe("Real spawn result.");
+    expect(thread.responses[0].files.map((f) => f.path)).toEqual(["bg/out.md"]);
+    expect(thread.responses[0].historySeq).toBe(14);
+  });
+
+  it("appendCompletionBubble_does_not_upgrade_already_full_row_on_replay", () => {
+    // Defensive symmetry to the upgrade-in-place case: when the existing
+    // row at the matching seq already has full content (true replay
+    // scenario), the second call must be a no-op. Otherwise a reconnect
+    // could overwrite a finalized row with stale data from the wire.
+    makeUser("ask", "cmid-c-replay");
+    ThreadStore.appendCompletionBubble("cmid-c-replay", {
+      text: "First.",
+      media: ["a.md"],
+      spawnComplete: true,
+      historySeq: 7,
+      messageId: "m1",
+    });
+    ThreadStore.appendCompletionBubble("cmid-c-replay", {
+      text: "Different (stale).",
+      media: ["a.md"],
+      spawnComplete: true,
+      historySeq: 7,
+      messageId: "m1",
+    });
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const matches = thread.responses.filter((r) => r.historySeq === 7);
+    expect(matches).toHaveLength(1);
+    expect(matches[0].text).toBe("First.");
+  });
+
   it("appendCompletionBubble_returns_false_when_no_session_exists", () => {
     // No makeUser — no host session has been created yet, so
     // ensureOrphanThread has nowhere to host the row.

@@ -696,14 +696,45 @@ export function appendCompletionBubble(
   if (!host) return false;
   const { thread } = host;
 
-  // Idempotency: a replayed envelope on reconnect MUST NOT produce a
-  // duplicate row. The producer-side `seq` (Phase 1 P2-A fix) is the
-  // session-committed-row index, so it is a stable identity for this
-  // completion across restarts. Skip the append if a response with the
-  // same seq is already present in this thread.
+  // Idempotency / upgrade-in-place: a replayed envelope on reconnect
+  // MUST NOT produce a duplicate row. The producer-side `seq`
+  // (Phase 1 P2-A fix) is the session-committed-row index, so it is
+  // a stable identity for this completion across restarts.
+  //
+  // Codex P2 (rollout edge case): when both
+  // `event.message_persisted.v1` AND `event.spawn_complete.v1` are
+  // negotiated, the server's per-connection suppression should send
+  // only `turn/spawn_complete`. But if the legacy `message/persisted`
+  // row arrived first via `appendPersistedMessage` (defensive: server
+  // suppression slip, mid-flight rollout, replay ordering), it lands
+  // an empty-content row with the matching seq. Don't drop the spawn
+  // envelope's authoritative content — UPGRADE the existing row in
+  // place so the completion text renders, not a blank bubble.
   if (typeof opts.historySeq === "number") {
-    for (const r of thread.responses) {
-      if (r.historySeq === opts.historySeq) return true;
+    for (let i = 0; i < thread.responses.length; i += 1) {
+      const r = thread.responses[i];
+      if (r.historySeq !== opts.historySeq) continue;
+      // Treat the existing row as a placeholder ONLY when it has
+      // neither text nor files — that's the exact shape
+      // `appendPersistedMessage` produces from a metadata-only
+      // `message/persisted` (where `content` is `""` and `media` is
+      // empty). Any non-empty row at the matching seq is the
+      // legitimate completion (or a finalized assistant) and must
+      // not be overwritten.
+      const isPlaceholder = r.text.length === 0 && r.files.length === 0;
+      if (!isPlaceholder) return true;
+
+      thread.responses[i] = {
+        ...r,
+        text: opts.text,
+        files: opts.media.map(fileFromMediaPath),
+        intra_thread_seq: opts.historySeq,
+        responseToClientMessageId:
+          opts.sourceClientMessageId ?? r.responseToClientMessageId ?? threadId,
+      };
+      sortResponsesInThread(thread);
+      notify();
+      return true;
     }
     if (thread.pendingAssistant?.historySeq === opts.historySeq) return true;
   }
