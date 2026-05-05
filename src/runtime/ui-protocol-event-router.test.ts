@@ -139,6 +139,52 @@ describe("router event mapping", () => {
     expect(afterDelta.pendingAssistant?.historySeq).toBe(13);
   });
 
+  it("message/persisted replayed after delta+completed produces NO duplicate bubble", () => {
+    // Codex Phase 5b P1: assert the empty-placeholder defence is
+    // idempotent on replay. Sequence: persisted (no media) -> delta ->
+    // completed -> SAME persisted (server replay on cursor reconnect).
+    // Pre-fix the stamped seq was lost; a replayed persist could fall
+    // through to `appendPersistedMessage` and append a blank duplicate
+    // row beside the finalised bubble. With `stampPendingHistorySeq`
+    // the seq lands on the pending and propagates to the finalised
+    // row; replay then matches the same `historySeq` in the thread's
+    // responses and is dropped at the idempotency check.
+    const cmid = "cmid-replay";
+    seedThread(cmid, "ask once");
+    const persisted: MessagePersistedEvent = {
+      session_id: SESSION,
+      turn_id: cmid,
+      thread_id: cmid,
+      seq: 21,
+      role: "assistant",
+      message_id: "msg-replay-1",
+      source: "assistant",
+      cursor: { stream: SESSION, seq: 21 },
+      persisted_at: "2026-05-04T00:00:00Z",
+      media: [],
+    };
+    handleMessagePersisted({ sessionId: SESSION }, persisted);
+    handleMessageDelta(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: cmid, delta: "Hello there." },
+    );
+    // Simulate `turn/completed` finalising without a per-message seq —
+    // the stamped pending seq must propagate onto the finalised row.
+    ThreadStore.finalizeAssistant(cmid);
+    let [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses).toHaveLength(1);
+    expect(thread.responses[0].text).toBe("Hello there.");
+    expect(thread.responses[0].historySeq).toBe(21);
+
+    // Server replays the same persisted event (e.g. WS reconnect with
+    // cursor before seq 21).
+    handleMessagePersisted({ sessionId: SESSION }, persisted);
+    [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses).toHaveLength(1);
+    expect(thread.responses[0].text).toBe("Hello there.");
+    expect(thread.responses[0].historySeq).toBe(21);
+  });
+
   it("message/persisted (assistant, with media, empty pending) finalises with media", () => {
     // The fix preserves the legitimate finalisation case: when the
     // persist event carries media (the legacy file-delivery shape),

@@ -217,6 +217,16 @@ function tryPromotePendingFromPersisted(
   // row that drops the late delta. Code path stays idempotent: a
   // late `message/persisted` replay for a thread already finalized
   // returns early at the `pendingAssistant` null check above.
+  //
+  // Media-bearing branch: `eventMedia.length > 0` finalises
+  // immediately. Server-side contract is that media-bearing
+  // `message/persisted` rows are file-only — `message/delta` is
+  // text-only by spec § 9 (ephemeral text stream), and the agent never
+  // streams text into a row that also carries `media`. If the
+  // contract ever loosens (e.g. a media row with late text delta),
+  // this branch would freeze the row before the delta arrives — same
+  // failure mode the no-media branch fixes — and would need a
+  // matching defence.
   const pendingHasContent =
     thread.pendingAssistant.text.trim().length > 0 ||
     thread.pendingAssistant.files.length > 0 ||

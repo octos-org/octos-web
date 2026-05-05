@@ -1396,28 +1396,38 @@ export function appendPersistedMessage(
 
   const built = buildResponseFromApi(message);
 
-  // M10 Phase 5b: legacy splice-merge predicates removed.
-  //
-  // PRE-M10 contract: a late media-bearing `message/persisted` was
-  // assumed to be a "companion" of a prior text bubble. The
-  // `isMediaOnlyCompanion` + adjacent-seq + `findDuplicateAssistantWithFile`
-  // predicates folded the file into the prior bubble — preserving a
-  // single-bubble UX at the cost of a fragile splice-merge surface that
-  // produced 5+ waves of bugs (sticky-map drift, phantom-chunk drop,
-  // wrong-bubble target, etc).
-  //
-  // M10 contract: each persisted assistant row is its own bubble. The
-  // SPA's renderer already supports N>=1 assistant bubbles per user
-  // prompt via `responses.map`. For `spawn_only` completions the new
-  // `turn/spawn_complete` envelope (server PR #772, M10 Phase 1)
-  // delivers content + media in a SINGLE atomic event; the per-file
+  // M10 Phase 5b: the legacy ADJACENT splice-merge (`isMediaOnlyCompanion`
+  // + adjacent-seq) is removed. That predicate folded a media-only
+  // persisted row into the *prior* text bubble — a fragile assumption
+  // that the late row was a "companion" of the immediately-prior text
+  // response, producing 5+ waves of bugs (sticky-map drift,
+  // phantom-chunk drop, wrong-bubble target). Each persisted assistant
+  // row is now its own bubble; the renderer supports N>=1 assistant
+  // bubbles per user prompt via `responses.map`. For `spawn_only`
+  // completions the `turn/spawn_complete` envelope (server PR #772)
+  // delivers content + media in one atomic event; the per-file
   // companion `message/persisted` rows are filtered server-side under
-  // the `event.spawn_complete.v1` capability (PR #773, Phase 5a).
+  // `event.spawn_complete.v1` (PR #773, Phase 5a).
   //
-  // Replay/hydrate (`replayHistory`) keeps its own copy of the merge
-  // predicates because the hydrate path serves both negotiated and
-  // legacy shapes — once the hydrate response carries a `source` field
-  // those predicates can be deleted too (Phase 6 follow-up).
+  // KEPT: the file-deduplication collapse below. Legacy SSE flows can
+  // deliver the same file twice (a `file` event attaches it to the
+  // pending/most-recent assistant slot via `appendAssistantFile`, then
+  // a `session_result` event re-persists the same row). Without the
+  // dedupe a non-spawn legacy file delivery would now render two
+  // bubbles holding the same MP3/PNG. Codex Phase 5b review P1/P2.
+  if (
+    built.role === "assistant" &&
+    built.files.length > 0 &&
+    thread.responses.length > 0
+  ) {
+    const dupIdx = findDuplicateAssistantWithFile(thread.responses, built);
+    if (dupIdx !== -1) {
+      mergeDuplicateAssistantFile(thread.responses[dupIdx], built);
+      notify();
+      return;
+    }
+  }
+
   thread.responses.push(built);
   sortResponsesInThread(thread);
   notify();
