@@ -120,6 +120,22 @@ const loadingPromises = new Map<string, Promise<void>>();
 let version = 0;
 const snapshotCache = new Map<string, { version: number; data: Thread[] }>();
 
+/**
+ * M10 Phase 6.2 (Bug C): per-session WS `session/hydrate` snapshot
+ * cached so that subsequent `replayHistory` calls (the forced retries
+ * in chat-thread.tsx fire at 2s/5s/12s) can replay the dedup pass on
+ * the freshly-replayed thread state. Without this, the second retry
+ * would undo the dedup we applied after the first replay.
+ *
+ * Keyed by `storeKey(sessionId, topic)`. Populated by the bridge's
+ * post-`session/open` hydrate call (see `ui-protocol-runtime.ts`).
+ * Cleared by `clearSession`.
+ */
+const hydrateSnapshotByKey = new Map<
+  string,
+  Parameters<typeof applyHydrateDedup>[2]
+>();
+
 function notify() {
   version++;
   snapshotCache.clear();
@@ -1341,6 +1357,306 @@ export function replayHistory(
 
   sessionsByKey.set(key, state);
   loadedSessions.add(key);
+
+  // M10 Phase 6.2 (Bug C): if the bridge already hydrated, apply its
+  // dedup pass against the freshly-replayed thread state. The forced
+  // retries in chat-thread.tsx mean `replayHistory` fires multiple
+  // times on a reload; we re-apply each time to keep the post-refresh
+  // DOM convergent with the live wire's suppressed-row shape.
+  //
+  // We always `notify()` first so subscribers see the freshly-replayed
+  // history even if `applyHydrateDedup` short-circuits (e.g. cached
+  // snapshot from an older server has no `replayed_envelopes`).
+  notify();
+  const cachedHydrate = hydrateSnapshotByKey.get(key);
+  if (cachedHydrate) {
+    applyHydrateDedup(sessionId, topic, cachedHydrate);
+  }
+}
+
+/**
+ * M10 Phase 6.2 (Bug C): cache the WS `session/hydrate` result so that
+ * subsequent `replayHistory` calls (the forced retries in
+ * chat-thread.tsx) re-run the dedup pass against the freshly-replayed
+ * thread state. Triggers an immediate dedup pass on the current state
+ * so a hydrate that lands AFTER the first `replayHistory` still
+ * cleans up the duplicate rows.
+ */
+export function setHydrateSnapshot(
+  sessionId: string,
+  topic: string | undefined,
+  hydrate: Parameters<typeof applyHydrateDedup>[2],
+): void {
+  const key = storeKey(sessionId, topic);
+  hydrateSnapshotByKey.set(key, hydrate);
+  if (sessionsByKey.has(key)) {
+    applyHydrateDedup(sessionId, topic, hydrate);
+  }
+}
+
+/**
+ * M10 Phase 6.2 (Bug C): apply the WS `session/hydrate` dedup pass on
+ * top of an already-hydrated thread state. Server PR #791 surfaces
+ * three new fields on `session/hydrate` for connections that
+ * negotiated `event.spawn_complete.v1`:
+ *
+ *   - `messages[i].message_id`  — stable per-row identity
+ *   - `messages[i].source`      — wire-form `MessagePersistedSource`
+ *   - `replayed_envelopes[]`    — retained `turn/spawn_complete` events
+ *
+ * The legacy REST `loadHistory` path returns the FULL ledger including
+ * the per-file companion + spawn-ack rows that the live wire suppresses
+ * for negotiated clients (server side rounds-3..6 of PR #791 deemed
+ * server-side suppression intractable; the negotiated dedup contract
+ * lives on the client). Without this pass, a page reload renders N+1
+ * assistant bubbles where the live page rendered N.
+ *
+ * Algorithm (per server PR #791 docstring on `replayed_envelopes`):
+ *
+ *   1. Index envelopes by `message_id` (the spawn-ack's id) and by the
+ *      anchor `thread_id` (placement key).
+ *   2. Build a `seq → HydratedMessage` map over the hydrated rows so we
+ *      can look up `(message_id, source)` for each thread response by
+ *      its `historySeq`.
+ *   3. For each thread, walk responses and drop those whose hydrated
+ *      counterpart has `source === "background"` AND either:
+ *        (a) `message_id` matches an envelope's `message_id` — the
+ *            spawn-ack the envelope replaces; or
+ *        (b) it sits in the same anchor thread as an envelope and
+ *            has an earlier or equal `seq` than that envelope — a
+ *            per-file companion the envelope's `media` already
+ *            covers.
+ *   4. For each envelope, call `appendCompletionBubble` (idempotent via
+ *      its existing `messageId` dedup, so a live-wire envelope already
+ *      placed for the same row is a no-op).
+ *
+ * Best-effort: rows missing `historySeq`, hydrated rows whose
+ * `message_id` / `source` are absent (older server, or non-negotiated
+ * connection), or envelopes without an anchor thread are skipped — we
+ * never delete a row we can't prove is the legacy duplicate.
+ */
+export function applyHydrateDedup(
+  sessionId: string,
+  topic: string | undefined,
+  hydrate: {
+    messages?: Array<{
+      seq: number;
+      message_id?: string;
+      source?: string;
+      thread_id?: string;
+      turn_id?: string;
+      media?: string[];
+    }>;
+    replayed_envelopes?: Array<{
+      thread_id?: string;
+      turn_id?: string;
+      response_to_client_message_id?: string;
+      task_id: string;
+      seq: number;
+      message_id: string;
+      content: string;
+      media?: string[];
+      persisted_at: string;
+    }>;
+  },
+): void {
+  const envelopes = hydrate.replayed_envelopes ?? [];
+  const messages = hydrate.messages ?? [];
+  if (envelopes.length === 0) return;
+
+  // Build the seq → row metadata index, including media so we can
+  // identify per-file companion rows by media-subset against an
+  // envelope's coalesced media list.
+  const rowBySeq = new Map<
+    number,
+    {
+      message_id?: string;
+      source?: string;
+      thread_id?: string;
+      media?: string[];
+    }
+  >();
+  for (const m of messages) {
+    rowBySeq.set(m.seq, {
+      message_id: m.message_id,
+      source: m.source,
+      thread_id: m.thread_id,
+      media: m.media,
+    });
+  }
+
+  // Per-envelope dedup. Per server PR #791 docstring: an envelope
+  // coalesces (a) the spawn-ack row by `message_id` match, (b)
+  // per-file `send_file` companion rows whose `media` paths are a
+  // subset of the envelope's `media` array. We index each envelope
+  // independently so a row's media-subset match is bounded to the
+  // SPECIFIC envelope whose media it covers — not the union of all
+  // envelopes in the same anchor thread (codex round-5 P2: that
+  // union would wrongly cover an unrelated row whose envelope aged
+  // out of the retention window but whose media path happened to
+  // appear in another retained envelope).
+  //
+  // A background-source row is covered by an envelope `e` when:
+  //   (a) `m.message_id === e.message_id` (the spawn-ack match), OR
+  //   (b) `m.thread_id` matches `e`'s anchor, `m.media` is non-empty,
+  //       AND every path in `m.media` is in `e.media` (the per-file
+  //       companion match — bounded to a single envelope).
+  // Companions not matching ANY envelope are preserved (a duplicate
+  // render is recoverable; an erased row is not).
+  const allEnvelopeMessageIds = new Set<string>();
+  for (const e of envelopes) allEnvelopeMessageIds.add(e.message_id);
+
+  // Pre-compute each envelope's media set (frozen) for the per-row
+  // subset check below. Carries `turn_id` so the match can be bounded
+  // to the same turn when both sides expose it (codex round-6 P2:
+  // a thread with two background completions emitting the same media
+  // path must NOT cross-pollinate through anchor+media alone).
+  const envelopeMediaSets: Array<{
+    anchor: string | null;
+    turn_id: string | null;
+    media: Set<string>;
+  }> = envelopes.map((e) => ({
+    anchor: e.thread_id ?? e.response_to_client_message_id ?? null,
+    turn_id: e.turn_id ?? null,
+    media: new Set(e.media ?? []),
+  }));
+
+  // Collect per-anchor "covered by media-subset" seqs AND a separate
+  // session-wide "covered by message_id" seq set (for the
+  // no-thread-id fallback).
+  const coveredSeqsByAnchor = new Map<string, Set<number>>();
+  const coveredSeqsByMessageId = new Set<number>();
+  for (const m of messages) {
+    if (m.source !== "background") continue;
+
+    // (a) message_id match — session-unique, works without thread_id.
+    if (m.message_id && allEnvelopeMessageIds.has(m.message_id)) {
+      coveredSeqsByMessageId.add(m.seq);
+      // Continue to (b) for completeness — a row covered by both
+      // routes is still covered exactly once below.
+    }
+
+    // (b) per-envelope media-subset match. Anchor required (a
+    // different completion in a different thread may reuse the same
+    // path; we never cross thread boundaries on media match). When
+    // both sides expose a `turn_id`, they must agree (codex round-6
+    // P2: two completions in the same thread that share a media path
+    // must NOT bleed across each other on media-subset alone).
+    //
+    // When either side omits `turn_id` we fall back to anchor+media
+    // match. The current server (PR #791 era) emits `turn_id: None`
+    // for `MessagePersistedEvent`s and does not stamp it on hydrated
+    // rows for spawn_only completions — applying a strict turn_id
+    // requirement would disable the Bug C fix entirely for live
+    // production traffic. The residual theoretical risk (codex
+    // round-8 P2: two background completions under the same prompt
+    // emit the SAME exact media path) is negligible in practice
+    // because spawn_only artefact paths embed UUIDv7s, so
+    // cross-completion path collisions don't occur. Once the server
+    // typed-id work propagates `turn_id` onto Message rows, this
+    // fallback can become a hard equality check.
+    const anchor = m.thread_id;
+    if (!anchor) continue;
+    if (!m.media || m.media.length === 0) continue;
+    let matched = false;
+    for (const env of envelopeMediaSets) {
+      if (env.anchor !== anchor) continue;
+      if (m.turn_id && env.turn_id && m.turn_id !== env.turn_id) {
+        continue;
+      }
+      // Bound the subset check to a SINGLE envelope's media so a
+      // companion only counts as covered when there's a specific
+      // envelope it pairs with.
+      if (m.media.every((p) => env.media.has(p))) {
+        matched = true;
+        break;
+      }
+    }
+    if (matched) {
+      let bag = coveredSeqsByAnchor.get(anchor);
+      if (!bag) {
+        bag = new Set<number>();
+        coveredSeqsByAnchor.set(anchor, bag);
+      }
+      bag.add(m.seq);
+    }
+  }
+
+  const key = storeKey(sessionId, topic);
+  const state = sessionsByKey.get(key);
+  if (!state) {
+    // No thread state to dedup — emit envelopes as fresh bubbles below.
+  } else {
+    // For each thread, drop responses whose `historySeq` is covered
+    // either by an anchor's media-subset match OR by a session-wide
+    // message_id match (no thread_id required for the latter — codex
+    // round-4 P2). Handles both the post-merge case (where the row's
+    // historySeq was donated by the companion at seq=N+1) and the
+    // un-merged case (separate ack + companion rows at seqs N and
+    // N+1).
+    let mutated = false;
+    for (const thread of state.threads) {
+      const anchorCovered = coveredSeqsByAnchor.get(thread.id);
+      // No covered set for this thread by anchor AND no session-wide
+      // message_id matches → nothing to drop here.
+      if (!anchorCovered && coveredSeqsByMessageId.size === 0) continue;
+      const filtered: ThreadMessage[] = [];
+      for (const r of thread.responses) {
+        if (typeof r.historySeq !== "number") {
+          filtered.push(r);
+          continue;
+        }
+        const isCovered =
+          (anchorCovered && anchorCovered.has(r.historySeq)) ||
+          coveredSeqsByMessageId.has(r.historySeq);
+        if (!isCovered) {
+          filtered.push(r);
+          continue;
+        }
+        // Defense-in-depth: only drop rows whose hydrated counterpart
+        // is genuinely background. If `messages[]` is missing (older
+        // server) the row is preserved (no covered match anyway).
+        const meta = rowBySeq.get(r.historySeq);
+        if (meta && meta.source !== "background") {
+          // Meta says non-background — protect even if covered set
+          // included the seq (defensive against an upstream bug).
+          filtered.push(r);
+          continue;
+        }
+        mutated = true;
+      }
+      if (filtered.length !== thread.responses.length) {
+        thread.responses = filtered;
+      }
+    }
+    if (mutated) {
+      // Bump the snapshot version so downstream selectors recompute.
+      version++;
+      snapshotCache.delete(key);
+    }
+  }
+
+  // Emit each envelope as a completion bubble. `appendCompletionBubble`
+  // is idempotent via its `messageId` dedup, so a live-wire envelope
+  // already placed for the same row is a no-op. The legacy spawn-ack
+  // row (if it survived to this point) is upgraded in place by the
+  // existing `appendCompletionBubble` placeholder-upgrade path; if the
+  // dedup loop above already deleted it, this call appends fresh.
+  for (const e of envelopes) {
+    const placementKey = e.thread_id ?? e.response_to_client_message_id;
+    if (!placementKey) continue;
+    appendCompletionBubble(placementKey, {
+      text: e.content,
+      media: e.media ?? [],
+      spawnComplete: true,
+      sourceClientMessageId: e.response_to_client_message_id,
+      historySeq: e.seq,
+      messageId: e.message_id,
+      persistedAt: e.persisted_at,
+      sessionId,
+      topic,
+    });
+  }
   notify();
 }
 
@@ -1565,12 +1881,25 @@ export function clearSession(sessionId: string, topic?: string): void {
     sessionsByKey.delete(key);
     loadedSessions.delete(key);
     loadingPromises.delete(key);
+    hydrateSnapshotByKey.delete(key);
   } else {
     for (const k of [...sessionsByKey.keys()]) {
       if (k === sessionId || k.startsWith(`${sessionId}#`)) {
         sessionsByKey.delete(k);
         loadedSessions.delete(k);
         loadingPromises.delete(k);
+        hydrateSnapshotByKey.delete(k);
+      }
+    }
+    // Codex round-5 P3: a hydrate snapshot may exist without a
+    // matching `sessionsByKey` entry (the bridge cached the snapshot
+    // before REST `replayHistory` populated thread state). The
+    // sessionsByKey-only loop above misses it; sweep
+    // `hydrateSnapshotByKey` independently so a clear-then-replay
+    // sequence doesn't apply stale envelopes.
+    for (const k of [...hydrateSnapshotByKey.keys()]) {
+      if (k === sessionId || k.startsWith(`${sessionId}#`)) {
+        hydrateSnapshotByKey.delete(k);
       }
     }
   }
@@ -1669,6 +1998,7 @@ export function __resetForTests(): void {
   loadedSessions.clear();
   loadingPromises.clear();
   snapshotCache.clear();
+  hydrateSnapshotByKey.clear();
   version = 0;
   idCounter = 0;
 }

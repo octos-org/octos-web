@@ -426,6 +426,121 @@ describe("type guards (fail-closed)", () => {
     expect(ev?.media).toBeUndefined();
   });
 
+  // -------------------------------------------------------------------------
+  // M10 Phase 6.2 (Bug C): session/hydrate result guard
+  // -------------------------------------------------------------------------
+
+  it("guardSessionHydrate accepts a hydrate result with new PR #791 fields", () => {
+    const result = guards.guardSessionHydrate({
+      session_id: "sess-1",
+      cursor: { stream: "sess-1", seq: 25 },
+      messages: [
+        {
+          seq: 0,
+          role: "user",
+          content: "Use deep_search...",
+          thread_id: "synth_0",
+          persisted_at: "2026-05-04T00:00:00Z",
+          // No message_id / source — older-protocol row.
+        },
+        {
+          seq: 19,
+          role: "assistant",
+          content: "Research delivered.",
+          thread_id: "synth_0",
+          persisted_at: "2026-05-04T00:09:22Z",
+          message_id: "local:demo:19:1700000019000000000",
+          source: "background",
+        },
+        {
+          seq: 20,
+          role: "assistant",
+          content: "",
+          thread_id: "synth_0",
+          persisted_at: "2026-05-04T00:09:22Z",
+          message_id: "local:demo:20:1700000020000000000",
+          source: "background",
+          media: ["pf/file.md"],
+        },
+      ],
+      replayed_envelopes: [
+        {
+          session_id: "sess-1",
+          turn_id: "turn-1",
+          thread_id: "synth_0",
+          task_id: "task_abc",
+          seq: 19,
+          message_id: "local:demo:19:1700000019000000000",
+          source: "background",
+          cursor: { stream: "sess-1", seq: 19 },
+          persisted_at: "2026-05-04T00:09:22Z",
+          content: "Research delivered.",
+          media: ["pf/file.md"],
+        },
+      ],
+    });
+    expect(result).not.toBeNull();
+    expect(result?.messages).toHaveLength(3);
+    expect(result?.messages?.[1].message_id).toBe(
+      "local:demo:19:1700000019000000000",
+    );
+    expect(result?.messages?.[1].source).toBe("background");
+    expect(result?.messages?.[0].message_id).toBeUndefined();
+    expect(result?.replayed_envelopes).toHaveLength(1);
+    expect(result?.replayed_envelopes?.[0].task_id).toBe("task_abc");
+  });
+
+  it("guardSessionHydrate accepts a back-compat result without new fields (older server)", () => {
+    const result = guards.guardSessionHydrate({
+      session_id: "sess-1",
+      cursor: { stream: "sess-1", seq: 5 },
+      messages: [
+        {
+          seq: 0,
+          role: "user",
+          content: "hi",
+          persisted_at: "2026-05-04T00:00:00Z",
+        },
+      ],
+      // No replayed_envelopes (server pre-#791, or non-negotiated client).
+    });
+    expect(result).not.toBeNull();
+    expect(result?.messages).toHaveLength(1);
+    expect(result?.replayed_envelopes).toBeUndefined();
+  });
+
+  it("guardSessionHydrate rejects a non-object payload", () => {
+    expect(guards.guardSessionHydrate(null)).toBeNull();
+    expect(guards.guardSessionHydrate("string")).toBeNull();
+    expect(guards.guardSessionHydrate(42)).toBeNull();
+  });
+
+  it("guardSessionHydrate drops malformed inner messages without poisoning the result", () => {
+    const result = guards.guardSessionHydrate({
+      session_id: "sess-1",
+      cursor: { stream: "sess-1", seq: 1 },
+      messages: [
+        {
+          seq: 0,
+          role: "user",
+          content: "ok",
+          persisted_at: "2026-05-04T00:00:00Z",
+        },
+        // Missing required fields — dropped.
+        { seq: "not-a-number", role: "assistant" },
+        // Invalid role — dropped.
+        {
+          seq: 2,
+          role: "narrator",
+          content: "",
+          persisted_at: "2026-05-04T00:00:00Z",
+        },
+      ],
+    });
+    expect(result).not.toBeNull();
+    expect(result?.messages).toHaveLength(1);
+  });
+
   it("rejects task/updated without task_id", () => {
     expect(
       guards.guardTaskUpdated({

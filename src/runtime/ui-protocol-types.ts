@@ -280,3 +280,63 @@ export interface RpcErrorPayload {
   message: string;
   data?: unknown;
 }
+
+/**
+ * `session/hydrate` row shape per server PR #791 (M10 Phase 6.2 / Bug C).
+ *
+ * Mirrors `octos_core::ui_protocol::HydratedMessage`. The two fields the
+ * SPA cares about for hydrate-time dedup of legacy `Background`-source
+ * rows are:
+ *
+ *   - `message_id`: stable per-row identity, agrees with
+ *     `MessagePersistedEvent.message_id` and
+ *     `TurnSpawnCompleteEvent.message_id` for the same row. The server
+ *     populates this only when the connection negotiated
+ *     `event.spawn_complete.v1`.
+ *   - `source`: snake_case wire form of `MessagePersistedSource`
+ *     (`"user" | "assistant" | "tool" | "background" | "recovery"`).
+ *     Used to identify the per-file `send_file` companion rows the live
+ *     wire suppresses for negotiated clients.
+ *
+ * Both are `Option<String>` on the wire; legacy clients that pre-date
+ * negotiation see them omitted (back-compat). Treat both as optional.
+ */
+export interface HydratedMessage {
+  seq: number;
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  turn_id?: string;
+  thread_id?: string;
+  client_message_id?: string;
+  persisted_at: string;
+  message_id?: string;
+  source?: string;
+  media?: string[];
+}
+
+/**
+ * `session/hydrate` result shape per server PR #791. The `messages`
+ * field is omitted when the request didn't include `"messages"`; the
+ * `replayed_envelopes` field is omitted when the connection didn't
+ * negotiate `event.spawn_complete.v1` OR `messages` wasn't requested.
+ *
+ * The negotiated dedup contract on a fresh page reload is:
+ *
+ *   1. For each `replayed_envelopes[i]`, find the row in `messages`
+ *      whose `message_id` matches: that's the spawn-ack the live wire
+ *      replaced with the envelope. Drop the row, render the envelope.
+ *   2. For each Background companion row in the same thread that
+ *      precedes the spawn-ack and does NOT match any envelope's
+ *      `message_id`: drop it (the envelope's `media` already covers
+ *      it).
+ *   3. All other rows replay verbatim.
+ */
+export interface SessionHydrateResult {
+  session_id: string;
+  cursor: UiCursor;
+  messages?: HydratedMessage[];
+  threads?: unknown[];
+  turns?: unknown[];
+  pending_approvals?: unknown[];
+  replayed_envelopes?: TurnSpawnCompleteEvent[];
+}
