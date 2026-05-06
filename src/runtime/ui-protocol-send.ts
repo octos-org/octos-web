@@ -97,13 +97,20 @@ function shouldFallbackToLegacy(opts: SendOptions): boolean {
 
 const turnQueues = new Map<string, Promise<void>>();
 
-function queueKey(sessionId: string, topic: string | undefined): string {
-  const t = topic?.trim();
-  return t ? `${sessionId}#${t}` : sessionId;
+// Per-session lock scope. Codex P2: the server's
+// `handle_turn_start` "one turn at a time" lock is keyed by `session_id`
+// only — `bridge.sendTurn` doesn't carry the SPA-side `historyTopic`,
+// so switching topic mid-turn would not relax the server's rejection
+// rule. Key the queue on `sessionId` to match the server lock scope
+// exactly; otherwise a topic switch lets a fresh prompt through to the
+// same-session lock and reproduces the orphan-bubble shape this fix
+// targets.
+function queueKey(sessionId: string): string {
+  return sessionId;
 }
 
 async function enqueueSendV1(opts: SendOptions): Promise<void> {
-  const key = queueKey(opts.sessionId, opts.historyTopic);
+  const key = queueKey(opts.sessionId);
   const prev = turnQueues.get(key) ?? Promise.resolve();
 
   // The signal we hand to `sendMessageV1`. The lifecycle handler resolves
