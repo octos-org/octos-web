@@ -2372,6 +2372,42 @@ describe("setHydrateSnapshot reload-mid-stream fallback (M10.5)", () => {
   });
 
   /**
+   * Codex SPA round 2 P2: a hydrate with non-system but assistant/
+   * tool-only rows would produce orphan-placeholder threads (empty
+   * user bubble) via `replayHistory`. Pre-fix the cached-hydrate
+   * re-apply hook would then call `applyHydrateDedup` again, which
+   * re-entered `seedFromHydrateMessages` (the placeholder threads
+   * matched `allThreadsAreOrphanPlaceholders`) and infinite-looped.
+   * Post-fix: require at least one user row before seeding.
+   */
+  it("does not recurse when hydrate.messages has no user row", () => {
+    expect(() => {
+      ThreadStore.setHydrateSnapshot(SID, undefined, {
+        messages: [
+          {
+            seq: 0,
+            role: "assistant",
+            content: "stale assistant rumination",
+            thread_id: "cmid-orphan",
+            persisted_at: "2026-05-04T00:00:00Z",
+          },
+          {
+            seq: 1,
+            role: "tool",
+            content: "tool result",
+            thread_id: "cmid-orphan",
+            persisted_at: "2026-05-04T00:00:01Z",
+          },
+        ],
+        replayed_envelopes: [],
+      });
+    }).not.toThrow();
+    // No threads created — without a user row the seed is a no-op
+    // (we'd rather show nothing than orphan-place an unrooted history).
+    expect(ThreadStore.getThreads(SID)).toHaveLength(0);
+  });
+
+  /**
    * Codex SPA round 1 P2.2: when an envelope is delivered BEFORE the
    * `session/hydrate` response (live wire ordering), the store
    * already holds an orphan-placeholder thread with an empty user

@@ -1560,6 +1560,7 @@ function seedFromHydrateMessages(
   }
 
   const apiMessages: MessageInfo[] = [];
+  let hasUserRow = false;
   for (const row of rows) {
     const info = hydrateRowToMessageInfo(row);
     if (!info) continue;
@@ -1574,8 +1575,22 @@ function seedFromHydrateMessages(
     // `replayHistory` will actually persist.
     if (info.role === "system") continue;
     apiMessages.push(info);
+    if (info.role === "user") hasUserRow = true;
   }
   if (apiMessages.length === 0) return false;
+  // Codex SPA round 2 P2: a hydrate with non-system but assistant/
+  // tool-only rows produces a `replayHistory` output that has only
+  // orphan-placeholder threads (empty user bubbles) — exactly the
+  // shape `allThreadsAreOrphanPlaceholders` greenlights for re-
+  // seeding. The cached-hydrate hook at the end of `replayHistory`
+  // would then call `applyHydrateDedup` again, which re-enters this
+  // function and recurses forever.
+  //
+  // Require at least one user row before seeding. A user-less hydrate
+  // is not a useful seed anyway: the canonical reload-mid-stream
+  // shape this fallback exists for ALWAYS carries the user prompt
+  // (it lives in the same JSONL the assistant rows do).
+  if (!hasUserRow) return false;
   // Reuse `replayHistory`'s adjacent-merge + orphan-thread synthesis.
   // It replaces state for `key` wholesale; an orphan-placeholder
   // existing state is intentionally clobbered by the seed (P2.2).
