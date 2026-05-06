@@ -131,6 +131,10 @@ const snapshotCache = new Map<string, { version: number; data: Thread[] }>();
  * post-`session/open` hydrate call (see `ui-protocol-runtime.ts`).
  * Cleared by `clearSession`.
  */
+// `HydrateSnapshot` (defined alongside `applyHydrateDedup` below) is
+// the authoritative shape; this Parameters lookup keeps the cache
+// value tied to whatever the dedup pass accepts so it stays in sync
+// if the function's signature widens further.
 const hydrateSnapshotByKey = new Map<
   string,
   Parameters<typeof applyHydrateDedup>[2]
@@ -1375,23 +1379,36 @@ export function replayHistory(
 }
 
 /**
- * M10 Phase 6.2 (Bug C): cache the WS `session/hydrate` result so that
- * subsequent `replayHistory` calls (the forced retries in
- * chat-thread.tsx) re-run the dedup pass against the freshly-replayed
- * thread state. Triggers an immediate dedup pass on the current state
- * so a hydrate that lands AFTER the first `replayHistory` still
- * cleans up the duplicate rows.
+ * M10 Phase 6.2 (Bug C) + M10.5 reload-mid-stream fix: cache the WS
+ * `session/hydrate` result so that subsequent `replayHistory` calls
+ * (the forced retries in chat-thread.tsx) re-run the dedup pass
+ * against the freshly-replayed thread state. Triggers an immediate
+ * dedup pass on the current state so a hydrate that lands AFTER the
+ * first `replayHistory` still cleans up the duplicate rows.
+ *
+ * M10.5: also runs `applyHydrateDedup` when the store is empty for
+ * this scope (no thread state yet). The dedup function's own
+ * `seedFromHydrateMessages` will populate the store from
+ * `hydrate.messages` when REST returned `[]`. Without this branch the
+ * SPA produced an orphan completion bubble whenever REST and WS
+ * disagreed about whether the session had any history.
  */
 export function setHydrateSnapshot(
   sessionId: string,
   topic: string | undefined,
-  hydrate: Parameters<typeof applyHydrateDedup>[2],
+  hydrate: HydrateSnapshot,
 ): void {
   const key = storeKey(sessionId, topic);
   hydrateSnapshotByKey.set(key, hydrate);
-  if (sessionsByKey.has(key)) {
-    applyHydrateDedup(sessionId, topic, hydrate);
-  }
+  // Always invoke the dedup pass:
+  //   • If the store already has thread state for this scope, dedup
+  //     coalesces the legacy spawn-ack rows behind retained envelopes
+  //     (Bug C).
+  //   • If the store is empty for this scope, the dedup pass's
+  //     `seedFromHydrateMessages` step populates it from
+  //     `hydrate.messages` so the user prompt + narration row are
+  //     visible (M10.5 reload-mid-stream fallback).
+  applyHydrateDedup(sessionId, topic, hydrate);
 }
 
 /**
@@ -1435,33 +1452,150 @@ export function setHydrateSnapshot(
  * connection), or envelopes without an anchor thread are skipped — we
  * never delete a row we can't prove is the legacy duplicate.
  */
+/**
+ * `HydratedMessage` shape `applyHydrateDedup` and `seedFromHydrateMessages`
+ * accept. Mirrors `octos_core::ui_protocol::HydratedMessage` (cf.
+ * `runtime/ui-protocol-types.ts`).
+ *
+ * The dedup pass below only reads the metadata fields (seq, message_id,
+ * source, thread_id, turn_id, media). The seed pass additionally reads
+ * `role`, `content`, `client_message_id`, and `persisted_at` so it can
+ * reconstruct the full `Thread` shape when REST `loadHistory` returned
+ * `[]` (M10.5 reload-mid-stream fallback).
+ *
+ * Both extra fields are optional on the wire — older servers omit them.
+ * When absent, the seed pass treats the row the same way the legacy REST
+ * `replayHistory` treats a `MessageInfo` with the same gaps: skip
+ * unknown roles, default the content to empty string, etc.
+ */
+export interface HydrateMessageRow {
+  seq: number;
+  message_id?: string;
+  source?: string;
+  thread_id?: string;
+  turn_id?: string;
+  media?: string[];
+  /** Wire role: `user | assistant | tool | system`. Absent on older
+   *  servers; treat as `assistant` so the row is at least visible. */
+  role?: string;
+  /** Verbatim text from the canonical session JSONL. */
+  content?: string;
+  /** Stable per-row client id. The seed pass uses this to root user
+   *  messages on the same `client_message_id` REST would have used. */
+  client_message_id?: string;
+  /** ISO-8601 persistence timestamp. Used for `Thread` ordering. */
+  persisted_at?: string;
+}
+
+export interface HydrateEnvelope {
+  thread_id?: string;
+  turn_id?: string;
+  response_to_client_message_id?: string;
+  task_id: string;
+  seq: number;
+  message_id: string;
+  content: string;
+  media?: string[];
+  persisted_at: string;
+}
+
+export interface HydrateSnapshot {
+  messages?: HydrateMessageRow[];
+  replayed_envelopes?: HydrateEnvelope[];
+}
+
+/**
+ * Convert a [`HydrateMessageRow`] (the WS `session/hydrate` shape) into
+ * a [`MessageInfo`] (the REST `/messages` shape) so the existing
+ * `replayHistory` logic can ingest it without reimplementing the whole
+ * adjacent-merge / orphan-thread / dedup pipeline. Skips rows that lack
+ * the minimum (`role` + `content`) needed to reconstruct a chat bubble.
+ */
+function hydrateRowToMessageInfo(row: HydrateMessageRow): MessageInfo | null {
+  if (!row.role || row.content === undefined) return null;
+  if (
+    row.role !== "user" &&
+    row.role !== "assistant" &&
+    row.role !== "tool" &&
+    row.role !== "system"
+  ) {
+    return null;
+  }
+  const timestamp =
+    typeof row.persisted_at === "string" && row.persisted_at.length > 0
+      ? row.persisted_at
+      : new Date().toISOString();
+  return {
+    seq: row.seq,
+    role: row.role,
+    content: row.content,
+    client_message_id: row.client_message_id,
+    thread_id: row.thread_id,
+    timestamp,
+    media: row.media,
+  };
+}
+
+/**
+ * M10.5 reload-mid-stream fallback: when REST `loadHistory` returned no
+ * rows (server-side bug or just race) but the WS `session/hydrate`
+ * carried `messages[]`, seed the store from those rows BEFORE
+ * `applyHydrateDedup` runs. Without this, the SPA renders only the
+ * envelope's completion bubble — with no user prompt or narration row
+ * to anchor it — producing the orphan-completion shape the M10
+ * hardening test catches.
+ *
+ * Idempotency: a subsequent `replayHistory` call (REST retries fire at
+ * 2s/5s/12s) replaces state wholesale, so a real REST response that
+ * lands later wins for any overlap with the hydrate seed. A second
+ * hydrate snapshot for an already-seeded session is a no-op (state is
+ * not empty).
+ *
+ * Returns `true` when seeding actually populated the store — callers
+ * can use this to decide whether `applyHydrateDedup`'s envelope-emit
+ * pass needs the now-existing thread state for placeholder upgrades.
+ */
+function seedFromHydrateMessages(
+  sessionId: string,
+  topic: string | undefined,
+  rows: HydrateMessageRow[],
+): boolean {
+  if (rows.length === 0) return false;
+  const key = storeKey(sessionId, topic);
+  const existing = sessionsByKey.get(key);
+  // REST result wins for any overlap — only seed when state is empty.
+  // This means: on a healthy REST response we never touch the seeded
+  // shape; on a `[]` REST response (the bug we're fixing) the seed
+  // remains visible until the next REST retry — which post-PR-1
+  // server fix is itself non-empty.
+  if (existing && existing.threads.length > 0) return false;
+
+  const apiMessages: MessageInfo[] = [];
+  for (const row of rows) {
+    const info = hydrateRowToMessageInfo(row);
+    if (info) apiMessages.push(info);
+  }
+  if (apiMessages.length === 0) return false;
+  // Reuse `replayHistory`'s adjacent-merge + orphan-thread synthesis.
+  // It replaces state for `key` wholesale, but `existing` was empty
+  // so this is a pure insert — no live data is at risk of being
+  // clobbered.
+  replayHistory(sessionId, apiMessages, topic);
+  return true;
+}
+
 export function applyHydrateDedup(
   sessionId: string,
   topic: string | undefined,
-  hydrate: {
-    messages?: Array<{
-      seq: number;
-      message_id?: string;
-      source?: string;
-      thread_id?: string;
-      turn_id?: string;
-      media?: string[];
-    }>;
-    replayed_envelopes?: Array<{
-      thread_id?: string;
-      turn_id?: string;
-      response_to_client_message_id?: string;
-      task_id: string;
-      seq: number;
-      message_id: string;
-      content: string;
-      media?: string[];
-      persisted_at: string;
-    }>;
-  },
+  hydrate: HydrateSnapshot,
 ): void {
   const envelopes = hydrate.replayed_envelopes ?? [];
   const messages = hydrate.messages ?? [];
+  // M10.5 reload-mid-stream fallback: if REST hasn't seeded the store
+  // yet (it returned `[]` or hasn't fired) but WS hydrate carried the
+  // full message list, seed from hydrate first so the dedup pass below
+  // and the envelope-emit have a thread to anchor to.
+  seedFromHydrateMessages(sessionId, topic, messages);
   if (envelopes.length === 0) return;
 
   // Build the seq → row metadata index, including media so we can
