@@ -1514,6 +1514,28 @@ function hydrateRowToMessageInfo(row: HydrateMessageRow): MessageInfo | null {
  * can use this to decide whether `applyHydrateDedup`'s envelope-emit
  * pass needs the now-existing thread state for placeholder upgrades.
  */
+/**
+ * Returns `true` when every thread in `state` is an orphan-placeholder
+ * — created by `appendCompletionBubble` for an envelope whose hydrate
+ * snapshot has not yet landed. Such a thread has an empty user-bubble
+ * (no text, no files) and is safe to replace with the canonical
+ * hydrate seed, which carries the real prompt + narration rows.
+ *
+ * Codex SPA round 1 P2.2: an envelope-before-hydrate ordering puts a
+ * placeholder thread in the store BEFORE `setHydrateSnapshot` runs.
+ * Without this predicate the seed pass would treat the placeholder as
+ * authoritative state and skip seeding, leaving the orphan-completion
+ * shape this fix exists to prevent.
+ */
+function allThreadsAreOrphanPlaceholders(state: SessionState): boolean {
+  if (state.threads.length === 0) return true;
+  for (const t of state.threads) {
+    if (t.userMsg.text.length > 0) return false;
+    if (t.userMsg.files.length > 0) return false;
+  }
+  return true;
+}
+
 function seedFromHydrateMessages(
   sessionId: string,
   topic: string | undefined,
@@ -1522,23 +1544,41 @@ function seedFromHydrateMessages(
   if (rows.length === 0) return false;
   const key = storeKey(sessionId, topic);
   const existing = sessionsByKey.get(key);
-  // REST result wins for any overlap — only seed when state is empty.
+  // REST result wins for any overlap — only seed when state is empty
+  // OR when the only existing threads are orphan placeholders created
+  // by an envelope that landed before the hydrate response (codex SPA
+  // round 1 P2.2).
+  //
   // This means: on a healthy REST response we never touch the seeded
   // shape; on a `[]` REST response (the bug we're fixing) the seed
   // remains visible until the next REST retry — which post-PR-1
-  // server fix is itself non-empty.
-  if (existing && existing.threads.length > 0) return false;
+  // server fix is itself non-empty; on an envelope-before-hydrate
+  // ordering, the placeholder thread is replaced by the canonical
+  // hydrate history.
+  if (existing && !allThreadsAreOrphanPlaceholders(existing)) {
+    return false;
+  }
 
   const apiMessages: MessageInfo[] = [];
   for (const row of rows) {
     const info = hydrateRowToMessageInfo(row);
-    if (info) apiMessages.push(info);
+    if (!info) continue;
+    // Codex SPA round 1 P2.1: `replayHistory` skips `system` rows.
+    // If we feed a system-only batch through, `replayHistory` writes
+    // empty state, then re-invokes `applyHydrateDedup` (via its
+    // cached-hydrate dedup re-application at the end), which calls
+    // `seedFromHydrateMessages` again on the still-empty store —
+    // infinite recursion until the call stack overflows.
+    //
+    // Filter system rows here so the seedable count reflects what
+    // `replayHistory` will actually persist.
+    if (info.role === "system") continue;
+    apiMessages.push(info);
   }
   if (apiMessages.length === 0) return false;
   // Reuse `replayHistory`'s adjacent-merge + orphan-thread synthesis.
-  // It replaces state for `key` wholesale, but `existing` was empty
-  // so this is a pure insert — no live data is at risk of being
-  // clobbered.
+  // It replaces state for `key` wholesale; an orphan-placeholder
+  // existing state is intentionally clobbered by the seed (P2.2).
   replayHistory(sessionId, apiMessages, topic);
   return true;
 }

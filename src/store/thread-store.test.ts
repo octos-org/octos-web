@@ -2337,6 +2337,109 @@ describe("setHydrateSnapshot reload-mid-stream fallback (M10.5)", () => {
   });
 
   /**
+   * Codex SPA round 1 P2.1: when `hydrate.messages` carries only
+   * system rows (older daemons emit a system bootstrap on every
+   * session), `replayHistory` skips them and leaves the store empty.
+   * Pre-P2-fix `setHydrateSnapshot` would re-invoke
+   * `applyHydrateDedup` from `replayHistory`'s cached-hydrate hook,
+   * which would call `seedFromHydrateMessages` again on the still-
+   * empty store — infinite recursion until the call stack overflows.
+   * Post-fix: system rows are filtered before deciding to seed, so
+   * the seed pass is a no-op (no recursion).
+   */
+  it("does not recurse when hydrate.messages carries only system rows", () => {
+    expect(() => {
+      ThreadStore.setHydrateSnapshot(SID, undefined, {
+        messages: [
+          {
+            seq: 0,
+            role: "system",
+            content: "session bootstrap",
+            persisted_at: "2026-05-04T00:00:00Z",
+          },
+          {
+            seq: 1,
+            role: "system",
+            content: "system policy",
+            persisted_at: "2026-05-04T00:00:01Z",
+          },
+        ],
+        replayed_envelopes: [],
+      });
+    }).not.toThrow();
+    // No threads created — system rows are not user-rooted.
+    expect(ThreadStore.getThreads(SID)).toHaveLength(0);
+  });
+
+  /**
+   * Codex SPA round 1 P2.2: when an envelope is delivered BEFORE the
+   * `session/hydrate` response (live wire ordering), the store
+   * already holds an orphan-placeholder thread with an empty user
+   * bubble. The seed pass MUST treat that state as still-seedable so
+   * the canonical hydrate history (real user prompt + narration)
+   * replaces the placeholder. Pre-fix the placeholder was treated as
+   * authoritative and the user prompt was never restored.
+   */
+  it("seeds over orphan placeholders created by an early envelope", () => {
+    // Simulate envelope-before-hydrate ordering: a
+    // `turn/spawn_complete` lands before `session/hydrate` returns.
+    // `appendCompletionBubble` creates an orphan-placeholder thread
+    // (empty user bubble) hosting the envelope's content.
+    ThreadStore.appendCompletionBubble("cmid-user-1", {
+      text: "## Research delivered\nFull text inline.",
+      media: [],
+      spawnComplete: true,
+      sourceClientMessageId: "cmid-user-1",
+      sessionId: SID,
+    });
+
+    const beforeSeed = ThreadStore.getThreads(SID);
+    expect(beforeSeed).toHaveLength(1);
+    expect(beforeSeed[0].userMsg.text).toBe("");
+
+    // Now hydrate lands with the canonical history (REST is still []).
+    ThreadStore.setHydrateSnapshot(SID, undefined, {
+      messages: [
+        {
+          seq: 0,
+          role: "user",
+          content: "do the research",
+          client_message_id: "cmid-user-1",
+          thread_id: "cmid-user-1",
+          persisted_at: "2026-05-04T00:00:00Z",
+        },
+        {
+          seq: 1,
+          role: "assistant",
+          content: "spawning the deep_research task",
+          thread_id: "cmid-user-1",
+          persisted_at: "2026-05-04T00:00:01Z",
+        },
+      ],
+      replayed_envelopes: [
+        {
+          thread_id: "cmid-user-1",
+          task_id: "task_research",
+          seq: 19,
+          message_id: "local:research:19",
+          content: "## Research delivered\nFull text inline.",
+          media: [],
+          persisted_at: "2026-05-04T00:00:02Z",
+        },
+      ],
+    });
+
+    const afterSeed = ThreadStore.getThreads(SID);
+    expect(afterSeed).toHaveLength(1);
+    expect(afterSeed[0].userMsg.text).toBe("do the research");
+    expect(afterSeed[0].userMsg.clientMessageId).toBe("cmid-user-1");
+    // Both the narration AND the envelope's completion are reachable.
+    const responseTexts = afterSeed[0].responses.map((r) => r.text);
+    expect(responseTexts).toContain("spawning the deep_research task");
+    expect(responseTexts).toContain("## Research delivered\nFull text inline.");
+  });
+
+  /**
    * Symmetrical guard for the happy path: a real REST response with
    * authoritative rows must win over the hydrate seed. Ensures the
    * fallback never silently overrides REST data.
