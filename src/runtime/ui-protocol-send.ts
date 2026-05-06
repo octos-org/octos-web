@@ -111,6 +111,16 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
   const key = queueKey(opts.sessionId);
   const prev = turnQueues.get(key) ?? Promise.resolve();
 
+  // Codex round 5 P1: pin the clientMessageId ONCE so the synchronous
+  // ThreadStore mirror and the eventual `sendTurn`/lifecycle gate use
+  // the same value. Pre-fix, when a caller omitted `clientMessageId`
+  // (the chat-thread default), `enqueueSendV1` minted one for the
+  // mirror but `sendMessageV1` minted a different one for sendTurn —
+  // server events / errors would not attach to the mirrored pending
+  // bubble.
+  const clientMessageId = opts.clientMessageId ?? crypto.randomUUID();
+  const pinnedOpts: SendOptions = { ...opts, clientMessageId };
+
   // Codex round 4 P2: mirror the user message into ThreadStore
   // SYNCHRONOUSLY before the queue gate, so the bubble is visible the
   // instant the user clicks Send — even when a prior turn has not yet
@@ -132,19 +142,19 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
   //     `requestText` to /api/chat but mirrors `text` into the store —
   //     we'd need to pre-compute that here and risk drifting from the
   //     legacy bridge's behaviour. Defer to legacy for these too.
-  if (shouldMirrorUserMessageSync(opts)) {
-    const localFiles = opts.media.map((path) => ({
+  if (shouldMirrorUserMessageSync(pinnedOpts)) {
+    const localFiles = pinnedOpts.media.map((path) => ({
       filename: displayFilenameFromPath(path),
       path,
       caption: "",
     }));
-    ThreadStore.addUserMessage(opts.sessionId, {
-      text: opts.text,
-      clientMessageId: opts.clientMessageId ?? crypto.randomUUID(),
+    ThreadStore.addUserMessage(pinnedOpts.sessionId, {
+      text: pinnedOpts.text,
+      clientMessageId,
       files: localFiles,
-      topic: opts.historyTopic,
+      topic: pinnedOpts.historyTopic,
     });
-    opts.onSessionActive?.(opts.text);
+    pinnedOpts.onSessionActive?.(pinnedOpts.text);
   }
 
   // The signal we hand to `sendMessageV1`. The lifecycle handler resolves
@@ -166,11 +176,44 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
     // bridge availability HERE (rather than at sendMessage entry) so a
     // bridge that was torn down while we were parked correctly falls
     // through to legacy.
-    if (shouldFallbackToLegacy(opts)) {
-      legacySendMessage(opts);
-      release();
+    if (shouldFallbackToLegacy(pinnedOpts)) {
+      // Codex round 5 P2: tie the queue release to the legacy send's
+      // own completion callback. Pre-fix, the queue released
+      // immediately after `legacySendMessage` returned (which only
+      // schedules the SSE fetch — the actual /api/chat is still in
+      // flight). A subsequent v1 `bridge.sendTurn` could then race
+      // the legacy turn at the WS one-turn lock. Wrap the caller's
+      // `onComplete` so we hold the gate until the legacy stream's
+      // `done` (or error) fires.
+      const userOnComplete = pinnedOpts.onComplete;
+      let released = false;
+      legacySendMessage({
+        ...pinnedOpts,
+        onComplete: () => {
+          if (!released) {
+            released = true;
+            release();
+          }
+          userOnComplete?.();
+        },
+      });
+      // Defensive timeout: if the legacy bridge never calls
+      // `onComplete` (e.g. an unhandled fetch error), match the v1
+      // safety net's 15-minute upper bound so the chain still drains.
+      const legacySafetyTimer = setTimeout(
+        () => {
+          if (!released) {
+            released = true;
+            release();
+          }
+        },
+        15 * 60 * 1000,
+      );
+      // Don't keep the timer alive past resolution — once the chain
+      // advances we don't care about a late onComplete.
+      void lifecycleDone.then(() => clearTimeout(legacySafetyTimer));
     } else {
-      await sendMessageV1(opts, release);
+      await sendMessageV1(pinnedOpts, release);
     }
     // Wait for the lifecycle to complete before we let the chain advance.
     // `sendMessageV1` always calls `release()` — on success via the

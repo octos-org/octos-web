@@ -608,22 +608,28 @@ describe("sendMessage flag-ON path", () => {
     expect(onComplete1).toHaveBeenCalledTimes(1);
 
     // Q2 must now proceed. With the bridge already torn down /
-    // unregistered, the v1 path falls back to legacy — so we just
-    // verify that Q2's onComplete eventually fires (the queue
-    // unblocked) and we did NOT issue a second `bridge.sendTurn`
-    // against a stopped bridge.
+    // unregistered, the v1 path falls back to legacy. The real legacy
+    // SSE bridge fires `onComplete` on stream done — mirror that with
+    // the spy mock so the queue-release tied to legacy completion
+    // (codex round 5 P2) actually fires in the test, allowing a Q3
+    // follow-up to proceed instead of parking on the 15-min safety
+    // timer.
+    legacySendSpy.mockImplementation((opts: SendOptions) => {
+      // Microtask-defer onComplete so the queue advances after the
+      // current await Promise.resolve() loop, not synchronously.
+      Promise.resolve().then(() => opts.onComplete?.());
+    });
     __resetUiProtocolRuntimeForTest(); // mirrors runtime stopping the bridge
     for (let i = 0; i < 12; i++) await Promise.resolve();
     // sendTurn count is unchanged — Q2 fell to legacy because the bridge
     // is no longer registered when its turn at the queue head arrived.
     expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
-    // Q2's onComplete fires from the legacy fallback path's
-    // releaseLifecycleGate; the legacy SSE bridge is mocked here so it
-    // doesn't call onComplete itself. The minimal correctness signal is
-    // that the QUEUE drained (a follow-up send would proceed); assert
-    // by issuing a third send and confirming it lands in the legacy
-    // mock too rather than parking forever.
+    // Q3 follow-up: lands on legacy too (still no bridge). The queue
+    // must have drained for this to fire.
     legacySendSpy.mockClear();
+    legacySendSpy.mockImplementation((opts: SendOptions) => {
+      Promise.resolve().then(() => opts.onComplete?.());
+    });
     sendMessage({
       sessionId: SESSION,
       text: "Q3",
