@@ -107,13 +107,16 @@ describe("sendMessage flag-ON path", () => {
     window.localStorage.setItem("chat_app_ui_v1", "1");
   });
 
-  it("falls back to the legacy bridge when no active bridge is registered", () => {
+  it("falls back to the legacy bridge when no active bridge is registered", async () => {
     sendMessage({
       sessionId: SESSION,
       text: "hi",
       media: [],
       clientMessageId: "cmid-fallback",
     });
+    // Bug B per-session queue: legacy fallback runs after `await prev`
+    // so the synchronous spy assertion gains 2-3 microtask ticks.
+    for (let i = 0; i < 12; i++) await Promise.resolve();
     expect(legacySendSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -189,7 +192,7 @@ describe("sendMessage flag-ON path", () => {
   // Codex review must-fix #5A: media-bearing turns must NOT silently
   // drop on the v1 path (TurnStartInput.kind === "text" only). Falling
   // back to legacy keeps voice/image uploads working under the flag.
-  it("falls back to legacy when media is present", () => {
+  it("falls back to legacy when media is present", async () => {
     const bridge = makeBridge();
     __setActiveBridgeForTest(SESSION, bridge);
     sendMessage({
@@ -198,11 +201,14 @@ describe("sendMessage flag-ON path", () => {
       media: ["/tmp/foo.png"],
       clientMessageId: "cmid-media",
     });
+    // Bug B per-session queue: legacy fallback runs after `await prev`.
+    for (let i = 0; i < 12; i++) await Promise.resolve();
     expect(legacySendSpy).toHaveBeenCalledTimes(1);
     expect(bridge.sendTurn).not.toHaveBeenCalled();
-    // The thread store must NOT be pre-populated by the v1 mirror —
-    // the legacy bridge handles its own ThreadStore mirroring (gated
-    // by isThreadStoreEnabled() which now also reads chat_app_ui_v1).
+    // The thread store must NOT be pre-populated by the v1 sync mirror —
+    // the legacy bridge handles its own ThreadStore mirroring for
+    // media (gated by isThreadStoreEnabled()), and duplicating it here
+    // would double-thread.
     expect(ThreadStore.getThreads(SESSION)).toHaveLength(0);
   });
 
@@ -210,7 +216,7 @@ describe("sendMessage flag-ON path", () => {
   // rewrite. Legacy posts requestText to /api/chat; the v1 path only
   // takes a plain text input. Fall back so the rewrite isn't silently
   // dropped.
-  it("falls back to legacy when requestText differs from text", () => {
+  it("falls back to legacy when requestText differs from text", async () => {
     const bridge = makeBridge();
     __setActiveBridgeForTest(SESSION, bridge);
     sendMessage({
@@ -220,6 +226,7 @@ describe("sendMessage flag-ON path", () => {
       media: [],
       clientMessageId: "cmid-rewrite",
     });
+    for (let i = 0; i < 12; i++) await Promise.resolve();
     expect(legacySendSpy).toHaveBeenCalledTimes(1);
     expect(bridge.sendTurn).not.toHaveBeenCalled();
   });
@@ -379,6 +386,110 @@ describe("sendMessage flag-ON path", () => {
     expect(bridge.sendTurn).toHaveBeenLastCalledWith("cmid-Q3", [
       { kind: "text", text: "Q3" },
     ]);
+  });
+
+  // Codex P2 round 4 (M10 follow-up Bug B): the user message must be
+  // mirrored into ThreadStore SYNCHRONOUSLY, before the per-session
+  // queue gate. Pre-fix, `addUserMessage` ran inside `sendMessageV1`
+  // AFTER `await prev`, so a queued prompt was invisible until the
+  // prior turn drained — and the user's input field had already
+  // cleared, making the prompt feel lost.
+  it("mirrors a queued v1 user message synchronously, before the gate clears", async () => {
+    const bridge = makeBridge();
+    __setActiveBridgeForTest(SESSION, bridge);
+
+    let lifecycleHandler:
+      | ((e: { turn_id: string; reason?: string; error?: unknown }) => void)
+      | undefined;
+    (bridge.onTurnLifecycle as ReturnType<typeof vi.fn>).mockImplementation(
+      (h: (e: { turn_id: string; reason?: string; error?: unknown }) => void) => {
+        lifecycleHandler = h;
+        return () => {
+          lifecycleHandler = undefined;
+        };
+      },
+    );
+
+    sendMessage({
+      sessionId: SESSION,
+      text: "Q1",
+      media: [],
+      clientMessageId: "cmid-Q1",
+    });
+    sendMessage({
+      sessionId: SESSION,
+      text: "Q2",
+      media: [],
+      clientMessageId: "cmid-Q2",
+    });
+
+    // After exactly one microtask tick — well before Q1's lifecycle
+    // would unblock Q2's `bridge.sendTurn` — both user bubbles must
+    // already be in the thread store.
+    await Promise.resolve();
+    const threads = ThreadStore.getThreads(SESSION);
+    expect(threads.map((t) => t.id)).toEqual(["cmid-Q1", "cmid-Q2"]);
+    expect(threads[0].userMsg.text).toBe("Q1");
+    expect(threads[1].userMsg.text).toBe("Q2");
+    // Only Q1's bridge.sendTurn fired so far — Q2 is still queued.
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
+    expect(bridge.sendTurn).toHaveBeenLastCalledWith("cmid-Q1", [
+      { kind: "text", text: "Q1" },
+    ]);
+
+    lifecycleHandler?.({ turn_id: "cmid-Q1", reason: "stop" });
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(bridge.sendTurn).toHaveBeenCalledTimes(2);
+  });
+
+  // Codex P2 round 4 (M10 follow-up Bug B): a media-bearing prompt
+  // queued behind an in-flight v1 turn must not overtake the v1 turn at
+  // the server. Pre-fix, `sendMessage` short-circuited media sends to
+  // the synchronous `legacySendMessage` path, so a "Q1 text → Q2
+  // image" pair could arrive on the server in reverse order. Now every
+  // v1 send (text, media, rewrite) funnels through `enqueueSendV1`,
+  // and the legacy `/api/chat` for a fallback only runs after the
+  // prior v1 turn's lifecycle.
+  it("orders mixed text + media sends through the same per-session queue", async () => {
+    const bridge = makeBridge();
+    __setActiveBridgeForTest(SESSION, bridge);
+
+    let lifecycleHandler:
+      | ((e: { turn_id: string; reason?: string; error?: unknown }) => void)
+      | undefined;
+    (bridge.onTurnLifecycle as ReturnType<typeof vi.fn>).mockImplementation(
+      (h: (e: { turn_id: string; reason?: string; error?: unknown }) => void) => {
+        lifecycleHandler = h;
+        return () => {
+          lifecycleHandler = undefined;
+        };
+      },
+    );
+
+    // Q1: pure text → v1 path. Q2: text + media → legacy fallback.
+    sendMessage({
+      sessionId: SESSION,
+      text: "Q1 text",
+      media: [],
+      clientMessageId: "cmid-Q1",
+    });
+    sendMessage({
+      sessionId: SESSION,
+      text: "Q2 with image",
+      media: ["/tmp/foo.png"],
+      clientMessageId: "cmid-Q2",
+    });
+
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    // Q1's v1 sendTurn fired first; Q2's legacy fallback is parked.
+    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
+    expect(legacySendSpy).not.toHaveBeenCalled();
+
+    // Q1 completes → Q2's legacy /api/chat runs.
+    lifecycleHandler?.({ turn_id: "cmid-Q1", reason: "stop" });
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(legacySendSpy).toHaveBeenCalledTimes(1);
   });
 
   // Codex P2 round 3 (M10 follow-up Bug B): a throwing `onComplete`

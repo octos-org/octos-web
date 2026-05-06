@@ -29,16 +29,14 @@ export function sendMessage(opts: SendOptions): void {
     legacySendMessage(opts);
     return;
   }
-  // Fast-path the legacy fallbacks SYNCHRONOUSLY (no queue) — they don't
-  // issue a `bridge.sendTurn`, so they don't compete for the server's
-  // "one turn at a time" slot. Pulling them out of the queue path also
-  // preserves the original synchronous semantics of `sendMessage(opts);
-  // expect(legacySendSpy).toHaveBeenCalledTimes(1)` that the unit tests
-  // depend on (no `await` between call and assertion).
-  if (shouldFallbackToLegacy(opts)) {
-    legacySendMessage(opts);
-    return;
-  }
+  // Codex round 4 P2: every v1 send funnels through the per-session
+  // queue, including the legacy fallbacks (media/rewrite/no-bridge).
+  // Pre-fix, fallback sends bypassed the queue and could overtake an
+  // already-queued v1 prompt — the user submits "Q1" (text → queued
+  // behind a running turn) then "Q2 with image" (legacy fast-path) and
+  // the server sees Q2 first. Funnelling everything through
+  // `enqueueSendV1` preserves user submission order regardless of
+  // which transport each send eventually picks.
   void enqueueSendV1(opts);
 }
 
@@ -113,6 +111,42 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
   const key = queueKey(opts.sessionId);
   const prev = turnQueues.get(key) ?? Promise.resolve();
 
+  // Codex round 4 P2: mirror the user message into ThreadStore
+  // SYNCHRONOUSLY before the queue gate, so the bubble is visible the
+  // instant the user clicks Send — even when a prior turn has not yet
+  // emitted `turn/completed`. Pre-fix, `addUserMessage` ran inside
+  // `sendMessageV1` AFTER `await prev`, so a queued prompt was
+  // invisible until the prior turn drained (and could be lost on
+  // reload during that window). The legacy-fallback path also benefits:
+  // a media-bearing prompt parked behind a v1 turn now shows its bubble
+  // immediately, and only the actual `legacySendMessage` (or
+  // `bridge.sendTurn`) is gated.
+  //
+  // Two callers skip the synchronous mirror:
+  //   - text + media: `legacySendMessage` runs the upload pipeline and
+  //     triggers its own ThreadStore mirror via the SSE bridge's hook;
+  //     duplicating it here would create two threads with the same
+  //     clientMessageId (the legacy mirror is gated on the v2-store
+  //     flag, but the v1 send path implies v2 is on).
+  //   - rewrite (`requestText !== text`): the legacy bridge sends
+  //     `requestText` to /api/chat but mirrors `text` into the store —
+  //     we'd need to pre-compute that here and risk drifting from the
+  //     legacy bridge's behaviour. Defer to legacy for these too.
+  if (shouldMirrorUserMessageSync(opts)) {
+    const localFiles = opts.media.map((path) => ({
+      filename: displayFilenameFromPath(path),
+      path,
+      caption: "",
+    }));
+    ThreadStore.addUserMessage(opts.sessionId, {
+      text: opts.text,
+      clientMessageId: opts.clientMessageId ?? crypto.randomUUID(),
+      files: localFiles,
+      topic: opts.historyTopic,
+    });
+    opts.onSessionActive?.(opts.text);
+  }
+
   // The signal we hand to `sendMessageV1`. The lifecycle handler resolves
   // it on `turn/completed` or `turn/error` (or on early failure inside
   // `sendMessageV1`). The next chained call awaits this signal before
@@ -128,7 +162,16 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
 
   try {
     await prev;
-    await sendMessageV1(opts, release);
+    // After the gate clears, decide v1 vs legacy fallback. Re-check
+    // bridge availability HERE (rather than at sendMessage entry) so a
+    // bridge that was torn down while we were parked correctly falls
+    // through to legacy.
+    if (shouldFallbackToLegacy(opts)) {
+      legacySendMessage(opts);
+      release();
+    } else {
+      await sendMessageV1(opts, release);
+    }
     // Wait for the lifecycle to complete before we let the chain advance.
     // `sendMessageV1` always calls `release()` — on success via the
     // `turn/completed`/`turn/error` listener, on early fallback or RPC
@@ -147,6 +190,19 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
       turnQueues.delete(key);
     }
   }
+}
+
+/** Whether `enqueueSendV1` should mirror the user message into the
+ *  ThreadStore SYNCHRONOUSLY (codex round 4 P2). Returns true only for
+ *  the pure-text v1 path; the media and rewrite legacy fallbacks have
+ *  their own ThreadStore mirroring inside the SSE bridge that we must
+ *  not duplicate. */
+function shouldMirrorUserMessageSync(opts: SendOptions): boolean {
+  if (opts.media.length > 0) return false;
+  if (opts.requestText !== undefined && opts.requestText !== opts.text) {
+    return false;
+  }
+  return true;
 }
 
 /** Test-only reset for the per-session queue map. */
@@ -169,69 +225,28 @@ async function sendMessageV1(
     sessionId,
     historyTopic,
     text,
-    requestText,
-    media,
     clientMessageId = crypto.randomUUID(),
-    onSessionActive,
     onComplete,
   } = opts;
 
-  // Codex review must-fix #5A: TurnStartInput v1 only carries text. Media
-  // (image / voice) and `requestText !== text` (e.g. /commands rewrite)
-  // need the legacy /api/chat upload pre-step that the SSE bridge owns.
-  // Falling back keeps the user's input intact; the next turn picks the
-  // v1 transport back up. A `console.info` makes the path switch
-  // observable in DevTools without surfacing as a warning.
-  const hasMedia = media.length > 0;
-  const hasRewrite = requestText !== undefined && requestText !== text;
-  if (hasMedia || hasRewrite) {
-    if (typeof console !== "undefined" && console.info) {
-      console.info(
-        "ui-protocol-send: v1 path does not yet support media/requestText; falling back to legacy",
-        { hasMedia, hasRewrite },
-      );
-    }
-    legacySendMessage(opts);
-    // Legacy SSE path runs independently of the v1 turn-queue. Releasing
-    // immediately means the next v1 send won't be blocked behind a
-    // legacy-only turn — but that's the right semantic, because the
-    // legacy `/api/chat` route is the path that already queues
-    // server-side, so the WS turn-collision doesn't apply.
-    releaseLifecycleGate();
-    return;
-  }
+  // The user message is mirrored into ThreadStore by `enqueueSendV1`
+  // BEFORE the queue gate (codex round 4 P2). All sendMessageV1 callers
+  // arrive here through `enqueueSendV1` for the v1 path, so the bubble
+  // already exists in the thread store. Direct test paths that call
+  // `sendMessageV1` without going through the queue must mirror their
+  // own user message — but the production export (`sendMessage`) goes
+  // through `enqueueSendV1` unconditionally.
 
   const bridge = getActiveBridge(sessionId, historyTopic);
   if (!bridge) {
-    // Bridge has not started yet (rare race: send before mount effect ran).
-    // Fall back to the SSE path so the user message is never lost — the
-    // session is still functional, just not on the v1 transport for this
-    // turn. The next turn will pick up the bridge.
+    // Bridge was torn down between the queue gate and now. Fall back to
+    // legacy. The user bubble is already in the store from
+    // `enqueueSendV1`'s synchronous mirror, so the legacy path's own
+    // mirror is a no-op (deduped by clientMessageId in ThreadStore).
     legacySendMessage(opts);
-    // Same reasoning as the media/rewrite fallback above — release so
-    // the v1 chain doesn't stall behind a non-v1 turn.
     releaseLifecycleGate();
     return;
   }
-
-  const localFiles = media.map((path) => ({
-    filename: displayFilenameFromPath(path),
-    path,
-    caption: "",
-  }));
-
-  // Mirror the legacy bridge's user-message write so the thread store has
-  // a thread anchored on this clientMessageId before any server event
-  // arrives. The pendingAssistant slot is opened so streaming tokens land
-  // in the right slot from the very first delta.
-  ThreadStore.addUserMessage(sessionId, {
-    text,
-    clientMessageId,
-    files: localFiles,
-    topic: historyTopic,
-  });
-
-  onSessionActive?.(text);
 
   // Codex review must-fix #5B: subscribe to the turn lifecycle BEFORE
   // calling `sendTurn`. A fast turn/completed (or turn/error) can fire
