@@ -381,6 +381,66 @@ describe("sendMessage flag-ON path", () => {
     ]);
   });
 
+  // Codex P2 round 3 (M10 follow-up Bug B): a throwing `onComplete`
+  // callback must NOT wedge the per-session queue. Pre-fix, the
+  // lifecycle promise never resolved because the throw unwound past
+  // `releaseLifecycleGate` and every subsequent send blocked on the
+  // 15-min safety timer.
+  it("releases the queue even when the onComplete callback throws", async () => {
+    const bridge = makeBridge();
+    __setActiveBridgeForTest(SESSION, bridge);
+
+    let lifecycleHandler:
+      | ((e: { turn_id: string; reason?: string; error?: unknown }) => void)
+      | undefined;
+    (bridge.onTurnLifecycle as ReturnType<typeof vi.fn>).mockImplementation(
+      (h: (e: { turn_id: string; reason?: string; error?: unknown }) => void) => {
+        lifecycleHandler = h;
+        return () => {
+          lifecycleHandler = undefined;
+        };
+      },
+    );
+
+    const onCompleteThrowing = vi.fn(() => {
+      throw new Error("subscriber blew up");
+    });
+    const onCompleteFollowup = vi.fn();
+
+    sendMessage({
+      sessionId: SESSION,
+      text: "Q1",
+      media: [],
+      clientMessageId: "cmid-Q1",
+      onComplete: onCompleteThrowing,
+    });
+    sendMessage({
+      sessionId: SESSION,
+      text: "Q2",
+      media: [],
+      clientMessageId: "cmid-Q2",
+      onComplete: onCompleteFollowup,
+    });
+
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
+
+    // Q1's lifecycle fires; its onComplete throws. The chain MUST still
+    // advance — Q2's sendTurn must follow. The real bridge swallows
+    // subscriber exceptions inside its `Subscribers.emit`; this mock
+    // calls the handler directly so we catch the throw at the call
+    // site to mirror the real-world contract.
+    expect(() =>
+      lifecycleHandler?.({ turn_id: "cmid-Q1", reason: "stop" }),
+    ).toThrow("subscriber blew up");
+    expect(onCompleteThrowing).toHaveBeenCalledTimes(1);
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(bridge.sendTurn).toHaveBeenCalledTimes(2);
+    expect(bridge.sendTurn).toHaveBeenLastCalledWith("cmid-Q2", [
+      { kind: "text", text: "Q2" },
+    ]);
+  });
+
   // Codex P2 round 2 (M10 follow-up Bug B): when the bridge is torn down
   // (user navigates away from the session/topic, runtime calls
   // `stopActiveBridge`), `bridge.stop()` clears `subTurnLifecycle`. The
