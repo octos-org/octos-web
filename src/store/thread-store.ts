@@ -1412,47 +1412,6 @@ export function setHydrateSnapshot(
 }
 
 /**
- * M10 Phase 6.2 (Bug C): apply the WS `session/hydrate` dedup pass on
- * top of an already-hydrated thread state. Server PR #791 surfaces
- * three new fields on `session/hydrate` for connections that
- * negotiated `event.spawn_complete.v1`:
- *
- *   - `messages[i].message_id`  — stable per-row identity
- *   - `messages[i].source`      — wire-form `MessagePersistedSource`
- *   - `replayed_envelopes[]`    — retained `turn/spawn_complete` events
- *
- * The legacy REST `loadHistory` path returns the FULL ledger including
- * the per-file companion + spawn-ack rows that the live wire suppresses
- * for negotiated clients (server side rounds-3..6 of PR #791 deemed
- * server-side suppression intractable; the negotiated dedup contract
- * lives on the client). Without this pass, a page reload renders N+1
- * assistant bubbles where the live page rendered N.
- *
- * Algorithm (per server PR #791 docstring on `replayed_envelopes`):
- *
- *   1. Index envelopes by `message_id` (the spawn-ack's id) and by the
- *      anchor `thread_id` (placement key).
- *   2. Build a `seq → HydratedMessage` map over the hydrated rows so we
- *      can look up `(message_id, source)` for each thread response by
- *      its `historySeq`.
- *   3. For each thread, walk responses and drop those whose hydrated
- *      counterpart has `source === "background"` AND either:
- *        (a) `message_id` matches an envelope's `message_id` — the
- *            spawn-ack the envelope replaces; or
- *        (b) it sits in the same anchor thread as an envelope and
- *            has an earlier or equal `seq` than that envelope — a
- *            per-file companion the envelope's `media` already
- *            covers.
- *   4. For each envelope, call `appendCompletionBubble` (idempotent via
- *      its existing `messageId` dedup, so a live-wire envelope already
- *      placed for the same row is a no-op).
- *
- * Best-effort: rows missing `historySeq`, hydrated rows whose
- * `message_id` / `source` are absent (older server, or non-negotiated
- * connection), or envelopes without an anchor thread are skipped — we
- * never delete a row we can't prove is the legacy duplicate.
- */
-/**
  * `HydratedMessage` shape `applyHydrateDedup` and `seedFromHydrateMessages`
  * accept. Mirrors `octos_core::ui_protocol::HydratedMessage` (cf.
  * `runtime/ui-protocol-types.ts`).
@@ -1584,6 +1543,55 @@ function seedFromHydrateMessages(
   return true;
 }
 
+/**
+ * M10 Phase 6.2 (Bug C): apply the WS `session/hydrate` dedup pass on
+ * top of an already-hydrated thread state. Server PR #791 surfaces
+ * three new fields on `session/hydrate` for connections that
+ * negotiated `event.spawn_complete.v1`:
+ *
+ *   - `messages[i].message_id`  — stable per-row identity
+ *   - `messages[i].source`      — wire-form `MessagePersistedSource`
+ *   - `replayed_envelopes[]`    — retained `turn/spawn_complete` events
+ *
+ * The legacy REST `loadHistory` path returns the FULL ledger including
+ * the per-file companion + spawn-ack rows that the live wire suppresses
+ * for negotiated clients (server side rounds-3..6 of PR #791 deemed
+ * server-side suppression intractable; the negotiated dedup contract
+ * lives on the client). Without this pass, a page reload renders N+1
+ * assistant bubbles where the live page rendered N.
+ *
+ * M10.5 reload-mid-stream addition: if `hydrate.messages` is non-empty
+ * AND the store has no thread state for this scope, seed it from those
+ * rows (via `seedFromHydrateMessages`) BEFORE the dedup pass. Without
+ * this, an empty REST `loadHistory` response leaves the dedup pass
+ * with no rows to coalesce and `appendCompletionBubble` produces an
+ * orphan completion (the bug
+ * `tests/m10-harden-reload-midstream.spec.ts` catches).
+ *
+ * Algorithm (per server PR #791 docstring on `replayed_envelopes`):
+ *
+ *   1. Index envelopes by `message_id` (the spawn-ack's id) and by the
+ *      anchor `thread_id` (placement key).
+ *   2. Build a `seq → HydratedMessage` map over the hydrated rows so we
+ *      can look up `(message_id, source)` for each thread response by
+ *      its `historySeq`.
+ *   3. For each thread, walk responses and drop those whose hydrated
+ *      counterpart has `source === "background"` AND either:
+ *        (a) `message_id` matches an envelope's `message_id` — the
+ *            spawn-ack the envelope replaces; or
+ *        (b) it sits in the same anchor thread as an envelope and
+ *            has an earlier or equal `seq` than that envelope — a
+ *            per-file companion the envelope's `media` already
+ *            covers.
+ *   4. For each envelope, call `appendCompletionBubble` (idempotent via
+ *      its existing `messageId` dedup, so a live-wire envelope already
+ *      placed for the same row is a no-op).
+ *
+ * Best-effort: rows missing `historySeq`, hydrated rows whose
+ * `message_id` / `source` are absent (older server, or non-negotiated
+ * connection), or envelopes without an anchor thread are skipped — we
+ * never delete a row we can't prove is the legacy duplicate.
+ */
 export function applyHydrateDedup(
   sessionId: string,
   topic: string | undefined,
