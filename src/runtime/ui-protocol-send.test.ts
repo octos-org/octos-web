@@ -380,4 +380,86 @@ describe("sendMessage flag-ON path", () => {
       { kind: "text", text: "Q3" },
     ]);
   });
+
+  // Codex P2 round 2 (M10 follow-up Bug B): when the bridge is torn down
+  // (user navigates away from the session/topic, runtime calls
+  // `stopActiveBridge`), `bridge.stop()` clears `subTurnLifecycle`. The
+  // `onTurnLifecycle` handler installed by the in-flight `sendMessageV1`
+  // is dropped before the server ever emits `turn/completed`. Pre-fix,
+  // the per-session queue would block subsequent sends for the 15-min
+  // safety timer.
+  //
+  // The connection-state listener bridges this: as soon as the bridge
+  // transitions to `"closed"`, the in-flight send forces release of the
+  // lifecycle gate. Subsequent enqueued sends resume immediately
+  // (falling through to legacy if the bridge is gone).
+  it("releases the per-session queue when the bridge transitions to closed", async () => {
+    const bridge = makeBridge();
+    __setActiveBridgeForTest(SESSION, bridge);
+
+    let stateHandler: ((s: string) => void) | undefined;
+    (bridge.onConnectionStateChange as ReturnType<typeof vi.fn>).mockImplementation(
+      (h: (s: string) => void) => {
+        stateHandler = h;
+        return () => {
+          stateHandler = undefined;
+        };
+      },
+    );
+
+    const onComplete1 = vi.fn();
+    const onComplete2 = vi.fn();
+
+    // First send installs its lifecycle + state listeners.
+    sendMessage({
+      sessionId: SESSION,
+      text: "Q1",
+      media: [],
+      clientMessageId: "cmid-Q1",
+      onComplete: onComplete1,
+    });
+    // Second send queues behind Q1's lifecycle gate.
+    sendMessage({
+      sessionId: SESSION,
+      text: "Q2",
+      media: [],
+      clientMessageId: "cmid-Q2",
+      onComplete: onComplete2,
+    });
+
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
+    expect(stateHandler).toBeDefined();
+
+    // Bridge teardown: connection state goes to `closed`. The lifecycle
+    // gate must release WITHOUT waiting for `turn/completed`.
+    stateHandler?.("closed");
+    expect(onComplete1).toHaveBeenCalledTimes(1);
+
+    // Q2 must now proceed. With the bridge already torn down /
+    // unregistered, the v1 path falls back to legacy — so we just
+    // verify that Q2's onComplete eventually fires (the queue
+    // unblocked) and we did NOT issue a second `bridge.sendTurn`
+    // against a stopped bridge.
+    __resetUiProtocolRuntimeForTest(); // mirrors runtime stopping the bridge
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    // sendTurn count is unchanged — Q2 fell to legacy because the bridge
+    // is no longer registered when its turn at the queue head arrived.
+    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
+    // Q2's onComplete fires from the legacy fallback path's
+    // releaseLifecycleGate; the legacy SSE bridge is mocked here so it
+    // doesn't call onComplete itself. The minimal correctness signal is
+    // that the QUEUE drained (a follow-up send would proceed); assert
+    // by issuing a third send and confirming it lands in the legacy
+    // mock too rather than parking forever.
+    legacySendSpy.mockClear();
+    sendMessage({
+      sessionId: SESSION,
+      text: "Q3",
+      media: [],
+      clientMessageId: "cmid-Q3",
+    });
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(legacySendSpy).toHaveBeenCalled();
+  });
 });

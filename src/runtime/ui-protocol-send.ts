@@ -132,8 +132,10 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
     // Wait for the lifecycle to complete before we let the chain advance.
     // `sendMessageV1` always calls `release()` — on success via the
     // `turn/completed`/`turn/error` listener, on early fallback or RPC
-    // failure inline — so this resolves promptly rather than parking the
-    // chain forever.
+    // failure inline (including the connection-state `closed` listener
+    // for codex P2 round 2: bridge teardown cascades release through
+    // every parked entry without the 15-min safety wait). So this
+    // resolves promptly rather than parking the chain forever.
     await lifecycleDone;
   } catch {
     // Defensive: if `sendMessageV1` ever rejects without calling release,
@@ -239,12 +241,17 @@ async function sendMessageV1(
   // rejection so the input never spins forever on a network failure.
   let completed = false;
   let lifecycleSafetyTimer: ReturnType<typeof setTimeout> | null = null;
+  let offState: (() => void) | null = null;
   const fireComplete = () => {
     if (completed) return;
     completed = true;
     if (lifecycleSafetyTimer !== null) {
       clearTimeout(lifecycleSafetyTimer);
       lifecycleSafetyTimer = null;
+    }
+    if (offState !== null) {
+      offState();
+      offState = null;
     }
     onComplete?.();
     // Bug B: also unblock the per-session turn queue so the next
@@ -262,6 +269,20 @@ async function sendMessageV1(
       return;
     }
     if ("reason" in e) {
+      off();
+      fireComplete();
+    }
+  });
+
+  // Codex P2 round 2: if the bridge stops (user navigates away from this
+  // session/topic, runtime tears down), `bridge.stop()` calls
+  // `subTurnLifecycle.clear()` and our `onTurnLifecycle` handler is gone
+  // forever — `releaseLifecycleGate` would otherwise wait on the 15-min
+  // safety timer. Subscribe to the bridge's connection state and force a
+  // release as soon as it transitions to `closed`. Idempotent via the
+  // `completed` guard inside `fireComplete`.
+  offState = bridge.onConnectionStateChange((s) => {
+    if (s === "closed") {
       off();
       fireComplete();
     }
