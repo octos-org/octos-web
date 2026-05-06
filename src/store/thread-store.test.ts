@@ -1628,4 +1628,88 @@ describe("thread-store", () => {
     });
     expect(ok).toBe(false);
   });
+
+  it("appendCompletionBubble_routes_burst_of_3_sibling_envelopes_to_distinct_threads", () => {
+    // M10 follow-up Bug B regression: under the wave-6m soak, 3+
+    // sibling user prompts (each with a spawn_only skill) sometimes
+    // fail to receive their `turn/spawn_complete` envelope when the
+    // envelopes arrive in rapid succession (parallel deep_search +
+    // mofa-podcast + tts can finish back-to-back).
+    //
+    // The synchronous routing path MUST land each envelope under its
+    // own user-prompt thread, regardless of dispatch order. Each thread
+    // has a finalized spawn-ack (the "Q1/Q2/Q3 user bubble + spawn-ack"
+    // shape from the failing soak DOM dump) so the upgrade-in-place
+    // codepath is NOT triggered — fresh rows are appended.
+    makeUser("Q1 deep research", "cmid-Q1");
+    makeUser("Q2 mofa podcast", "cmid-Q2");
+    makeUser("Q3 tts", "cmid-Q3");
+
+    // Each thread already has a finalized spawn-ack (mirrors the live
+    // sequence: spawn_only tool emits message/delta + message/persisted
+    // for the ack BEFORE the late spawn_complete envelope).
+    ThreadStore.appendAssistantToken("cmid-Q1", "深度研究已在后台启动…");
+    ThreadStore.finalizeAssistant("cmid-Q1", { committedSeq: 2 });
+    ThreadStore.appendAssistantToken("cmid-Q2", "Podcast generation started…");
+    ThreadStore.finalizeAssistant("cmid-Q2", { committedSeq: 3 });
+    ThreadStore.appendAssistantToken("cmid-Q3", "TTS synthesis started…");
+    ThreadStore.finalizeAssistant("cmid-Q3", { committedSeq: 4 });
+
+    // 3 turn/spawn_complete envelopes fire in the same JS tick (server
+    // emitted them within ms of each other; the WS frame loop drains
+    // them all before yielding). Each carries DISTINCT messageId,
+    // historySeq, and threadId.
+    ThreadStore.appendCompletionBubble("cmid-Q1", {
+      text: "Rust news: tokio 1.42 released.",
+      media: ["bg/research-Q1.md"],
+      spawnComplete: true,
+      messageId: "msg-Q1-result",
+      historySeq: 10,
+      sessionId: SESSION,
+    });
+    ThreadStore.appendCompletionBubble("cmid-Q2", {
+      text: "AI podcast episode generated.",
+      media: ["bg/podcast-Q2.mp3"],
+      spawnComplete: true,
+      messageId: "msg-Q2-result",
+      historySeq: 11,
+      sessionId: SESSION,
+    });
+    ThreadStore.appendCompletionBubble("cmid-Q3", {
+      text: "Voice synthesised.",
+      media: ["bg/tts-Q3.mp3"],
+      spawnComplete: true,
+      messageId: "msg-Q3-result",
+      historySeq: 12,
+      sessionId: SESSION,
+    });
+
+    const threads = ThreadStore.getThreads(SESSION);
+    expect(threads.map((t) => t.id)).toEqual([
+      "cmid-Q1",
+      "cmid-Q2",
+      "cmid-Q3",
+    ]);
+
+    const findCompletion = (threadId: string) =>
+      threads
+        .find((t) => t.id === threadId)
+        ?.responses.find((r) => r.id.startsWith("msg-"));
+
+    const c1 = findCompletion("cmid-Q1");
+    const c2 = findCompletion("cmid-Q2");
+    const c3 = findCompletion("cmid-Q3");
+    expect(c1?.text).toBe("Rust news: tokio 1.42 released.");
+    expect(c1?.files.map((f) => f.path)).toEqual(["bg/research-Q1.md"]);
+    expect(c2?.text).toBe("AI podcast episode generated.");
+    expect(c2?.files.map((f) => f.path)).toEqual(["bg/podcast-Q2.mp3"]);
+    expect(c3?.text).toBe("Voice synthesised.");
+    expect(c3?.files.map((f) => f.path)).toEqual(["bg/tts-Q3.mp3"]);
+
+    // Each thread MUST have exactly its own ack + completion (2 rows),
+    // not bleed into siblings — the splice-merge bug class M10 deletes.
+    for (const t of threads) {
+      expect(t.responses).toHaveLength(2);
+    }
+  });
 });

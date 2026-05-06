@@ -247,6 +247,27 @@ interface PendingRpc {
 
 type Listener<T> = (value: T) => void;
 
+// Bug B diagnostic instrumentation. Gated on
+// `localStorage.octos_debug_envelope === '1'`. NEVER logs in production
+// by default; toggled on per test run only. See M10 follow-up Bug B —
+// the goal is to capture every `turn/spawn_complete` envelope the bridge
+// SEES so we can diff against what ThreadStore actually appends. Cheap
+// no-op when the flag is off (single localStorage read on each call).
+function debugEnvelopeEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem("octos_debug_envelope") === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function debugEnvelopeLog(tag: string, payload: unknown): void {
+  if (!debugEnvelopeEnabled()) return;
+  // eslint-disable-next-line no-console
+  console.log(`[bug-b] ${tag}`, payload);
+}
+
 class Subscribers<T> {
   private readonly handlers: Set<Listener<T>> = new Set();
 
@@ -1005,14 +1026,40 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private dispatchNotification(note: JsonRpcNotification): void {
     const params = note.params;
     const handler = this.notificationTable[note.method];
-    if (!handler) return;
+    if (!handler) {
+      // Bug B diagnostic: surface unhandled methods to the debug log
+      // so a server-side rename (or capability negotiation gap) shows
+      // up immediately instead of silently dropping events.
+      debugEnvelopeLog("notif:unhandled-method", { method: note.method });
+      return;
+    }
     const result = handler.guard(params);
     if (!result) {
+      // Bug B diagnostic: spawn_complete envelopes that fail the guard
+      // produce no DOM bubble. Surface the rejected method + raw params
+      // so we can spot wire-shape regressions on the failing path.
+      debugEnvelopeLog("notif:guard-rejected", {
+        method: note.method,
+        params,
+      });
       this.subWarning.emit({
         reason: `invalid_event:${note.method}`,
         context: params,
       });
       return;
+    }
+    if (note.method === METHODS.TURN_SPAWN_COMPLETE) {
+      const r = result as TurnSpawnCompleteEvent;
+      debugEnvelopeLog("notif:spawn_complete", {
+        task_id: r.task_id,
+        thread_id: r.thread_id,
+        turn_id: r.turn_id,
+        seq: r.seq,
+        message_id: r.message_id,
+        content_len: r.content.length,
+        media_count: r.media?.length ?? 0,
+        rcm: r.response_to_client_message_id,
+      });
     }
     handler.emit(result);
   }
