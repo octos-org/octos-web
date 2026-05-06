@@ -13,6 +13,7 @@ import {
   type UiProtocolBridge,
 } from "./ui-protocol-bridge";
 import { attachRouter, type RouterAttachment } from "./ui-protocol-event-router";
+import { setHydrateSnapshot } from "@/store/thread-store";
 
 interface ActiveBridge {
   sessionId: string;
@@ -98,6 +99,40 @@ export async function startBridgeForSession(
   }
   const attachment = attachRouter(bridge, { sessionId, topic });
   active = { sessionId, topic, bridge, attachment };
+
+  // M10 Phase 6.2 (Bug C): immediately fire `session/hydrate` to fetch
+  // the negotiated `replayed_envelopes` + per-row `(message_id,
+  // source)`. Cache the result in ThreadStore so any concurrent or
+  // subsequent REST `replayHistory` (chat-thread.tsx fires retries at
+  // 2s/5s/12s) can dedup the legacy `Background`-source rows the live
+  // wire suppresses for negotiated clients. Best-effort: a failure
+  // here just falls back to the pre-Bug-C N+1 render.
+  //
+  // Topic scoping: the WS bridge starts with the bare `sessionId` (no
+  // topic), so `session/hydrate` returns data for the ROOT
+  // `SessionKey` (which encodes a `#topic` suffix when topics are
+  // active server-side). Until the bridge can negotiate topic with
+  // the server, restrict the dedup to the no-topic case — the soak
+  // suite + Bug C reproducer all run in this scope, and topic-scoped
+  // chat (slides/sites) keeps the legacy REST-only render with the
+  // pre-fix N+1 limitation. This avoids cross-topic envelope leakage
+  // (codex round-2 P2).
+  if (!topic || topic.trim() === "") {
+    void (async () => {
+      if (myGeneration !== generation) return;
+      // Defensive: test mocks of `UiProtocolBridge` may pre-date this
+      // method. Production builds always have it.
+      if (typeof bridge.hydrateSession !== "function") return;
+      const hydrate = await bridge.hydrateSession(["messages"]);
+      if (myGeneration !== generation) return;
+      if (!hydrate) return;
+      setHydrateSnapshot(sessionId, topic, {
+        messages: hydrate.messages,
+        replayed_envelopes: hydrate.replayed_envelopes,
+      });
+    })();
+  }
+
   return bridge;
 }
 

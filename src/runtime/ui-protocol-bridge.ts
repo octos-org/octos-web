@@ -21,9 +21,11 @@ import type {
   ApprovalRespondResult,
   ApprovalScope,
   ConnectionState,
+  HydratedMessage,
   MessageDeltaEvent,
   MessagePersistedEvent,
   RpcErrorPayload,
+  SessionHydrateResult,
   SessionOpenResult,
   TaskOutputDeltaEvent,
   TaskUpdatedEvent,
@@ -43,10 +45,12 @@ export type {
   ApprovalRespondResult,
   ApprovalScope,
   ConnectionState,
+  HydratedMessage,
   MessageDeltaEvent,
   MessagePersistedEvent,
   PersistedMessage,
   PersistedMessageFile,
+  SessionHydrateResult,
   SessionOpenResult,
   SessionOpenedResult,
   TaskOutputDeltaEvent,
@@ -71,6 +75,7 @@ export const UI_PROTOCOL_WS_PATH = "/api/ui-protocol/ws";
 export const METHODS = {
   // client → server
   SESSION_OPEN: "session/open",
+  SESSION_HYDRATE: "session/hydrate",
   TURN_START: "turn/start",
   TURN_INTERRUPT: "turn/interrupt",
   APPROVAL_RESPOND: "approval/respond",
@@ -111,6 +116,13 @@ export const UI_PROTOCOL_FEATURES = [
   // PR (Phase 2) only ADDS the new envelope handling so the migration is
   // backward-compatible during rollout.
   "event.spawn_complete.v1",
+  // M10 Phase 6.2 (server PR #791 / Bug C): server gates `session/hydrate`
+  // RPC behind this feature when feature negotiation is present (UPCR-2026-009).
+  // Without it, our hydrate dedup pass never runs because the server
+  // returns `method_not_supported` for the RPC. The dedup snapshot
+  // populated post-`session/open` from the negotiated `replayed_envelopes`
+  // is what eliminates the N+1 bubble render after page reload.
+  "state.session_hydrate.v1",
 ] as const;
 
 const JSON_RPC_VERSION = "2.0";
@@ -166,6 +178,22 @@ export interface UiProtocolBridge {
     scope?: ApprovalScope,
     client_note?: string,
   ): Promise<ApprovalRespondResult>;
+
+  /**
+   * Issue a `session/hydrate` RPC for the active session. M10 Phase 6.2
+   * (Bug C): `replayed_envelopes` + per-row `(message_id, source)` are
+   * surfaced only when the connection negotiated
+   * `event.spawn_complete.v1` (server PR #791). Used by the runtime
+   * layer to dedup the legacy `Background`-source rows the live wire
+   * suppresses for negotiated clients.
+   *
+   * `include` defaults to `["messages"]` — that's the dedup target.
+   * Returns `null` when the RPC fails: the caller falls back to the
+   * legacy REST `replayHistory` path with no hydrate-time dedup.
+   */
+  hydrateSession(
+    include?: ReadonlyArray<"messages" | "threads" | "turns" | "pending_approvals">,
+  ): Promise<SessionHydrateResult | null>;
 
   onMessageDelta(handler: (e: MessageDeltaEvent) => void): () => void;
   onMessagePersisted(handler: (e: MessagePersistedEvent) => void): () => void;
@@ -470,6 +498,121 @@ function guardSpawnComplete(p: unknown): TurnSpawnCompleteEvent | null {
     persisted_at: p.persisted_at,
     content: p.content,
     media,
+  };
+}
+
+/**
+ * Guard for one row in `SessionHydrateResult.messages`. Fail-closed on
+ * type / required-field violations. `message_id` and `source` are
+ * Option<String> on the wire (server PR #791 codex round 6 gates them
+ * on `event.spawn_complete.v1` negotiation), so absence is normal — we
+ * surface them as `undefined` rather than rejecting the row.
+ */
+function guardHydratedMessage(p: unknown): HydratedMessage | null {
+  if (!isPlainObject(p)) return null;
+  if (typeof p.seq !== "number" || !Number.isFinite(p.seq) || p.seq < 0) {
+    return null;
+  }
+  if (!isString(p.role)) return null;
+  if (
+    p.role !== "system" &&
+    p.role !== "user" &&
+    p.role !== "assistant" &&
+    p.role !== "tool"
+  ) {
+    return null;
+  }
+  if (typeof p.content !== "string") return null;
+  if (!isString(p.persisted_at)) return null;
+  let media: string[] | undefined;
+  if (Array.isArray(p.media)) {
+    const filtered = p.media.filter(
+      (u): u is string => isString(u) && u.length > 0,
+    );
+    if (filtered.length > 0) media = filtered;
+  }
+  return {
+    seq: p.seq,
+    role: p.role,
+    content: p.content,
+    turn_id:
+      typeof p.turn_id === "string" && p.turn_id.length > 0
+        ? p.turn_id
+        : undefined,
+    thread_id:
+      typeof p.thread_id === "string" && p.thread_id.length > 0
+        ? p.thread_id
+        : undefined,
+    client_message_id:
+      typeof p.client_message_id === "string" && p.client_message_id.length > 0
+        ? p.client_message_id
+        : undefined,
+    persisted_at: p.persisted_at,
+    message_id:
+      typeof p.message_id === "string" && p.message_id.length > 0
+        ? p.message_id
+        : undefined,
+    source:
+      typeof p.source === "string" && p.source.length > 0
+        ? p.source
+        : undefined,
+    media,
+  };
+}
+
+/**
+ * Guard for the `session/hydrate` RPC result (server PR #791). The
+ * `messages` and `replayed_envelopes` fields are both optional — the
+ * server omits them when not requested or not negotiated. Treat any
+ * non-object payload as a hard reject (returns null), but accept the
+ * shape with all-optional sections for back-compat with older servers.
+ *
+ * Inner-row failure is non-fatal: malformed `messages[i]` / envelope
+ * entries are dropped so a single corrupt row doesn't poison the whole
+ * hydrate. Cursor is required in the typed wire shape but the SPA
+ * doesn't drive off it today, so an absent / malformed cursor falls
+ * back to a synthesized zero-cursor rather than rejecting the result.
+ */
+export function guardSessionHydrate(p: unknown): SessionHydrateResult | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.session_id)) return null;
+
+  let cursor: { stream: string; seq: number };
+  if (
+    isPlainObject(p.cursor) &&
+    typeof p.cursor.stream === "string" &&
+    typeof p.cursor.seq === "number" &&
+    Number.isFinite(p.cursor.seq) &&
+    p.cursor.seq >= 0
+  ) {
+    cursor = { stream: p.cursor.stream, seq: p.cursor.seq };
+  } else {
+    cursor = { stream: "", seq: 0 };
+  }
+
+  let messages: HydratedMessage[] | undefined;
+  if (Array.isArray(p.messages)) {
+    messages = [];
+    for (const m of p.messages) {
+      const guarded = guardHydratedMessage(m);
+      if (guarded) messages.push(guarded);
+    }
+  }
+
+  let replayedEnvelopes: TurnSpawnCompleteEvent[] | undefined;
+  if (Array.isArray(p.replayed_envelopes)) {
+    replayedEnvelopes = [];
+    for (const e of p.replayed_envelopes) {
+      const guarded = guardSpawnComplete(e);
+      if (guarded) replayedEnvelopes.push(guarded);
+    }
+  }
+
+  return {
+    session_id: p.session_id,
+    cursor,
+    messages,
+    replayed_envelopes: replayedEnvelopes,
   };
 }
 
@@ -808,6 +951,37 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       METHODS.APPROVAL_RESPOND,
       params,
     );
+  }
+
+  async hydrateSession(
+    include: ReadonlyArray<
+      "messages" | "threads" | "turns" | "pending_approvals"
+    > = ["messages"],
+  ): Promise<SessionHydrateResult | null> {
+    try {
+      const raw = await this.request<unknown>(METHODS.SESSION_HYDRATE, {
+        session_id: this.requireSessionId(),
+        include,
+      });
+      const guarded = guardSessionHydrate(raw);
+      if (!guarded) {
+        this.subWarning.emit({
+          reason: "hydrate_guard_rejected",
+          context: { method: METHODS.SESSION_HYDRATE },
+        });
+        return null;
+      }
+      return guarded;
+    } catch (err) {
+      // Failure is non-fatal — the legacy REST `loadHistory` path still
+      // populates the thread store. We just lose the hydrate-time dedup
+      // for this session.
+      this.subWarning.emit({
+        reason: "hydrate_rpc_failed",
+        context: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
   }
 
   onMessageDelta(handler: Listener<MessageDeltaEvent>): () => void {
@@ -1265,6 +1439,7 @@ export const __INTERNAL_GUARDS_FOR_TEST__ = {
   guardMessageDelta,
   guardMessagePersisted,
   guardSpawnComplete,
+  guardSessionHydrate,
   guardTaskUpdated,
   guardTaskOutputDelta,
   guardTurnStarted,
