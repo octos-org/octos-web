@@ -30,7 +30,10 @@ vi.mock("./sse-bridge", () => ({
 }));
 
 import * as ThreadStore from "@/store/thread-store";
-import { sendMessage } from "./ui-protocol-send";
+import {
+  sendMessage,
+  __resetSendQueueForTest,
+} from "./ui-protocol-send";
 import {
   __resetUiProtocolRuntimeForTest,
   __setActiveBridgeForTest,
@@ -70,6 +73,7 @@ function makeBridge(): UiProtocolBridge & {
 beforeEach(() => {
   legacySendSpy.mockReset();
   __resetUiProtocolRuntimeForTest();
+  __resetSendQueueForTest();
   ThreadStore.__resetForTests();
   window.localStorage.clear();
 });
@@ -77,6 +81,7 @@ beforeEach(() => {
 afterEach(() => {
   window.localStorage.clear();
   __resetUiProtocolRuntimeForTest();
+  __resetSendQueueForTest();
 });
 
 describe("sendMessage flag-OFF preservation", () => {
@@ -123,8 +128,9 @@ describe("sendMessage flag-ON path", () => {
     });
     // The v1 path is async; let microtasks settle so the awaited
     // sendTurn invocation has been registered before we assert.
-    await Promise.resolve();
-    await Promise.resolve();
+    // Bug B's per-session turn queue adds 2-3 microtask ticks (await
+    // prev → await sendMessageV1 entry) on top of the legacy chain.
+    for (let i = 0; i < 12; i++) await Promise.resolve();
     expect(bridge.sendTurn).toHaveBeenCalledWith("cmid-on", [
       { kind: "text", text: "hello" },
     ]);
@@ -163,11 +169,13 @@ describe("sendMessage flag-ON path", () => {
       clientMessageId: "cmid-complete",
       onComplete,
     });
-    // Flush enough microtasks for the awaited sendTurn → finally block
-    // to install the lifecycle subscription. Six ticks is comfortably
-    // beyond what the chain needs (2-3 microtasks) but kept low to
-    // avoid masking a hung promise.
-    for (let i = 0; i < 6; i++) await Promise.resolve();
+    // Flush enough microtasks for the per-session queue tail to settle,
+    // then for the awaited sendTurn → finally block to install the
+    // lifecycle subscription. The Bug B turn-queue adds 2-3 ticks on top
+    // of the original chain (await prev, await sendMessageV1), so we
+    // bumped from 6 to 12 — still tightly bounded so a hung promise still
+    // surfaces as a failure.
+    for (let i = 0; i < 12; i++) await Promise.resolve();
 
     expect(lifecycleHandler).toBeDefined();
     // A different turn's completion must not fire onComplete.
@@ -253,10 +261,11 @@ describe("sendMessage flag-ON path", () => {
       onComplete,
     });
 
-    // Let the sync portion of sendMessageV1 run (it awaits getActiveBridge
-    // path → the sendTurn call). The lifecycle subscription should be
-    // installed BEFORE the await on sendTurn, so the handler is live now.
-    for (let i = 0; i < 4; i++) await Promise.resolve();
+    // Let the sync portion of sendMessageV1 run. The lifecycle
+    // subscription must be installed BEFORE the await on sendTurn so the
+    // handler is live now. Bug B's turn-queue adds 2-3 microtask ticks
+    // on top of the original chain.
+    for (let i = 0; i < 12; i++) await Promise.resolve();
     expect(lifecycleHandler).toBeDefined();
 
     // Fire turn/completed BEFORE sendTurn resolves.
@@ -265,7 +274,7 @@ describe("sendMessage flag-ON path", () => {
 
     // Now let sendTurn resolve. onComplete must NOT fire a second time.
     resolveSendTurn?.();
-    for (let i = 0; i < 4; i++) await Promise.resolve();
+    for (let i = 0; i < 8; i++) await Promise.resolve();
     expect(onComplete).toHaveBeenCalledTimes(1);
   });
 
@@ -289,12 +298,86 @@ describe("sendMessage flag-ON path", () => {
       onComplete,
     });
 
-    for (let i = 0; i < 6; i++) await Promise.resolve();
+    // Bug B turn-queue adds extra ticks on top of the original chain.
+    for (let i = 0; i < 12; i++) await Promise.resolve();
     expect(onComplete).toHaveBeenCalledTimes(1);
     // The thread should be marked errored, not stuck pending.
     const threads = ThreadStore.getThreads(SESSION);
     expect(threads).toHaveLength(1);
     expect(threads[0].pendingAssistant).toBeNull();
     expect(threads[0].responses[0]?.status).toBe("error");
+  });
+
+  // M10 follow-up Bug B: the WS `turn/start` handler enforces "one turn at
+  // a time" per session — a second `turn/start` arriving while the
+  // previous turn's foreground phase is still running is REJECTED with
+  // `"a turn is already running for this session"`. The legacy SSE path
+  // hid this from the SPA because `/api/chat` queues server-side; the v1
+  // path doesn't, so the client must serialise sends per session.
+  //
+  // This test asserts that 3 rapid `sendMessage` calls (the
+  // `live-overflow-stress` failure shape) issue `bridge.sendTurn`
+  // serially: each call waits for the prior turn's
+  // `turn/completed`/`turn/error` lifecycle event before its own RPC
+  // fires. Without serialisation, all 3 issue concurrently and the
+  // server rejects 2 of them, dropping 2 of 3 user prompts on the floor.
+  it("serialises 3 rapid sends per session, awaiting prior turn lifecycle", async () => {
+    const bridge = makeBridge();
+    __setActiveBridgeForTest(SESSION, bridge);
+
+    let lifecycleHandler:
+      | ((e: { turn_id: string; reason?: string; error?: unknown }) => void)
+      | undefined;
+    (bridge.onTurnLifecycle as ReturnType<typeof vi.fn>).mockImplementation(
+      (h: (e: { turn_id: string; reason?: string; error?: unknown }) => void) => {
+        lifecycleHandler = h;
+        return () => {
+          lifecycleHandler = undefined;
+        };
+      },
+    );
+
+    sendMessage({
+      sessionId: SESSION,
+      text: "Q1",
+      media: [],
+      clientMessageId: "cmid-Q1",
+    });
+    sendMessage({
+      sessionId: SESSION,
+      text: "Q2",
+      media: [],
+      clientMessageId: "cmid-Q2",
+    });
+    sendMessage({
+      sessionId: SESSION,
+      text: "Q3",
+      media: [],
+      clientMessageId: "cmid-Q3",
+    });
+
+    // After the queue settles, only ONE bridge.sendTurn (Q1) must have
+    // fired. Q2 and Q3 are blocked waiting for Q1's turn/completed.
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
+    expect(bridge.sendTurn).toHaveBeenLastCalledWith("cmid-Q1", [
+      { kind: "text", text: "Q1" },
+    ]);
+
+    // Fire turn/completed for Q1. Q2's sendTurn must follow.
+    lifecycleHandler?.({ turn_id: "cmid-Q1", reason: "stop" });
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(bridge.sendTurn).toHaveBeenCalledTimes(2);
+    expect(bridge.sendTurn).toHaveBeenLastCalledWith("cmid-Q2", [
+      { kind: "text", text: "Q2" },
+    ]);
+
+    // Q2 lifecycle → Q3 fires.
+    lifecycleHandler?.({ turn_id: "cmid-Q2", reason: "stop" });
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(bridge.sendTurn).toHaveBeenCalledTimes(3);
+    expect(bridge.sendTurn).toHaveBeenLastCalledWith("cmid-Q3", [
+      { kind: "text", text: "Q3" },
+    ]);
   });
 });

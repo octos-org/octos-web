@@ -29,10 +29,133 @@ export function sendMessage(opts: SendOptions): void {
     legacySendMessage(opts);
     return;
   }
-  void sendMessageV1(opts);
+  // Fast-path the legacy fallbacks SYNCHRONOUSLY (no queue) — they don't
+  // issue a `bridge.sendTurn`, so they don't compete for the server's
+  // "one turn at a time" slot. Pulling them out of the queue path also
+  // preserves the original synchronous semantics of `sendMessage(opts);
+  // expect(legacySendSpy).toHaveBeenCalledTimes(1)` that the unit tests
+  // depend on (no `await` between call and assertion).
+  if (shouldFallbackToLegacy(opts)) {
+    legacySendMessage(opts);
+    return;
+  }
+  void enqueueSendV1(opts);
 }
 
-async function sendMessageV1(opts: SendOptions): Promise<void> {
+function shouldFallbackToLegacy(opts: SendOptions): boolean {
+  const hasMedia = opts.media.length > 0;
+  const hasRewrite =
+    opts.requestText !== undefined && opts.requestText !== opts.text;
+  if (hasMedia || hasRewrite) {
+    if (typeof console !== "undefined" && console.info) {
+      console.info(
+        "ui-protocol-send: v1 path does not yet support media/requestText; falling back to legacy",
+        { hasMedia, hasRewrite },
+      );
+    }
+    return true;
+  }
+  // No active bridge → legacy fallback (rare race: send before mount).
+  if (!getActiveBridge(opts.sessionId, opts.historyTopic)) {
+    return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Per-session turn-start queue (M10 follow-up Bug B)
+// ---------------------------------------------------------------------------
+//
+// Background: the WS `turn/start` handler enforces "one turn at a time" per
+// session — a second `turn/start` arriving while the previous turn's
+// foreground phase is still running is rejected with the error
+// `"a turn is already running for this session"`
+// (see `crates/octos-cli/src/api/ui_protocol.rs::handle_turn_start`).
+//
+// Pre-fix, `sendMessageV1` called `bridge.sendTurn(...)` immediately. When
+// the user (or a soak test) sent a second prompt before the first turn's
+// foreground phase finished, the SPA had already added a user bubble via
+// `ThreadStore.addUserMessage` but the server then rejected the RPC. The
+// bubble stayed on screen with no assistant pair — exactly the `live-
+// overflow-stress` failure mode (4 of 5 prompts orphaned at workers=1).
+//
+// The legacy SSE `/api/chat` path doesn't hit this because the chat backend
+// queues concurrent messages server-side (see `stream-manager.ts:191`
+// "The backend's queue mode … handles concurrent messages server-side").
+// The v1 WS protocol intentionally rejects rather than queues, so the
+// queueing has to live on the client.
+//
+// Implementation: a per-session promise chain. `enqueueSendV1` pushes the
+// next send onto the chain; each send awaits BOTH (a) the prior send's
+// completion AND (b) the prior turn's lifecycle event (`turn/completed`
+// or `turn/error`) before issuing `bridge.sendTurn`. The chain is keyed
+// by `(sessionId, historyTopic)` so distinct sessions don't block each
+// other.
+//
+// On falls-through to `legacySendMessage` (no bridge / has media /
+// rewrite), we DON'T inject the wait — the legacy path is independent.
+
+const turnQueues = new Map<string, Promise<void>>();
+
+function queueKey(sessionId: string, topic: string | undefined): string {
+  const t = topic?.trim();
+  return t ? `${sessionId}#${t}` : sessionId;
+}
+
+async function enqueueSendV1(opts: SendOptions): Promise<void> {
+  const key = queueKey(opts.sessionId, opts.historyTopic);
+  const prev = turnQueues.get(key) ?? Promise.resolve();
+
+  // The signal we hand to `sendMessageV1`. The lifecycle handler resolves
+  // it on `turn/completed` or `turn/error` (or on early failure inside
+  // `sendMessageV1`). The next chained call awaits this signal before
+  // issuing its own `bridge.sendTurn`.
+  let release!: () => void;
+  const lifecycleDone = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  // Build the chain entry as a fresh promise we keep a stable reference to,
+  // so the cleanup compare-and-delete is correct.
+  const chained = prev.then(() => lifecycleDone);
+  turnQueues.set(key, chained);
+
+  try {
+    await prev;
+    await sendMessageV1(opts, release);
+    // Wait for the lifecycle to complete before we let the chain advance.
+    // `sendMessageV1` always calls `release()` — on success via the
+    // `turn/completed`/`turn/error` listener, on early fallback or RPC
+    // failure inline — so this resolves promptly rather than parking the
+    // chain forever.
+    await lifecycleDone;
+  } catch {
+    // Defensive: if `sendMessageV1` ever rejects without calling release,
+    // unblock the chain so a transient failure doesn't wedge subsequent
+    // sends.
+    release();
+  } finally {
+    if (turnQueues.get(key) === chained) {
+      turnQueues.delete(key);
+    }
+  }
+}
+
+/** Test-only reset for the per-session queue map. */
+export function __resetSendQueueForTest(): void {
+  turnQueues.clear();
+}
+
+async function sendMessageV1(
+  opts: SendOptions,
+  // Bug B (M10 follow-up): per-session FIFO queue gate. Resolves on the
+  // server's `turn/completed`/`turn/error` for THIS turn so the next
+  // `enqueueSendV1` call can issue its own `bridge.sendTurn` without
+  // racing the server's "one turn at a time" rule. Always called exactly
+  // once on every code path (including the legacy fallbacks) so the chain
+  // never wedges. Defaults to a no-op for backward compatibility / direct
+  // test calls.
+  releaseLifecycleGate: () => void = () => {},
+): Promise<void> {
   const {
     sessionId,
     historyTopic,
@@ -60,6 +183,12 @@ async function sendMessageV1(opts: SendOptions): Promise<void> {
       );
     }
     legacySendMessage(opts);
+    // Legacy SSE path runs independently of the v1 turn-queue. Releasing
+    // immediately means the next v1 send won't be blocked behind a
+    // legacy-only turn — but that's the right semantic, because the
+    // legacy `/api/chat` route is the path that already queues
+    // server-side, so the WS turn-collision doesn't apply.
+    releaseLifecycleGate();
     return;
   }
 
@@ -70,6 +199,9 @@ async function sendMessageV1(opts: SendOptions): Promise<void> {
     // session is still functional, just not on the v1 transport for this
     // turn. The next turn will pick up the bridge.
     legacySendMessage(opts);
+    // Same reasoning as the media/rewrite fallback above — release so
+    // the v1 chain doesn't stall behind a non-v1 turn.
+    releaseLifecycleGate();
     return;
   }
 
@@ -99,10 +231,19 @@ async function sendMessageV1(opts: SendOptions): Promise<void> {
   // listener afterwards. The handler also fires `onComplete` on RPC
   // rejection so the input never spins forever on a network failure.
   let completed = false;
+  let lifecycleSafetyTimer: ReturnType<typeof setTimeout> | null = null;
   const fireComplete = () => {
     if (completed) return;
     completed = true;
+    if (lifecycleSafetyTimer !== null) {
+      clearTimeout(lifecycleSafetyTimer);
+      lifecycleSafetyTimer = null;
+    }
     onComplete?.();
+    // Bug B: also unblock the per-session turn queue so the next
+    // `enqueueSendV1` can issue its `bridge.sendTurn`. Calling release
+    // multiple times is a no-op.
+    releaseLifecycleGate();
   };
   const off = bridge.onTurnLifecycle((e) => {
     if (e.turn_id !== clientMessageId) return;
@@ -118,6 +259,26 @@ async function sendMessageV1(opts: SendOptions): Promise<void> {
       fireComplete();
     }
   });
+
+  // Bug B safety net: if the server never emits `turn/completed` /
+  // `turn/error` for this turn (server crash mid-turn, WS reconnect race
+  // that drops the lifecycle frame past the ledger replay window), the
+  // per-session queue would otherwise wedge — every subsequent
+  // `sendMessage` call sits forever waiting for `lifecycleDone`. Force a
+  // release after a generously long upper bound (15 min); long enough
+  // that legitimate slow turns (deep_research foreground, mofa-podcast
+  // generation) finish well within it, short enough that a wedged
+  // session recovers without a page reload. `fireComplete` is
+  // idempotent, so a late lifecycle frame after the timeout is a no-op.
+  lifecycleSafetyTimer = setTimeout(
+    () => {
+      if (!completed) {
+        off();
+        fireComplete();
+      }
+    },
+    15 * 60 * 1000,
+  );
 
   try {
     await bridge.sendTurn(clientMessageId, [
