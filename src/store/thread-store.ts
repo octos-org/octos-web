@@ -99,6 +99,19 @@ interface SessionState {
   byId: Map<string, Thread>;
 }
 
+// Bug B diagnostic. Gated on `localStorage.octos_debug_envelope === '1'`.
+// See `ui-protocol-bridge.ts` `debugEnvelopeLog` for the full rationale.
+function debugCompletionLog(tag: string, payload: unknown): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (window.localStorage.getItem("octos_debug_envelope") !== "1") return;
+  } catch {
+    return;
+  }
+  // eslint-disable-next-line no-console
+  console.log(`[bug-b:store:appendCompletion] ${tag}`, payload);
+}
+
 const sessionsByKey = new Map<string, SessionState>();
 const listeners = new Set<() => void>();
 const loadedSessions = new Set<string>();
@@ -663,6 +676,15 @@ export function appendCompletionBubble(
   threadId: string,
   opts: AppendCompletionBubbleOptions,
 ): boolean {
+  // Bug B diagnostic. See ui-protocol-bridge.ts `debugEnvelopeLog`.
+  debugCompletionLog("enter", {
+    threadId,
+    messageId: opts.messageId,
+    historySeq: opts.historySeq,
+    text_len: opts.text.length,
+    media_count: opts.media.length,
+    sessionId: opts.sessionId,
+  });
   // Resolve the host thread. Prefer an exact match anywhere in the
   // store (M8.10 cross-session cmid semantics). When no match exists,
   // create the orphan inside the router's active session so
@@ -700,8 +722,17 @@ export function appendCompletionBubble(
       host = ensureOrphanThread(threadId);
     }
   }
-  if (!host) return false;
+  if (!host) {
+    debugCompletionLog("drop:no-host", { threadId });
+    return false;
+  }
   const { thread } = host;
+  debugCompletionLog("host-resolved", {
+    threadId,
+    is_orphan: thread.userMsg.text === "",
+    existing_responses: thread.responses.length,
+    has_pending: thread.pendingAssistant !== null,
+  });
 
   // Identity / upgrade-in-place. A replayed envelope on reconnect
   // MUST NOT produce a duplicate row. Two stable identities exist:
@@ -735,13 +766,29 @@ export function appendCompletionBubble(
       // True identity match — this row IS the spawn-complete row.
       // Upgrade-in-place if it's a placeholder (the persisted-only
       // shape), no-op if it's already the full completion.
-      if (r.text.length > 0) return true;
+      if (r.text.length > 0) {
+        debugCompletionLog("dedupe:messageId-existing-text", {
+          threadId,
+          messageId: opts.messageId,
+        });
+        return true;
+      }
       thread.responses[i] = upgradePlaceholderRow(r, opts, threadId);
       sortResponsesInThread(thread);
       notify();
+      debugCompletionLog("upgrade:messageId-placeholder", {
+        threadId,
+        messageId: opts.messageId,
+      });
       return true;
     }
-    if (thread.pendingAssistant?.id === opts.messageId) return true;
+    if (thread.pendingAssistant?.id === opts.messageId) {
+      debugCompletionLog("dedupe:messageId-pending", {
+        threadId,
+        messageId: opts.messageId,
+      });
+      return true;
+    }
   }
 
   if (typeof opts.historySeq === "number") {
@@ -761,15 +808,31 @@ export function appendCompletionBubble(
       // For (b) test-path callers, the next-best identity is "same
       // text + same media list"; if that matches, treat as no-op.
       if (r.text.length > 0) {
-        if (rowMatchesCompletionContent(r, opts)) return true;
+        if (rowMatchesCompletionContent(r, opts)) {
+          debugCompletionLog("dedupe:historySeq-content-match", {
+            threadId,
+            historySeq: opts.historySeq,
+          });
+          return true;
+        }
         continue; // (a): merged-ack row, not our target
       }
       thread.responses[i] = upgradePlaceholderRow(r, opts, threadId);
       sortResponsesInThread(thread);
       notify();
+      debugCompletionLog("upgrade:historySeq-placeholder", {
+        threadId,
+        historySeq: opts.historySeq,
+      });
       return true;
     }
-    if (thread.pendingAssistant?.historySeq === opts.historySeq) return true;
+    if (thread.pendingAssistant?.historySeq === opts.historySeq) {
+      debugCompletionLog("dedupe:historySeq-pending", {
+        threadId,
+        historySeq: opts.historySeq,
+      });
+      return true;
+    }
   }
 
   const completion: ThreadMessage = {
@@ -791,6 +854,11 @@ export function appendCompletionBubble(
   thread.responses.push(completion);
   sortResponsesInThread(thread);
   notify();
+  debugCompletionLog("append:new-row", {
+    threadId,
+    messageId: completion.id,
+    responses_after: thread.responses.length,
+  });
   return true;
 }
 

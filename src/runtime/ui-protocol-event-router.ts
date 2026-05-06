@@ -53,6 +53,20 @@ export function __resetRouterStateForTest(): void {
   lastTaskStateById.clear();
 }
 
+// Bug B diagnostic. Gated on `localStorage.octos_debug_envelope === '1'`.
+// Mirrors the bridge/store loggers so a single flag flip turns on the
+// full router → bridge → store breadcrumb trail.
+function debugRouterLog(tag: string, payload: unknown): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (window.localStorage.getItem("octos_debug_envelope") !== "1") return;
+  } catch {
+    return;
+  }
+  // eslint-disable-next-line no-console
+  console.log(`[bug-b:router] ${tag}`, payload);
+}
+
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
@@ -283,7 +297,23 @@ export function handleSpawnComplete(
 ): void {
   const placementKey =
     event.thread_id ?? event.response_to_client_message_id;
-  if (!placementKey) return;
+  if (!placementKey) {
+    debugRouterLog("spawn_complete:drop-no-placement-key", {
+      task_id: event.task_id,
+      seq: event.seq,
+      message_id: event.message_id,
+    });
+    return;
+  }
+
+  debugRouterLog("spawn_complete:forward", {
+    placementKey,
+    cfg_session: cfg.sessionId,
+    task_id: event.task_id,
+    seq: event.seq,
+    thread_id: event.thread_id,
+    rcm: event.response_to_client_message_id,
+  });
 
   ThreadStore.appendCompletionBubble(placementKey, {
     text: event.content,
