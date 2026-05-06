@@ -390,6 +390,48 @@ describe("sendMessage flag-ON path", () => {
     ]);
   });
 
+  // Codex P2 round 7 (M10 follow-up Bug B): a `bridge.sendTurn`
+  // resolution of `{ accepted: false }` (the protocol type allows it)
+  // means no `turn/started` lifecycle will ever fire. Pre-fix the
+  // queue would wait the full 15-min safety timer and the mirrored
+  // bubble would stay pending. Treat it as an inline error so the
+  // chain advances immediately and the bubble shows errored status.
+  it("releases the queue when bridge.sendTurn resolves accepted: false", async () => {
+    const bridge = makeBridge();
+    __setActiveBridgeForTest(SESSION, bridge);
+
+    (bridge.sendTurn as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      Promise.resolve({ accepted: false }),
+    );
+
+    const onComplete1 = vi.fn();
+    const onComplete2 = vi.fn();
+
+    sendMessage({
+      sessionId: SESSION,
+      text: "Q1 server-rejects",
+      media: [],
+      clientMessageId: "cmid-rejected",
+      onComplete: onComplete1,
+    });
+    sendMessage({
+      sessionId: SESSION,
+      text: "Q2 follow-up",
+      media: [],
+      clientMessageId: "cmid-followup",
+      onComplete: onComplete2,
+    });
+
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    // Q1 finishes inline (accepted: false → finalizeAssistant + release).
+    expect(onComplete1).toHaveBeenCalledTimes(1);
+    expect(bridge.sendTurn).toHaveBeenCalledTimes(2);
+    const threads = ThreadStore.getThreads(SESSION);
+    expect(threads.find((t) => t.id === "cmid-rejected")?.responses[0].status).toBe(
+      "error",
+    );
+  });
+
   // Codex P2 round 4 (M10 follow-up Bug B): the user message must be
   // mirrored into ThreadStore SYNCHRONOUSLY, before the per-session
   // queue gate. Pre-fix, `addUserMessage` ran inside `sendMessageV1`

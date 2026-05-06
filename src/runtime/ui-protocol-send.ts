@@ -357,12 +357,22 @@ async function sendMessageV1(
   );
 
   try {
-    await bridge.sendTurn(clientMessageId, [
+    const result = await bridge.sendTurn(clientMessageId, [
       { kind: "text", text },
       // File / voice attachments stay on REST — see fallback above. The
       // bridge schema already accepts a TurnStartInput[] so a future PR
       // can add file references here without changing this call site.
     ]);
+    // Codex round 7 P2: if the server's RPC reply is structurally
+    // valid but reports `{ accepted: false }`, no `turn/started` will
+    // ever fire — the lifecycle gate would otherwise wait the full
+    // 15-min safety timer. Mark the bubble errored and release
+    // immediately, mirroring the rejected-RPC catch branch below.
+    if (!result?.accepted) {
+      ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
+      off();
+      fireComplete();
+    }
   } catch {
     // Surface as an error message in the thread so the user isn't left
     // with a silent dead pending bubble. The bridge already emits a
