@@ -253,11 +253,20 @@ async function sendMessageV1(
       offState();
       offState = null;
     }
-    onComplete?.();
-    // Bug B: also unblock the per-session turn queue so the next
-    // `enqueueSendV1` can issue its `bridge.sendTurn`. Calling release
-    // multiple times is a no-op.
-    releaseLifecycleGate();
+    // Codex round 3 P2: invoke onComplete inside try/finally so a
+    // throwing callback cannot wedge the per-session queue. The bridge
+    // swallows subscriber exceptions inside its `Subscribers.emit`, so
+    // pre-fix a thrown callback unwound past `releaseLifecycleGate`
+    // here, the lifecycle promise never resolved, and every subsequent
+    // send for the session blocked on the 15-min safety timer.
+    try {
+      onComplete?.();
+    } finally {
+      // Bug B: unblock the per-session turn queue so the next
+      // `enqueueSendV1` can issue its `bridge.sendTurn`. Calling
+      // release multiple times is a no-op.
+      releaseLifecycleGate();
+    }
   };
   const off = bridge.onTurnLifecycle((e) => {
     if (e.turn_id !== clientMessageId) return;
