@@ -14,6 +14,7 @@
  */
 
 import { getToken, getSelectedProfileId } from "@/api/client";
+import { TOKEN_KEY, ADMIN_TOKEN_KEY } from "@/lib/constants";
 import type {
   ApprovalDecision,
   ApprovalRequestedEvent,
@@ -841,7 +842,31 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
         : "");
     const base = origin.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
     const params = new URLSearchParams();
-    const token = this.cfg.getToken();
+    let token = this.cfg.getToken();
+    // Last-ditch fallback: read both auth slots directly. Defends against
+    // a state race where auth-context hasn't pushed the token through the
+    // injected `cfg.getToken` closure yet but localStorage already has it
+    // (e.g. fresh OTP login + immediate /chat navigation).
+    if (!token && typeof window !== "undefined") {
+      try {
+        token =
+          window.localStorage.getItem(TOKEN_KEY) ||
+          window.localStorage.getItem(ADMIN_TOKEN_KEY);
+      } catch {
+        // localStorage may be unavailable in some sandbox modes — fall through.
+      }
+    }
+    if (!token) {
+      // Surface a loud client-side error so users with broken/missing auth
+      // see something actionable instead of a silent WS handshake failure.
+      // The server rejects unauthenticated WS upgrades, so we'd fail anyway —
+      // this just gives the user a useful console signal.
+      console.error(
+        `[ui-protocol-bridge] No auth token in localStorage ` +
+          `(neither ${TOKEN_KEY} nor ${ADMIN_TOKEN_KEY}). ` +
+          `WS will fail to connect. Please re-login.`,
+      );
+    }
     // ?token= falls back into Caddy access logs but is the only path that
     // works in browsers (which forbid setting Authorization on WS).
     if (token) params.append("token", token);
