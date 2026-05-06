@@ -1713,3 +1713,493 @@ describe("thread-store", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// M10 Phase 6.2 (Bug C): WS session/hydrate dedup pass
+// ---------------------------------------------------------------------------
+
+describe("applyHydrateDedup (M10 Phase 6.2)", () => {
+  const SID = "sess-bug-c";
+
+  it("drops the legacy spawn-ack row when an envelope's message_id matches it, then renders the envelope", () => {
+    // Replay the REST history shape the server returns post-Bug-C
+    // before client-side dedup: user prompt + spawn-ack assistant row
+    // (background source) + per-file companion row (background
+    // source). The live wire suppressed both for negotiated clients
+    // and replaced them with one `turn/spawn_complete` envelope.
+    ThreadStore.replayHistory(SID, [
+      {
+        seq: 0,
+        role: "user",
+        content: "Use deep_search to research X.",
+        client_message_id: "cmid-user-1",
+        thread_id: "cmid-user-1",
+        timestamp: "2026-05-04T00:00:00Z",
+      },
+      {
+        seq: 19,
+        role: "assistant",
+        content: "Done.",
+        thread_id: "cmid-user-1",
+        timestamp: "2026-05-04T00:09:22.538Z",
+      },
+      {
+        seq: 20,
+        role: "assistant",
+        content: "",
+        thread_id: "cmid-user-1",
+        timestamp: "2026-05-04T00:09:22.541Z",
+        media: ["pf/_report.md"],
+      },
+    ]);
+
+    // Pre-dedup: the legacy adjacent-merge already coalesces the
+    // companion (seq=20) into the spawn-ack (seq=19) since they have
+    // adjacent seqs and the companion has empty text. So the thread
+    // ends up with 1 user + 1 ack-with-file response. We still need
+    // dedup to replace that ack with the envelope content.
+    const before = ThreadStore.getThreads(SID);
+    expect(before).toHaveLength(1);
+    const beforeResponses = before[0].responses.length;
+    expect(beforeResponses).toBeGreaterThanOrEqual(1);
+
+    // Apply hydrate dedup with the WS envelope that replaces the ack.
+    // Per the server's hydrate contract: the envelope's `message_id`
+    // matches the spawn-ack row (seq=19); the companion row (seq=20)
+    // is identified by media-subset match against the envelope's
+    // `media` array.
+    ThreadStore.applyHydrateDedup(SID, undefined, {
+      messages: [
+        {
+          seq: 0,
+          message_id: "local:demo:0:1",
+          source: "user",
+          thread_id: "cmid-user-1",
+        },
+        {
+          seq: 19,
+          message_id: "local:demo:19:19",
+          source: "background",
+          thread_id: "cmid-user-1",
+        },
+        {
+          seq: 20,
+          message_id: "local:demo:20:20",
+          source: "background",
+          thread_id: "cmid-user-1",
+          media: ["pf/_report.md"],
+        },
+      ],
+      replayed_envelopes: [
+        {
+          thread_id: "cmid-user-1",
+          task_id: "task_abc",
+          seq: 19,
+          message_id: "local:demo:19:19",
+          content: "## Research delivered\nFull text inline.",
+          media: ["pf/_report.md"],
+          persisted_at: "2026-05-04T00:09:22.538Z",
+        },
+      ],
+    });
+
+    const after = ThreadStore.getThreads(SID);
+    expect(after).toHaveLength(1);
+    const responses = after[0].responses;
+    // Exactly 1 assistant bubble (the envelope's content), not 2 (ack + envelope).
+    expect(responses).toHaveLength(1);
+    // The bubble's content comes from the envelope, not the ack.
+    expect(responses[0].text).toBe("## Research delivered\nFull text inline.");
+    expect(responses[0].files.map((f) => f.path)).toContain("pf/_report.md");
+  });
+
+  it("drops file-companion rows whose media is a subset of the envelope's media", () => {
+    // Production shape: the spawn-ack row at seq=N (text, no media)
+    // followed by per-file `send_file` companion rows at seq=N+1...
+    // (each carrying ONE media file). The envelope's `media` array
+    // aggregates every companion's file path, so a media-subset
+    // match identifies the per-file companions for safe deletion.
+    ThreadStore.__resetForTests();
+    ThreadStore.replayHistory(SID, [
+      {
+        seq: 0,
+        role: "user",
+        content: "Q",
+        client_message_id: "cmid-1",
+        thread_id: "cmid-1",
+        timestamp: "2026-05-04T00:00:00Z",
+      },
+      {
+        seq: 10,
+        role: "assistant",
+        content: "spawn ack",
+        thread_id: "cmid-1",
+        timestamp: "2026-05-04T00:00:03Z",
+      },
+      // Per-file companions — gaps with the spawn-ack so
+      // adjacent-merge does not coalesce them.
+      {
+        seq: 13,
+        role: "assistant",
+        content: "",
+        thread_id: "cmid-1",
+        timestamp: "2026-05-04T00:00:04Z",
+        media: ["bg/file-a.md"],
+      },
+      {
+        seq: 16,
+        role: "assistant",
+        content: "",
+        thread_id: "cmid-1",
+        timestamp: "2026-05-04T00:00:05Z",
+        media: ["bg/file-b.md"],
+      },
+    ]);
+
+    const before = ThreadStore.getThreads(SID);
+    expect(before[0].responses).toHaveLength(3);
+
+    ThreadStore.applyHydrateDedup(SID, undefined, {
+      messages: [
+        { seq: 0, message_id: "m0", source: "user", thread_id: "cmid-1" },
+        // Spawn-ack: matches envelope's message_id.
+        { seq: 10, message_id: "m10", source: "background", thread_id: "cmid-1" },
+        // Per-file companions: identified by media-subset against envelope.media.
+        {
+          seq: 13,
+          message_id: "m13",
+          source: "background",
+          thread_id: "cmid-1",
+          media: ["bg/file-a.md"],
+        },
+        {
+          seq: 16,
+          message_id: "m16",
+          source: "background",
+          thread_id: "cmid-1",
+          media: ["bg/file-b.md"],
+        },
+      ],
+      replayed_envelopes: [
+        {
+          thread_id: "cmid-1",
+          task_id: "task_x",
+          seq: 10,
+          message_id: "m10",
+          content: "envelope content",
+          media: ["bg/file-a.md", "bg/file-b.md"],
+          persisted_at: "2026-05-04T00:00:03Z",
+        },
+      ],
+    });
+
+    const after = ThreadStore.getThreads(SID);
+    // 3 background rows: spawn-ack matches by message_id, both
+    // per-file companions match by media-subset. All dropped, then
+    // envelope appended as 1 fresh bubble.
+    expect(after[0].responses).toHaveLength(1);
+    expect(after[0].responses[0].text).toBe("envelope content");
+    expect(after[0].responses[0].files.map((f) => f.path).sort()).toEqual([
+      "bg/file-a.md",
+      "bg/file-b.md",
+    ]);
+  });
+
+  it("preserves a background row whose media is NOT a subset of the envelope's media (different completion)", () => {
+    // Edge case: a separate spawn_only completion's row whose
+    // envelope aged out of the retention window. We must NOT drop
+    // it just because it sits in the same anchor as a known
+    // envelope (codex round 3 P2). Delete-only-when-positive-evidence.
+    ThreadStore.__resetForTests();
+    ThreadStore.replayHistory(SID, [
+      {
+        seq: 0,
+        role: "user",
+        content: "Q",
+        client_message_id: "cmid-1",
+        thread_id: "cmid-1",
+        timestamp: "2026-05-04T00:00:00Z",
+      },
+      {
+        seq: 10,
+        role: "assistant",
+        content: "spawn ack A",
+        thread_id: "cmid-1",
+        timestamp: "2026-05-04T00:00:03Z",
+      },
+      // A background row whose media doesn't appear in the envelope:
+      // belongs to a separate completion. Server retention window may
+      // have aged out its envelope. MUST NOT drop.
+      {
+        seq: 30,
+        role: "assistant",
+        content: "",
+        thread_id: "cmid-1",
+        timestamp: "2026-05-04T00:00:10Z",
+        media: ["bg/orphan.md"],
+      },
+    ]);
+
+    ThreadStore.applyHydrateDedup(SID, undefined, {
+      messages: [
+        { seq: 0, message_id: "m0", source: "user", thread_id: "cmid-1" },
+        { seq: 10, message_id: "m10", source: "background", thread_id: "cmid-1" },
+        {
+          seq: 30,
+          message_id: "m30",
+          source: "background",
+          thread_id: "cmid-1",
+          media: ["bg/orphan.md"],
+        },
+      ],
+      replayed_envelopes: [
+        {
+          thread_id: "cmid-1",
+          task_id: "task_a",
+          seq: 10,
+          message_id: "m10",
+          content: "completion A",
+          media: [], // no companions covered by this envelope
+          persisted_at: "2026-05-04T00:00:03Z",
+        },
+      ],
+    });
+
+    const after = ThreadStore.getThreads(SID)[0].responses;
+    // Spawn-ack A dropped (message_id match); orphan row preserved
+    // (media-subset miss); envelope appended.
+    expect(after).toHaveLength(2);
+    expect(after.find((r) => r.text === "completion A")).toBeDefined();
+    expect(
+      after.find((r) => r.files.some((f) => f.path === "bg/orphan.md")),
+    ).toBeDefined();
+  });
+
+  it("is a no-op without replayed_envelopes (older server / non-negotiated client)", () => {
+    ThreadStore.__resetForTests();
+    ThreadStore.replayHistory(SID, [
+      {
+        seq: 0,
+        role: "user",
+        content: "Q",
+        client_message_id: "cmid-1",
+        thread_id: "cmid-1",
+        timestamp: "2026-05-04T00:00:00Z",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "A",
+        thread_id: "cmid-1",
+        timestamp: "2026-05-04T00:00:01Z",
+      },
+    ]);
+    const beforeIds = ThreadStore.getThreads(SID)[0].responses.map((r) => r.id);
+
+    ThreadStore.applyHydrateDedup(SID, undefined, {
+      messages: undefined,
+      replayed_envelopes: undefined,
+    });
+
+    const after = ThreadStore.getThreads(SID);
+    expect(after[0].responses).toHaveLength(1);
+    expect(after[0].responses.map((r) => r.id)).toEqual(beforeIds);
+  });
+
+  it("dedups by message_id even when the hydrated row omits thread_id (legacy row)", () => {
+    // Codex round-4 P2: legacy ledger rows can omit `thread_id` while
+    // still exposing the post-#791 stable `message_id`. The dedup
+    // pass MUST honour the message_id match without an anchor lookup,
+    // otherwise reloads of legacy sessions keep the spawn-ack
+    // duplicate.
+    ThreadStore.__resetForTests();
+    ThreadStore.replayHistory(SID, [
+      {
+        seq: 0,
+        role: "user",
+        content: "Q",
+        client_message_id: "cmid-1",
+        thread_id: "cmid-1",
+        timestamp: "2026-05-04T00:00:00Z",
+      },
+      {
+        seq: 5,
+        role: "assistant",
+        content: "spawn ack",
+        thread_id: "cmid-1",
+        timestamp: "2026-05-04T00:00:01Z",
+      },
+    ]);
+
+    ThreadStore.applyHydrateDedup(SID, undefined, {
+      messages: [
+        {
+          seq: 0,
+          message_id: "m0",
+          source: "user",
+          // No thread_id — legacy row.
+        },
+        {
+          seq: 5,
+          message_id: "m5",
+          source: "background",
+          // No thread_id — legacy row.
+        },
+      ],
+      replayed_envelopes: [
+        {
+          thread_id: "cmid-1",
+          task_id: "task_legacy",
+          seq: 5,
+          message_id: "m5",
+          content: "envelope replaces ack",
+          media: [],
+          persisted_at: "2026-05-04T00:00:01Z",
+        },
+      ],
+    });
+
+    const after = ThreadStore.getThreads(SID)[0].responses;
+    // Spawn-ack dropped via session-wide message_id match; envelope appended.
+    expect(after).toHaveLength(1);
+    expect(after[0].text).toBe("envelope replaces ack");
+  });
+
+  it("does not cross-cover companions of different turns sharing a media path", () => {
+    // Codex round-6 P2: two completions in the same anchor thread
+    // that emit the same media path must not pollute each other's
+    // dedup. Bound media-subset matching to the same turn_id when
+    // both sides expose it.
+    ThreadStore.__resetForTests();
+    ThreadStore.replayHistory(SID, [
+      {
+        seq: 0,
+        role: "user",
+        content: "Q",
+        client_message_id: "cmid-1",
+        thread_id: "cmid-1",
+        timestamp: "2026-05-04T00:00:00Z",
+      },
+      // Completion A's spawn-ack.
+      {
+        seq: 5,
+        role: "assistant",
+        content: "ack A",
+        thread_id: "cmid-1",
+        timestamp: "2026-05-04T00:00:01Z",
+      },
+      // Completion B's companion (different turn) reuses the same path.
+      {
+        seq: 8,
+        role: "assistant",
+        content: "",
+        thread_id: "cmid-1",
+        timestamp: "2026-05-04T00:00:02Z",
+        media: ["bg/shared.md"],
+      },
+    ]);
+
+    ThreadStore.applyHydrateDedup(SID, undefined, {
+      messages: [
+        { seq: 0, message_id: "m0", source: "user", thread_id: "cmid-1" },
+        {
+          seq: 5,
+          message_id: "m5",
+          source: "background",
+          thread_id: "cmid-1",
+          turn_id: "turn-A",
+        },
+        {
+          seq: 8,
+          message_id: "m8",
+          source: "background",
+          thread_id: "cmid-1",
+          turn_id: "turn-B",
+          media: ["bg/shared.md"],
+        },
+      ],
+      replayed_envelopes: [
+        // Only completion A's envelope is retained; B's aged out.
+        {
+          thread_id: "cmid-1",
+          turn_id: "turn-A",
+          task_id: "task_A",
+          seq: 5,
+          message_id: "m5",
+          content: "envelope A",
+          media: ["bg/shared.md"], // shares path with B's companion
+          persisted_at: "2026-05-04T00:00:01Z",
+        },
+      ],
+    });
+
+    const after = ThreadStore.getThreads(SID)[0].responses;
+    // Completion A's ack dropped via message_id match; B's companion
+    // PRESERVED (turn_id mismatch on media-subset path); envelope appended.
+    const texts = after.map((r) => r.text);
+    expect(texts).toContain("envelope A");
+    // B's companion bubble is still rendered (media-bearing,
+    // empty-text — visible via attachment).
+    expect(
+      after.some((r) => r.files.some((f) => f.path === "bg/shared.md") && r.text === ""),
+    ).toBe(true);
+  });
+
+  it("preserves non-background rows even when their seq overlaps the envelope's anchor", () => {
+    // A user-source row at seq=0 must NOT be dropped just because it
+    // precedes the envelope's seq in the same anchor. The (b) branch
+    // is gated on `source === "background"`.
+    ThreadStore.__resetForTests();
+    ThreadStore.replayHistory(SID, [
+      {
+        seq: 0,
+        role: "user",
+        content: "Q",
+        client_message_id: "cmid-1",
+        thread_id: "cmid-1",
+        timestamp: "2026-05-04T00:00:00Z",
+      },
+      {
+        seq: 5,
+        role: "assistant",
+        content: "regular assistant reply",
+        thread_id: "cmid-1",
+        timestamp: "2026-05-04T00:00:01Z",
+      },
+      {
+        seq: 10,
+        role: "assistant",
+        content: "spawn ack",
+        thread_id: "cmid-1",
+        timestamp: "2026-05-04T00:00:02Z",
+      },
+    ]);
+
+    ThreadStore.applyHydrateDedup(SID, undefined, {
+      messages: [
+        { seq: 0, message_id: "m0", source: "user", thread_id: "cmid-1" },
+        // Non-background — protected from dedup even though it precedes the envelope.
+        { seq: 5, message_id: "m5", source: "assistant", thread_id: "cmid-1" },
+        { seq: 10, message_id: "m10", source: "background", thread_id: "cmid-1" },
+      ],
+      replayed_envelopes: [
+        {
+          thread_id: "cmid-1",
+          task_id: "task_y",
+          seq: 10,
+          message_id: "m10",
+          content: "envelope final",
+          media: [],
+          persisted_at: "2026-05-04T00:00:02Z",
+        },
+      ],
+    });
+
+    const after = ThreadStore.getThreads(SID)[0].responses;
+    // Regular assistant reply preserved; spawn-ack replaced by envelope.
+    expect(after.map((r) => r.text)).toEqual([
+      "regular assistant reply",
+      "envelope final",
+    ]);
+  });
+});
