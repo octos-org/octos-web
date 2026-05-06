@@ -259,7 +259,7 @@ function setSessionActiveFlag(
  *    web-{timestamp}-{random}  → timestamp directly (milliseconds)
  *    web-{uuid-v7}             → extract ms from UUID v7 first 48 bits
  */
-function sessionTimestamp(s: SessionInfo): number {
+export function sessionTimestamp(s: SessionInfo): number {
   const id = s.id.replace("web-", "");
   // UUID v7: 019d044f-aa95-7d92-...  (first 12 hex chars = 48-bit timestamp)
   if (id.match(/^[0-9a-f]{8}-[0-9a-f]{4}-7/)) {
@@ -271,6 +271,61 @@ function sessionTimestamp(s: SessionInfo): number {
   if (!isNaN(ts) && ts > 1700000000000) return ts;
   // Fallback: use created_at if available, or 0
   return 0;
+}
+
+/** Soft cap on how many sessions the sidebar will render at once.
+ *  Sized so a heavy user (hundreds of chats) sees their full history without
+ *  hammering the DOM. If a user ever crosses this, virtualization is the next
+ *  step; a hard slice was the original Bug A — newest sessions silently
+ *  dropped behind a `.slice(0, 20)` window.
+ */
+export const SESSION_LIST_RENDER_CAP = 500;
+
+/** Pure merge step extracted from `refreshSessions` so it can be unit-tested.
+ *
+ *  Filters the raw `list` from `/api/sessions` to web-prefixed sessions with
+ *  at least one persisted message that aren't tombstoned, sorts newest-first,
+ *  caps to {@link SESSION_LIST_RENDER_CAP}, and overlays any
+ *  locally-tracked sessions that haven't yet been observed by the server
+ *  (e.g. a brand-new chat whose first turn is still mid-flight).
+ *
+ *  Bug A (M10 follow-up): the original implementation hard-sliced to 20
+ *  sessions before merging. Users with 20+ historical chats saw the newest
+ *  one push an old one out, but on a later refresh — when other sessions
+ *  bumped — the newest could fall out of the top 20 and vanish, since
+ *  `_local` was cleared by the first successful merge. The fix is to use
+ *  a much higher cap and to preserve sessions that are present in `prev`
+ *  but missing from the current API response (so a transient API delay
+ *  doesn't wipe them either).
+ */
+export function mergeSessionLists(
+  prev: SessionWithTitle[],
+  list: SessionInfo[],
+  deletedIds: Set<string>,
+  titles: Record<string, string>,
+): SessionWithTitle[] {
+  const webSessions = list
+    .filter(
+      (s) =>
+        s.id.startsWith("web-") &&
+        (s.message_count ?? 0) > 0 &&
+        !deletedIds.has(s.id),
+    )
+    .sort((a, b) => sessionTimestamp(b) - sessionTimestamp(a))
+    .slice(0, SESSION_LIST_RENDER_CAP);
+
+  const fromApi: SessionWithTitle[] = webSessions.map((s) => ({
+    ...s,
+    title: titles[s.id],
+  }));
+  const apiIds = new Set(fromApi.map((s) => s.id));
+  // Preserve locally-tracked sessions that aren't in the API yet (still
+  // mid-flight) AND any session we've previously rendered that the API
+  // momentarily dropped (defensive against a transient empty/short list).
+  const carryover = prev.filter(
+    (s) => !apiIds.has(s.id) && !deletedIds.has(s.id) && s._local,
+  );
+  return [...carryover, ...fromApi];
 }
 
 export function SessionProvider({ children }: { children: ReactNode }) {
@@ -373,7 +428,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     try {
       const deletedIds = loadDeletedSessionIds();
       const list = await listSessions();
-      const webSessions = list
+      // Pre-merge filter + sort just to decide which sessions need a title
+      // fetch. The actual merge runs again inside `setSessions` so it sees
+      // the latest `prev`.
+      const visibleCandidates = list
         .filter(
           (s) =>
             s.id.startsWith("web-") &&
@@ -381,10 +439,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             !deletedIds.has(s.id),
         )
         .sort((a, b) => sessionTimestamp(b) - sessionTimestamp(a))
-        .slice(0, 20);
+        .slice(0, SESSION_LIST_RENDER_CAP);
 
-      // Fetch titles for sessions we haven't seen
-      const needTitle = webSessions.filter((s) => !titleCache.current[s.id]);
+      // Fetch titles for sessions we haven't seen.
+      const needTitle = visibleCandidates.filter(
+        (s) => !titleCache.current[s.id],
+      );
       await Promise.all(
         needTitle.slice(0, 10).map(async (s) => {
           try {
@@ -400,18 +460,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         }),
       );
 
-      setSessions((prev) => {
-        const fromApi = webSessions.map((s) => ({
-          ...s,
-          title: titleCache.current[s.id],
-        }));
-        // Preserve any locally-tracked sessions that aren't in the API yet
-        const apiIds = new Set(fromApi.map((s) => s.id));
-        const localOnly = prev.filter(
-          (s) => s._local && !apiIds.has(s.id) && !deletedIds.has(s.id),
-        );
-        return [...localOnly, ...fromApi];
-      });
+      setSessions((prev) =>
+        mergeSessionLists(prev, list, deletedIds, titleCache.current),
+      );
     } catch {
       // ignore
     }
