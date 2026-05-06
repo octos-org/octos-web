@@ -2203,3 +2203,314 @@ describe("applyHydrateDedup (M10 Phase 6.2)", () => {
     ]);
   });
 });
+
+describe("setHydrateSnapshot reload-mid-stream fallback (M10.5)", () => {
+  const SID = "sess-reload-mid-stream";
+
+  /**
+   * The brief's hardening test (`m10-harden-reload-midstream.spec.ts`)
+   * lives behind `OCTOS_LIVE_PROBE=1` and exercises a real WS reload.
+   * This unit test pins the data shape the SPA must produce for that
+   * scenario — when REST `loadHistory` returned `[]` (e.g. server
+   * returned the wrong session-key path before the M10.5 server fix
+   * landed) but WS `session/hydrate` carried the canonical
+   * `messages[]` plus a retained `replayed_envelopes[]` for the
+   * completion. Pre-fix the SPA only emitted the envelope as an
+   * orphan completion bubble; the user prompt + ack + narration rows
+   * were silently dropped.
+   */
+  it("seeds the store from hydrate.messages when REST returned [] and the envelope upgrades the spawn-ack in place", () => {
+    // Note: REST loadHistory was NOT called — `sessionsByKey` is
+    // empty for this session. This is the post-M10.5-server-fix
+    // race where REST hasn't run yet OR the REST proxy returned `[]`
+    // for the WS-key-mismatch case the server PR closes.
+    ThreadStore.setHydrateSnapshot(SID, undefined, {
+      messages: [
+        {
+          seq: 0,
+          role: "user",
+          content: "tell me the weather in NYC",
+          client_message_id: "cmid-user-1",
+          thread_id: "cmid-user-1",
+          persisted_at: "2026-05-04T00:00:00Z",
+        },
+        {
+          seq: 1,
+          role: "assistant",
+          content: "Looking up the latest forecast.",
+          thread_id: "cmid-user-1",
+          persisted_at: "2026-05-04T00:00:01Z",
+        },
+        {
+          // The spawn-ack the envelope upgrades. Marked `background`
+          // so the dedup pass either drops it (covered) or
+          // `appendCompletionBubble` upgrades it via `historySeq`
+          // match (this row is the placeholder shape with no media).
+          seq: 19,
+          message_id: "local:weather:19",
+          source: "background",
+          role: "assistant",
+          content: "",
+          thread_id: "cmid-user-1",
+          persisted_at: "2026-05-04T00:00:02Z",
+        },
+      ],
+      replayed_envelopes: [
+        {
+          thread_id: "cmid-user-1",
+          task_id: "task_weather",
+          seq: 19,
+          message_id: "local:weather:19",
+          content: "## NYC weather\nSunny, 72°F.",
+          media: [],
+          persisted_at: "2026-05-04T00:00:02Z",
+        },
+      ],
+    });
+
+    // Result must be: 1 user thread + 2 assistant responses
+    //   • "Looking up the latest forecast." (the narration row)
+    //   • "## NYC weather\nSunny, 72°F."  (the envelope, upgrading
+    //     the spawn-ack in place, NOT a sibling orphan bubble)
+    const threads = ThreadStore.getThreads(SID);
+    expect(threads).toHaveLength(1);
+    expect(threads[0].userMsg.text).toBe("tell me the weather in NYC");
+    expect(threads[0].userMsg.clientMessageId).toBe("cmid-user-1");
+    const responseTexts = threads[0].responses.map((r) => r.text);
+    expect(responseTexts).toContain("Looking up the latest forecast.");
+    expect(responseTexts).toContain("## NYC weather\nSunny, 72°F.");
+    // Exactly 2 assistant responses — the narration + the envelope's
+    // upgraded completion. NOT 3 (narration + ack + envelope), which
+    // would be the post-seed-but-pre-upgrade shape, and NOT 1 (just
+    // the envelope), which would be the pre-fix orphan shape.
+    expect(threads[0].responses).toHaveLength(2);
+    // Critically: NOT a sibling orphan thread with empty user bubble.
+    // Pre-fix the store ended up with 2 threads — one empty
+    // placeholder hosting the envelope.
+    for (const t of threads) {
+      expect(t.userMsg.text).not.toBe("");
+    }
+  });
+
+  /**
+   * Confirm the seed is idempotent: a subsequent `replayHistory` call
+   * (REST retries fire at 2s/5s/12s) replaces state wholesale, so a
+   * real REST response that lands later WINS for any overlap with the
+   * hydrate seed. Pre-fix this was already true for a non-empty REST
+   * response; this test pins the post-fix invariant that even when
+   * REST is `[]` the seed is preserved (not wiped) until a non-empty
+   * REST result arrives.
+   */
+  it("preserves the hydrate seed when a subsequent REST loadHistory returns []", () => {
+    ThreadStore.setHydrateSnapshot(SID, undefined, {
+      messages: [
+        {
+          seq: 0,
+          role: "user",
+          content: "hello",
+          client_message_id: "cmid-1",
+          thread_id: "cmid-1",
+          persisted_at: "2026-05-04T00:00:00Z",
+        },
+        {
+          seq: 1,
+          role: "assistant",
+          content: "hi back",
+          thread_id: "cmid-1",
+          persisted_at: "2026-05-04T00:00:01Z",
+        },
+      ],
+      replayed_envelopes: [],
+    });
+
+    // Pre-condition: hydrate seed populated the store.
+    expect(ThreadStore.getThreads(SID)).toHaveLength(1);
+
+    // REST replay returns []. Pre-M10.5-fix server, this is exactly
+    // what the SPA saw on reload-mid-stream. `replayHistory` MUST
+    // re-apply the cached hydrate so the user prompt stays visible.
+    ThreadStore.replayHistory(SID, []);
+
+    const threads = ThreadStore.getThreads(SID);
+    expect(threads).toHaveLength(1);
+    expect(threads[0].userMsg.text).toBe("hello");
+  });
+
+  /**
+   * Codex SPA round 1 P2.1: when `hydrate.messages` carries only
+   * system rows (older daemons emit a system bootstrap on every
+   * session), `replayHistory` skips them and leaves the store empty.
+   * Pre-P2-fix `setHydrateSnapshot` would re-invoke
+   * `applyHydrateDedup` from `replayHistory`'s cached-hydrate hook,
+   * which would call `seedFromHydrateMessages` again on the still-
+   * empty store — infinite recursion until the call stack overflows.
+   * Post-fix: system rows are filtered before deciding to seed, so
+   * the seed pass is a no-op (no recursion).
+   */
+  it("does not recurse when hydrate.messages carries only system rows", () => {
+    expect(() => {
+      ThreadStore.setHydrateSnapshot(SID, undefined, {
+        messages: [
+          {
+            seq: 0,
+            role: "system",
+            content: "session bootstrap",
+            persisted_at: "2026-05-04T00:00:00Z",
+          },
+          {
+            seq: 1,
+            role: "system",
+            content: "system policy",
+            persisted_at: "2026-05-04T00:00:01Z",
+          },
+        ],
+        replayed_envelopes: [],
+      });
+    }).not.toThrow();
+    // No threads created — system rows are not user-rooted.
+    expect(ThreadStore.getThreads(SID)).toHaveLength(0);
+  });
+
+  /**
+   * Codex SPA round 2 P2: a hydrate with non-system but assistant/
+   * tool-only rows would produce orphan-placeholder threads (empty
+   * user bubble) via `replayHistory`. Pre-fix the cached-hydrate
+   * re-apply hook would then call `applyHydrateDedup` again, which
+   * re-entered `seedFromHydrateMessages` (the placeholder threads
+   * matched `allThreadsAreOrphanPlaceholders`) and infinite-looped.
+   * Post-fix: require at least one user row before seeding.
+   */
+  it("does not recurse when hydrate.messages has no user row", () => {
+    expect(() => {
+      ThreadStore.setHydrateSnapshot(SID, undefined, {
+        messages: [
+          {
+            seq: 0,
+            role: "assistant",
+            content: "stale assistant rumination",
+            thread_id: "cmid-orphan",
+            persisted_at: "2026-05-04T00:00:00Z",
+          },
+          {
+            seq: 1,
+            role: "tool",
+            content: "tool result",
+            thread_id: "cmid-orphan",
+            persisted_at: "2026-05-04T00:00:01Z",
+          },
+        ],
+        replayed_envelopes: [],
+      });
+    }).not.toThrow();
+    // No threads created — without a user row the seed is a no-op
+    // (we'd rather show nothing than orphan-place an unrooted history).
+    expect(ThreadStore.getThreads(SID)).toHaveLength(0);
+  });
+
+  /**
+   * Codex SPA round 1 P2.2: when an envelope is delivered BEFORE the
+   * `session/hydrate` response (live wire ordering), the store
+   * already holds an orphan-placeholder thread with an empty user
+   * bubble. The seed pass MUST treat that state as still-seedable so
+   * the canonical hydrate history (real user prompt + narration)
+   * replaces the placeholder. Pre-fix the placeholder was treated as
+   * authoritative and the user prompt was never restored.
+   */
+  it("seeds over orphan placeholders created by an early envelope", () => {
+    // Simulate envelope-before-hydrate ordering: a
+    // `turn/spawn_complete` lands before `session/hydrate` returns.
+    // `appendCompletionBubble` creates an orphan-placeholder thread
+    // (empty user bubble) hosting the envelope's content.
+    ThreadStore.appendCompletionBubble("cmid-user-1", {
+      text: "## Research delivered\nFull text inline.",
+      media: [],
+      spawnComplete: true,
+      sourceClientMessageId: "cmid-user-1",
+      sessionId: SID,
+    });
+
+    const beforeSeed = ThreadStore.getThreads(SID);
+    expect(beforeSeed).toHaveLength(1);
+    expect(beforeSeed[0].userMsg.text).toBe("");
+
+    // Now hydrate lands with the canonical history (REST is still []).
+    ThreadStore.setHydrateSnapshot(SID, undefined, {
+      messages: [
+        {
+          seq: 0,
+          role: "user",
+          content: "do the research",
+          client_message_id: "cmid-user-1",
+          thread_id: "cmid-user-1",
+          persisted_at: "2026-05-04T00:00:00Z",
+        },
+        {
+          seq: 1,
+          role: "assistant",
+          content: "spawning the deep_research task",
+          thread_id: "cmid-user-1",
+          persisted_at: "2026-05-04T00:00:01Z",
+        },
+      ],
+      replayed_envelopes: [
+        {
+          thread_id: "cmid-user-1",
+          task_id: "task_research",
+          seq: 19,
+          message_id: "local:research:19",
+          content: "## Research delivered\nFull text inline.",
+          media: [],
+          persisted_at: "2026-05-04T00:00:02Z",
+        },
+      ],
+    });
+
+    const afterSeed = ThreadStore.getThreads(SID);
+    expect(afterSeed).toHaveLength(1);
+    expect(afterSeed[0].userMsg.text).toBe("do the research");
+    expect(afterSeed[0].userMsg.clientMessageId).toBe("cmid-user-1");
+    // Both the narration AND the envelope's completion are reachable.
+    const responseTexts = afterSeed[0].responses.map((r) => r.text);
+    expect(responseTexts).toContain("spawning the deep_research task");
+    expect(responseTexts).toContain("## Research delivered\nFull text inline.");
+  });
+
+  /**
+   * Symmetrical guard for the happy path: a real REST response with
+   * authoritative rows must win over the hydrate seed. Ensures the
+   * fallback never silently overrides REST data.
+   */
+  it("REST loadHistory wins over hydrate seed for any overlap", () => {
+    ThreadStore.setHydrateSnapshot(SID, undefined, {
+      messages: [
+        {
+          seq: 0,
+          role: "user",
+          content: "stale hydrate user",
+          client_message_id: "cmid-1",
+          thread_id: "cmid-1",
+          persisted_at: "2026-05-04T00:00:00Z",
+        },
+      ],
+      replayed_envelopes: [],
+    });
+
+    // REST returns the authoritative shape — text differs from the
+    // hydrate seed (e.g. user edited their prompt before the server
+    // commit landed).
+    ThreadStore.replayHistory(SID, [
+      {
+        seq: 0,
+        role: "user",
+        content: "AUTHORITATIVE rest user text",
+        client_message_id: "cmid-1",
+        thread_id: "cmid-1",
+        timestamp: "2026-05-04T00:00:00Z",
+      },
+    ]);
+
+    const threads = ThreadStore.getThreads(SID);
+    expect(threads).toHaveLength(1);
+    expect(threads[0].userMsg.text).toBe("AUTHORITATIVE rest user text");
+  });
+});
