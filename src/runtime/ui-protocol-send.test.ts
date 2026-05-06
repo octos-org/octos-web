@@ -201,15 +201,17 @@ describe("sendMessage flag-ON path", () => {
       media: ["/tmp/foo.png"],
       clientMessageId: "cmid-media",
     });
-    // Bug B per-session queue: legacy fallback runs after `await prev`.
+    // Codex round 6 P2: the user bubble must appear SYNCHRONOUSLY for
+    // every send (text, media, rewrite) so a queued prompt isn't
+    // invisible until the prior turn drains. After exactly one tick
+    // the thread is in the store; the legacy `legacySendMessage` itself
+    // runs after the queue gate (12 ticks here covers it).
+    await Promise.resolve();
+    expect(ThreadStore.getThreads(SESSION)).toHaveLength(1);
+    expect(ThreadStore.getThreads(SESSION)[0].id).toBe("cmid-media");
     for (let i = 0; i < 12; i++) await Promise.resolve();
     expect(legacySendSpy).toHaveBeenCalledTimes(1);
     expect(bridge.sendTurn).not.toHaveBeenCalled();
-    // The thread store must NOT be pre-populated by the v1 sync mirror —
-    // the legacy bridge handles its own ThreadStore mirroring for
-    // media (gated by isThreadStoreEnabled()), and duplicating it here
-    // would double-thread.
-    expect(ThreadStore.getThreads(SESSION)).toHaveLength(0);
   });
 
   // Codex review must-fix #5A: requestText !== text means a /command

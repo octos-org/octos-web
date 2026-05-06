@@ -121,41 +121,34 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
   const clientMessageId = opts.clientMessageId ?? crypto.randomUUID();
   const pinnedOpts: SendOptions = { ...opts, clientMessageId };
 
-  // Codex round 4 P2: mirror the user message into ThreadStore
+  // Codex round 4-6 P2: mirror the user message into ThreadStore
   // SYNCHRONOUSLY before the queue gate, so the bubble is visible the
   // instant the user clicks Send — even when a prior turn has not yet
   // emitted `turn/completed`. Pre-fix, `addUserMessage` ran inside
   // `sendMessageV1` AFTER `await prev`, so a queued prompt was
-  // invisible until the prior turn drained (and could be lost on
-  // reload during that window). The legacy-fallback path also benefits:
-  // a media-bearing prompt parked behind a v1 turn now shows its bubble
-  // immediately, and only the actual `legacySendMessage` (or
-  // `bridge.sendTurn`) is gated.
+  // invisible until the prior turn drained.
   //
-  // Two callers skip the synchronous mirror:
-  //   - text + media: `legacySendMessage` runs the upload pipeline and
-  //     triggers its own ThreadStore mirror via the SSE bridge's hook;
-  //     duplicating it here would create two threads with the same
-  //     clientMessageId (the legacy mirror is gated on the v2-store
-  //     flag, but the v1 send path implies v2 is on).
-  //   - rewrite (`requestText !== text`): the legacy bridge sends
-  //     `requestText` to /api/chat but mirrors `text` into the store —
-  //     we'd need to pre-compute that here and risk drifting from the
-  //     legacy bridge's behaviour. Defer to legacy for these too.
-  if (shouldMirrorUserMessageSync(pinnedOpts)) {
-    const localFiles = pinnedOpts.media.map((path) => ({
-      filename: displayFilenameFromPath(path),
-      path,
-      caption: "",
-    }));
-    ThreadStore.addUserMessage(pinnedOpts.sessionId, {
-      text: pinnedOpts.text,
-      clientMessageId,
-      files: localFiles,
-      topic: pinnedOpts.historyTopic,
-    });
-    pinnedOpts.onSessionActive?.(pinnedOpts.text);
-  }
+  // This applies to EVERY transport path (v1 text, legacy media,
+  // legacy rewrite, no-bridge fallback). The legacy SSE bridge does
+  // its own `addUserMessage` mirror later in `legacySendMessage`, but
+  // `addUserMessage` is idempotent on an existing `clientMessageId`
+  // (`thread-store.ts:addUserMessage` "If a thread already exists with
+  // this id, adopt it instead of double-inserting"), so the second
+  // call is a no-op. By matching the legacy bridge's mirror semantics
+  // (`text` for the bubble even when `requestText` differs) the two
+  // paths produce identical store state.
+  const localFiles = pinnedOpts.media.map((path) => ({
+    filename: displayFilenameFromPath(path),
+    path,
+    caption: "",
+  }));
+  ThreadStore.addUserMessage(pinnedOpts.sessionId, {
+    text: pinnedOpts.text,
+    clientMessageId,
+    files: localFiles,
+    topic: pinnedOpts.historyTopic,
+  });
+  pinnedOpts.onSessionActive?.(pinnedOpts.text);
 
   // The signal we hand to `sendMessageV1`. The lifecycle handler resolves
   // it on `turn/completed` or `turn/error` (or on early failure inside
@@ -235,18 +228,6 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
   }
 }
 
-/** Whether `enqueueSendV1` should mirror the user message into the
- *  ThreadStore SYNCHRONOUSLY (codex round 4 P2). Returns true only for
- *  the pure-text v1 path; the media and rewrite legacy fallbacks have
- *  their own ThreadStore mirroring inside the SSE bridge that we must
- *  not duplicate. */
-function shouldMirrorUserMessageSync(opts: SendOptions): boolean {
-  if (opts.media.length > 0) return false;
-  if (opts.requestText !== undefined && opts.requestText !== opts.text) {
-    return false;
-  }
-  return true;
-}
 
 /** Test-only reset for the per-session queue map. */
 export function __resetSendQueueForTest(): void {
