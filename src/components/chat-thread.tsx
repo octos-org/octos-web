@@ -1,9 +1,10 @@
 /**
- * Custom chat thread — renders from the message store, not assistant-ui.
+ * Custom chat thread — renders from the thread store.
  *
- * Messages are read from `useMessages(sessionId)` and rendered as bubbles:
- * user on right, assistant on left. Supports inline file players,
- * markdown rendering, tool progress, thinking indicators, and message meta.
+ * Threads are read from `useThreads(sessionId, topic)` and rendered as
+ * one user bubble + ordered assistant/tool responses + a streaming
+ * pending-assistant tail. Supports inline file players, markdown
+ * rendering, tool progress, thinking indicators, and message meta.
  */
 
 import {
@@ -30,20 +31,17 @@ import {
 } from "lucide-react";
 import { useSession } from "@/runtime/session-context";
 import {
-  useMessages,
-  type Message,
-  type MessageFile,
-  type MessageMeta,
-} from "@/store/message-store";
-import {
   useThreads,
   loadHistory as loadThreadHistory,
+  type MessageFile,
+  type MessageMeta,
   type Thread,
   type ThreadMessage,
   type ThreadToolCall,
 } from "@/store/thread-store";
 import { uploadFiles } from "@/api/chat";
 import { sendMessage as bridgeSend } from "@/runtime/ui-protocol-send";
+import { getActiveBridge } from "@/runtime/ui-protocol-runtime";
 import * as StreamManager from "@/runtime/stream-manager";
 import { MarkdownContent } from "./markdown-renderer";
 import { ThinkingIndicator } from "./thinking-indicator";
@@ -63,14 +61,6 @@ function formatTimestamp(ts: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-function userBubbleVisibleText(message: Message): string {
-  if (message.files.length === 0) return message.text;
-  const trimmed = message.text.trim();
-  if (/^\[Attached: .*\]$/u.test(trimmed)) return "";
-  if (trimmed === "[User sent an image]") return "";
-  return message.text;
-}
-
 function visibleAttachmentCaption(caption?: string): string {
   if (!caption) return "";
   if (/^\s*[✓✗]\s+\S+.*\b(completed|failed|error)\b/iu.test(caption.trim())) {
@@ -78,128 +68,6 @@ function visibleAttachmentCaption(caption?: string): string {
   }
   return caption;
 }
-
-const UserBubble = memo(function UserBubble({ message }: { message: Message }) {
-  const visibleText = userBubbleVisibleText(message);
-  return (
-    <div className="flex justify-end px-4 py-3">
-      <div className="flex max-w-[74%] flex-col items-end">
-        {visibleText && (
-          <div
-            data-testid="user-message"
-            className="message-card message-card-user rounded-[14px] rounded-br-[4px] px-4 py-2.5 text-sm leading-relaxed text-text"
-          >
-            {visibleText}
-          </div>
-        )}
-        {message.files.length > 0 && (
-          <div className={`${visibleText ? "mt-2" : ""} flex flex-wrap gap-2`}>
-            {message.files.map((f) => (
-              <FileAttachment key={f.path} file={f} />
-            ))}
-          </div>
-        )}
-        <div className="mt-1.5 px-1 text-[10px] text-muted/50 select-none">
-          {formatTimestamp(message.timestamp)}
-        </div>
-      </div>
-    </div>
-  );
-});
-
-const AssistantBubble = memo(function AssistantBubble({
-  message,
-  isLast,
-}: {
-  message: Message;
-  isLast: boolean;
-}) {
-  return (
-    <div className="flex px-4 py-3">
-      <div
-        data-testid="assistant-message"
-        className="message-card message-card-assistant animate-shell-rise max-w-[88%] rounded-[14px] rounded-bl-[4px] px-4 py-3 text-sm leading-relaxed text-text"
-      >
-        {message.text ? (
-          <MarkdownContent
-            text={message.text}
-            className="prose prose-invert prose-sm max-w-none min-w-0 break-words"
-          />
-        ) : message.status === "streaming" ? (
-          <span className="inline-flex items-center gap-1">
-            <span className="h-2 w-2 rounded-full bg-accent/60 animate-pulse" />
-            <span className="h-2 w-2 rounded-full bg-accent/60 animate-pulse [animation-delay:150ms]" />
-            <span className="h-2 w-2 rounded-full bg-accent/60 animate-pulse [animation-delay:300ms]" />
-          </span>
-        ) : null}
-
-        {/* Inline file attachments */}
-        {message.files.length > 0 && (
-          <div className="mt-3 flex flex-col gap-2">
-            {message.files.map((f) => (
-              <FileAttachment key={f.path} file={f} />
-            ))}
-          </div>
-        )}
-
-        {/* Tool calls */}
-        {message.toolCalls.length > 0 && (
-          <div className="mt-2 flex flex-col gap-1.5">
-            {message.toolCalls.map((tc, idx) => (
-              <div
-                // Fall back to index when the server omitted a
-                // tool_call_id so React still has a stable per-render
-                // key without us minting a synthetic id.
-                key={tc.id || `idx-${idx}`}
-                data-testid="tool-call-bubble"
-                // Render only when the server actually issued a
-                // tool_call_id. Falling back to a synthetic shape would
-                // break external correlation (e.g. specs comparing the
-                // bubble's id to /api/sessions/:id/tasks[i].tool_call_id).
-                data-tool-call-id={tc.id || undefined}
-                className={`flex flex-col gap-1 rounded-[10px] px-2.5 py-1 text-[10px] font-mono ${
-                  tc.status === "running"
-                    ? "border-accent/20 bg-accent/14 text-accent animate-pulse"
-                    : tc.status === "error"
-                      ? "border-red-500/20 bg-red-500/12 text-red-400"
-                      : "text-muted"
-                } glass-pill`}
-              >
-                <span>{tc.name}</span>
-                {tc.progress.length > 0 && (
-                  <ul
-                    data-testid="tool-call-runtime-timeline"
-                    className="m-0 mt-1 flex list-none flex-col gap-0.5 border-l border-current/20 pl-2"
-                  >
-                    {tc.progress.map((entry, idx) => (
-                      <li key={idx} className="opacity-80">
-                        {entry.message.replace(
-                          /^\[(info|debug|warn|error)\]\s*/i,
-                          "",
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Thinking + tool progress (only for the last streaming message) */}
-        {isLast && message.status === "streaming" && (
-          <>
-            <ThinkingIndicator />
-            <ToolProgressIndicator />
-          </>
-        )}
-
-        {/* Message meta */}
-        <MessageMetaInline message={message} />
-      </div>
-    </div>
-  );
-});
 
 // ---------------------------------------------------------------------------
 // File attachment renderer
@@ -415,45 +283,10 @@ function AudioAttachment({ file, blobUrl }: { file: MessageFile; blobUrl?: strin
   );
 }
 
-// ---------------------------------------------------------------------------
-// Inline message meta (replaces the old assistant-ui based MessageMeta)
-// ---------------------------------------------------------------------------
-
+// Token count formatter shared by per-thread message meta.
 function formatTokens(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
   return n.toString();
-}
-
-function MessageMetaInline({
-  message,
-}: {
-  message: Message;
-}) {
-  const meta: MessageMeta | undefined = message.meta;
-
-  const parts: string[] = [];
-  if (meta) {
-    if (meta.model) parts.push(meta.model);
-    if (meta.tokens_in) parts.push(`${formatTokens(meta.tokens_in)} in`);
-    if (meta.tokens_out) parts.push(`${formatTokens(meta.tokens_out)} out`);
-    if (meta.duration_s) parts.push(`${meta.duration_s}s`);
-  }
-  parts.push(formatTimestamp(message.timestamp));
-
-  if (meta && (meta.model || meta.tokens_in || meta.tokens_out)) {
-    return (
-      <div className="mt-1.5 flex items-center gap-1.5 text-[10px] text-muted/60 select-none">
-        <span className="inline-block h-1.5 w-1.5 rounded-full bg-accent/40" />
-        {parts.join(" · ")}
-      </div>
-    );
-  }
-
-  return (
-    <div className="mt-1.5 text-[10px] text-muted/60 select-none">
-      {formatTimestamp(message.timestamp)}
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -541,47 +374,11 @@ interface ChatThreadProps {
   hideFileOnlyAssistantMessages?: boolean;
 }
 
-function isFileOnlyAssistantMessage(message: Message): boolean {
-  return (
-    message.role === "assistant" &&
-    !message.text.trim() &&
-    message.files.length > 0 &&
-    message.toolCalls.length === 0
-  );
-}
-
-/** M8.10 PR #3: opt-in to the new thread-by-cmid renderer via DevTools.
- *  When the flag is on, render a stub placeholder — the real threaded UI
- *  ships in PR #4. The flat-list path below remains the default.
- *
- *  Phase C-2 (codex review #1): the chat_app_ui_v1 send path writes only
- *  to ThreadStore (`ui-protocol-send.ts`). To avoid a renderer/store
- *  mismatch (writes to ThreadStore, reads from MessageStore = empty
- *  /chat), v1=ON also forces the v2 renderer regardless of the v2 flag.
- *  This does NOT change v2 flag semantics or default — v2 OFF + v1 OFF
- *  remains the legacy flat-list path. */
-function isThreadStoreV2Enabled(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    if (window.localStorage.getItem("octos_thread_store_v2") === "1") return true;
-    return window.localStorage.getItem("chat_app_ui_v1") === "1";
-  } catch {
-    return false;
-  }
-}
-
 export function ChatThread({
   hideFileOnlyAssistantMessages = false,
 }: ChatThreadProps = {}) {
-  if (isThreadStoreV2Enabled()) {
-    return (
-      <ChatThreadV2
-        hideFileOnlyAssistantMessages={hideFileOnlyAssistantMessages}
-      />
-    );
-  }
   return (
-    <ChatThreadFlatList
+    <ChatThreadV2
       hideFileOnlyAssistantMessages={hideFileOnlyAssistantMessages}
     />
   );
@@ -977,105 +774,6 @@ function ChatThreadV2({
   );
 }
 
-function ChatThreadFlatList({
-  hideFileOnlyAssistantMessages = false,
-}: ChatThreadProps) {
-  const { currentSessionId, historyTopic } = useSession();
-  const messages = useMessages(currentSessionId, historyTopic);
-  const visibleMessages = useMemo(
-    () =>
-      hideFileOnlyAssistantMessages
-        ? messages.filter((message) => !isFileOnlyAssistantMessage(message))
-        : messages,
-    [hideFileOnlyAssistantMessages, messages],
-  );
-  const hasMessages = visibleMessages.length > 0;
-
-  return (
-    <div className="flex h-full min-h-0 flex-col bg-transparent">
-      {hasMessages ? (
-        <MessageList messages={visibleMessages} sessionId={currentSessionId} />
-      ) : (
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6">
-          <div className="glass-section animate-shell-rise max-w-xl rounded-[12px] px-7 py-9 text-center">
-            <div className="shell-kicker">Conversation Studio</div>
-            <h1 className="mb-3 mt-3 text-3xl font-light tracking-tight text-text-strong">
-              What can I help with?
-            </h1>
-            <p className="text-sm text-muted">
-              Ask anything, attach files, or record a voice message.
-            </p>
-          </div>
-        </div>
-      )}
-      <div className="shrink-0">
-        <Composer />
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Message list with auto-scroll
-// ---------------------------------------------------------------------------
-
-function MessageList({
-  messages,
-}: {
-  messages: Message[];
-  sessionId: string;
-}) {
-  const viewportRef = useRef<HTMLDivElement>(null);
-  const stickToBottomRef = useRef(true);
-
-  // Detect whether user has scrolled up (passive for performance)
-  useEffect(() => {
-    const el = viewportRef.current;
-    if (!el) return;
-    const handleScroll = () => {
-      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      stickToBottomRef.current = distanceFromBottom < 80;
-    };
-    el.addEventListener("scroll", handleScroll, { passive: true });
-    return () => el.removeEventListener("scroll", handleScroll);
-  }, []);
-
-  // Auto-scroll when messages change (new message or text update)
-  useEffect(() => {
-    if (stickToBottomRef.current && viewportRef.current) {
-      viewportRef.current.scrollTop = viewportRef.current.scrollHeight;
-    }
-  }, [messages]);
-
-  return (
-    <div
-      data-testid="chat-thread"
-      ref={viewportRef}
-      className="flex-1 min-h-0 overflow-y-auto overscroll-contain"
-    >
-      <div className="mx-auto max-w-4xl py-6">
-        {messages.map((msg, i) => {
-          const isLast = i === messages.length - 1;
-          if (msg.role === "user") {
-            return <UserBubble key={msg.id} message={msg} />;
-          }
-          if (msg.role === "assistant") {
-            return (
-              <AssistantBubble key={msg.id} message={msg} isLast={isLast} />
-            );
-          }
-          // system messages — render as a subtle divider
-          return (
-            <div key={msg.id} className="px-4 py-2 text-center text-xs text-muted/60">
-              {msg.text}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Composer
 // ---------------------------------------------------------------------------
@@ -1091,22 +789,18 @@ function Composer() {
     adaptiveMode,
   } =
     useSession();
-  // M8.10: under v2 flag the message-store is empty (events flow through
-  // thread-store), so `messages.some(streaming)` is always false and the
-  // cancel button never appears. Read isRunning from whichever store is
-  // active.
-  const messages = useMessages(currentSessionId, historyTopic);
+  // M10.5: ThreadStore is the single source of truth — read `isRunning`
+  // from the active session's threads.
   const threadsForRunning = useThreads(currentSessionId, historyTopic);
-  const isRunning = useMemo(() => {
-    if (isThreadStoreV2Enabled()) {
-      return threadsForRunning.some(
+  const isRunning = useMemo(
+    () =>
+      threadsForRunning.some(
         (t) =>
           t.pendingAssistant !== null &&
           t.pendingAssistant.status === "streaming",
-      );
-    }
-    return messages.some((m) => m.status === "streaming");
-  }, [messages, threadsForRunning]);
+      ),
+    [threadsForRunning],
+  );
 
   const [text, setText] = useState("");
   const [cmdFeedback, setCmdFeedback] = useState<string | null>(null);
@@ -1458,8 +1152,27 @@ function Composer() {
   ]);
 
   const handleCancel = useCallback(() => {
-    StreamManager.destroyStream(currentSessionId);
-  }, [currentSessionId]);
+    // Cancel the in-flight WS turn (v1 path) AND any legacy SSE stream.
+    // Both may exist: a topic-scoped session uses the legacy SSE upload;
+    // a default-scope text turn uses the WS bridge. `interruptTurn` is
+    // a no-op when no matching turn is in flight on the bridge, and
+    // `destroyStream` is a no-op when no SSE stream is active.
+    const bridge = getActiveBridge(currentSessionId, historyTopic);
+    if (bridge) {
+      const pendingTurnId = threadsForRunning.find(
+        (t) =>
+          t.pendingAssistant !== null &&
+          t.pendingAssistant.status === "streaming",
+      )?.id;
+      if (pendingTurnId) {
+        void bridge.interruptTurn(pendingTurnId, "user cancelled").catch(() => {
+          // best-effort: swallow transport errors so the legacy
+          // destroyStream path still runs.
+        });
+      }
+    }
+    StreamManager.destroyStream(currentSessionId, historyTopic);
+  }, [currentSessionId, historyTopic, threadsForRunning]);
 
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {

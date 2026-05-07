@@ -1,12 +1,13 @@
 /**
- * ui-protocol-send unit tests (Phase C-2, issue #68).
+ * ui-protocol-send unit tests.
  *
  * Coverage:
- *   - flag-OFF: delegates to the legacy SSE bridge unchanged
- *   - flag-ON with no active bridge: falls back to legacy so the user
- *     message is never lost on a pre-mount race
- *   - flag-ON with active bridge: dispatches via bridge.sendTurn and
- *     mirrors the user message into the thread store
+ *   - no active bridge: falls back to legacy SSE so a pre-mount race
+ *     never drops the user message
+ *   - active bridge: dispatches via bridge.sendTurn and mirrors the user
+ *     message into the thread store
+ *   - media / requestText: stays on the legacy `/api/chat` upload path
+ *     because the WS `TurnStartInput` only accepts `kind: "text"`
  */
 
 import {
@@ -84,29 +85,7 @@ afterEach(() => {
   __resetSendQueueForTest();
 });
 
-describe("sendMessage flag-OFF preservation", () => {
-  it("flag-OFF delegates to the legacy SSE sendMessage unchanged", () => {
-    const opts = {
-      sessionId: SESSION,
-      text: "hi",
-      media: [] as string[],
-      clientMessageId: "cmid-flag-off",
-    };
-    sendMessage(opts);
-    expect(legacySendSpy).toHaveBeenCalledTimes(1);
-    expect(legacySendSpy).toHaveBeenCalledWith(opts);
-    // No thread is created on the v1 store path because the legacy
-    // bridge is the one that mirrors into ThreadStore (flag-gated
-    // internally by the v2 thread-store flag).
-    expect(ThreadStore.getThreads(SESSION)).toHaveLength(0);
-  });
-});
-
-describe("sendMessage flag-ON path", () => {
-  beforeEach(() => {
-    window.localStorage.setItem("chat_app_ui_v1", "1");
-  });
-
+describe("sendMessage", () => {
   it("falls back to the legacy bridge when no active bridge is registered", async () => {
     sendMessage({
       sessionId: SESSION,

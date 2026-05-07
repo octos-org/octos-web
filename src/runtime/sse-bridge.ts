@@ -17,27 +17,12 @@ import { dispatchCrewFileEvent } from "./file-events";
 import { recordRuntimeCounter } from "./observability";
 import { eventSessionId, eventTopic } from "./event-scope";
 
-/**
- * M8.10 PR #3: feature flag — when set to "1", route SSE events through the
- * new thread-by-cmid `thread-store.ts` instead of the flat-list
- * `message-store.ts`. Default off. PR #5 flips the default and removes the
- * flat-list path. The flag is read fresh each `bindStreamToAssistant` call
- * so toggling in DevTools takes effect on the next user message without a
- * page reload.
- */
-function isThreadStoreEnabled(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    if (window.localStorage.getItem("octos_thread_store_v2") === "1") return true;
-    // Phase C-2 (codex review #1): chat_app_ui_v1 forces ThreadStore
-    // mirroring on the legacy SSE path so the renderer (also forced to
-    // v2 under v1) stays consistent during the bridge-not-yet-mounted
-    // fallback window.
-    return window.localStorage.getItem("chat_app_ui_v1") === "1";
-  } catch {
-    return false;
-  }
-}
+// M10.5: ThreadStore mirroring is unconditional. The legacy
+// `octos_thread_store_v2` / `chat_app_ui_v1` localStorage flags are gone
+// and the bridge always writes through to ThreadStore in addition to
+// MessageStore. The MessageStore mirror is retained ONLY for legacy
+// surfaces that still read from it (sites-chat / slides-chat /
+// task-watcher). The /chat renderer reads from ThreadStore.
 
 // ---------------------------------------------------------------------------
 // Session-scoped tool-call key map (M8.10 follow-up #649).
@@ -327,16 +312,13 @@ export function sendMessage(opts: SendOptions): void {
 
   // 1b. Mirror the user message into the thread store when the feature flag
   //     is on — keeps both stores populated so the renderer can flag-switch
-  //     without losing state. PR #4 makes the thread store the rendered
-  //     source of truth; PR #5 deletes the flat-list path.
-  if (isThreadStoreEnabled()) {
-    ThreadStore.addUserMessage(sessionId, {
-      text,
-      clientMessageId,
-      files: localFiles,
-      topic: historyTopic,
-    });
-  }
+  //     without losing state.
+  ThreadStore.addUserMessage(sessionId, {
+    text,
+    clientMessageId,
+    files: localFiles,
+    topic: historyTopic,
+  });
 
   // Notify sidebar
   onSessionActive?.(text);
@@ -461,11 +443,10 @@ function bindStreamToAssistant({
       .map((k) => toolCalls.get(k))
       .filter((tc): tc is ToolCallSnapshot => tc !== undefined);
 
-  // M8.10 PR #3: snapshot the flag once per stream so toggling mid-stream
-  // doesn't tear data across two stores. The bridge mirrors data into the
-  // thread store when on; the existing flat-list path remains authoritative
-  // until PR #5 flips the default and removes it.
-  const threadStoreEnabled = isThreadStoreEnabled();
+  // M10.5: ThreadStore mirroring is unconditional. Kept as a constant
+  // so the per-event branches read identically to their pre-deletion
+  // shape; tree-shaking eliminates the dead `if (false)` arms anyway.
+  const threadStoreEnabled = true;
 
   /** Resolve the thread_id for an event.
    *
@@ -1036,6 +1017,14 @@ function setupCleanup(
           MessageStore.updateMessage(sessionId, assistantMsgId, {
             status: "complete",
           }, historyTopic);
+          // M10.5: ThreadStore reads `isRunning` for the cancel button
+          // and renders the streaming dots. Mirror the legacy bubble's
+          // terminal status so a stream that ends without `done`
+          // (network drop, abort, server timeout) doesn't leave the
+          // pending bubble stuck spinning.
+          if (clientMessageId) {
+            ThreadStore.finalizeAssistant(clientMessageId, { status: "complete" });
+          }
           _onComplete?.();
         } else {
           // No content — poll for response
@@ -1071,7 +1060,18 @@ async function pollForResponse(
   const maxAttempts = options?.maxAttempts ?? 180;
   const intervalMs = options?.intervalMs ?? 5000;
   for (let i = 0; i < maxAttempts; i++) {
-    if (abortSignal?.aborted) return false;
+    if (abortSignal?.aborted) {
+      // User cancel / page unmount mid-poll. Finalize both stores so
+      // the pending streaming bubble (especially the one ThreadStore
+      // renders on /chat) doesn't sit stuck forever.
+      MessageStore.updateMessage(sessionId, assistantMsgId, {
+        status: "complete",
+      }, historyTopic);
+      if (clientMessageId) {
+        ThreadStore.finalizeAssistant(clientMessageId, { status: "complete" });
+      }
+      return false;
+    }
     await new Promise((r) => setTimeout(r, intervalMs));
     try {
       const msgs = await fetchSessionMessages(
@@ -1110,6 +1110,22 @@ async function pollForResponse(
             status: "complete",
           }, historyTopic);
         }
+        // M10.5: mirror the recovered content + terminal status into
+        // ThreadStore so the pending streaming bubble shows the
+        // server-fetched text on /chat instead of an empty timestamp-only
+        // bubble. The text replace must run BEFORE `finalizeAssistant`
+        // because `finalizeAssistant` moves `pendingAssistant` into
+        // `responses` and `replaceAssistantText` only operates on the
+        // pending slot.
+        if (clientMessageId) {
+          if (matchedAssistant.content) {
+            ThreadStore.replaceAssistantText(
+              clientMessageId,
+              matchedAssistant.content,
+            );
+          }
+          ThreadStore.finalizeAssistant(clientMessageId, { status: "complete" });
+        }
         return true;
       }
     } catch {
@@ -1121,6 +1137,9 @@ async function pollForResponse(
       text: "No response received.",
       status: "error",
     }, historyTopic);
+    if (clientMessageId) {
+      ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
+    }
     return false;
   }
 
@@ -1128,5 +1147,8 @@ async function pollForResponse(
     text: `Error: ${options.errorMessage}`,
     status: "error",
   }, historyTopic);
+  if (clientMessageId) {
+    ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
+  }
   return false;
 }
