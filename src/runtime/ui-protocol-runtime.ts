@@ -167,10 +167,16 @@ export async function startBridgeForSession(
 
 /**
  * Returns the currently-active bridge if it matches the requested scope
- * AND has reached the `connected` state (post-`session/open` ack). A
- * bridge that is still `connecting` / `reconnecting` / `error` / `closed`
- * is treated as unavailable so the v1 send path falls through to the
- * legacy REST/SSE transport instead of parking turns on a dead WS.
+ * AND the WS connection isn't in a dead state (`closed` / `error`). The
+ * bridge's own send queue handles `connecting` / `reconnecting` by
+ * parking the turn until the WS handshake completes — falling back to
+ * legacy REST/SSE during the brief connect window broke fast-burst
+ * scenarios where 5+ prompts fire within the WS connect latency
+ * (rapid-fire-five-fast soak regression, observed on the M10.5
+ * Wave A deploy 2026-05-07). Only fail-closed when the bridge has
+ * actually given up (`closed` / `error`); the codex-round-2 concern
+ * about a permanently blocked / DNS-failing WS still routes around it
+ * since the bridge transitions to `error` after retries exhaust.
  * Mismatched scopes also return null so callers don't dispatch into the
  * wrong session's transport.
  */
@@ -180,7 +186,9 @@ export function getActiveBridge(
 ): UiProtocolBridge | null {
   if (!active) return null;
   if (!sameScope(active, sessionId, topic)) return null;
-  if (active.connectionState !== "connected") return null;
+  if (active.connectionState === "closed" || active.connectionState === "error") {
+    return null;
+  }
   return active.bridge;
 }
 
