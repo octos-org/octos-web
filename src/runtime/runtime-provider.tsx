@@ -124,13 +124,21 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
     }
   }, [currentSessionId, historyTopic]);
 
-  // Mount the UI Protocol v1 `ui-protocol-bridge` over WS for every chat
-  // session. The bridge owns the streaming-turn slice; the router fans
-  // bridge events out to ThreadStore mutations. Media / voice uploads
-  // still run through the legacy SSE `/api/chat` POST (`stream-manager`)
+  // Mount the UI Protocol v1 `ui-protocol-bridge` over WS for every
+  // root-scope chat session. Topic-scoped sessions (sites/slides,
+  // `/new <topic>`) skip the bridge entirely until the WS protocol
+  // carries `topic`: `session/open` and `TurnStartInput` only carry
+  // `sessionId`, so a bridge mounted under an active topic would route
+  // root-session notifications into the topic's ThreadStore and render
+  // unrelated root messages there. (codex review M10.5 round 3 P2.)
+  // The bridge owns the streaming-turn slice; the router fans bridge
+  // events out to ThreadStore mutations. Media / voice uploads always
+  // run through the legacy SSE `/api/chat` POST (`stream-manager`)
   // because the WS bridge's `TurnStartInput` only accepts `kind: "text"`
   // today — but the rendered output always lands in ThreadStore.
   useEffect(() => {
+    const topicTrimmed = historyTopic?.trim() ?? "";
+    if (topicTrimmed.length > 0) return;
     let cancelled = false;
     let mineStarted = false;
     void (async () => {
