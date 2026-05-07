@@ -1536,10 +1536,81 @@ function allThreadsAreOrphanPlaceholders(state: SessionState): boolean {
   return true;
 }
 
+/**
+ * M10.5 reload-mid-stream regression fix: predicate matching the
+ * `applyHydrateDedup` envelope-coverage contract for a single hydrate
+ * row. A row is "covered" when:
+ *
+ *   - `source === "background"` (the legacy companion marker the live
+ *     wire suppresses for negotiated clients), AND either
+ *
+ *     (a) `message_id` matches some envelope's `message_id` — the
+ *         spawn-ack the envelope replaces; OR
+ *     (b) `media` is non-empty AND every path is in some envelope's
+ *         `media` set, with anchor (`thread_id`) match required and
+ *         `turn_id` agreement when both sides expose it (codex
+ *         round-6 P2 on the dedup loop applies here too).
+ *
+ * Use cases:
+ *   • `seedFromHydrateMessages` filters covered rows BEFORE feeding
+ *     `replayHistory` so the seed step never produces a sibling
+ *     bubble for the legacy companion. Without this, the dedup loop
+ *     downstream still drops the row but only if its `historySeq`
+ *     survives `replayHistory`'s adjacent-merge intact — and any
+ *     companion that the live wire emits AFTER the hydrate seed (via
+ *     `message/persisted` for a long-running spawn_only completion)
+ *     would still produce a duplicate bubble. Filtering at the seed
+ *     contract level prevents both classes.
+ *
+ *   • `applyHydrateDedup`'s downstream loop continues to apply the
+ *     same predicate to the post-seed thread state for any row that
+ *     somehow survived (e.g. cached snapshot re-applied after a REST
+ *     replay reseeded the store).
+ *
+ * Defensive: rows whose `source` is not `"background"` and rows whose
+ * coverage cannot be proven (no message_id match AND no anchor for
+ * the media-subset check) are NOT covered. We only delete on positive
+ * evidence — a duplicate render is recoverable; an erased row is not.
+ */
+function hydrateRowCoveredByEnvelope(
+  row: HydrateMessageRow,
+  envelopes: HydrateEnvelope[],
+): boolean {
+  if (envelopes.length === 0) return false;
+  if (row.source !== "background") return false;
+
+  // (a) message_id match — session-unique, works without thread_id.
+  if (row.message_id) {
+    for (const e of envelopes) {
+      if (e.message_id === row.message_id) return true;
+    }
+  }
+
+  // (b) anchor + media-subset match. Anchor required so a different
+  // completion in a different thread that happens to reuse a media
+  // path is never wrongly covered. When both sides expose `turn_id`
+  // they must agree (codex round-6 P2 on the dedup loop); when either
+  // side omits it we fall back to anchor+media match (current server
+  // emits `turn_id: None` on `MessagePersistedEvent`s).
+  const anchor = row.thread_id;
+  if (!anchor) return false;
+  if (!row.media || row.media.length === 0) return false;
+  for (const e of envelopes) {
+    const envAnchor = e.thread_id ?? e.response_to_client_message_id ?? null;
+    if (envAnchor !== anchor) continue;
+    if (row.turn_id && e.turn_id && row.turn_id !== e.turn_id) continue;
+    const envMedia = new Set(e.media ?? []);
+    if (envMedia.size === 0) continue;
+    if (row.media.every((p) => envMedia.has(p))) return true;
+  }
+  return false;
+}
+
 function seedFromHydrateMessages(
   sessionId: string,
   topic: string | undefined,
   rows: HydrateMessageRow[],
+  envelopes: HydrateEnvelope[],
 ): boolean {
   if (rows.length === 0) return false;
   const key = storeKey(sessionId, topic);
@@ -1562,6 +1633,16 @@ function seedFromHydrateMessages(
   const apiMessages: MessageInfo[] = [];
   let hasUserRow = false;
   for (const row of rows) {
+    // M10.5 reload-mid-stream regression: skip rows the envelope
+    // contract already covers, BEFORE feeding `replayHistory`. If we
+    // let a covered `Background`-source row through, `replayHistory`
+    // may fold it into a sibling bubble via `mergeMediaCompanionInto`
+    // (donating its `historySeq`) and then `appendCompletionBubble`
+    // appends the envelope as a SEPARATE bubble — yielding the
+    // 1 user + 3 assistant shape `m10-harden-reload-midstream` catches.
+    // Drop the row at the seed contract; the envelope-emit pass then
+    // produces exactly 1 completion bubble downstream.
+    if (hydrateRowCoveredByEnvelope(row, envelopes)) continue;
     const info = hydrateRowToMessageInfo(row);
     if (!info) continue;
     // Codex SPA round 1 P2.1: `replayHistory` skips `system` rows.
@@ -1657,8 +1738,13 @@ export function applyHydrateDedup(
   // M10.5 reload-mid-stream fallback: if REST hasn't seeded the store
   // yet (it returned `[]` or hasn't fired) but WS hydrate carried the
   // full message list, seed from hydrate first so the dedup pass below
-  // and the envelope-emit have a thread to anchor to.
-  seedFromHydrateMessages(sessionId, topic, messages);
+  // and the envelope-emit have a thread to anchor to. Pass `envelopes`
+  // through so the seed step drops `Background`-source companion rows
+  // covered by an envelope BEFORE `replayHistory`'s adjacent-merge can
+  // fold their `historySeq` onto a sibling bubble — the bug
+  // `m10-harden-reload-midstream` catches when both the legacy
+  // companion AND the envelope land in the same hydrate response.
+  seedFromHydrateMessages(sessionId, topic, messages, envelopes);
   if (envelopes.length === 0) return;
 
   // Build the seq → row metadata index, including media so we can

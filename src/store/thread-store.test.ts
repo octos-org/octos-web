@@ -2513,4 +2513,212 @@ describe("setHydrateSnapshot reload-mid-stream fallback (M10.5)", () => {
     expect(threads).toHaveLength(1);
     expect(threads[0].userMsg.text).toBe("AUTHORITATIVE rest user text");
   });
+
+  /**
+   * M10.5 reload-mid-stream regression (the bug
+   * `tests/m10-harden-reload-midstream.spec.ts` catches): when the
+   * server returns a hydrate carrying BOTH the legacy `Background`-source
+   * companion row in `messages[]` AND the `turn/spawn_complete` envelope
+   * in `replayed_envelopes[]` (with the same media), the SPA must not
+   * render the companion as a separate bubble.
+   *
+   * Pre-fix: `seedFromHydrateMessages` fed the companion verbatim into
+   * `replayHistory`, producing 1 user + 3 assistant (ack + companion +
+   * envelope-completion). Post-fix: the seed pass drops covered
+   * background rows BEFORE feeding `replayHistory`, leaving 1 user + 2
+   * assistant (ack + envelope-completion).
+   */
+  it("drops covered background companion rows from the seed feed when an envelope covers them", () => {
+    ThreadStore.setHydrateSnapshot(SID, undefined, {
+      messages: [
+        {
+          seq: 0,
+          role: "user",
+          content: "Use deep_research to find news about Rust.",
+          client_message_id: "cmid-user-1",
+          thread_id: "cmid-user-1",
+          persisted_at: "2026-05-04T00:00:00Z",
+        },
+        {
+          // Spawn-ack — background source, no media. NOT covered by
+          // the envelope (envelope's message_id is the completion's,
+          // not the ack's), so MUST survive the seed.
+          seq: 19,
+          message_id: "local:research:ack:19",
+          source: "background",
+          role: "assistant",
+          content: "Spawning deep_research…",
+          thread_id: "cmid-user-1",
+          persisted_at: "2026-05-04T00:00:01Z",
+        },
+        {
+          // Per-file companion — background source, with media. Covered
+          // by the envelope's media-subset → MUST be dropped from the
+          // seed feed so the dedup pass + envelope-emit don't end up
+          // rendering both the companion and the completion.
+          seq: 22,
+          message_id: "local:research:companion:22",
+          source: "background",
+          role: "assistant",
+          content: "",
+          thread_id: "cmid-user-1",
+          media: ["pf/rust-news.md"],
+          persisted_at: "2026-05-04T00:00:02Z",
+        },
+      ],
+      replayed_envelopes: [
+        {
+          thread_id: "cmid-user-1",
+          task_id: "task_research",
+          seq: 25,
+          message_id: "local:research:complete:25",
+          content: "## Rust news\nFull report inline.",
+          media: ["pf/rust-news.md"],
+          persisted_at: "2026-05-04T00:00:03Z",
+        },
+      ],
+    });
+
+    const threads = ThreadStore.getThreads(SID);
+    expect(threads).toHaveLength(1);
+    expect(threads[0].userMsg.text).toBe(
+      "Use deep_research to find news about Rust.",
+    );
+    // Exactly 2 assistant responses: the spawn-ack (preserved because
+    // its message_id does NOT match the envelope and it has no media)
+    // and the envelope's completion bubble. The covered background
+    // companion was filtered before the seed reached `replayHistory`.
+    expect(threads[0].responses).toHaveLength(2);
+    const responseTexts = threads[0].responses.map((r) => r.text);
+    expect(responseTexts).toContain("Spawning deep_research…");
+    expect(responseTexts).toContain("## Rust news\nFull report inline.");
+    // The completion bubble carries the media (the companion's path
+    // surfaces here once, not twice).
+    const fileBubbles = threads[0].responses.filter((r) => r.files.length > 0);
+    expect(fileBubbles).toHaveLength(1);
+    expect(fileBubbles[0].files.map((f) => f.path)).toEqual(["pf/rust-news.md"]);
+  });
+
+  /**
+   * Adjacent-seq case: when the spawn-ack and the per-file companion
+   * sit at adjacent seqs (N, N+1), pre-fix `replayHistory` would
+   * `mergeMediaCompanionInto` and donate the companion's `historySeq`
+   * onto the ack — leaving the dedup loop downstream to drop the
+   * merged ack (defensive check passes because `meta.source ===
+   * "background"`), and then `appendCompletionBubble` appends the
+   * envelope as a fresh bubble. The shape WAS 1 user + 1 envelope
+   * (the ack lost), which loses the spawn-ack visibility too.
+   * Post-fix: covered companion rows are filtered before the merge,
+   * so the ack survives intact and the envelope is its sibling.
+   */
+  it("preserves the spawn-ack when companion at adjacent seq is covered by envelope", () => {
+    ThreadStore.setHydrateSnapshot(SID, undefined, {
+      messages: [
+        {
+          seq: 0,
+          role: "user",
+          content: "Q",
+          client_message_id: "cmid-1",
+          thread_id: "cmid-1",
+          persisted_at: "2026-05-04T00:00:00Z",
+        },
+        {
+          // Spawn-ack at adjacent seq.
+          seq: 19,
+          message_id: "local:ack:19",
+          source: "background",
+          role: "assistant",
+          content: "Spawning…",
+          thread_id: "cmid-1",
+          persisted_at: "2026-05-04T00:00:01Z",
+        },
+        {
+          // Companion at the immediately-next seq — pre-fix this
+          // adjacency triggered `mergeMediaCompanionInto` and the
+          // ack lost its `historySeq` to the companion.
+          seq: 20,
+          message_id: "local:companion:20",
+          source: "background",
+          role: "assistant",
+          content: "",
+          thread_id: "cmid-1",
+          media: ["pf/report.md"],
+          persisted_at: "2026-05-04T00:00:02Z",
+        },
+      ],
+      replayed_envelopes: [
+        {
+          thread_id: "cmid-1",
+          task_id: "task_x",
+          seq: 25,
+          message_id: "local:complete:25",
+          content: "## Result\nDone.",
+          media: ["pf/report.md"],
+          persisted_at: "2026-05-04T00:00:03Z",
+        },
+      ],
+    });
+
+    const threads = ThreadStore.getThreads(SID);
+    expect(threads).toHaveLength(1);
+    const responseTexts = threads[0].responses.map((r) => r.text);
+    // Both the spawn-ack and the envelope's completion are visible
+    // (the ack is NOT consumed by an adjacent-seq merge with a row
+    // that should never have been seeded in the first place).
+    expect(responseTexts).toContain("Spawning…");
+    expect(responseTexts).toContain("## Result\nDone.");
+    expect(threads[0].responses).toHaveLength(2);
+  });
+
+  /**
+   * Guard: a background row whose media does NOT match any envelope
+   * (separate completion whose envelope aged out of the retention
+   * window) MUST survive the seed. Delete-only-when-positive-evidence,
+   * mirroring the dedup pass's rule.
+   */
+  it("preserves background rows whose media is NOT covered by any envelope", () => {
+    ThreadStore.setHydrateSnapshot(SID, undefined, {
+      messages: [
+        {
+          seq: 0,
+          role: "user",
+          content: "Q",
+          client_message_id: "cmid-1",
+          thread_id: "cmid-1",
+          persisted_at: "2026-05-04T00:00:00Z",
+        },
+        {
+          seq: 30,
+          message_id: "local:other:30",
+          source: "background",
+          role: "assistant",
+          content: "",
+          thread_id: "cmid-1",
+          media: ["pf/orphan.md"],
+          persisted_at: "2026-05-04T00:00:01Z",
+        },
+      ],
+      replayed_envelopes: [
+        {
+          thread_id: "cmid-1",
+          task_id: "task_a",
+          seq: 19,
+          message_id: "local:a:19",
+          content: "envelope A",
+          media: ["pf/different.md"],
+          persisted_at: "2026-05-04T00:00:02Z",
+        },
+      ],
+    });
+
+    const threads = ThreadStore.getThreads(SID);
+    // Both the surviving companion AND the envelope's completion are
+    // present (the orphan companion is preserved because no envelope
+    // covers its media).
+    const allFiles = threads[0].responses.flatMap((r) =>
+      r.files.map((f) => f.path),
+    );
+    expect(allFiles).toContain("pf/orphan.md");
+    expect(allFiles).toContain("pf/different.md");
+  });
 });
