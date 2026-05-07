@@ -10,29 +10,14 @@ import {
   type SessionSendRequest,
 } from "@/runtime/session-context";
 import * as MessageStore from "@/store/message-store";
-import { useMessages, type Message } from "@/store/message-store";
+import { type Message } from "@/store/message-store";
 import { useThreads, type Thread } from "@/store/thread-store";
 
-function isThreadStoreV2Enabled(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    if (window.localStorage.getItem("octos_thread_store_v2") === "1") return true;
-    // Phase C-2 (codex review #1): chat_app_ui_v1 forces v2 renderer so
-    // sites-chat reads from the same store /chat does.
-    return window.localStorage.getItem("chat_app_ui_v1") === "1";
-  } catch {
-    return false;
-  }
-}
-
 /**
- * Read messages from whichever store is currently active. Under the
- * v2 thread-store flag the legacy message-store is empty, so callers
- * that do raw history lookups (e.g. SitesChat looking for the last
- * user message to seed scaffold prompts) must read threads instead.
- *
- * Returns a flat list ordered by user-message send time then per-thread
- * sequence — matches the rendered DOM order.
+ * Flatten thread-store data into the legacy `Message[]` shape SitesChat
+ * already iterates over (e.g. for scaffold-prompt seeding). Returns a
+ * flat list ordered by user-message send time then per-thread sequence —
+ * matches the rendered DOM order.
  */
 function flattenThreadsToMessages(threads: Thread[]): Message[] {
   const flatToolCalls = (
@@ -147,14 +132,13 @@ export function SitesChat({ sessionId }: Props) {
   const projectTitle = project?.title;
   const projectScaffolded = project?.scaffolded;
   const historyTopic = project?.preset ? `site ${project.preset}` : undefined;
-  // M8.10: read from whichever store is active so the scaffold lookup
-  // for the last user message works under both flag states.
-  const flatMessages = useMessages(sessionId, historyTopic);
+  // M10.5: ThreadStore is the single source of truth. SitesChat still
+  // reads a flattened `Message[]` for backwards compatibility with its
+  // internal scaffold-prompt seeding logic.
   const threads = useThreads(sessionId, historyTopic);
   const messages = useMemo(
-    () =>
-      isThreadStoreV2Enabled() ? flattenThreadsToMessages(threads) : flatMessages,
-    [flatMessages, threads],
+    () => flattenThreadsToMessages(threads),
+    [threads],
   );
 
   useEffect(() => {

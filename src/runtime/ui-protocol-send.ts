@@ -1,22 +1,18 @@
 /**
- * UI Protocol v1 send-path glue for /chat (Phase C-2).
+ * UI Protocol v1 send-path entry point for /chat.
  *
- * Flag-gated wrapper around the legacy SSE-bridge `sendMessage`. When the
- * `chat_app_ui_v1` flag is OFF (the default), this module just delegates
- * to the SSE bridge unchanged so the existing REST+SSE behaviour is bit-
- * for-bit preserved. When ON, the user message is mirrored into the
- * thread store and the turn is dispatched through `bridge.sendTurn(...)`.
+ * The user message is mirrored into the thread store and the turn is
+ * dispatched through `bridge.sendTurn(...)` over the WS UI Protocol.
  *
- * Image / voice upload stays on REST: the existing `sendMessage` already
- * uploads via `StreamManager.startStream` which posts to `/api/chat`. The
- * v1 path runs in parallel — a follow-up swaps the upload pre-step to a
- * direct REST call once the bridge owns the streaming-turn slice cleanly,
- * but for C-2 we keep the simplest possible split: only the streaming
- * transport changes.
+ * **Carve-out**: image / voice / requestText still need the legacy SSE
+ * `/api/chat` upload because the WS bridge's `TurnStartInput` only
+ * accepts `kind: "text"` today. Those sends fall through to
+ * `legacySendMessage` so audio + image uploads keep working. Funnelling
+ * every send (including the legacy fallback) through `enqueueSendV1`
+ * preserves user submission order regardless of transport.
  */
 
 import * as ThreadStore from "@/store/thread-store";
-import { isChatAppUiV1Enabled } from "@/lib/feature-flags";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { sendMessage as legacySendMessage } from "./sse-bridge";
 import type { SendOptions } from "./sse-bridge";
@@ -25,18 +21,6 @@ import { getActiveBridge } from "./ui-protocol-runtime";
 export type { SendOptions } from "./sse-bridge";
 
 export function sendMessage(opts: SendOptions): void {
-  if (!isChatAppUiV1Enabled()) {
-    legacySendMessage(opts);
-    return;
-  }
-  // Codex round 4 P2: every v1 send funnels through the per-session
-  // queue, including the legacy fallbacks (media/rewrite/no-bridge).
-  // Pre-fix, fallback sends bypassed the queue and could overtake an
-  // already-queued v1 prompt — the user submits "Q1" (text → queued
-  // behind a running turn) then "Q2 with image" (legacy fast-path) and
-  // the server sees Q2 first. Funnelling everything through
-  // `enqueueSendV1` preserves user submission order regardless of
-  // which transport each send eventually picks.
   void enqueueSendV1(opts);
 }
 
