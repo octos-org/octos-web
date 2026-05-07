@@ -18,7 +18,6 @@ import { getSessionStatus } from "@/api/sessions";
 import type { BackgroundTaskInfo } from "@/api/types";
 import { restoreWatchedSessions, unwatchSession, watchSession } from "./task-watcher";
 import { eventSessionId, eventTopic } from "./event-scope";
-import { isChatAppUiV1Enabled } from "@/lib/feature-flags";
 import {
   startBridgeForSession,
   stopActiveBridgeIfScope,
@@ -125,13 +124,13 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
     }
   }, [currentSessionId, historyTopic]);
 
-  // Phase C-2 (#68): when the chat_app_ui_v1 flag is on, mount a
-  // `ui-protocol-bridge` on top of the existing SSE+REST runtime. The
-  // bridge owns the streaming-turn slice; the router fans bridge events
-  // out to ThreadStore mutations. Flag-OFF (the default) leaves this
-  // effect a no-op so the legacy path is bit-for-bit preserved.
+  // Mount the UI Protocol v1 `ui-protocol-bridge` over WS for every chat
+  // session. The bridge owns the streaming-turn slice; the router fans
+  // bridge events out to ThreadStore mutations. Media / voice uploads
+  // still run through the legacy SSE `/api/chat` POST (`stream-manager`)
+  // because the WS bridge's `TurnStartInput` only accepts `kind: "text"`
+  // today — but the rendered output always lands in ThreadStore.
   useEffect(() => {
-    if (!isChatAppUiV1Enabled()) return;
     let cancelled = false;
     let mineStarted = false;
     void (async () => {
