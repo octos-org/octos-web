@@ -28,11 +28,20 @@ function shouldFallbackToLegacy(opts: SendOptions): boolean {
   const hasMedia = opts.media.length > 0;
   const hasRewrite =
     opts.requestText !== undefined && opts.requestText !== opts.text;
-  if (hasMedia || hasRewrite) {
+  // Topic-scoped surfaces (slides/sites slash-commands) cannot use the WS
+  // bridge yet — `session/open` only carries `sessionId` and
+  // `TurnStartInput` has no `topic` field, so a bridge.sendTurn would
+  // run/persist against the ROOT session while the SPA store/render is
+  // scoped to the topic. The legacy `/api/chat` POST sends `topic`
+  // explicitly, so keep topic-scoped sends on the legacy transport
+  // until the WS protocol carries the topic. (codex review M10.5
+  // delete-legacy-render P1.)
+  const hasTopic = (opts.historyTopic?.trim().length ?? 0) > 0;
+  if (hasMedia || hasRewrite || hasTopic) {
     if (typeof console !== "undefined" && console.info) {
       console.info(
-        "ui-protocol-send: v1 path does not yet support media/requestText; falling back to legacy",
-        { hasMedia, hasRewrite },
+        "ui-protocol-send: v1 path does not yet support media / requestText / topic; falling back to legacy",
+        { hasMedia, hasRewrite, hasTopic },
       );
     }
     return true;
