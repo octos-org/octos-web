@@ -41,6 +41,7 @@ import {
 } from "@/store/thread-store";
 import { uploadFiles } from "@/api/chat";
 import { sendMessage as bridgeSend } from "@/runtime/ui-protocol-send";
+import { getActiveBridge } from "@/runtime/ui-protocol-runtime";
 import * as StreamManager from "@/runtime/stream-manager";
 import { MarkdownContent } from "./markdown-renderer";
 import { ThinkingIndicator } from "./thinking-indicator";
@@ -1151,8 +1152,27 @@ function Composer() {
   ]);
 
   const handleCancel = useCallback(() => {
-    StreamManager.destroyStream(currentSessionId);
-  }, [currentSessionId]);
+    // Cancel the in-flight WS turn (v1 path) AND any legacy SSE stream.
+    // Both may exist: a topic-scoped session uses the legacy SSE upload;
+    // a default-scope text turn uses the WS bridge. `interruptTurn` is
+    // a no-op when no matching turn is in flight on the bridge, and
+    // `destroyStream` is a no-op when no SSE stream is active.
+    const bridge = getActiveBridge(currentSessionId, historyTopic);
+    if (bridge) {
+      const pendingTurnId = threadsForRunning.find(
+        (t) =>
+          t.pendingAssistant !== null &&
+          t.pendingAssistant.status === "streaming",
+      )?.id;
+      if (pendingTurnId) {
+        void bridge.interruptTurn(pendingTurnId, "user cancelled").catch(() => {
+          // best-effort: swallow transport errors so the legacy
+          // destroyStream path still runs.
+        });
+      }
+    }
+    StreamManager.destroyStream(currentSessionId, historyTopic);
+  }, [currentSessionId, historyTopic, threadsForRunning]);
 
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
