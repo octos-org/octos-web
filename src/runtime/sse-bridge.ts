@@ -1110,9 +1110,20 @@ async function pollForResponse(
             status: "complete",
           }, historyTopic);
         }
-        // M10.5: mirror terminal status into ThreadStore so the
-        // pending streaming bubble doesn't stay stuck on /chat.
+        // M10.5: mirror the recovered content + terminal status into
+        // ThreadStore so the pending streaming bubble shows the
+        // server-fetched text on /chat instead of an empty timestamp-only
+        // bubble. The text replace must run BEFORE `finalizeAssistant`
+        // because `finalizeAssistant` moves `pendingAssistant` into
+        // `responses` and `replaceAssistantText` only operates on the
+        // pending slot.
         if (clientMessageId) {
+          if (matchedAssistant.content) {
+            ThreadStore.replaceAssistantText(
+              clientMessageId,
+              matchedAssistant.content,
+            );
+          }
           ThreadStore.finalizeAssistant(clientMessageId, { status: "complete" });
         }
         return true;
