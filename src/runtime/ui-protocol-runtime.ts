@@ -12,6 +12,7 @@ import {
   createUiProtocolBridge,
   type UiProtocolBridge,
 } from "./ui-protocol-bridge";
+import type { ConnectionState } from "./ui-protocol-types";
 import { attachRouter, type RouterAttachment } from "./ui-protocol-event-router";
 import { setHydrateSnapshot } from "@/store/thread-store";
 
@@ -20,6 +21,13 @@ interface ActiveBridge {
   topic?: string;
   bridge: UiProtocolBridge;
   attachment: RouterAttachment;
+  /** Live connection state, kept in sync via `onConnectionStateChange`.
+   *  `getActiveBridge` only returns this entry when it has reached
+   *  `"connected"`, so callers (the v1 send path) fall back to legacy
+   *  REST/SSE while the WS handshake is still in flight or stalled. */
+  connectionState: ConnectionState;
+  /** Cleanup fn for the connection-state subscriber. Detached on stop. */
+  unsubscribeState: () => void;
 }
 
 let active: ActiveBridge | null = null;
@@ -98,7 +106,28 @@ export async function startBridgeForSession(
     );
   }
   const attachment = attachRouter(bridge, { sessionId, topic });
-  active = { sessionId, topic, bridge, attachment };
+  // Track live connection state so `getActiveBridge` can refuse to
+  // hand out a bridge that has not yet negotiated `session/open`.
+  // Without this, a WS endpoint that is blocked / DNS-fails / hangs in
+  // `connecting` would still publish here and the v1 send queue would
+  // park every text turn forever instead of falling back to legacy
+  // REST/SSE. (codex review M10.5 round 2 P2.)
+  let connectionState: ConnectionState = "connecting";
+  const unsubscribeState = bridge.onConnectionStateChange((s) => {
+    if (active?.bridge === bridge) {
+      active.connectionState = s;
+    } else {
+      connectionState = s;
+    }
+  });
+  active = {
+    sessionId,
+    topic,
+    bridge,
+    attachment,
+    connectionState,
+    unsubscribeState,
+  };
 
   // M10 Phase 6.2 (Bug C): immediately fire `session/hydrate` to fetch
   // the negotiated `replayed_envelopes` + per-row `(message_id,
@@ -137,9 +166,13 @@ export async function startBridgeForSession(
 }
 
 /**
- * Returns the currently-active bridge if it matches the requested scope.
- * Mismatched scopes return null so callers fall back to the legacy path
- * rather than dispatching a turn into the wrong session's transport.
+ * Returns the currently-active bridge if it matches the requested scope
+ * AND has reached the `connected` state (post-`session/open` ack). A
+ * bridge that is still `connecting` / `reconnecting` / `error` / `closed`
+ * is treated as unavailable so the v1 send path falls through to the
+ * legacy REST/SSE transport instead of parking turns on a dead WS.
+ * Mismatched scopes also return null so callers don't dispatch into the
+ * wrong session's transport.
  */
 export function getActiveBridge(
   sessionId: string,
@@ -147,6 +180,7 @@ export function getActiveBridge(
 ): UiProtocolBridge | null {
   if (!active) return null;
   if (!sameScope(active, sessionId, topic)) return null;
+  if (active.connectionState !== "connected") return null;
   return active.bridge;
 }
 
@@ -160,6 +194,7 @@ export async function stopActiveBridge(): Promise<void> {
   const handle = active;
   active = null;
   handle.attachment.detach();
+  handle.unsubscribeState();
   try {
     await handle.bridge.stop();
   } catch {
@@ -186,6 +221,7 @@ export async function stopActiveBridgeIfScope(
   const handle = active;
   active = null;
   handle.attachment.detach();
+  handle.unsubscribeState();
   try {
     await handle.bridge.stop();
   } catch {
@@ -201,16 +237,22 @@ export function __resetUiProtocolRuntimeForTest(): void {
 }
 
 /** Test-only injection so unit tests can drive a mock bridge into the
- *  runtime registry without spinning up a real WebSocket. */
+ *  runtime registry without spinning up a real WebSocket. Defaults the
+ *  connection state to `connected` because all existing test cases
+ *  assume the bridge is ready; pass `connectionState` to drive other
+ *  states (e.g. `connecting` to exercise the legacy-fallback path). */
 export function __setActiveBridgeForTest(
   sessionId: string,
   bridge: UiProtocolBridge,
   topic?: string,
+  connectionState: ConnectionState = "connected",
 ): void {
   active = {
     sessionId,
     topic,
     bridge,
     attachment: { detach: () => {} },
+    connectionState,
+    unsubscribeState: () => {},
   };
 }

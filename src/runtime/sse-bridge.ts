@@ -1017,6 +1017,14 @@ function setupCleanup(
           MessageStore.updateMessage(sessionId, assistantMsgId, {
             status: "complete",
           }, historyTopic);
+          // M10.5: ThreadStore reads `isRunning` for the cancel button
+          // and renders the streaming dots. Mirror the legacy bubble's
+          // terminal status so a stream that ends without `done`
+          // (network drop, abort, server timeout) doesn't leave the
+          // pending bubble stuck spinning.
+          if (clientMessageId) {
+            ThreadStore.finalizeAssistant(clientMessageId, { status: "complete" });
+          }
           _onComplete?.();
         } else {
           // No content — poll for response
@@ -1052,7 +1060,18 @@ async function pollForResponse(
   const maxAttempts = options?.maxAttempts ?? 180;
   const intervalMs = options?.intervalMs ?? 5000;
   for (let i = 0; i < maxAttempts; i++) {
-    if (abortSignal?.aborted) return false;
+    if (abortSignal?.aborted) {
+      // User cancel / page unmount mid-poll. Finalize both stores so
+      // the pending streaming bubble (especially the one ThreadStore
+      // renders on /chat) doesn't sit stuck forever.
+      MessageStore.updateMessage(sessionId, assistantMsgId, {
+        status: "complete",
+      }, historyTopic);
+      if (clientMessageId) {
+        ThreadStore.finalizeAssistant(clientMessageId, { status: "complete" });
+      }
+      return false;
+    }
     await new Promise((r) => setTimeout(r, intervalMs));
     try {
       const msgs = await fetchSessionMessages(
@@ -1091,6 +1110,11 @@ async function pollForResponse(
             status: "complete",
           }, historyTopic);
         }
+        // M10.5: mirror terminal status into ThreadStore so the
+        // pending streaming bubble doesn't stay stuck on /chat.
+        if (clientMessageId) {
+          ThreadStore.finalizeAssistant(clientMessageId, { status: "complete" });
+        }
         return true;
       }
     } catch {
@@ -1102,6 +1126,9 @@ async function pollForResponse(
       text: "No response received.",
       status: "error",
     }, historyTopic);
+    if (clientMessageId) {
+      ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
+    }
     return false;
   }
 
@@ -1109,5 +1136,8 @@ async function pollForResponse(
     text: `Error: ${options.errorMessage}`,
     status: "error",
   }, historyTopic);
+  if (clientMessageId) {
+    ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
+  }
   return false;
 }

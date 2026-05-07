@@ -40,11 +40,18 @@ import {
   stopActiveBridge,
 } from "./ui-protocol-runtime";
 import type { UiProtocolBridge } from "./ui-protocol-bridge";
+import type { ConnectionState } from "./ui-protocol-types";
 
 interface DeferredBridge {
   bridge: UiProtocolBridge;
   resolveStart: () => void;
   rejectStart: (err: Error) => void;
+  /** Drive the bridge's connection-state subscriber. The runtime
+   *  publishes the bridge with state="connecting" and `getActiveBridge`
+   *  refuses to surface a bridge that is not "connected"; tests must
+   *  fire `setConnected()` after `await startBridgeForSession(...)`
+   *  for `getActiveBridge` to return the bridge. */
+  setConnected: () => void;
   startCalls: number;
   stopCalls: number;
 }
@@ -58,6 +65,12 @@ function makeDeferredBridge(): DeferredBridge {
   });
   let startCalls = 0;
   let stopCalls = 0;
+  // Track the current state subscriber so the test can drive the bridge
+  // to `"connected"` after `start()` resolves — `getActiveBridge` only
+  // surfaces a bridge that has reached `connected` (codex M10.5 round 2
+  // P2), so the registry's published-with-state="connecting" entry would
+  // otherwise look like null to assertions.
+  let stateHandler: ((s: ConnectionState) => void) | null = null;
   const bridge: UiProtocolBridge = {
     start: vi.fn(async () => {
       startCalls++;
@@ -80,13 +93,19 @@ function makeDeferredBridge(): DeferredBridge {
     onTaskOutputDelta: vi.fn(() => () => {}),
     onTurnLifecycle: vi.fn(() => () => {}),
     onApprovalRequested: vi.fn(() => () => {}),
-    onConnectionStateChange: vi.fn(() => () => {}),
+    onConnectionStateChange: vi.fn((h: (s: ConnectionState) => void) => {
+      stateHandler = h;
+      return () => {
+        if (stateHandler === h) stateHandler = null;
+      };
+    }),
     onWarning: vi.fn(() => () => {}),
   };
   return {
     bridge,
     resolveStart: () => resolveStart(),
     rejectStart: (err) => rejectStart(err),
+    setConnected: () => stateHandler?.("connected"),
     get startCalls() {
       return startCalls;
     },
@@ -127,6 +146,8 @@ describe("startBridgeForSession race safety", () => {
     // Resolve B first. It should publish.
     b.resolveStart();
     await startB;
+    // Drive the bridge to `connected` so `getActiveBridge` surfaces it.
+    b.setConnected();
     expect(getActiveBridge("sess-B")).toBe(b.bridge);
 
     // Now resolve A. A is stale — it must NOT overwrite active, and it
