@@ -739,6 +739,14 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private profileId: string | null | undefined = undefined;
   private stopped = false;
   private reconnectAttempts = 0;
+  /** True only after `scheduleReconnect` has exhausted
+   *  `maxReconnectAttempts` and given up. Distinguishes the terminal
+   *  `state === "error"` case (no recovery possible) from the transient
+   *  `onerror` blip that `onWsClose` is about to either schedule a
+   *  reconnect for or finalize. The fast-reject in `request()` uses this
+   *  to avoid rejecting sends queued during the brief `onerror -> onclose`
+   *  window of an otherwise recoverable network hiccup. */
+  private reconnectAbandoned = false;
   private reconnectTimer: unknown = null;
   private keepaliveTimer: unknown = null;
   private lastInboundAt = 0;
@@ -849,6 +857,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.sessionId = opts.sessionId;
     this.profileId = opts.profileId ?? this.cfg.getProfileId();
     this.reconnectAttempts = 0;
+    this.reconnectAbandoned = false;
     await this.openSocket();
   }
 
@@ -1103,6 +1112,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       });
       if (this.stopped) return;
       this.reconnectAttempts = 0;
+      this.reconnectAbandoned = false;
       this.setState("connected");
       this.startKeepalive();
       this.flushSendQueue();
@@ -1215,6 +1225,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private scheduleReconnect(): void {
     if (this.stopped) return;
     if (this.reconnectAttempts >= this.cfg.maxReconnectAttempts) {
+      this.reconnectAbandoned = true;
       this.setState("error");
       this.rejectAllPending(new BridgeStoppedError("max reconnect attempts"));
       return;
@@ -1287,19 +1298,30 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     if (this.stopped) {
       return Promise.reject(new BridgeStoppedError());
     }
-    // Fast-reject when the bridge is permanently dead — `closed` and
-    // `error` are terminal states from which the queue will never
-    // drain. Without this guard, callers (`sendTurn`/`interruptTurn`/
-    // `respondToApproval`) silently park the frame in `sendQueue`,
-    // their Promise neither resolves nor rejects, and the user sees
-    // their typed text vanish (the optimistic bubble gets rolled back
-    // upstream when the caller never settles). `bypassQueue` callers
-    // (the handshake `session/open` during `onopen`) handle their own
-    // socket-not-open path below, so we only fast-reject the normal
-    // request path here.
+    // Fast-reject when the bridge is permanently dead so callers
+    // (`sendTurn`/`interruptTurn`/`respondToApproval`) don't silently
+    // park frames in `sendQueue` whose Promise never settles — that
+    // hang is what makes the user's optimistic bubble vanish upstream
+    // when their network drops mid-session.
+    //
+    // We only treat two situations as terminal:
+    //   - `state === "closed"`: NORMAL_CLOSURE arrived (or `stop()` ran);
+    //     the socket will not reopen on its own.
+    //   - `state === "error"` AND `reconnectAbandoned`: scheduleReconnect
+    //     hit `maxReconnectAttempts` and gave up.
+    //
+    // A bare `state === "error"` without `reconnectAbandoned` is the
+    // browser-event blip between `onerror` and `onclose` for a network
+    // hiccup that's about to schedule a reconnect — those sends should
+    // queue, not reject (codex M10.5 Wave A round-4 follow-up).
+    //
+    // `bypassQueue` callers (the handshake `session/open` during
+    // `onopen`) handle their own socket-not-open path below, so we only
+    // gate the normal request path here.
     if (
       !opts?.bypassQueue &&
-      (this.state === "closed" || this.state === "error")
+      (this.state === "closed" ||
+        (this.state === "error" && this.reconnectAbandoned))
     ) {
       return Promise.reject(
         new BridgeStoppedError(
@@ -1353,12 +1375,16 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   }
 
   private sendNotification(method: string, params: unknown): void {
-    // Drop notifications outright when the bridge is permanently dead —
-    // queueing them on a socket that will never reopen just leaks
-    // memory (cf. fast-reject in `request`). `idle`/`connecting`/
-    // `reconnecting` still queue, since those are transient states the
-    // bridge can recover from.
-    if (this.state === "closed" || this.state === "error") {
+    // Drop notifications outright when the bridge is permanently dead
+    // (cf. fast-reject in `request`); queueing them on a socket that
+    // will never reopen just leaks memory. Only treat the terminal
+    // post-max-retries `error` as dead — a transient `onerror` between
+    // `onerror` and `onclose` is about to reconnect, so we let the
+    // notification queue and flush after handshake.
+    if (
+      this.state === "closed" ||
+      (this.state === "error" && this.reconnectAbandoned)
+    ) {
       return;
     }
     const frame: JsonRpcNotification = {
