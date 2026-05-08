@@ -1287,6 +1287,26 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     if (this.stopped) {
       return Promise.reject(new BridgeStoppedError());
     }
+    // Fast-reject when the bridge is permanently dead — `closed` and
+    // `error` are terminal states from which the queue will never
+    // drain. Without this guard, callers (`sendTurn`/`interruptTurn`/
+    // `respondToApproval`) silently park the frame in `sendQueue`,
+    // their Promise neither resolves nor rejects, and the user sees
+    // their typed text vanish (the optimistic bubble gets rolled back
+    // upstream when the caller never settles). `bypassQueue` callers
+    // (the handshake `session/open` during `onopen`) handle their own
+    // socket-not-open path below, so we only fast-reject the normal
+    // request path here.
+    if (
+      !opts?.bypassQueue &&
+      (this.state === "closed" || this.state === "error")
+    ) {
+      return Promise.reject(
+        new BridgeStoppedError(
+          "WebSocket connection is closed; please refresh the page",
+        ),
+      );
+    }
     const id = this.cfg.generateId();
     const frame: JsonRpcRequest = {
       jsonrpc: JSON_RPC_VERSION,
@@ -1333,6 +1353,14 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   }
 
   private sendNotification(method: string, params: unknown): void {
+    // Drop notifications outright when the bridge is permanently dead —
+    // queueing them on a socket that will never reopen just leaks
+    // memory (cf. fast-reject in `request`). `idle`/`connecting`/
+    // `reconnecting` still queue, since those are transient states the
+    // bridge can recover from.
+    if (this.state === "closed" || this.state === "error") {
+      return;
+    }
     const frame: JsonRpcNotification = {
       jsonrpc: JSON_RPC_VERSION,
       method,
