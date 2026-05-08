@@ -166,19 +166,25 @@ export async function startBridgeForSession(
 }
 
 /**
- * Returns the currently-active bridge if it matches the requested scope
- * AND the WS connection isn't in a dead state (`closed` / `error`). The
- * bridge's own send queue handles `connecting` / `reconnecting` by
- * parking the turn until the WS handshake completes — falling back to
- * legacy REST/SSE during the brief connect window broke fast-burst
- * scenarios where 5+ prompts fire within the WS connect latency
- * (rapid-fire-five-fast soak regression, observed on the M10.5
- * Wave A deploy 2026-05-07). Only fail-closed when the bridge has
- * actually given up (`closed` / `error`); the codex-round-2 concern
- * about a permanently blocked / DNS-failing WS still routes around it
- * since the bridge transitions to `error` after retries exhaust.
- * Mismatched scopes also return null so callers don't dispatch into the
- * wrong session's transport.
+ * Returns the currently-active bridge if it matches the requested scope.
+ *
+ * The legacy `connectionState === "closed" | "error"` fail-closed gate
+ * was removed (M10.5 Wave A round-3): the SSE fallback that used to
+ * pick up turns when the WS bridge was dead is itself buggy for text
+ * (Yue 2026-05-07 — SSE is the path M10 was supposed to retire). With
+ * the gate dropped, sends always flow through the bridge's own send
+ * queue, which:
+ *   - parks the turn while `connecting` / `reconnecting` (handshake
+ *     latency window),
+ *   - errors loudly when the bridge has truly given up so the SPA
+ *     surfaces a real "connection lost" state instead of silently
+ *     re-routing through SSE and corrupting the thread.
+ *
+ * Mismatched scopes still return null so callers don't dispatch into
+ * the wrong session's transport. Topic-scoped sessions (sites/slides)
+ * and media uploads (`kind: image|audio`) reach this with their own
+ * scope; the legacy SSE fallback for those consumers lives at the
+ * call site, not here.
  */
 export function getActiveBridge(
   sessionId: string,
@@ -186,9 +192,6 @@ export function getActiveBridge(
 ): UiProtocolBridge | null {
   if (!active) return null;
   if (!sameScope(active, sessionId, topic)) return null;
-  if (active.connectionState === "closed" || active.connectionState === "error") {
-    return null;
-  }
   return active.bridge;
 }
 
