@@ -6,6 +6,7 @@ import {
   useCallback,
   type ReactNode,
 } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import * as authApi from "@/api/auth";
 import {
   clearToken,
@@ -24,6 +25,12 @@ interface AuthState {
   login: (email: string, code: string) => Promise<void>;
   loginWithToken: (token: string) => Promise<void>;
   logout: () => Promise<void>;
+  /** Re-validate the stored token against `/api/auth/me`. Call this from
+   *  any code path that sees an authenticated request rejected (e.g. the
+   *  WS bridge's close-with-1008, a 401 from a long-lived poll). On
+   *  rejection it wipes localStorage + redirects the user to `/login`,
+   *  same as the initial-mount syncMe failure path. */
+  revalidate: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -34,6 +41,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [authStatus, setAuthStatus] = useState<AuthStatusResponse | null>(null);
   const [token, setTokenState] = useState<string | null>(getToken());
   const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  // Centralised auth-fail handler: wipe token slots, clear React state,
+  // and redirect to /login UNLESS we're already there (don't loop on the
+  // login page itself when its own /api/auth/verify call rejects). The
+  // initial-mount syncMe failure, the WS bridge's auth-1008 close, and
+  // any future 401-from-a-long-poll path should all funnel through this
+  // single helper so the SPA never lingers on an authenticated route
+  // with a dead token (the "/chat zombie state" Yue hit on 2026-05-08).
+  const failAuthAndRedirect = useCallback(() => {
+    clearToken();
+    setTokenState(null);
+    setUser(null);
+    setPortal(null);
+    if (location.pathname !== "/login") {
+      navigate("/login", { replace: true });
+    }
+  }, [navigate, location.pathname]);
 
   const syncMe = useCallback(async () => {
     const resp = await authApi.me();
@@ -71,13 +97,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     syncMe()
       .catch(() => {
-        clearToken();
-        setTokenState(null);
-        setUser(null);
-        setPortal(null);
+        failAuthAndRedirect();
       })
       .finally(() => setLoading(false));
-  }, [token, user, syncMe]);
+  }, [token, user, syncMe, failAuthAndRedirect]);
+
+  const revalidate = useCallback(async () => {
+    // Caller flagged that an authenticated request was rejected; re-run
+    // the canonical auth probe and let `failAuthAndRedirect` handle the
+    // cleanup if the token is genuinely dead. If syncMe succeeds, the
+    // rejection was for a different reason (server-side bug, transient
+    // race) and we leave the session intact.
+    try {
+      await syncMe();
+    } catch {
+      failAuthAndRedirect();
+    }
+  }, [syncMe, failAuthAndRedirect]);
 
   const login = useCallback(async (email: string, code: string) => {
     const resp = await authApi.verify(email, code);
@@ -121,7 +157,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, portal, authStatus, token, loading, login, loginWithToken, logout }}
+      value={{ user, portal, authStatus, token, loading, login, loginWithToken, logout, revalidate }}
     >
       {children}
     </AuthContext.Provider>
