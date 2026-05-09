@@ -17,8 +17,33 @@ import { displayFilenameFromPath } from "@/lib/utils";
 import { sendMessage as legacySendMessage } from "./sse-bridge";
 import type { SendOptions } from "./sse-bridge";
 import { getActiveBridge } from "./ui-protocol-runtime";
+import { request } from "@/api/client";
 
 export type { SendOptions } from "./sse-bridge";
+
+/** Re-validate the stored auth token after a send failure. The api/client
+ *  `request()` helper has a built-in 401-interceptor that calls
+ *  `clearToken()` + hard-redirects to `/login`, so a successful 401 here
+ *  drives the user to re-authenticate instead of leaving them on a /chat
+ *  page where the WS will never accept their next send.
+ *
+ *  Bug we're closing: token expiry mid-session yielded a "WS connection
+ *  rejected" close (1008) which surfaces here as a `bridge.sendTurn`
+ *  rejection. Pre-fix, the SPA marked the assistant bubble as error and
+ *  stopped — the user was stuck on /chat with a dead token, no signal
+ *  to re-login. Yue hit this 2026-05-08 testing mini1 (Q1 worked, Q2
+ *  vanished into a dead WS).
+ *
+ *  Probe is best-effort: if /api/auth/me succeeds, the token is still
+ *  valid and the WS rejection was for a different reason (server
+ *  hiccup, transient race) — we don't want to redirect spuriously.
+ *  If /api/auth/me 401s, request()'s interceptor handles cleanup. */
+function probeAuthAfterSendFailure(): void {
+  void request<unknown>("/api/auth/me").catch(() => {
+    // Swallowed — request() already handled redirect via its 401
+    // interceptor. Anything we add here would race with that.
+  });
+}
 
 export function sendMessage(opts: SendOptions): void {
   void enqueueSendV1(opts);
@@ -374,5 +399,10 @@ async function sendMessageV1(
     ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
     off();
     fireComplete();
+    // Token may have been rejected at WS upgrade — probe `/api/auth/me`
+    // to surface dead-token cases via api/client's 401 interceptor (which
+    // hard-redirects to /login). If the token is still good, this is a
+    // no-op and the user can retry.
+    probeAuthAfterSendFailure();
   }
 }
