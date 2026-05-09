@@ -803,6 +803,98 @@ describe("reconnect with exponential backoff", () => {
     ws3.triggerClose(1006);
     expect(states).toContain("error");
   });
+
+  it("sendTurn fast-rejects after maxReconnectAttempts is exhausted", async () => {
+    // Codex M10.5 Wave A round-4 P2: once `scheduleReconnect` has given
+    // up (state==="error" AND reconnectAbandoned), the bridge must
+    // surface a real error to callers instead of parking the frame in
+    // sendQueue forever. This used to silently drop user turns.
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(
+      makeBridgeOpts({ maxReconnectAttempts: 2 }),
+    );
+    void bridge.start({ sessionId: "sess-1" });
+    await Promise.resolve();
+    const ws1 = lastInstance();
+    ws1.triggerClose(1006);
+    await vi.advanceTimersByTimeAsync(1000);
+    const ws2 = lastInstance();
+    ws2.triggerClose(1006);
+    await vi.advanceTimersByTimeAsync(2000);
+    const ws3 = lastInstance();
+    ws3.triggerClose(1006);
+    // Reconnect now abandoned (state==="error", reconnectAbandoned=true).
+    await expect(
+      bridge.sendTurn("turn-x", [{ kind: "text", text: "post-abandon" }]),
+    ).rejects.toThrow(/WebSocket connection is closed/);
+  });
+
+  it("sendTurn during transient onerror (pre-onclose) still queues and reconnects", async () => {
+    // Codex M10.5 Wave A round-4 P2 follow-up: `onerror` flips state to
+    // `error` BEFORE `onclose` runs scheduleReconnect, so a naive
+    // `state==="error" => fast-reject` rule would incorrectly fail
+    // sends issued in the brief browser-event gap of an otherwise
+    // recoverable network hiccup. The fix gates fast-reject on
+    // `reconnectAbandoned`, so the transient `error` blip leaves the
+    // frame queued; this test pins that behavior so a future refactor
+    // can't re-introduce the regression.
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const states: ConnectionState[] = [];
+    bridge.onConnectionStateChange((s) => states.push(s));
+    void bridge.start({ sessionId: "sess-1" });
+    await Promise.resolve();
+    const ws1 = lastInstance();
+    // Drive into the transient error window: onerror fires first, state
+    // becomes "error", but the socket has not yet closed and reconnect
+    // has NOT been abandoned.
+    ws1.onerror?.({});
+    expect(states).toContain("error");
+    // sendTurn at this moment must NOT fast-reject — it should queue
+    // for the imminent reconnect to flush after handshake.
+    let sendSettled = false;
+    const sendPromise = bridge
+      .sendTurn("turn-q", [{ kind: "text", text: "queued through hiccup" }])
+      .then(
+        () => {
+          sendSettled = true;
+        },
+        () => {
+          sendSettled = true;
+        },
+      );
+    await Promise.resolve();
+    expect(sendSettled).toBe(false);
+    // Now let the close land → scheduleReconnect → ws2 opens →
+    // session/open ack → flush.
+    ws1.triggerClose(1006, "abnormal");
+    await vi.advanceTimersByTimeAsync(1000);
+    const ws2 = lastInstance();
+    ws2.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(ws2, METHODS.SESSION_OPEN);
+    ws2.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+    // Frame eventually went out on the new socket.
+    const turnFrames = ws2.sent
+      .map((f) => JSON.parse(f) as { method: string; params?: { turn_id?: string } })
+      .filter((f) => f.method === METHODS.TURN_START)
+      .map((f) => f.params?.turn_id);
+    expect(turnFrames).toContain("turn-q");
+    // Resolve the in-flight RPC so the Promise above settles cleanly.
+    const turnReq = findRequest(ws2, METHODS.TURN_START);
+    ws2.triggerMessage({
+      jsonrpc: "2.0",
+      id: turnReq.id,
+      result: { accepted: true },
+    });
+    await sendPromise;
+    expect(sendSettled).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

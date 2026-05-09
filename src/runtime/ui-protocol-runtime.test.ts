@@ -189,4 +189,62 @@ describe("startBridgeForSession race safety", () => {
     expect(second).toBe(a.bridge);
     expect(createBridgeSpy).toHaveBeenCalledTimes(1);
   });
+
+  it("sendTurn fast-rejects when the underlying bridge has gone closed", async () => {
+    // Codex M10.5 Wave A round-4 P2: removing the SSE-fallback gate from
+    // `getActiveBridge` correctly stops re-routing turns through SSE,
+    // but if the WS bridge is permanently `closed` / `error` the bridge
+    // itself MUST fast-reject its public send methods (`sendTurn` /
+    // `interruptTurn` / `respondToApproval`) instead of parking the
+    // frame in `sendQueue` and never settling its Promise — that path
+    // makes the user's optimistic bubble vanish silently when their
+    // network drops mid-session. This test models the new contract
+    // through the runtime: drive a mock bridge whose `sendTurn` rejects
+    // when its connection state is dead, hand it back via
+    // `getActiveBridge`, and verify the rejection bubbles up with the
+    // user-facing message.
+    const a = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(a.bridge);
+
+    // Override the mock's sendTurn to mirror real bridge behavior:
+    // reject with the canonical closed-WS message when the bridge
+    // believes it is in a terminal state.
+    let mockState: ConnectionState = "connected";
+    (
+      a.bridge.sendTurn as unknown as {
+        mockImplementation: (
+          fn: (turn_id: string, input: unknown) => Promise<unknown>,
+        ) => void;
+      }
+    ).mockImplementation(async (_turn_id: string, _input: unknown) => {
+      if (mockState === "closed" || mockState === "error") {
+        throw new Error(
+          "WebSocket connection is closed; please refresh the page",
+        );
+      }
+      return { accepted: true };
+    });
+
+    const startA = startBridgeForSession("sess-A");
+    a.resolveStart();
+    await startA;
+    a.setConnected();
+    expect(getActiveBridge("sess-A")).toBe(a.bridge);
+
+    // While alive, sendTurn succeeds (sanity check the harness).
+    await expect(a.bridge.sendTurn("turn-1", [])).resolves.toEqual({
+      accepted: true,
+    });
+
+    // Drive the bridge into a terminal state. The runtime's internal
+    // tracker doesn't gate getActiveBridge anymore (round-3 dropped the
+    // SSE fallback), so a stale getActiveBridge result still hands back
+    // the bridge — and the bridge itself is responsible for rejecting.
+    mockState = "closed";
+    const dead = getActiveBridge("sess-A");
+    expect(dead).toBe(a.bridge);
+    await expect(dead!.sendTurn("turn-2", [])).rejects.toThrow(
+      /WebSocket connection is closed/,
+    );
+  });
 });
