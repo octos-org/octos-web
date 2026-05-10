@@ -658,6 +658,51 @@ describe("thread-store", () => {
   });
 
   // ---------------------------------------------------------------------------
+  // Production phantom (mini1 dspfac.crew.ominix.io 2026-05-08): Q1 sent over
+  // the WS lane finalizes correctly with content, then a second
+  // `addUserMessage` for the SAME clientMessageId (legacy mirror, retry,
+  // double-publish) re-creates a streaming `pendingAssistant` on the
+  // already-finalized thread — surfacing as a phantom empty bubble that
+  // never finalizes. `isRunning` then stays true for that thread because
+  // the renderer reads `pendingAssistant.status === "streaming"`, blocking
+  // the user from seeing a clean post-send state.
+  //
+  // The fix: addUserMessage MUST NOT spawn a fresh pendingAssistant on a
+  // thread that already has at least one finalized assistant response —
+  // a follow-up turn would have a fresh `clientMessageId` and root its
+  // own thread.
+  // ---------------------------------------------------------------------------
+
+  it("addUserMessage_does_not_spawn_phantom_pending_on_already_finalized_thread", () => {
+    // Q1: user sends, assistant streams, turn finalizes cleanly.
+    makeUser("今天北京的天气如何", "cmid-q1");
+    ThreadStore.appendAssistantToken("cmid-q1", "北京今天天气晴朗，气温 18.4°C");
+    ThreadStore.finalizeAssistant("cmid-q1", { committedSeq: 1 });
+
+    const afterFinalize = ThreadStore.getThreads(SESSION)[0];
+    expect(afterFinalize.pendingAssistant).toBeNull();
+    expect(afterFinalize.responses).toHaveLength(1);
+
+    // A second `addUserMessage` for the SAME cmid arrives — this is the
+    // production trigger (legacy SSE mirror running after the WS path
+    // already finalized; retry-path re-publishing the same payload; etc.).
+    // The user already saw their answer; this MUST NOT create a fresh
+    // streaming pending.
+    ThreadStore.addUserMessage(SESSION, {
+      text: "今天北京的天气如何",
+      clientMessageId: "cmid-q1",
+    });
+
+    const after = ThreadStore.getThreads(SESSION)[0];
+    expect(
+      after.pendingAssistant,
+      "second addUserMessage on a finalized thread MUST NOT spawn a phantom streaming bubble — that empty bubble pins isRunning=true and surfaces as the empty-timestamp ghost the user reported on mini1 2026-05-08",
+    ).toBeNull();
+    expect(after.responses).toHaveLength(1);
+    expect(after.responses[0].text).toBe("北京今天天气晴朗，气温 18.4°C");
+  });
+
+  // ---------------------------------------------------------------------------
   // PR J Fix 1: Adjacent media-only companion coalescing
   //
   // After reload: assistant text record N (e.g. Chinese-language deep-research

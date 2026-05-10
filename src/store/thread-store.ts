@@ -343,39 +343,64 @@ export function addUserMessage(
   const pendingAssistant = makeAssistantPlaceholder(opts.clientMessageId);
 
   // If a thread already exists with this id, adopt it instead of
-  // double-inserting. Two flavours:
-  //  • Orphan bucket — created earlier by a late background event whose
-  //    user message hadn't been added yet. Preserve its `responses` and
-  //    in-flight `pendingAssistant` (codex review #2: replacing them
-  //    with an empty placeholder would discard runtime progress).
-  //  • Hydrated history thread — `responses` is already populated and
-  //    `pendingAssistant` is null. Open a fresh pending for the new turn.
+  // double-inserting. Three flavours:
+  //  • Orphan bucket with no responses yet — created earlier by a late
+  //    background event whose user message hadn't been added yet.
+  //    Preserve its in-flight `pendingAssistant`; if none, open a fresh
+  //    pending so the upcoming stream events have a slot to land in.
+  //  • In-flight thread (pending non-null) — keep the live pending,
+  //    don't disturb runtime progress (codex review #2).
+  //  • ALREADY-FINALIZED thread (pending null AND responses contain an
+  //    assistant) — DO NOT spawn a fresh streaming pending. The thread
+  //    has already been answered; this is a re-mirror / replay /
+  //    cross-transport double-publish (mini1 2026-05-08: WS path
+  //    finalises Q1 cleanly, then a late legacy-mirror or retry calls
+  //    `addUserMessage` for the same cmid; pre-fix this minted a
+  //    streaming pending that pinned `isRunning=true` and surfaced as
+  //    the empty timestamp-only ghost bubble in the DOM). A real
+  //    follow-up turn always has a fresh `clientMessageId` and roots
+  //    its own thread.
   const existing = state.byId.get(opts.clientMessageId);
   if (existing) {
     existing.userMsg = userMsg;
     if (!existing.pendingAssistant) {
-      existing.pendingAssistant = pendingAssistant;
+      const alreadyAnswered = existing.responses.some(
+        (r) => r.role === "assistant",
+      );
+      if (!alreadyAnswered) {
+        existing.pendingAssistant = pendingAssistant;
+      }
     }
     notify();
     return {
       threadId: opts.clientMessageId,
-      pendingAssistantId: existing.pendingAssistant.id,
+      pendingAssistantId:
+        existing.pendingAssistant?.id ?? pendingAssistant.id,
     };
   }
 
   // Adopt any orphan thread bucket that was created earlier (a late
   // background event arrived ahead of the user message) — even if it
   // landed in a different session's state. Carry over its responses
-  // and in-flight pending so the runtime progress isn't dropped.
+  // and in-flight pending so the runtime progress isn't dropped. Same
+  // already-answered guard as the same-session branch above: if the
+  // orphan already carries a finalized assistant response, do NOT
+  // mint a fresh streaming pending — that would surface as the
+  // phantom empty bubble.
   for (const otherState of sessionsByKey.values()) {
     if (otherState === state) continue;
     const orphan = otherState.byId.get(opts.clientMessageId);
     if (!orphan) continue;
+    const orphanAlreadyAnswered =
+      !orphan.pendingAssistant &&
+      orphan.responses.some((r) => r.role === "assistant");
     const adopted: Thread = {
       id: opts.clientMessageId,
       userMsg,
       responses: orphan.responses,
-      pendingAssistant: orphan.pendingAssistant ?? pendingAssistant,
+      pendingAssistant: orphanAlreadyAnswered
+        ? null
+        : (orphan.pendingAssistant ?? pendingAssistant),
     };
     // Detach from the wrong session.
     otherState.byId.delete(opts.clientMessageId);
@@ -385,7 +410,7 @@ export function addUserMessage(
     notify();
     return {
       threadId: adopted.id,
-      pendingAssistantId: adopted.pendingAssistant!.id,
+      pendingAssistantId: adopted.pendingAssistant?.id ?? pendingAssistant.id,
     };
   }
 
