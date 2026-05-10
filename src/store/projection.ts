@@ -20,6 +20,9 @@
  * (`metrics.droppedAfterTurnCompleted`). `metrics.outOfOrder` counts
  * buffered-then-drained envelopes (back-compat name; not dropped).
  *
+ * Pure module: no imports from `thread-store` and (post-γ-6)
+ * `message-store` no longer exists.
+ *
  * **`turn_completed` barrier**: the projection ignores trailing
  * envelopes after `turn_completed` on a `thread_id` and bumps
  * `droppedAfterTurnCompleted`. The bridge re-syncs the connection.
@@ -233,13 +236,12 @@ function computeProjection(
     thread.appliedCount += 1;
 
     // Capture user identity from the FIRST envelope we apply in
-    // canonical order. The previous "first envelope seen" fallback
-    // (codex BLOCK 3) reconstructed UserView.text from whatever
-    // payload the first envelope carried, which corrupted the user
-    // bubble whenever the first envelope was an assistant_delta. Now
-    // identity (seq + client_message_id) is captured here; text +
-    // files come exclusively from a user_message payload via
-    // applyPayload.
+    // canonical order. Thread membership is determined exclusively by
+    // `(thread_id, seq)` (M9-γ-5, issue #842). The cmid is stored only
+    // so γ-4's GhostBubble overlay can match its server reflection and
+    // unmount; the projection itself does NOT depend on it for
+    // identity. Text + files come exclusively from a user_message
+    // payload via applyPayload.
     if (thread.user === null) {
       thread.user = {
         seq: env.seq,

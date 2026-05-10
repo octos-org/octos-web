@@ -9,12 +9,38 @@ import {
   type SessionBeforeSendResult,
   type SessionSendRequest,
 } from "@/runtime/session-context";
-import * as MessageStore from "@/store/message-store";
-import { type Message } from "@/store/message-store";
+import * as ThreadStore from "@/store/thread-store";
 import { useThreads, type Thread } from "@/store/thread-store";
 
+// M9-γ-6: the legacy `Message` shape from MessageStore is gone. SitesChat
+// only needs a flat list shape for its scaffold-prompt seeding logic;
+// keep the minimal subset inline so we don't reintroduce a parallel store.
+interface FlatToolCall {
+  id: string;
+  name: string;
+  status: "running" | "complete" | "error";
+}
+interface FlatMessageFile {
+  filename: string;
+  path: string;
+  caption?: string;
+}
+interface Message {
+  id: string;
+  role: "user" | "assistant" | "tool" | "system";
+  text: string;
+  clientMessageId?: string;
+  responseToClientMessageId?: string;
+  files: FlatMessageFile[];
+  toolCalls: FlatToolCall[];
+  status: "streaming" | "complete" | "error";
+  timestamp: number;
+  historySeq?: number;
+  meta?: { model: string; tokens_in: number; tokens_out: number; duration_s: number };
+}
+
 /**
- * Flatten thread-store data into the legacy `Message[]` shape SitesChat
+ * Flatten thread-store data into a flat `Message[]` shape SitesChat
  * already iterates over (e.g. for scaffold-prompt seeding). Returns a
  * flat list ordered by user-message send time then per-thread sequence —
  * matches the rendered DOM order.
@@ -142,7 +168,7 @@ export function SitesChat({ sessionId }: Props) {
   );
 
   useEffect(() => {
-    void MessageStore.loadHistory(sessionId, historyTopic);
+    void ThreadStore.loadHistory(sessionId, historyTopic);
   }, [historyTopic, sessionId]);
 
   const ensureSiteScaffolded = useCallback(

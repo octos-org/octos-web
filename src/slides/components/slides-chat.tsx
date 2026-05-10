@@ -4,7 +4,7 @@ import { buildApiHeaders } from "@/api/client";
 import { ChatThread } from "@/components/chat-thread";
 import { API_BASE } from "@/lib/constants";
 import { SessionContext, useModeState } from "@/runtime/session-context";
-import * as MessageStore from "@/store/message-store";
+import * as ThreadStore from "@/store/thread-store";
 
 import { buildSlidesSlug } from "../api";
 import { useSlides } from "../context/slides-context";
@@ -25,7 +25,7 @@ export function SlidesChat({ sessionId }: Props) {
 
   // Load history for this session
   useEffect(() => {
-    void MessageStore.loadHistory(sessionId, historyTopic);
+    void ThreadStore.loadHistory(sessionId, historyTopic);
   }, [historyTopic, sessionId]);
 
   useEffect(() => {

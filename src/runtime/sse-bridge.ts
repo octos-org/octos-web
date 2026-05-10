@@ -9,7 +9,6 @@
  */
 
 import * as StreamManager from "./stream-manager";
-import * as MessageStore from "@/store/message-store";
 import * as ThreadStore from "@/store/thread-store";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { getMessages as fetchSessionMessages } from "@/api/sessions";
@@ -17,12 +16,14 @@ import { dispatchCrewFileEvent } from "./file-events";
 import { recordRuntimeCounter } from "./observability";
 import { eventSessionId, eventTopic } from "./event-scope";
 
-// M10.5: ThreadStore mirroring is unconditional. The legacy
-// `octos_thread_store_v2` / `chat_app_ui_v1` localStorage flags are gone
-// and the bridge always writes through to ThreadStore in addition to
-// MessageStore. The MessageStore mirror is retained ONLY for legacy
-// surfaces that still read from it (sites-chat / slides-chat /
-// task-watcher). The /chat renderer reads from ThreadStore.
+// M9-γ-6 (issue #843): ThreadStore is the single source of truth.
+// MessageStore — the legacy parallel flat-list store — has been deleted.
+// All previous "mirror" writes that the bridge used to make to
+// MessageStore in addition to ThreadStore are now ThreadStore-only.
+// `assistantMsgId` is now a synthesized local UUID (used only as an
+// internal correlation token for setupCleanup / pollForResponse); the
+// real durable identity lives on `clientMessageId` (the threadId for
+// fresh user-rooted threads) which the projection consumes.
 
 // ---------------------------------------------------------------------------
 // Session-scoped tool-call key map (M8.10 follow-up #649).
@@ -308,25 +309,14 @@ export function sendMessage(opts: SendOptions): void {
     caption: "",
   }));
 
-  // 1. Write user message to store
-  MessageStore.addMessage(sessionId, {
-    role: "user",
-    text,
-    clientMessageId,
-    files: localFiles,
-    toolCalls: [],
-    status: "complete",
-  }, historyTopic);
-
-  // 1b. Mirror the user message into the thread store when the feature flag
-  //     is on — keeps both stores populated so the renderer can flag-switch
-  //     without losing state.
+  // 1. Write user message to ThreadStore (the single source of truth
+  //    after M9-γ-6).
   //
-  //     M9-γ-4: under projection_v1 the Composer renders a `<GhostBubble>`
-  //     overlay instead of mutating the store. The caller signals this via
-  //     `skipOptimisticUserMessage` so we keep ThreadStore untouched here
-  //     and let the orphan-thread path open a bucket if/when assistant
-  //     content streams back.
+  //    M9-γ-4: under projection_v1 the Composer renders a `<GhostBubble>`
+  //    overlay instead of mutating the store. The caller signals this via
+  //    `skipOptimisticUserMessage` so we keep ThreadStore untouched here
+  //    and let the orphan-thread path open a bucket if/when assistant
+  //    content streams back.
   if (!opts.skipOptimisticUserMessage) {
     ThreadStore.addUserMessage(sessionId, {
       text,
@@ -337,7 +327,6 @@ export function sendMessage(opts: SendOptions): void {
   } else {
     ThreadStore.registerPendingClientMessageId(
       sessionId,
-      clientMessageId,
       clientMessageId,
       historyTopic,
     );
@@ -356,15 +345,11 @@ export function sendMessage(opts: SendOptions): void {
     audioUploadMode,
   );
 
-  // 3. Create the assistant message placeholder
-  const assistantMsgId = MessageStore.addMessage(sessionId, {
-    role: "assistant",
-    text: "",
-    responseToClientMessageId: clientMessageId,
-    files: [],
-    toolCalls: [],
-    status: "streaming",
-  }, historyTopic);
+  // 3. Create the assistant correlation id. Used only as an internal
+  //    token for setupCleanup / pollForResponse to identify "this turn";
+  //    ThreadStore's pendingAssistant slot is keyed off `clientMessageId`
+  //    (the threadId).
+  const assistantMsgId = crypto.randomUUID();
 
   // 4. Subscribe to events and route into the store
   bindStreamToAssistant({
@@ -385,11 +370,12 @@ export function resumeSessionStream(
 ): void {
   const abortController = new AbortController();
   StreamManager.attachStream(sessionId, historyTopic);
-  const assistantMsgId = MessageStore.ensureStreamingAssistantMessage(
-    sessionId,
-    "Resuming ongoing work...",
-    historyTopic,
-  );
+  // M9-γ-6: the legacy MessageStore created a placeholder
+  // "Resuming ongoing work..." bubble here. Under ThreadStore the
+  // orphan-thread path opens the bucket on the first token, so no
+  // pre-emptive placeholder write is needed; we just keep an internal
+  // correlation token for setupCleanup / pollForResponse.
+  const assistantMsgId = crypto.randomUUID();
 
   bindStreamToAssistant({
     sessionId,
@@ -450,21 +436,11 @@ function bindStreamToAssistant({
    *  a turn whose `replace` arrived on a previous connection still
    *  has its prefix when a `token` delta arrives on a new one. */
   const rawTextByThread = getRawTextByThreadMap(scope);
-  /** Per-stream snapshot of just the tool calls started in THIS stream.
-   *  Drives the legacy MessageStore assistant-bubble rendering (which
-   *  expects per-message tool calls, not per-session). The v2 ThreadStore
-   *  path uses the session-scoped `toolCalls` above instead. */
-  const streamLocalToolCallKeys = new Set<string>();
   /** Maps tool name to the most recent toolCall key (for tool_end matching).
    *  Per-stream by design: this is only used as a *fallback* for legacy
    *  daemons that omit tool_call_id. Cross-stream tool name collisions
    *  would mis-route, so we keep this scoped to the current stream. */
   const activeToolByName = new Map<string, string>();
-
-  const streamToolCallsForLegacyView = (): ToolCallSnapshot[] =>
-    Array.from(streamLocalToolCallKeys)
-      .map((k) => toolCalls.get(k))
-      .filter((tc): tc is ToolCallSnapshot => tc !== undefined);
 
   // M10.5: ThreadStore mirroring is unconditional. Kept as a constant
   // so the per-event branches read identically to their pre-deletion
@@ -532,15 +508,12 @@ function bindStreamToAssistant({
             ThreadStore.replaceAssistantText(tid, clean(next));
           }
         }
-        // Legacy MessageStore path: only advance the per-stream rawText
-        // when this event matches THIS bridge's bound clientMessageId.
-        // Otherwise we would splice another turn's text into this
-        // bubble (the overflow-stress content-mispair signature).
+        // Maintain the chat-wide rawText accumulator for the bound cmid
+        // so legacy text-aware paths (mode-update detection in `done`)
+        // see the matching turn's text. M9-γ-6: the MessageStore mirror
+        // write is gone; ThreadStore is the only durable sink.
         if (!clientMessageId || tid === clientMessageId) {
           rawText += event.text;
-          MessageStore.updateMessage(sessionId, assistantMsgId, {
-            text: clean(rawText),
-          }, historyTopic);
         }
         break;
       }
@@ -560,9 +533,6 @@ function bindStreamToAssistant({
         }
         if (!clientMessageId || tid === clientMessageId) {
           rawText = event.text;
-          MessageStore.updateMessage(sessionId, assistantMsgId, {
-            text: clean(rawText),
-          }, historyTopic);
         }
         break;
       }
@@ -589,15 +559,11 @@ function bindStreamToAssistant({
           status: "running",
           progress: toolCalls.get(key)?.progress ?? [],
         });
-        streamLocalToolCallKeys.add(key);
         activeToolByName.set(event.tool, key);
         // Map every server-issued id we know about to this local key so
         // tool_progress / tool_end events can route by either field.
         if (event.tool_call_id) keyByServerId.set(event.tool_call_id, key);
         if (event.tool_id) keyByServerId.set(event.tool_id, key);
-        MessageStore.updateMessage(sessionId, assistantMsgId, {
-          toolCalls: streamToolCallsForLegacyView(),
-        }, historyTopic);
         if (threadStoreEnabled) {
           const tid = resolveThreadIdForEvent(event.thread_id);
           if (tid) ThreadStore.addToolCall(tid, tcId, event.tool);
@@ -612,9 +578,6 @@ function bindStreamToAssistant({
           activeToolByName.get(event.tool);
         const tc = key ? toolCalls.get(key) : undefined;
         if (tc) tc.status = event.success ? "complete" : "error";
-        MessageStore.updateMessage(sessionId, assistantMsgId, {
-          toolCalls: streamToolCallsForLegacyView(),
-        }, historyTopic);
         if (threadStoreEnabled) {
           const tid = resolveThreadIdForEvent(event.thread_id);
           // Use the server-issued id first so a late tool_end on a
@@ -647,9 +610,6 @@ function bindStreamToAssistant({
         const tc = key ? toolCalls.get(key) : undefined;
         if (tc) {
           tc.progress.push({ message: event.message, ts: Date.now() });
-          MessageStore.updateMessage(sessionId, assistantMsgId, {
-            toolCalls: streamToolCallsForLegacyView(),
-          }, historyTopic);
         }
         if (threadStoreEnabled) {
           const tid = resolveThreadIdForEvent(event.thread_id);
@@ -725,20 +685,6 @@ function bindStreamToAssistant({
             path: event.path,
             caption,
           };
-          const attached = MessageStore.appendFileByToolCallId(
-            sessionId,
-            event.tool_call_id,
-            file,
-            historyTopic,
-          );
-          if (!attached) {
-            MessageStore.appendFileToBackgroundAnchor(
-              sessionId,
-              file,
-              historyTopic,
-            );
-          }
-
           if (threadStoreEnabled) {
             const tid = resolveThreadIdForEvent(event.thread_id);
             if (tid) ThreadStore.appendAssistantFile(tid, file);
@@ -756,7 +702,11 @@ function bindStreamToAssistant({
       }
 
       case "task_status": {
-        MessageStore.bindBackgroundTask(sessionId, event.task, historyTopic);
+        // M9-γ-6: bg-task↔message binding lived only in MessageStore.
+        // The runtime-provider's `crew:task_status` listener mirrors the
+        // synthetic progress line into ThreadStore via
+        // `findThreadIdForToolCall + appendToolProgress`, which is the
+        // only consumer that actually drives UI.
         window.dispatchEvent(
           new CustomEvent("crew:task_status", {
             detail: { task: event.task, sessionId, topic: historyTopic },
@@ -766,38 +716,24 @@ function bindStreamToAssistant({
       }
 
       case "session_result": {
-        // M8.10 wave-6 fix (PR M): the v2 renderer reads ONLY ThreadStore
-        // and ignores MessageStore. Without this branch a late
-        // session_result for a deep_research / mofa / run_pipeline turn
-        // landed solely in the legacy store, leaving the v2 UI frozen on
-        // the finalized spawn-ack. Server stamps `message.thread_id` for
-        // both non-media and media-bearing paths; we use it directly and
-        // fall through to `deriveLegacyThreadId` inside the helper for
-        // the legacy-daemon edge case.
-        if (threadStoreEnabled && event.message) {
+        // M9-γ-6: ThreadStore is the single sink. The legacy MessageStore
+        // path used to backfill missing seqs via `getMaxHistorySeq` +
+        // `appendHistoryMessages`; ThreadStore now exposes the same gap
+        // detection via `getMaxHistorySeq` and the bridge backfills
+        // through `appendPersistedMessage` on a /messages refetch.
+        if (event.message) {
           const tid =
             event.message.thread_id ?? (event as { thread_id?: string }).thread_id;
+          const previousSeq = ThreadStore.getMaxHistorySeq(sessionId, historyTopic);
           ThreadStore.appendPersistedMessage(
             sessionId,
             historyTopic,
             tid ? { ...event.message, thread_id: tid } : event.message,
           );
-        }
-        if (event.message) {
-          const previousSeq = MessageStore.getMaxHistorySeq(sessionId, historyTopic);
-          const merged = MessageStore.mergeHistoryMessageIntoMessage(
-            sessionId,
-            assistantMsgId,
-            event.message,
-            historyTopic,
-          );
-          if (!merged) {
-            MessageStore.appendHistoryMessages(sessionId, [event.message], historyTopic);
-          }
           const observedSeq =
             typeof event.message.seq === "number"
               ? event.message.seq
-              : MessageStore.getMaxHistorySeq(sessionId, historyTopic);
+              : ThreadStore.getMaxHistorySeq(sessionId, historyTopic);
           if (observedSeq > previousSeq + 1) {
             void fetchSessionMessages(
               sessionId,
@@ -807,7 +743,9 @@ function bindStreamToAssistant({
               historyTopic,
             )
               .then((messages) => {
-                MessageStore.appendHistoryMessages(sessionId, messages, historyTopic);
+                for (const m of messages) {
+                  ThreadStore.appendPersistedMessage(sessionId, historyTopic, m);
+                }
               })
               .catch(() => {});
           }
@@ -826,34 +764,22 @@ function bindStreamToAssistant({
 
       case "done": {
         const tid = resolveThreadIdForEvent(event.thread_id);
-        // `ownsLegacy` gates every legacy MessageStore side effect of
-        // `done` — including the bubble status flip, meta annotation,
-        // background-anchor registration, and the `onComplete` callback.
-        // Without this gate, a `done` for sibling thread A would still
-        // mark THIS bridge's bubble (bound to clientMessageId B) as
-        // complete and fire B's onComplete, even though B's own done
-        // hasn't arrived yet. Codex 2nd-opinion review.
-        const ownsLegacy = !clientMessageId || tid === clientMessageId;
+        // `ownsTurn` gates the side effects of `done` (meta event,
+        // mode-update detection, bg-tasks event, onComplete callback)
+        // so a sibling thread's done doesn't fire THIS bridge's
+        // onComplete prematurely. Codex 2nd-opinion review.
+        const ownsTurn = !clientMessageId || tid === clientMessageId;
 
         // Use the per-thread accumulator for ThreadStore — never the
-        // legacy chat-wide `rawText` which may hold a sibling turn's
-        // content. The chat-wide `rawText` continues to drive the
-        // legacy MessageStore path, but is only advanced for matching
-        // events (token/replace handlers above).
+        // chat-wide `rawText` which may hold a sibling turn's content.
         const threadRaw =
           (tid && rawTextByThread.get(tid)) ||
-          (event.content ?? (ownsLegacy ? rawText : ""));
+          (event.content ?? (ownsTurn ? rawText : ""));
         const finalThreadText = clean(threadRaw);
-        if (event.content && ownsLegacy) {
+        if (event.content && ownsTurn) {
           rawText = event.content;
         }
-        const finalLegacyText = clean(rawText);
-        if (ownsLegacy) {
-          MessageStore.updateMessage(sessionId, assistantMsgId, {
-            text: finalLegacyText,
-            status: "complete",
-          }, historyTopic);
-        }
+        const finalTurnText = clean(rawText);
 
         if (threadStoreEnabled) {
           if (tid) {
@@ -881,13 +807,7 @@ function bindStreamToAssistant({
           }
         }
 
-        if (ownsLegacy && (event.model || event.tokens_in || event.tokens_out)) {
-          MessageStore.setMessageMeta(sessionId, assistantMsgId, {
-            model: event.model || "",
-            tokens_in: event.tokens_in || 0,
-            tokens_out: event.tokens_out || 0,
-            duration_s: event.duration_s || 0,
-          }, historyTopic);
+        if (ownsTurn && (event.model || event.tokens_in || event.tokens_out)) {
           window.dispatchEvent(
             new CustomEvent("crew:message_meta", {
               detail: {
@@ -905,10 +825,11 @@ function bindStreamToAssistant({
         }
 
         // Detect queue/adaptive mode changes from command responses.
-        // Use the legacy text — the global mode-update detector is keyed
-        // off whichever turn's done event fires; it's not thread-scoped.
-        if (ownsLegacy) {
-          detectModeUpdate(finalLegacyText, sessionId);
+        // Uses the chat-wide rawText — the global mode-update detector
+        // is keyed off whichever turn's done event fires; it's not
+        // thread-scoped.
+        if (ownsTurn) {
+          detectModeUpdate(finalTurnText, sessionId);
         }
 
         // Clear thinking state — global per-session, fires on every done
@@ -925,16 +846,12 @@ function bindStreamToAssistant({
         );
 
         // Background task and deferred-file synchronization is owned by the
-        // session runtime's incremental sync loop (appendHistoryMessages).
-        // We no longer call replaceHistory here — it races with the sync loop
-        // and can wipe optimistic messages or create duplicates.
-        if (ownsLegacy && event.has_bg_tasks) {
-          MessageStore.registerBackgroundAnchor(
-            sessionId,
-            assistantMsgId,
-            historyTopic,
-            streamToolCallsForLegacyView().map((toolCall) => toolCall.name),
-          );
+        // session runtime's incremental sync loop. M9-γ-6 deleted the
+        // legacy MessageStore.registerBackgroundAnchor call — anchors
+        // were a MessageStore-internal mechanism for routing late files
+        // into a specific assistant row; ThreadStore routes by
+        // `thread_id` directly, so the anchor concept is moot.
+        if (ownsTurn && event.has_bg_tasks) {
           window.dispatchEvent(
             new CustomEvent("crew:bg_tasks", {
               detail: { sessionId, topic: historyTopic },
@@ -942,7 +859,7 @@ function bindStreamToAssistant({
           );
         }
 
-        if (ownsLegacy) {
+        if (ownsTurn) {
           onComplete?.();
         }
         break;
@@ -1018,10 +935,18 @@ function setupCleanup(
       window.removeEventListener("crew:stream_state", handler);
       _unsub();
 
-      // If the message is still streaming (no done event received), check if we got content
-      const msgs = MessageStore.getMessages(sessionId, historyTopic);
-      const assistantMsg = msgs.find((m) => m.id === assistantMsgId);
-      if (assistantMsg && assistantMsg.status === "streaming") {
+      // If the bubble is still streaming (no done event received),
+      // check if we already got content. M9-γ-6: ThreadStore is the
+      // single source of truth; the pending assistant snapshot replaces
+      // the legacy MessageStore lookup by `assistantMsgId`.
+      const pendingSnap = clientMessageId
+        ? ThreadStore.getPendingAssistantSnapshot(
+            sessionId,
+            clientMessageId,
+            historyTopic,
+          )
+        : null;
+      if (pendingSnap && pendingSnap.status === "streaming") {
         if (pendingStreamError?.current) {
           pollForResponse(
             sessionId,
@@ -1036,15 +961,10 @@ function setupCleanup(
               errorMessage: pendingStreamError.current,
             },
           ).then(() => _onComplete?.());
-        } else if (assistantMsg.text) {
-          MessageStore.updateMessage(sessionId, assistantMsgId, {
-            status: "complete",
-          }, historyTopic);
-          // M10.5: ThreadStore reads `isRunning` for the cancel button
-          // and renders the streaming dots. Mirror the legacy bubble's
-          // terminal status so a stream that ends without `done`
-          // (network drop, abort, server timeout) doesn't leave the
-          // pending bubble stuck spinning.
+        } else if (pendingSnap.text) {
+          // Stream ended without `done` (network drop, abort, server
+          // timeout) but we have content — finalize so the bubble stops
+          // spinning.
           if (clientMessageId) {
             ThreadStore.finalizeAssistant(clientMessageId, { status: "complete" });
           }
@@ -1084,12 +1004,8 @@ async function pollForResponse(
   const intervalMs = options?.intervalMs ?? 5000;
   for (let i = 0; i < maxAttempts; i++) {
     if (abortSignal?.aborted) {
-      // User cancel / page unmount mid-poll. Finalize both stores so
-      // the pending streaming bubble (especially the one ThreadStore
-      // renders on /chat) doesn't sit stuck forever.
-      MessageStore.updateMessage(sessionId, assistantMsgId, {
-        status: "complete",
-      }, historyTopic);
+      // User cancel / page unmount mid-poll. Finalize the ThreadStore
+      // bubble so the streaming dots stop spinning.
       if (clientMessageId) {
         ThreadStore.finalizeAssistant(clientMessageId, { status: "complete" });
       }
@@ -1120,26 +1036,11 @@ async function pollForResponse(
       });
 
       if (matchedAssistant) {
-        const merged = MessageStore.mergeHistoryMessageIntoMessage(
-          sessionId,
-          assistantMsgId,
-          matchedAssistant,
-          historyTopic,
-        );
-        if (!merged) {
-          MessageStore.appendHistoryMessages(sessionId, [matchedAssistant], historyTopic);
-          MessageStore.updateMessage(sessionId, assistantMsgId, {
-            text: matchedAssistant.content,
-            status: "complete",
-          }, historyTopic);
-        }
-        // M10.5: mirror the recovered content + terminal status into
-        // ThreadStore so the pending streaming bubble shows the
-        // server-fetched text on /chat instead of an empty timestamp-only
-        // bubble. The text replace must run BEFORE `finalizeAssistant`
-        // because `finalizeAssistant` moves `pendingAssistant` into
-        // `responses` and `replaceAssistantText` only operates on the
-        // pending slot.
+        // M9-γ-6: ThreadStore is the only sink. Push the recovered
+        // assistant content into the pending slot and finalize. The
+        // text replace must run BEFORE `finalizeAssistant` because
+        // `finalizeAssistant` moves `pendingAssistant` into `responses`
+        // and `replaceAssistantText` only operates on the pending slot.
         if (clientMessageId) {
           if (matchedAssistant.content) {
             ThreadStore.replaceAssistantText(
@@ -1149,27 +1050,30 @@ async function pollForResponse(
           }
           ThreadStore.finalizeAssistant(clientMessageId, { status: "complete" });
         }
+        // Also persist the full row into ThreadStore so the durable
+        // history shows it (not just the in-flight bubble).
+        ThreadStore.appendPersistedMessage(
+          sessionId,
+          historyTopic,
+          matchedAssistant,
+        );
         return true;
       }
     } catch {
       // keep polling
     }
   }
+  // Suppress unused-parameter lint in the post-migration shape — the
+  // assistantMsgId is still part of the call surface (used by
+  // crew:message_meta event detail).
+  void assistantMsgId;
   if (!options?.errorMessage) {
-    MessageStore.updateMessage(sessionId, assistantMsgId, {
-      text: "No response received.",
-      status: "error",
-    }, historyTopic);
     if (clientMessageId) {
       ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
     }
     return false;
   }
 
-  MessageStore.updateMessage(sessionId, assistantMsgId, {
-    text: `Error: ${options.errorMessage}`,
-    status: "error",
-  }, historyTopic);
   if (clientMessageId) {
     ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
   }

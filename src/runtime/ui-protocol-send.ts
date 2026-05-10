@@ -177,7 +177,6 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
     ThreadStore.registerPendingClientMessageId(
       pinnedOpts.sessionId,
       clientMessageId,
-      clientMessageId,
       pinnedOpts.historyTopic,
     );
   }
