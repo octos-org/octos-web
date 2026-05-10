@@ -4,22 +4,47 @@
  * The user message is mirrored into the thread store and the turn is
  * dispatched through `bridge.sendTurn(...)` over the WS UI Protocol.
  *
- * **Carve-out**: image / voice / requestText still need the legacy SSE
- * `/api/chat` upload because the WS bridge's `TurnStartInput` only
- * accepts `kind: "text"` today. Those sends fall through to
- * `legacySendMessage` so audio + image uploads keep working. Funnelling
- * every send (including the legacy fallback) through `enqueueSendV1`
- * preserves user submission order regardless of transport.
+ * M9-α-5/α-6 (ADR PR #830 / audit issue #845): the legacy SSE bridge
+ * (`sse-bridge.ts`) has been deleted along with the server-side SSE
+ * chat transport. `/api/ui-protocol/ws` is now the sole chat transport.
+ *
+ * **Known follow-up**: the WS bridge's `TurnStartInput` only accepts
+ * `kind: "text"` today, so media uploads, `/queue` rewrites, and
+ * topic-scoped sends are temporarily blocked here — `sendMessage`
+ * surfaces an explicit error on the assistant bubble and emits a
+ * `console.warn` instead of falling back to a deleted SSE path. The
+ * follow-up to extend `TurnStartInput` lives in M9-β.
  */
 
 import * as ThreadStore from "@/store/thread-store";
 import { displayFilenameFromPath } from "@/lib/utils";
-import { sendMessage as legacySendMessage } from "./sse-bridge";
-import type { SendOptions } from "./sse-bridge";
 import { getActiveBridge } from "./ui-protocol-runtime";
 import { request } from "@/api/client";
 
-export type { SendOptions } from "./sse-bridge";
+/** Per-turn send options. The legacy SSE bridge previously re-exported
+ *  this type; with that file deleted, the canonical home is here. */
+export interface SendOptions {
+  sessionId: string;
+  /** Topic ('/new <slug>' surfaces). Currently unsupported by the WS
+   *  bridge — sends with a non-empty topic surface an error. */
+  historyTopic?: string;
+  text: string;
+  /** Optional rewrite (e.g. `/queue` slash-commands). Currently
+   *  unsupported by the WS bridge — sends where `requestText !== text`
+   *  surface an error. */
+  requestText?: string;
+  /** Pre-uploaded media paths from `/api/upload`. Currently unsupported
+   *  by the WS bridge — sends with non-empty media surface an error. */
+  media: string[];
+  clientMessageId?: string;
+  /** Recording vs upload (audio surface). Unused on the WS path today. */
+  audioUploadMode?: "recording" | "upload";
+  /** M9-γ-4: Composer renders a `<GhostBubble>` overlay; skip the
+   *  optimistic ThreadStore mutation. */
+  skipOptimisticUserMessage?: boolean;
+  onSessionActive?: (firstMessage: string) => void;
+  onComplete?: () => void;
+}
 
 /** Re-validate the stored auth token after a send failure. The api/client
  *  `request()` helper has a built-in 401-interceptor that calls
@@ -49,33 +74,21 @@ export function sendMessage(opts: SendOptions): void {
   void enqueueSendV1(opts);
 }
 
-function shouldFallbackToLegacy(opts: SendOptions): boolean {
-  const hasMedia = opts.media.length > 0;
-  const hasRewrite =
-    opts.requestText !== undefined && opts.requestText !== opts.text;
-  // Topic-scoped surfaces (slides/sites slash-commands) cannot use the WS
-  // bridge yet — `session/open` only carries `sessionId` and
-  // `TurnStartInput` has no `topic` field, so a bridge.sendTurn would
-  // run/persist against the ROOT session while the SPA store/render is
-  // scoped to the topic. The legacy `/api/chat` POST sends `topic`
-  // explicitly, so keep topic-scoped sends on the legacy transport
-  // until the WS protocol carries the topic. (codex review M10.5
-  // delete-legacy-render P1.)
-  const hasTopic = (opts.historyTopic?.trim().length ?? 0) > 0;
-  if (hasMedia || hasRewrite || hasTopic) {
-    if (typeof console !== "undefined" && console.info) {
-      console.info(
-        "ui-protocol-send: v1 path does not yet support media / requestText / topic; falling back to legacy",
-        { hasMedia, hasRewrite, hasTopic },
-      );
-    }
-    return true;
+/** Return a human-readable reason when this send is unsupported by the
+ *  WS-only path, else `null`. M9-α-5/α-6 deleted the legacy SSE
+ *  fallback — when this returns non-null, the send fails fast with an
+ *  errored assistant bubble rather than silently dropping. */
+function unsupportedSendReason(opts: SendOptions): string | null {
+  if (opts.media.length > 0) {
+    return "media uploads are not yet supported on the WS chat transport (follow-up: M9-β extension to `TurnStartInput`)";
   }
-  // No active bridge → legacy fallback (rare race: send before mount).
-  if (!getActiveBridge(opts.sessionId, opts.historyTopic)) {
-    return true;
+  if (opts.requestText !== undefined && opts.requestText !== opts.text) {
+    return "`/queue`-style rewrites are not yet supported on the WS chat transport (follow-up: M9-β extension to `TurnStartInput`)";
   }
-  return false;
+  if ((opts.historyTopic?.trim().length ?? 0) > 0) {
+    return "topic-scoped sends are not yet supported on the WS chat transport (follow-up: M9-β extension to `session/open` / `TurnStartInput`)";
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -95,21 +108,11 @@ function shouldFallbackToLegacy(opts: SendOptions): boolean {
 // bubble stayed on screen with no assistant pair — exactly the `live-
 // overflow-stress` failure mode (4 of 5 prompts orphaned at workers=1).
 //
-// The legacy SSE `/api/chat` path doesn't hit this because the chat backend
-// queues concurrent messages server-side (see `stream-manager.ts:191`
-// "The backend's queue mode … handles concurrent messages server-side").
-// The v1 WS protocol intentionally rejects rather than queues, so the
-// queueing has to live on the client.
-//
 // Implementation: a per-session promise chain. `enqueueSendV1` pushes the
 // next send onto the chain; each send awaits BOTH (a) the prior send's
 // completion AND (b) the prior turn's lifecycle event (`turn/completed`
 // or `turn/error`) before issuing `bridge.sendTurn`. The chain is keyed
-// by `(sessionId, historyTopic)` so distinct sessions don't block each
-// other.
-//
-// On falls-through to `legacySendMessage` (no bridge / has media /
-// rewrite), we DON'T inject the wait — the legacy path is independent.
+// by `sessionId` to match the server-side lock scope.
 
 const turnQueues = new Map<string, Promise<void>>();
 
@@ -142,19 +145,8 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
   // Codex round 4-6 P2: mirror the user message into ThreadStore
   // SYNCHRONOUSLY before the queue gate, so the bubble is visible the
   // instant the user clicks Send — even when a prior turn has not yet
-  // emitted `turn/completed`. Pre-fix, `addUserMessage` ran inside
-  // `sendMessageV1` AFTER `await prev`, so a queued prompt was
-  // invisible until the prior turn drained.
-  //
-  // This applies to EVERY transport path (v1 text, legacy media,
-  // legacy rewrite, no-bridge fallback). The legacy SSE bridge does
-  // its own `addUserMessage` mirror later in `legacySendMessage`, but
-  // `addUserMessage` is idempotent on an existing `clientMessageId`
-  // (`thread-store.ts:addUserMessage` "If a thread already exists with
-  // this id, adopt it instead of double-inserting"), so the second
-  // call is a no-op. By matching the legacy bridge's mirror semantics
-  // (`text` for the bubble even when `requestText` differs) the two
-  // paths produce identical store state.
+  // emitted `turn/completed`. The mirror runs once per send; the WS
+  // path's own listener never re-mirrors.
   const localFiles = pinnedOpts.media.map((path) => ({
     filename: displayFilenameFromPath(path),
     path,
@@ -197,46 +189,18 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
 
   try {
     await prev;
-    // After the gate clears, decide v1 vs legacy fallback. Re-check
-    // bridge availability HERE (rather than at sendMessage entry) so a
-    // bridge that was torn down while we were parked correctly falls
-    // through to legacy.
-    if (shouldFallbackToLegacy(pinnedOpts)) {
-      // Codex round 5 P2: tie the queue release to the legacy send's
-      // own completion callback. Pre-fix, the queue released
-      // immediately after `legacySendMessage` returned (which only
-      // schedules the SSE fetch — the actual /api/chat is still in
-      // flight). A subsequent v1 `bridge.sendTurn` could then race
-      // the legacy turn at the WS one-turn lock. Wrap the caller's
-      // `onComplete` so we hold the gate until the legacy stream's
-      // `done` (or error) fires.
-      const userOnComplete = pinnedOpts.onComplete;
-      let released = false;
-      legacySendMessage({
-        ...pinnedOpts,
-        onComplete: () => {
-          if (!released) {
-            released = true;
-            release();
-          }
-          userOnComplete?.();
-        },
-      });
-      // Defensive timeout: if the legacy bridge never calls
-      // `onComplete` (e.g. an unhandled fetch error), match the v1
-      // safety net's 15-minute upper bound so the chain still drains.
-      const legacySafetyTimer = setTimeout(
-        () => {
-          if (!released) {
-            released = true;
-            release();
-          }
-        },
-        15 * 60 * 1000,
-      );
-      // Don't keep the timer alive past resolution — once the chain
-      // advances we don't care about a late onComplete.
-      void lifecycleDone.then(() => clearTimeout(legacySafetyTimer));
+    // M9-α-5/α-6: legacy SSE fallback removed. If the send is
+    // unsupported by the WS path (media, /queue rewrite, topic-scoped),
+    // surface an error on the assistant bubble and release the gate
+    // immediately so subsequent sends drain.
+    const reason = unsupportedSendReason(pinnedOpts);
+    if (reason !== null) {
+      if (typeof console !== "undefined" && console.warn) {
+        console.warn(`ui-protocol-send: ${reason}`);
+      }
+      ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
+      pinnedOpts.onComplete?.();
+      release();
     } else {
       await sendMessageV1(pinnedOpts, release);
     }
@@ -272,9 +236,9 @@ async function sendMessageV1(
   // server's `turn/completed`/`turn/error` for THIS turn so the next
   // `enqueueSendV1` call can issue its own `bridge.sendTurn` without
   // racing the server's "one turn at a time" rule. Always called exactly
-  // once on every code path (including the legacy fallbacks) so the chain
-  // never wedges. Defaults to a no-op for backward compatibility / direct
-  // test calls.
+  // once on every code path (including the unsupported-send and bridge-
+  // unavailable early returns) so the chain never wedges. Defaults to a
+  // no-op for backward compatibility / direct test calls.
   releaseLifecycleGate: () => void = () => {},
 ): Promise<void> {
   const {
@@ -295,11 +259,16 @@ async function sendMessageV1(
 
   const bridge = getActiveBridge(sessionId, historyTopic);
   if (!bridge) {
-    // Bridge was torn down between the queue gate and now. Fall back to
-    // legacy. The user bubble is already in the store from
-    // `enqueueSendV1`'s synchronous mirror, so the legacy path's own
-    // mirror is a no-op (deduped by clientMessageId in ThreadStore).
-    legacySendMessage(opts);
+    // Bridge was torn down between the queue gate and now. M9-α-5/α-6
+    // removed the legacy SSE fallback — surface an error on the
+    // assistant bubble so the user can retry once the bridge mounts.
+    if (typeof console !== "undefined" && console.warn) {
+      console.warn(
+        "ui-protocol-send: WS bridge unavailable; cannot send turn",
+      );
+    }
+    ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
+    onComplete?.();
     releaseLifecycleGate();
     return;
   }

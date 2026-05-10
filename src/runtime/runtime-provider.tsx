@@ -8,8 +8,6 @@
 
 import { type ReactNode, useEffect, useRef } from "react";
 import { SessionProvider, useSession } from "./session-context";
-import * as StreamManager from "./stream-manager";
-import { resumeSessionStream } from "./sse-bridge";
 import * as FileStore from "@/store/file-store";
 import * as TaskStore from "@/store/task-store";
 import * as ThreadStore from "@/store/thread-store";
@@ -110,10 +108,14 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
     void FileStore.loadSessionFiles(currentSessionId);
     mountedRef.current.add(currentSessionId);
 
-    // Evict old sessions if over limit
+    // Evict old sessions if over limit. Pre M9-α-5/α-6 the eviction
+    // check skipped sessions with an active SSE stream; with the SSE
+    // bridge gone, the WS bridge owns lifecycle and we evict freely
+    // by recency. The active session is always preserved (`id !==
+    // currentSessionId` guard).
     if (mountedRef.current.size > MAX_CACHED) {
       for (const id of mountedRef.current) {
-        if (id !== currentSessionId && !StreamManager.isActive(id)) {
+        if (id !== currentSessionId) {
           mountedRef.current.delete(id);
           ThreadStore.clearSession(id);
           TaskStore.clearTasks(id);
@@ -131,10 +133,10 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
   // root-session notifications into the topic's ThreadStore and render
   // unrelated root messages there. (codex review M10.5 round 3 P2.)
   // The bridge owns the streaming-turn slice; the router fans bridge
-  // events out to ThreadStore mutations. Media / voice uploads always
-  // run through the legacy SSE `/api/chat` POST (`stream-manager`)
-  // because the WS bridge's `TurnStartInput` only accepts `kind: "text"`
-  // today — but the rendered output always lands in ThreadStore.
+  // events out to ThreadStore mutations. M9-α-5/α-6: the legacy SSE
+  // `/api/chat` POST has been deleted, so media / voice / topic-scoped
+  // sends temporarily error out until the WS protocol's
+  // `TurnStartInput` is extended (M9-β follow-up).
   useEffect(() => {
     const topicTrimmed = historyTopic?.trim() ?? "";
     if (topicTrimmed.length > 0) return;
@@ -186,10 +188,15 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
         );
 
         // Resume an active stream the server is still working on.
+        // M9-α-5/α-6: the legacy `resumeSessionStream` (SSE) is gone.
+        // The WS bridge handles resumption automatically via
+        // `session/open`'s replay cursor — when this session re-mounts
+        // after a refresh, the bridge's `start()` call dispatches the
+        // server's outstanding envelopes back through the projection
+        // and ThreadStore catches up without an explicit resume call.
         // M9-γ-6: ThreadStore's orphan-thread path opens the bucket on
         // the first incoming token; no pre-emptive placeholder write.
-        if (status.active && !StreamManager.isActive(currentSessionId)) {
-          resumeSessionStream(currentSessionId, historyTopic);
+        if (status.active) {
           window.dispatchEvent(
             new CustomEvent("crew:thinking", {
               detail: {
@@ -215,7 +222,8 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
 
     void initSession();
 
-    // Listen for background task events from SSE and register with watcher.
+    // Listen for background task events forwarded by the task watcher
+    // (polling fallback) and register with the watcher.
     function handleBgTasks(event: Event) {
       const detail = (event as CustomEvent).detail;
       const sessionId = eventSessionId(detail);

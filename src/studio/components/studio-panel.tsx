@@ -6,10 +6,6 @@ import type { GenerationOptions, StudioSource } from "../types";
 import { GenerationTile } from "./generation-tile";
 import { GenerationOptionsPanel } from "./generation-options";
 import { OutputCard } from "./output-card";
-import * as StreamManager from "@/runtime/stream-manager";
-import { getToken } from "@/api/client";
-
-const API_BASE = "/api";
 
 function buildGenerationPrompt(
   tile: TileConfig,
@@ -77,45 +73,21 @@ export function StudioPanel() {
       });
       if (!outputId) return;
 
-      const prompt = buildGenerationPrompt(
-        activeTile,
-        options,
-        selectedSources,
-      );
-
-      // Start the SSE stream for this generation
-      StreamManager.startStream(genSessionId, prompt, [], undefined);
-
-      // Subscribe to capture file events and completion.
-      // Use the captured outputId directly to avoid stale closure over project.outputs.
-      const unsubscribe = StreamManager.subscribe(genSessionId, (streamEvt) => {
-        const evt = streamEvt.raw as any;
-        if (evt.type === "file") {
-          const token = getToken();
-          const fileUrl = `${API_BASE}/files/${encodeURIComponent(evt.path)}?token=${encodeURIComponent(token || "")}`;
-          updateOutput(outputId, {
-            fileUrl,
-            filePath: evt.path,
-            filename: evt.filename,
-          });
-        }
-        if (evt.type === "done") {
-          updateOutput(outputId, {
-            status: "complete",
-            preview:
-              typeof evt.content === "string"
-                ? evt.content.slice(0, 200)
-                : undefined,
-          });
-          unsubscribe?.();
-        }
-        if (evt.type === "error") {
-          updateOutput(outputId, {
-            status: "error",
-            error: evt.message || "Generation failed",
-          });
-          unsubscribe?.();
-        }
+      // M9-α-5/α-6 (ADR PR #830 / audit issue #845): the legacy SSE
+      // chat transport (`StreamManager.startStream` / `subscribe`) was
+      // deleted along with `/api/chat?stream=true`. The studio
+      // generation flow needs a WS-based driver that mounts a
+      // `ui-protocol-bridge` against the `genSessionId`, surfaces
+      // `file/attached` envelopes onto `updateOutput`, and resolves on
+      // `turn/completed`. Tracking as M9-β follow-up; for now mark the
+      // generation as errored so the user gets a clear signal instead
+      // of a silently stuck "generating" tile.
+      void buildGenerationPrompt(activeTile, options, selectedSources);
+      void genSessionId;
+      updateOutput(outputId, {
+        status: "error",
+        error:
+          "Studio generation is temporarily unavailable while the WS chat transport rolls out (M9-β follow-up).",
       });
 
       setActiveTile(null);
