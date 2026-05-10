@@ -48,6 +48,7 @@ import { MarkdownContent } from "./markdown-renderer";
 import { ThinkingIndicator } from "./thinking-indicator";
 import { ToolProgressIndicator } from "./tool-progress-indicator";
 import { GhostBubble } from "./GhostBubble";
+import { UserBubbleShell } from "./user-bubble-shell";
 import { buildAuthenticatedFileUrl, buildFileUrl } from "@/api/files";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { nextTopicForCommand } from "@/lib/slash-commands";
@@ -440,30 +441,27 @@ const ThreadUserBubble = memo(function ThreadUserBubble({
   threadId: string;
 }) {
   const visibleText = threadMessageVisibleText(message);
+  // Visual layout is shared with `<GhostBubble>` via `<UserBubbleShell>`
+  // so the optimistic overlay and the canonical user bubble cannot drift
+  // (codex BLOCK 4 fix). Only the file-row content differs: the real
+  // bubble renders `<FileAttachment>` for server-resolved paths; the
+  // ghost renders pending pills for not-yet-uploaded `File` objects.
+  const fileRows =
+    message.files.length > 0 ? (
+      <>
+        {message.files.map((f) => (
+          <FileAttachment key={f.path} file={f} />
+        ))}
+      </>
+    ) : null;
   return (
-    <div className="flex justify-end px-4 py-3">
-      <div className="flex max-w-[74%] flex-col items-end">
-        {visibleText && (
-          <div
-            data-testid="user-message"
-            data-thread-id={threadId}
-            className="message-card message-card-user rounded-[14px] rounded-br-[4px] px-4 py-2.5 text-sm leading-relaxed text-text"
-          >
-            {visibleText}
-          </div>
-        )}
-        {message.files.length > 0 && (
-          <div className={`${visibleText ? "mt-2" : ""} flex flex-wrap gap-2`}>
-            {message.files.map((f) => (
-              <FileAttachment key={f.path} file={f} />
-            ))}
-          </div>
-        )}
-        <div className="mt-1.5 px-1 text-[10px] text-muted/50 select-none">
-          {formatTimestamp(message.timestamp)}
-        </div>
-      </div>
-    </div>
+    <UserBubbleShell
+      text={visibleText || null}
+      files={fileRows}
+      footer={formatTimestamp(message.timestamp)}
+      textTestId="user-message"
+      textDataAttributes={{ "data-thread-id": threadId }}
+    />
   );
 });
 
@@ -1121,38 +1119,25 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
     const trimmedInput = text.trim();
     const input = trimmedInput.startsWith("/") ? text.trimStart() : trimmedInput;
 
-    // M9-γ-4: under projection_v1, we mount a `<GhostBubble>` immediately
-    // and pin the same cmid through the entire send so the projection's
-    // first envelope on this thread can match-and-unmount the ghost.
-    // Outside the flag, behaviour is unchanged: `enqueueSendV1` mints
-    // its own cmid as before.
+    // M9-γ-4 (codex BLOCK 3): defer the ghost-bubble mount until AFTER
+    // every early-return path (slash interception, /help, upload
+    // failure, second beforeSend interception). A ghost mounted before
+    // those returns leaves a stale optimistic bubble on screen with no
+    // matching cmid in flight. We compute the cmid up-front (so the
+    // bridge call at the bottom can pin it) but only call `mountGhost`
+    // once we're past every return point and `bridgeSend` is about to
+    // fire.
+    //
+    // Snapshot the user-typed visible text + the raw files NOW, before
+    // upload mutates `pendingFiles`. The ghost's contents are frozen at
+    // send-click — exactly what the user sees in a live bubble — and
+    // the same snapshot powers retry (codex BLOCK 2).
     const projectionV1 = isProjectionV1Enabled();
     const pinnedClientMessageId = projectionV1
       ? crypto.randomUUID()
       : undefined;
-    let ghostMounted = false;
-    if (projectionV1 && pinnedClientMessageId) {
-      // Snapshot the user-typed visible text + the raw files BEFORE
-      // upload mutates `pendingFiles`. The ghost's contents are frozen
-      // at send-click — exactly what the user sees in a live bubble.
-      const ghostText = trimmedInput;
-      const ghostFiles = pendingFiles.map((pf) => pf.file);
-      const cmid = pinnedClientMessageId;
-      mountGhost({
-        clientMessageId: cmid,
-        text: ghostText,
-        files: ghostFiles,
-        // Retry: tear down THIS ghost and re-invoke handleSend. The
-        // Composer's own state has been cleared (`setText("")` at the
-        // bottom of the success path), so a real retry would need the
-        // user to retype. We surface the affordance anyway so the
-        // overlay isn't a dead-end; a follow-up can wire deeper retry.
-        retry: () => {
-          unmountGhost(cmid);
-        },
-      });
-      ghostMounted = true;
-    }
+    const ghostTextSnapshot = trimmedInput;
+    const ghostFilesSnapshot = pendingFiles.map((pf) => pf.file);
 
     let mediaPaths: string[] = [];
     let audioUploadMode: "recording" | "upload" | undefined;
@@ -1269,6 +1254,58 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
       setTimeout(() => setCmdFeedback(null), 4000);
       sendingRef.current = false;
       return;
+    }
+
+    // M9-γ-4 (codex BLOCK 3): we're now past every early-return path.
+    // Mount the ghost immediately before dispatching `bridgeSend` so
+    // the optimistic bubble only appears when the send is actually
+    // about to leave the client. Hold onto the original payload so the
+    // ghost's Retry button can re-issue the send with a NEW cmid
+    // (codex BLOCK 2 — Retry truly resends, not just dismisses).
+    let ghostMounted = false;
+    if (projectionV1 && pinnedClientMessageId) {
+      const cmid = pinnedClientMessageId;
+      const retryPayload = {
+        ...finalPayload,
+        historyTopic: requestedTopic,
+      };
+      const retryFiles = ghostFilesSnapshot;
+      const retryText = ghostTextSnapshot;
+      // Recursive-closure factory: each retry mints a fresh cmid and
+      // mounts a new ghost; the new ghost's `retry` closure captures
+      // the freshly minted cmid so an N-th retry stays consistent.
+      const buildRetry = (currentCmid: string): (() => void) => () => {
+        unmountGhost(currentCmid);
+        const retryCmid = crypto.randomUUID();
+        mountGhost({
+          clientMessageId: retryCmid,
+          text: retryText,
+          files: retryFiles,
+          retry: buildRetry(retryCmid),
+        });
+        // Re-issue the send with the new cmid + the same payload.
+        // The bridge re-registers the pending cmid so the projection's
+        // first envelope on the new thread captures it. Failure of
+        // this retry must NOT pollute ThreadStore — the ghost's
+        // contract is purely visual.
+        bridgeSend({
+          ...retryPayload,
+          clientMessageId: retryCmid,
+          skipOptimisticUserMessage: true,
+          onSessionActive: (firstMsg) => markSessionActive(firstMsg),
+          onComplete: () => {
+            sendingRef.current = false;
+            refreshSessions();
+          },
+        });
+      };
+      mountGhost({
+        clientMessageId: cmid,
+        text: retryText,
+        files: retryFiles,
+        retry: buildRetry(cmid),
+      });
+      ghostMounted = true;
     }
 
     // Send via SSE bridge (StreamManager queues if a stream is already active)

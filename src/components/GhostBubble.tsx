@@ -13,10 +13,19 @@
  * sees a `UserView` with a matching `client_message_id`.
  *
  * The ghost is OUTSIDE `ThreadStore`. This component owns its own
- * presentation state (text, files, attached_at). On every
- * `ThreadStore.subscribe` notify (which the dual-write path triggers)
- * we inspect the projection-store's `UserView` for our cmid; when it
- * lands the ghost calls `onSettle` and the parent unmounts.
+ * presentation state (text, files, attached_at). On every projection
+ * `ingest()` (the only authoritative event that adds an envelope to
+ * the log) we ask the projection-store via the O(1) `hasCmid` index
+ * whether our cmid has landed; when it has, the ghost calls `onSettle`
+ * and the parent unmounts.
+ *
+ * Subscription model (codex BLOCK 1 fix): we subscribe to
+ * `ProjectionStore.subscribe`, NOT `ThreadStore.subscribe`. The
+ * thread-store's mutators call `notify()` BEFORE the projection
+ * dual-write — so a ThreadStore-only subscription would see the notify
+ * before the envelope is actually in the projection log, leaving us
+ * waiting for a later unrelated notify (or the 30s timeout). The
+ * projection-store fires AFTER `ingest()` commits, closing the race.
  *
  * Failure mode: if 30 seconds pass without settling, render an inline
  * error + retry button. The 30s timer is local to the component (no
@@ -26,11 +35,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Download } from "lucide-react";
-import * as ThreadStore from "@/store/thread-store";
-import {
-  getProjection,
-  projectionStoreKey,
-} from "@/store/projection-store";
+import * as ProjectionStore from "@/store/projection-store";
+import { projectionStoreKey } from "@/store/projection-store";
+import { UserBubbleShell } from "./user-bubble-shell";
 
 // ---------------------------------------------------------------------------
 // Tunables
@@ -84,21 +91,6 @@ function formatGhostTimestamp(ts: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-/** True iff the projection's view has a thread whose `user.client_message_id`
- *  matches the supplied cmid. Internal — kept as a named function (not
- *  inlined) so the predicate is a single, testable choke point if the
- *  match semantics ever need to widen. */
-function projectionHasUserCmid(
-  storeKey: string,
-  clientMessageId: string,
-): boolean {
-  const view = getProjection(storeKey);
-  for (const t of view.threads) {
-    if (t.user?.client_message_id === clientMessageId) return true;
-  }
-  return false;
-}
-
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -118,11 +110,11 @@ export function GhostBubble({
   onRetry,
 }: GhostBubbleProps): React.ReactElement {
   // attached_at is captured ONCE at mount so re-renders (e.g. from a
-  // ThreadStore notify) don't bump the displayed timestamp. We use the
-  // lazy-init form of `useState` so `Date.now()` is invoked exactly
-  // once (the initializer fn runs only on first render — no impure
-  // call during subsequent renders, and ESLint's "impure function in
-  // render" rule passes).
+  // projection-store notify) don't bump the displayed timestamp. We
+  // use the lazy-init form of `useState` so `Date.now()` is invoked
+  // exactly once (the initializer fn runs only on first render — no
+  // impure call during subsequent renders, and ESLint's "impure
+  // function in render" rule passes).
   const [attachedAt, setAttachedAt] = useState<number>(() => Date.now());
   const [timedOut, setTimedOut] = useState<boolean>(false);
   const settledRef = useRef<boolean>(false);
@@ -132,27 +124,33 @@ export function GhostBubble({
     [sessionId, topic],
   );
 
-  // Subscribe to ThreadStore notifications. Each notify means an envelope
-  // was just dual-written into the projection — re-check whether our cmid
-  // has landed. We DON'T subscribe to a projection-store notify channel
-  // (γ-3 doesn't expose one); the dual-write fires `notify()` on every
-  // ingest, which is exactly what we need.
+  // Subscribe to projection-store ingests. The projection-store fires
+  // its listeners AFTER each `ingest()` commits — so our `hasCmid`
+  // check is guaranteed to see the new envelope. (Subscribing to
+  // `ThreadStore.subscribe` would be racy: the legacy thread-store
+  // mutators call `notify()` BEFORE the projection dual-write.)
+  //
+  // Cmid lookup is O(1) — backed by `projection-store`'s
+  // `cmidToThread` index, populated as a side effect of `ingest()`.
   useEffect(() => {
     if (settledRef.current) return;
 
     // Fast-path: the projection might already carry our cmid by the
     // time this effect runs (rare race: server reflection landed inside
-    // the same microtask as the send dispatch). Settling synchronously
-    // here is safe — the parent's unmount will tear down the timer below.
-    if (projectionHasUserCmid(storeKey, clientMessageId)) {
+    // the same microtask as the send dispatch, or — more commonly — the
+    // ThreadStore's `addUserMessage` shim already ingested a
+    // user-rooted envelope before the GhostBubble mounted). Settling
+    // synchronously here is safe — the parent's unmount will tear down
+    // the timer below.
+    if (ProjectionStore.hasCmid(storeKey, clientMessageId)) {
       settledRef.current = true;
       onSettle();
       return;
     }
 
-    const unsubscribe = ThreadStore.subscribe(() => {
+    const unsubscribe = ProjectionStore.subscribe(() => {
       if (settledRef.current) return;
-      if (projectionHasUserCmid(storeKey, clientMessageId)) {
+      if (ProjectionStore.hasCmid(storeKey, clientMessageId)) {
         settledRef.current = true;
         unsubscribe();
         onSettle();
@@ -184,72 +182,68 @@ export function GhostBubble({
     onRetry();
   }, [onRetry]);
 
-  const visibleText = text;
   const showFiles = files.length > 0;
 
-  // Visual structure mirrors `ThreadUserBubble` in `chat-thread.tsx`
-  // (right-aligned, same `message-card-user` glass classes, same
-  // timestamp footer). The only deviations are:
-  //   - the outer test id (`ghost-bubble`) so harness specs can target
-  //     the optimistic overlay specifically;
+  // Visual structure delegates to `<UserBubbleShell>` so the ghost and
+  // the canonical `<ThreadUserBubble>` share one source of truth for
+  // markup + classes. The only ghost-specific deviations are:
+  //   - the outer `data-testid="ghost-bubble"` so harness specs can
+  //     target the optimistic overlay specifically;
+  //   - file rendering: ghosts carry raw `File` objects (not yet
+  //     uploaded), so we render them as pending "Sending…" pills
+  //     rather than `<FileAttachment>` rows;
   //   - the optional inline error + Retry button when the 30s timer
-  //     fires.
-  return (
-    <div
-      data-testid="ghost-bubble"
-      data-client-message-id={clientMessageId}
-      data-ghost-state={timedOut ? "timed-out" : "pending"}
-      className="flex justify-end px-4 py-3"
-    >
-      <div className="flex max-w-[74%] flex-col items-end">
-        {visibleText && (
-          <div
-            data-testid="ghost-bubble-text"
-            className="message-card message-card-user rounded-[14px] rounded-br-[4px] px-4 py-2.5 text-sm leading-relaxed text-text"
-          >
-            {visibleText}
-          </div>
-        )}
-        {showFiles && (
-          <div className={`${visibleText ? "mt-2" : ""} flex flex-wrap gap-2`}>
-            {files.map((f, idx) => (
-              <div
-                // `File` objects don't have a stable id; pair name + size
-                // + index so duplicate filenames in the same send still
-                // render distinct rows.
-                key={`${f.name}-${f.size}-${idx}`}
-                data-testid="ghost-bubble-file"
-                className="glass-pill inline-flex max-w-full items-center gap-1.5 overflow-hidden rounded-[10px] px-3 py-2 text-xs text-link"
-              >
-                <Download size={14} className="shrink-0" />
-                <span className="truncate">{f.name}</span>
-              </div>
-            ))}
-          </div>
-        )}
-        <div className="mt-1.5 px-1 text-[10px] text-muted/50 select-none">
-          {formatGhostTimestamp(attachedAt)}
+  //     fires (passed via the shell's `trailing` slot).
+  const fileRows = showFiles ? (
+    <>
+      {files.map((f, idx) => (
+        <div
+          // `File` objects don't have a stable id; pair name + size
+          // + index so duplicate filenames in the same send still
+          // render distinct rows.
+          key={`${f.name}-${f.size}-${idx}`}
+          data-testid="ghost-bubble-file"
+          className="glass-pill inline-flex max-w-full items-center gap-1.5 overflow-hidden rounded-[10px] px-3 py-2 text-xs text-link"
+        >
+          <Download size={14} className="shrink-0" />
+          <span className="truncate">{f.name}</span>
         </div>
-        {timedOut && (
-          <div
-            data-testid="ghost-bubble-error"
-            role="alert"
-            className="mt-1.5 flex items-center gap-2 rounded-[10px] border border-red-500/20 bg-red-500/12 px-3 py-1.5 text-[11px] text-red-400"
-          >
-            <span>Send not confirmed within 30s.</span>
-            {onRetry && (
-              <button
-                data-testid="ghost-bubble-retry"
-                type="button"
-                onClick={handleRetry}
-                className="rounded-md bg-red-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-red-700"
-              >
-                Retry
-              </button>
-            )}
-          </div>
-        )}
-      </div>
+      ))}
+    </>
+  ) : null;
+
+  const trailing = timedOut ? (
+    <div
+      data-testid="ghost-bubble-error"
+      role="alert"
+      className="mt-1.5 flex items-center gap-2 rounded-[10px] border border-red-500/20 bg-red-500/12 px-3 py-1.5 text-[11px] text-red-400"
+    >
+      <span>Send not confirmed within 30s.</span>
+      {onRetry && (
+        <button
+          data-testid="ghost-bubble-retry"
+          type="button"
+          onClick={handleRetry}
+          className="rounded-md bg-red-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-red-700"
+        >
+          Retry
+        </button>
+      )}
     </div>
+  ) : null;
+
+  return (
+    <UserBubbleShell
+      text={text || null}
+      files={fileRows}
+      footer={formatGhostTimestamp(attachedAt)}
+      trailing={trailing}
+      outerTestId="ghost-bubble"
+      textTestId="ghost-bubble-text"
+      outerDataAttributes={{
+        "data-client-message-id": clientMessageId,
+        "data-ghost-state": timedOut ? "timed-out" : "pending",
+      }}
+    />
   );
 }

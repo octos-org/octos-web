@@ -134,6 +134,62 @@ const envelopesByKey = new Map<string, Envelope[]>();
  *  semantics. */
 const seqCountersByKey = new Map<string, Map<string, number>>();
 
+// ─── Subscriber + cmid index (M9-γ-4 codex BLOCKs 1 & 5) ───────────────────
+//
+// BLOCK 1 (settle ordering): subscribers fire AFTER `ingest()` appends to
+// the log, so a `<GhostBubble>` subscribing here is guaranteed to see the
+// envelope in `getProjection()`. Production thread-store mutators usually
+// call `notify()` BEFORE the projection dual-write, so subscribing to
+// `ThreadStore.subscribe` alone could leave a ghost waiting for an
+// unrelated later notify (or hit the 30s timeout). The projection-store's
+// own `notify()` closes that race.
+//
+// BLOCK 5 (O(1) cmid lookup): `ingest()` records every observed
+// `(storeKey, client_message_id) → thread_id` mapping. `hasCmid()` is
+// O(1) instead of `getProjection()` followed by a full thread scan on
+// every notify.
+
+/** Listeners registered with `subscribe()`. Fired by `ingest()`. */
+const listeners = new Set<() => void>();
+
+/** Per-storeKey index of `client_message_id → thread_id` for O(1) ghost
+ *  match lookups. Populated as a side effect of `ingest()` when an
+ *  envelope carries a `client_message_id`. The mapping is monotonic:
+ *  the first envelope to introduce a cmid wins; later envelopes for the
+ *  same thread can omit the cmid without unsetting the entry. */
+const cmidToThreadByKey = new Map<string, Map<string, string>>();
+
+function recordCmidIfPresent(storeKey: string, envelope: Envelope): void {
+  const cmid = envelope.client_message_id;
+  if (cmid === undefined) return;
+  let perKey = cmidToThreadByKey.get(storeKey);
+  if (!perKey) {
+    perKey = new Map();
+    cmidToThreadByKey.set(storeKey, perKey);
+  }
+  // First-write-wins: do not overwrite an existing mapping. The
+  // projection's identity is `(thread_id, seq)`, but in practice a
+  // single cmid only ever roots one thread, so a re-emission is benign.
+  if (!perKey.has(cmid)) {
+    perKey.set(cmid, envelope.thread_id);
+  }
+}
+
+function notifyProjectionListeners(): void {
+  // Snapshot the listener set so a synchronous unsubscribe inside one
+  // handler doesn't perturb iteration of the others.
+  for (const fn of [...listeners]) {
+    try {
+      fn();
+    } catch (e) {
+      // A faulty listener must not break the ingest path; log and
+      // continue. We don't have a structured logger here — match the
+      // thread-store style and keep it console-best-effort.
+      console.error("projection-store listener threw", e);
+    }
+  }
+}
+
 // ─── Public API ────────────────────────────────────────────────────────────
 
 /**
@@ -157,10 +213,17 @@ export function nextSeq(storeKey: string, threadId: string): number {
 }
 
 /** The single mutation entry point. Append the envelope to the
- *  committed log. The projection dedupes / orders / barriers — this
- *  function does NOT validate the envelope's seq nor enforce
- *  monotonicity; that's the projection's job (and the bridge's, in
- *  production). */
+ *  committed log, update the cmid index, and fan out to subscribers.
+ *
+ *  Order matters: log append → cmid index → notify. Subscribers (e.g.
+ *  the M9-γ-4 `<GhostBubble>`) are guaranteed to see the envelope via
+ *  `getProjection()` AND `hasCmid()` by the time they run. This closes
+ *  the BLOCK 1 race where the legacy thread-store called `notify()`
+ *  BEFORE its projection dual-write.
+ *
+ *  The projection dedupes / orders / barriers — this function does NOT
+ *  validate the envelope's seq nor enforce monotonicity; that's the
+ *  projection's job (and the bridge's, in production). */
 export function ingest(storeKey: string, envelope: Envelope): void {
   let log = envelopesByKey.get(storeKey);
   if (!log) {
@@ -168,6 +231,48 @@ export function ingest(storeKey: string, envelope: Envelope): void {
     envelopesByKey.set(storeKey, log);
   }
   log.push(envelope);
+  recordCmidIfPresent(storeKey, envelope);
+  notifyProjectionListeners();
+}
+
+/** Subscribe to projection-store ingests. The listener fires AFTER
+ *  every `ingest()` once the envelope is committed to the log AND the
+ *  cmid index is updated — so subscribers can synchronously call
+ *  `getProjection(storeKey)` / `hasCmid(...)` and see the new state.
+ *
+ *  Returns an unsubscribe function. Idempotent: calling it twice is a
+ *  no-op. Listeners are stored in an insertion-ordered `Set`, so the
+ *  notify order is the registration order.
+ *
+ *  M9-γ-4 BLOCK 1 fix — see the module-level comment block above. */
+export function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+/** O(1) lookup: has any envelope with this `client_message_id` been
+ *  ingested for `storeKey`? Backed by the cmid index populated by
+ *  `ingest()`.
+ *
+ *  Replaces the per-notify `getProjection().threads.find(...)` scan
+ *  GhostBubble used to do (BLOCK 5 in the codex review). */
+export function hasCmid(storeKey: string, clientMessageId: string): boolean {
+  const perKey = cmidToThreadByKey.get(storeKey);
+  if (!perKey) return false;
+  return perKey.has(clientMessageId);
+}
+
+/** O(1) lookup: which `thread_id` did this `client_message_id` first
+ *  attach to? Returns `undefined` if no envelope carrying the cmid has
+ *  been ingested. Useful for routing later mutations back to the same
+ *  thread bucket without walking the projection. */
+export function threadIdForCmid(
+  storeKey: string,
+  clientMessageId: string,
+): string | undefined {
+  return cmidToThreadByKey.get(storeKey)?.get(clientMessageId);
 }
 
 /** Get the committed envelope log for a session. Returned as a
@@ -189,15 +294,17 @@ export function getProjectionWithMetrics(
   return projectWithMetrics(getEnvelopes(storeKey));
 }
 
-/** Drop all projection state for a session (envelope log + counters).
- *  Mirrors `thread-store.clearSession` semantics: a topic-less call
- *  sweeps the bare key AND every topic-suffixed variant. */
+/** Drop all projection state for a session (envelope log + counters
+ *  + cmid index). Mirrors `thread-store.clearSession` semantics: a
+ *  topic-less call sweeps the bare key AND every topic-suffixed
+ *  variant. */
 export function clearProjection(sessionId: string, topic?: string): void {
   const trimmedTopic = topic?.trim();
   if (trimmedTopic) {
     const key = `${sessionId}#${trimmedTopic}`;
     envelopesByKey.delete(key);
     seqCountersByKey.delete(key);
+    cmidToThreadByKey.delete(key);
     return;
   }
   for (const k of [...envelopesByKey.keys()]) {
@@ -208,6 +315,11 @@ export function clearProjection(sessionId: string, topic?: string): void {
   for (const k of [...seqCountersByKey.keys()]) {
     if (k === sessionId || k.startsWith(`${sessionId}#`)) {
       seqCountersByKey.delete(k);
+    }
+  }
+  for (const k of [...cmidToThreadByKey.keys()]) {
+    if (k === sessionId || k.startsWith(`${sessionId}#`)) {
+      cmidToThreadByKey.delete(k);
     }
   }
 }
@@ -230,6 +342,8 @@ export function projectionStoreKey(
 export function __resetProjectionForTests(): void {
   envelopesByKey.clear();
   seqCountersByKey.clear();
+  cmidToThreadByKey.clear();
+  listeners.clear();
   __resetProjectionCacheForTesting();
   __setProjectionV1ForTests(false);
 }

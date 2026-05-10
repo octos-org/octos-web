@@ -269,6 +269,111 @@ describe("GhostBubble", () => {
     expect(fileRows[1].textContent).toContain("b.png");
     unmount();
   });
+
+  // ── BLOCK 1 (codex review): production-ordering case ─────────────────
+  //
+  // Production thread-store mutators (e.g. `appendAssistantToken`,
+  // `appendPersistedMessage`) call `notify()` BEFORE the projection
+  // dual-write. A GhostBubble that subscribed to ThreadStore would see
+  // the notify but `getProjection().threads[].user.client_message_id`
+  // would still be empty — so settle wouldn't fire.
+  //
+  // The fix subscribes to `ProjectionStore.subscribe` instead. The
+  // projection-store fires its listeners AFTER `ingest()` commits, so
+  // the cmid IS visible by the time the listener runs. This test
+  // simulates that exact ordering: ThreadStore.notify() pulses with NO
+  // ingested envelope first; GhostBubble must NOT settle yet. Then
+  // `projectionIngest` lands the matching cmid; GhostBubble MUST
+  // settle on this notify (no extra ThreadStore pulse needed).
+  it("BLOCK 1: settles on projection-store ingest (not on a bare ThreadStore notify)", () => {
+    const onSettle = vi.fn();
+    const { unmount } = mount(
+      <GhostBubble
+        clientMessageId="cmid-block1"
+        text="block1"
+        files={[]}
+        sessionId={SESSION}
+        onSettle={onSettle}
+      />,
+    );
+
+    // Pre-fix: a ThreadStore notify with NO matching cmid in the
+    // projection would have re-checked, found nothing, and remained
+    // pending — that's already correct. The new failure mode the BLOCK
+    // codifies: a ThreadStore notify ARRIVING BEFORE the dual-write
+    // ingest leaves the ghost stuck even though the ingest will land
+    // shortly after on the SAME synchronous tick. Reproduce by pulsing
+    // ThreadStore first, asserting we don't (incorrectly) settle on
+    // its empty state.
+    act(() => {
+      ThreadStore.addUserMessage("__notify-pulse__", {
+        text: "pulse",
+        clientMessageId: "pulse-cmid",
+      });
+    });
+    expect(onSettle).not.toHaveBeenCalled();
+
+    // Now the projection-store ingest lands. The fix: GhostBubble
+    // subscribes to projection-store, which fires its listeners AFTER
+    // `ingest()` commits — so we settle on THIS notify, with no extra
+    // ThreadStore pulse needed (the pre-fix code would have waited for
+    // a follow-up notify that might never come).
+    const key = projectionStoreKey(SESSION);
+    act(() => {
+      projectionIngest(key, userRootedEnvelope("thr-block1", 1, "cmid-block1"));
+    });
+
+    expect(onSettle).toHaveBeenCalledTimes(1);
+    unmount();
+  });
+
+  // ── BLOCK 5 (codex review): O(1) cmid lookup ─────────────────────────
+  //
+  // GhostBubble used to call `getProjection(storeKey).threads.find(...)`
+  // on every notify — O(N) in the number of threads. The fix: an
+  // explicit `cmidToThread` Map kept in projection-store, populated by
+  // `ingest()`, queried via `hasCmid()` in O(1).
+  //
+  // We can't test the constant factor directly, but we CAN verify the
+  // public surface: `hasCmid` returns true once an envelope with the
+  // cmid has been ingested (and crucially, returns false for un-ingested
+  // cmids even when other threads exist in the projection). That's the
+  // contract the GhostBubble's settle predicate relies on.
+  it("BLOCK 5: ProjectionStore.hasCmid is true exactly for ingested cmids", async () => {
+    const ProjectionStore = await import("@/store/projection-store");
+    const key = projectionStoreKey(SESSION);
+
+    // Seed the projection with several threads — only ONE carries the
+    // cmid we'll query. The pre-fix scan would visit every thread; the
+    // post-fix Map lookup goes straight to the answer.
+    projectionIngest(
+      key,
+      userRootedEnvelope("thr-a", 1, "cmid-a"),
+    );
+    projectionIngest(
+      key,
+      userRootedEnvelope("thr-b", 1, "cmid-b"),
+    );
+    projectionIngest(
+      key,
+      userRootedEnvelope("thr-target", 1, "cmid-target"),
+    );
+
+    expect(ProjectionStore.hasCmid(key, "cmid-target")).toBe(true);
+    expect(ProjectionStore.hasCmid(key, "cmid-a")).toBe(true);
+    expect(ProjectionStore.hasCmid(key, "cmid-b")).toBe(true);
+    // Negative case — a cmid that was never ingested.
+    expect(ProjectionStore.hasCmid(key, "cmid-never")).toBe(false);
+    // Negative case — wrong storeKey.
+    expect(ProjectionStore.hasCmid("other-session", "cmid-target")).toBe(false);
+
+    // `threadIdForCmid` resolves to the thread the cmid first attached
+    // to. Same Map; same O(1) cost.
+    expect(ProjectionStore.threadIdForCmid(key, "cmid-target")).toBe(
+      "thr-target",
+    );
+    expect(ProjectionStore.threadIdForCmid(key, "cmid-never")).toBeUndefined();
+  });
 });
 
 // ─── Integration with ThreadStore — flag invariant ─────────────────────────
