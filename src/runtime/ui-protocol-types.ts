@@ -408,6 +408,21 @@ export interface MessageMeta {
  *  (snake_case wire form) in the Rust types. */
 export type EnvelopeToolEndStatus = "complete" | "error";
 
+/** File attachment carried on `user_message` envelopes. Mirrors `FileRef`
+ *  in the Rust types (γ-1 PR #848 commit `ac589b73`). The `path` field
+ *  is the durable filesystem path the server can resolve; `mime` and
+ *  `size_bytes` are optional metadata captured at upload time. */
+export interface FileRef {
+  path: string;
+  mime?: string;
+  size_bytes?: number;
+}
+
+interface UserMessagePayload {
+  type: "user_message";
+  data: { text: string; files: FileRef[] };
+}
+
 interface AssistantDeltaPayload {
   type: "assistant_delta";
   data: { text: string };
@@ -452,6 +467,7 @@ interface TurnCompletedPayload {
  *  envelope. The discriminator is `type`; payload data lives under
  *  `data`. Variant names are snake_case to match the wire / Rust shape. */
 export type Payload =
+  | UserMessagePayload
   | AssistantDeltaPayload
   | AssistantPersistedPayload
   | ToolStartPayload
@@ -495,6 +511,10 @@ export const UI_PROTOCOL_FEATURE_PROJECTION_ENVELOPE_V1 = "projection.envelope.v
 // rely on TS's discriminated-union narrowing. These helpers exist for
 // callers that need a runtime check (e.g. a debug overlay rendering a
 // raw envelope).
+
+export function isUserMessage(p: Payload): p is UserMessagePayload {
+  return p.type === "user_message";
+}
 
 export function isAssistantDelta(p: Payload): p is AssistantDeltaPayload {
   return p.type === "assistant_delta";

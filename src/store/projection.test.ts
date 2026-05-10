@@ -10,16 +10,27 @@
  * monotonic WITHIN a thread; cross-thread ordering is not specified).
  */
 
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import type {
   Envelope,
   EnvelopeTokenUsage,
+  FileRef,
   MessageMeta,
   Payload,
 } from "../runtime/ui-protocol-types";
 
-import { project, projectWithMetrics } from "./projection";
+import {
+  __resetProjectionCacheForTesting,
+  project,
+  projectWithMetrics,
+} from "./projection";
+
+beforeEach(() => {
+  // Per-thread ThreadView cache is module-scoped; reset between
+  // tests so re-used thread ids (`t1`, `t2`) don't return stale refs.
+  __resetProjectionCacheForTesting();
+});
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -38,6 +49,11 @@ function env(
     ? { thread_id, seq, payload, client_message_id }
     : { thread_id, seq, payload };
 }
+
+const uMsg = (text: string, files: FileRef[] = []): Payload => ({
+  type: "user_message",
+  data: { text, files },
+});
 
 const aDelta = (text: string): Payload => ({
   type: "assistant_delta",
@@ -220,17 +236,50 @@ describe("project — idempotency", () => {
     expect(a.metrics.duplicates).toBe(0);
   });
 
-  it("should drop strictly-out-of-order envelopes (seq < high-water)", () => {
+  it("should buffer out-of-order envelopes and apply them once the gap fills (codex BLOCK 1)", () => {
+    // seq 0,2,1 — pre-fix dropped seq=1 permanently.
     const log: Envelope[] = [
       env("t1", 0, aDelta("a")),
-      env("t1", 5, aDelta("b")),
-      // late arrival: seq=2, lower than the current high-water (5)
-      env("t1", 2, aDelta("LATE")),
+      env("t1", 2, aDelta("c")),
+      env("t1", 1, aDelta("b")),
     ];
     const result = projectWithMetrics(log);
     const t = result.view.threads[0];
-    expect(t.assistant?.text).toBe("ab");
+    expect(t.assistant?.text).toBe("abc");
+    // seq 2 took the buffering path; seq 1 was the in-order arrival
+    // that drained the gap (no bump).
     expect(result.metrics.outOfOrder).toBe(1);
+    expect(result.metrics.duplicates).toBe(0);
+  });
+
+  it("should buffer arrivals beyond the gap until the gap fills (large gap)", () => {
+    // seq 0, 5, 2, 1 — when 1 arrives, drain 1; 2 was already
+    // buffered so drain 2; 3,4 missing so 5 stays buffered.
+    const log: Envelope[] = [
+      env("t1", 0, aDelta("a")),
+      env("t1", 5, aDelta("z")),
+      env("t1", 2, aDelta("c")),
+      env("t1", 1, aDelta("b")),
+    ];
+    const result = projectWithMetrics(log);
+    const t = result.view.threads[0];
+    expect(t.assistant?.text).toBe("abc");
+    // seq 5 + seq 2 buffered (=2). seq 1 was in-order (no bump).
+    expect(result.metrics.outOfOrder).toBe(2);
+  });
+
+  it("should produce identical output for [0,1,2] and [0,2,1] (codex BLOCK 2 order-independence)", () => {
+    const inOrder: Envelope[] = [
+      env("t1", 0, aDelta("a")),
+      env("t1", 1, aDelta("b")),
+      env("t1", 2, aDelta("c")),
+    ];
+    const outOfOrder: Envelope[] = [
+      env("t1", 0, aDelta("a")),
+      env("t1", 2, aDelta("c")),
+      env("t1", 1, aDelta("b")),
+    ];
+    expect(project(inOrder)).toEqual(project(outOfOrder));
   });
 });
 
@@ -387,13 +436,20 @@ describe("project — user view captures client_message_id when present", () => 
       env("t1", 1, aDelta("there")),
     ];
     const view = project(log);
-    expect(view.threads[0].user).toEqual({ seq: 0, client_message_id: "u-token-1" });
+    // Until a `user_message` envelope lands, text/files default to
+    // empty (codex BLOCK 3: no first-envelope-seen fallback).
+    expect(view.threads[0].user).toEqual({
+      seq: 0,
+      client_message_id: "u-token-1",
+      text: "",
+      files: [],
+    });
   });
 
   it("should leave client_message_id unset when the envelope omits it", () => {
     const log: Envelope[] = [env("t1", 0, aDelta("hi"))];
     const view = project(log);
-    expect(view.threads[0].user).toEqual({ seq: 0 });
+    expect(view.threads[0].user).toEqual({ seq: 0, text: "", files: [] });
   });
 });
 
@@ -401,5 +457,93 @@ describe("project — empty input", () => {
   it("should produce an empty view-model", () => {
     const view = project([]);
     expect(view).toEqual({ threads: [] });
+  });
+});
+
+// ─── BLOCK 3: user_message payload populates UserView ────────────────────
+
+describe("project — user_message variant (codex BLOCK 3)", () => {
+  it("should populate UserView.text and UserView.files from a user_message envelope", () => {
+    const files: FileRef[] = [
+      { path: "/tmp/notes.md", mime: "text/markdown", size_bytes: 42 },
+    ];
+    const log: Envelope[] = [
+      env("t1", 0, uMsg("Hello!", files), "u-1"),
+      env("t1", 1, aDelta("Hi ")),
+      env("t1", 2, aDelta("there")),
+    ];
+    const view = project(log);
+    const u = view.threads[0].user!;
+    expect(u.text).toBe("Hello!");
+    expect(u.files).toEqual(files);
+    expect(u.client_message_id).toBe("u-1");
+    expect(u.seq).toBe(0);
+    expect(view.threads[0].assistant?.text).toBe("Hi there");
+  });
+
+  it("should NOT clobber UserView.text from a later assistant_delta (no first-envelope fallback)", () => {
+    const log: Envelope[] = [env("t1", 0, aDelta("assistant content"))];
+    const view = project(log);
+    expect(view.threads[0].user?.text).toBe("");
+    expect(view.threads[0].user?.files).toEqual([]);
+  });
+
+  it("should preserve UserView.text under buffered out-of-order arrival of the user_message envelope", () => {
+    const files: FileRef[] = [{ path: "/tmp/x.png" }];
+    const log: Envelope[] = [
+      env("t1", 1, aDelta("after"), "u-late"),
+      env("t1", 0, uMsg("typed", files), "u-late"),
+    ];
+    const view = project(log);
+    const u = view.threads[0].user!;
+    expect(u.text).toBe("typed");
+    expect(u.files).toEqual(files);
+    expect(view.threads[0].assistant?.text).toBe("after");
+  });
+
+  it("should ignore a second user_message payload (first-seen wins per thread)", () => {
+    const log: Envelope[] = [
+      env("t1", 0, uMsg("first")),
+      env("t1", 1, uMsg("second")),
+    ];
+    const view = project(log);
+    expect(view.threads[0].user?.text).toBe("first");
+  });
+});
+
+// ─── BLOCK 4: referential stability across project() calls ───────────────
+
+describe("project — referential stability (codex BLOCK 4)", () => {
+  it("should return the same ChatViewModel reference for the same input array", () => {
+    const log: Envelope[] = [
+      env("t1", 0, uMsg("hi"), "u-1"),
+      env("t1", 1, aDelta("hello")),
+    ];
+    const a = project(log);
+    const b = project(log);
+    expect(a).toBe(b);
+  });
+
+  it("should reuse per-thread ThreadView refs across distinct projections when the thread is unchanged", () => {
+    const log1: Envelope[] = [
+      env("t1", 0, uMsg("hi"), "u-1"),
+      env("t1", 1, aDelta("hello")),
+    ];
+    const log2: Envelope[] = log1.slice();
+    const v1 = project(log1);
+    const v2 = project(log2);
+    expect(v1).not.toBe(v2);
+    expect(v1.threads[0]).toBe(v2.threads[0]);
+  });
+
+  it("should mint a new ThreadView ref when the thread's contents materially change", () => {
+    const log1: Envelope[] = [env("t1", 0, uMsg("hi"))];
+    const log2: Envelope[] = [
+      env("t1", 0, uMsg("hi")),
+      env("t1", 1, aDelta("more")),
+    ];
+    const v1 = project(log1);
+    const v2 = project(log2);
+    expect(v1.threads[0]).not.toBe(v2.threads[0]);
   });
 });
