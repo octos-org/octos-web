@@ -15,8 +15,6 @@ import {
   getSessionTasks,
   getMessages as fetchSessionMessages,
 } from "@/api/sessions";
-import { buildApiHeaders } from "@/api/client";
-import { API_BASE } from "@/lib/constants";
 import * as ThreadStore from "@/store/thread-store";
 import * as TaskStore from "@/store/task-store";
 import * as FileStore from "@/store/file-store";
@@ -175,19 +173,6 @@ function updateActiveIds(entry: WatchedSession, tasks: BackgroundTaskInfo[]): vo
   }
 }
 
-function applyTaskUpdate(entry: WatchedSession, task: BackgroundTaskInfo): void {
-  if (isTaskActive(task)) {
-    entry.activeIds.add(task.id);
-    entry.terminalSince = null;
-    dispatchBgTasksEvent(entry.sessionId, entry.topic);
-  } else {
-    entry.activeIds.delete(task.id);
-    if (entry.replayComplete && entry.activeIds.size === 0) {
-      entry.terminalSince = Date.now();
-    }
-  }
-}
-
 function emitNewFileEvents(
   sessionId: string,
   topic: string | undefined,
@@ -228,23 +213,6 @@ function applyCommittedMessages(
     entry.terminalSince = Date.now();
   }
   persistWatchedSessions();
-}
-
-async function backfillCommittedGap(
-  entry: WatchedSession,
-  previousSeq: number,
-  observedSeq: number,
-): Promise<void> {
-  if (observedSeq <= previousSeq + 1) return;
-
-  const backfill = await fetchSessionMessages(
-    entry.sessionId,
-    500,
-    0,
-    previousSeq >= 0 ? previousSeq : undefined,
-    entry.topic,
-  );
-  applyCommittedMessages(entry.sessionId, entry, backfill);
 }
 
 /** Register a session for background monitoring. */
