@@ -125,6 +125,46 @@ describe("sendMessage", () => {
     expect(legacySendSpy).not.toHaveBeenCalled();
   });
 
+  // M9-γ-4 (issue #841): when `skipOptimisticUserMessage` is set,
+  // `enqueueSendV1` MUST NOT call `addUserMessage`. The Composer renders
+  // a `<GhostBubble>` overlay instead, so the durable thread reducer
+  // stays free of an optimistic row. The send itself still goes through
+  // bridge.sendTurn so the server produces real envelopes.
+  it("flag ON (skipOptimisticUserMessage): does NOT mirror into ThreadStore", async () => {
+    const bridge = makeBridge();
+    __setActiveBridgeForTest(SESSION, bridge);
+    sendMessage({
+      sessionId: SESSION,
+      text: "ghost",
+      media: [],
+      clientMessageId: "cmid-ghost",
+      skipOptimisticUserMessage: true,
+    });
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    // RPC still fired — the ghost is a UI-only opt-out, not a send opt-out.
+    expect(bridge.sendTurn).toHaveBeenCalledWith("cmid-ghost", [
+      { kind: "text", text: "ghost" },
+    ]);
+    // Acceptance criterion: no ThreadStore row.
+    expect(ThreadStore.getThreads(SESSION)).toHaveLength(0);
+  });
+
+  it("flag OFF (default): mirrors into ThreadStore (today's behaviour)", async () => {
+    const bridge = makeBridge();
+    __setActiveBridgeForTest(SESSION, bridge);
+    sendMessage({
+      sessionId: SESSION,
+      text: "legacy",
+      media: [],
+      clientMessageId: "cmid-legacy",
+      // skipOptimisticUserMessage omitted → defaults to false.
+    });
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    const threads = ThreadStore.getThreads(SESSION);
+    expect(threads).toHaveLength(1);
+    expect(threads[0].id).toBe("cmid-legacy");
+  });
+
   it("subscribes to turn lifecycle so onComplete fires on turn/completed", async () => {
     const bridge = makeBridge();
     __setActiveBridgeForTest(SESSION, bridge);
