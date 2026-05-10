@@ -713,6 +713,24 @@ export function addToolCall(
       progress: last.progress,
     };
     notify();
+
+    // M9-γ-3 dual-write (codex round-1 BLOCK 2): the retry-collapse
+    // path mutates legacy state in place but the wire still receives a
+    // fresh `tool_start` for the NEW `tool_call_id`. The projection
+    // keys tool cards on `tool_call_id`, so without this emission a
+    // retry would never open a card for the new id and any subsequent
+    // `tool_progress` / `tool_end` envelope would synthesise an
+    // empty-name placeholder card (γ-2's "progress without a prior
+    // start" path) — mismatching the legacy reducer's view.
+    if (isProjectionV1Enabled() && toolCallId) {
+      const key = shimResolveKey(threadId);
+      if (key) {
+        shimIngest(key, threadId, {
+          type: "tool_start",
+          data: { tool_call_id: toolCallId, name },
+        });
+      }
+    }
     return;
   }
 
@@ -1216,10 +1234,21 @@ export function stampPendingHistorySeq(
   // `persisted_at`); a bare seq-stamp without text/meta is purely a
   // legacy bookkeeping fix the v1 router needs to acknowledge a
   // `message/persisted` that arrived BEFORE its `message/delta`.
-  // Intentionally no envelope emission here — γ-2's projection has no
-  // payload variant for this and the seq itself is not (yet) used by
-  // the projection's identity. (Captured as a deferred edge case in
-  // the M9-γ-3 PR description.)
+  // Intentionally no envelope emission here.
+  //
+  // Why this no-op is safe under the projection (codex round-1
+  // BLOCK 4): the `historySeq` value here is the SERVER-issued seq
+  // (non-negative). After BLOCK 1's namespace separation, the server
+  // namespace is disjoint from the synthetic namespace minted by the
+  // shim, so this stamp doesn't need to be reflected in the
+  // projection log to keep dedup honest — the server seq will arrive
+  // on the wire as part of the eventual `assistant_persisted` /
+  // `turn_completed` envelope, and THAT envelope is what carries the
+  // text/meta the projection needs. Pre-fix (when synthetic and
+  // server seqs shared a namespace) a stamp-without-emission could
+  // have caused the eventual server-side envelope to be dropped as
+  // an out-of-order duplicate of an earlier synthetic seq; that race
+  // can no longer happen.
 }
 
 export interface FinalizeAssistantOptions {
@@ -1249,9 +1278,17 @@ export function finalizeAssistant(
     // lost over the wire would otherwise leave the chip spinning forever.
     // Only flip running → complete; preserve "error" and existing
     // "complete" entries (tool_end already arrived for those).
-    const sweptToolCalls = thread.pendingAssistant.toolCalls.map((tc) =>
-      tc.status === "running" ? { ...tc, status: "complete" as const } : tc,
-    );
+    // Also remember which ids were swept so the projection dual-write
+    // below can emit synthetic `tool_end` envelopes for them BEFORE
+    // `turn_completed` (codex round-1 BLOCK 3).
+    const sweptToolCallIds: string[] = [];
+    const sweptToolCalls = thread.pendingAssistant.toolCalls.map((tc) => {
+      if (tc.status === "running") {
+        if (tc.id) sweptToolCallIds.push(tc.id);
+        return { ...tc, status: "complete" as const };
+      }
+      return tc;
+    });
 
     const finalized: ThreadMessage = {
       ...thread.pendingAssistant,
@@ -1277,6 +1314,21 @@ export function finalizeAssistant(
     if (isProjectionV1Enabled()) {
       const key = shimResolveKey(threadId);
       if (key) {
+        // codex round-1 BLOCK 3: emit a synthetic `tool_end` for every
+        // tool call that legacy `finalizeAssistant` swept from
+        // `running` → `complete` (the wire never delivered an explicit
+        // tool_end). MUST happen BEFORE `turn_completed` since the
+        // projection's hard barrier drops anything after a thread is
+        // marked complete — a late tool_end on the wire would never
+        // reach the projection's tool card. Empty-id calls (legacy
+        // daemon path) are skipped at sweep-collection time.
+        for (const sweptId of sweptToolCallIds) {
+          shimIngest(key, threadId, {
+            type: "tool_end",
+            data: { tool_call_id: sweptId, status: "complete" },
+          });
+        }
+
         const meta = opts.meta ?? finalized.meta;
         const usage =
           meta !== undefined

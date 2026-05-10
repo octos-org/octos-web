@@ -3058,4 +3058,231 @@ describe("ThreadStore projection-mode (M9-γ-3, octos#840)", () => {
     // counter — neither one's seqs are functions of the other's.
     expect(byThread.get("cm-1")?.[0]).toBe(byThread.get("cm-2")?.[0]);
   });
+
+  // ── codex round-1 BLOCK 1: synthetic / server seq namespaces ──────────
+
+  it("seq_namespace_synthetic_negative_does_not_collide_with_server_positive", () => {
+    // Pre-fix repro: shim minted synthetic seq=1 for an in-flight
+    // assistant_delta, and a subsequent server-issued
+    // assistant_persisted with historySeq=1 was treated as a duplicate
+    // of the same `(thread_id, seq)` and silently dropped — the
+    // persisted text never replaced the streamed delta. After
+    // BLOCK 1's namespace split, the shim mints seq=-1 for the delta
+    // and the projection accepts seq=+1 (server) as a distinct
+    // envelope on a different track.
+    ThreadStore.addUserMessage(SID, {
+      text: "stream then persist",
+      clientMessageId: "cmid-1",
+    });
+
+    // Synthetic delta — minted by the shim with seq < 0.
+    ThreadStore.appendAssistantToken("cmid-1", "streamed");
+
+    // Server-issued persisted envelope with historySeq=1 (lands as
+    // `seq=+1` in the projection's server namespace). This is exactly
+    // the value where the pre-fix collision would have happened.
+    const key = projectionStoreKey(SID);
+    projectionIngest(key, {
+      thread_id: "cmid-1",
+      seq: 1,
+      payload: {
+        type: "assistant_persisted",
+        data: {
+          text: "persisted-canonical",
+          meta: {
+            message_id: "msg-server-1",
+            persisted_at: "2026-05-09T11:00:01Z",
+          },
+        },
+      },
+    });
+
+    const { view, metrics } = getProjectionWithMetrics(key);
+    // No duplicate dropped: the synthetic delta and the server
+    // persisted live in disjoint namespaces.
+    expect(metrics.duplicates).toBe(0);
+    const thread = view.threads.find((t) => t.thread_id === "cmid-1");
+    // The persisted text wins (both were applied; persisted is the
+    // canonical finalised text).
+    expect(thread?.assistant?.persisted).toBe(true);
+    expect(thread?.assistant?.text).toBe("persisted-canonical");
+  });
+
+  it("seq_namespace_server_seq_after_synthetic_is_not_out_of_order", () => {
+    // Verify that an out-of-order check is INSIDE each namespace, not
+    // across them. A synthetic seq=-3 followed by a server seq=+1 is
+    // legitimate: the synthetic high-water mark (magnitude=3) does
+    // not block the first server-namespace envelope.
+    ThreadStore.addUserMessage(SID, {
+      text: "interleaved namespaces",
+      clientMessageId: "cmid-1",
+    });
+
+    // Bump the synthetic high-water mark via three streamed tokens
+    // (each shim mint allocates one synthetic seq).
+    ThreadStore.appendAssistantToken("cmid-1", "a");
+    ThreadStore.appendAssistantToken("cmid-1", "b");
+    ThreadStore.appendAssistantToken("cmid-1", "c");
+
+    // Server-namespace envelope with seq=1 — would-be-rejected
+    // pre-fix because |seq|=3 was already the per-thread high water.
+    const key = projectionStoreKey(SID);
+    projectionIngest(key, {
+      thread_id: "cmid-1",
+      seq: 1,
+      payload: {
+        type: "tool_start",
+        data: { tool_call_id: "tc-srv", name: "external_tool" },
+      },
+    });
+
+    const { view, metrics } = getProjectionWithMetrics(key);
+    // The server envelope was applied — not classified as
+    // out-of-order, not classified as a duplicate.
+    expect(metrics.outOfOrder).toBe(0);
+    const thread = view.threads.find((t) => t.thread_id === "cmid-1");
+    expect(
+      thread?.toolCalls.find((tc) => tc.tool_call_id === "tc-srv"),
+    ).toBeDefined();
+  });
+
+  // ── codex round-1 BLOCK 2: retry-collapse emits tool_start ────────────
+
+  it("addToolCall_retry_collapse_emits_tool_start_for_new_tool_call_id", () => {
+    // The retry-collapse path mutates the existing legacy tool entry
+    // (incrementing retryCount) and returns early. Pre-fix, no
+    // `tool_start` envelope was emitted for the NEW tool_call_id, so
+    // the projection's tool card was either keyed on the OLD id (if
+    // legacy reused it via mutation) or never opened — and any
+    // subsequent `tool_progress` for the new id would synthesise an
+    // empty-name card. Post-fix: the retry-collapse path emits a
+    // fresh `tool_start { tool_call_id: NEW, name }` envelope so the
+    // projection opens a properly-named card under the new id.
+    ThreadStore.addUserMessage(SID, {
+      text: "retry me",
+      clientMessageId: "cmid-1",
+    });
+    ThreadStore.addToolCall("cmid-1", "tc-1", "fetch_thing");
+    ThreadStore.setToolCallStatus("cmid-1", "tc-1", "error");
+    // The retry: same name, NEW id. Legacy collapses; projection
+    // must still see a `tool_start` for tc-2.
+    ThreadStore.addToolCall("cmid-1", "tc-2", "fetch_thing");
+
+    const key = projectionStoreKey(SID);
+    const log = getEnvelopes(key);
+    const startsForTc2 = log.filter(
+      (e) =>
+        e.payload.type === "tool_start" &&
+        e.payload.data.tool_call_id === "tc-2",
+    );
+    expect(startsForTc2).toHaveLength(1);
+    expect(
+      startsForTc2[0].payload.type === "tool_start" &&
+        startsForTc2[0].payload.data.name,
+    ).toBe("fetch_thing");
+
+    // And the projected view: tc-2 has a card with the right name.
+    const view = getProjection(key);
+    const thread = view.threads.find((t) => t.thread_id === "cmid-1");
+    const tc2 = thread?.toolCalls.find((tc) => tc.tool_call_id === "tc-2");
+    expect(tc2).toBeDefined();
+    expect(tc2?.name).toBe("fetch_thing");
+  });
+
+  // ── codex round-1 BLOCK 3: finalizeAssistant emits tool_end on sweep ──
+
+  it("finalizeAssistant_emits_tool_end_for_swept_running_tool_calls_before_turn_completed", () => {
+    // Legacy `finalizeAssistant` sweeps any tool calls still in
+    // `"running"` to `"complete"` (the wire never delivered a
+    // `tool_end` for them). Pre-fix, the projection's tool card
+    // stayed in `status: null` because no `tool_end` envelope was
+    // emitted, AND the subsequent `turn_completed` envelope's hard
+    // barrier meant a late tool_end on the wire could never close
+    // the card. Post-fix: finalize emits a synthetic `tool_end`
+    // BEFORE `turn_completed` for every swept call.
+    ThreadStore.addUserMessage(SID, {
+      text: "run pipeline",
+      clientMessageId: "cmid-1",
+    });
+    ThreadStore.addToolCall("cmid-1", "tc-A", "step_one");
+    ThreadStore.addToolCall("cmid-1", "tc-B", "step_two");
+    // tc-B finishes explicitly via tool_end; tc-A is left running.
+    ThreadStore.setToolCallStatus("cmid-1", "tc-B", "complete");
+    // Now finalize — the sweep should close tc-A in the projection.
+    ThreadStore.finalizeAssistant("cmid-1", { committedSeq: 7 });
+
+    const key = projectionStoreKey(SID);
+    const log = getEnvelopes(key);
+
+    // Find the indices of tool_end events for tc-A and the
+    // turn_completed event — the tool_end MUST come first.
+    const tcAEndIdx = log.findIndex(
+      (e) =>
+        e.payload.type === "tool_end" &&
+        e.payload.data.tool_call_id === "tc-A",
+    );
+    const turnCompletedIdx = log.findIndex(
+      (e) => e.payload.type === "turn_completed",
+    );
+    expect(tcAEndIdx).toBeGreaterThanOrEqual(0);
+    expect(turnCompletedIdx).toBeGreaterThanOrEqual(0);
+    expect(tcAEndIdx).toBeLessThan(turnCompletedIdx);
+
+    // And the projected view: tc-A is closed with status=complete.
+    const view = getProjection(key);
+    const thread = view.threads.find((t) => t.thread_id === "cmid-1");
+    const tcA = thread?.toolCalls.find((tc) => tc.tool_call_id === "tc-A");
+    expect(tcA?.status).toBe("complete");
+    expect(thread?.completed).toBe(true);
+  });
+
+  // ── codex round-1 BLOCK 5: mid-session flag flip is ignored ───────────
+
+  it("mid_session_projection_v1_flag_flip_is_ignored_until_reload", () => {
+    // The flag is read once and cached on first call; a subsequent
+    // localStorage flip is logged as a one-shot warning and
+    // otherwise ignored — pre-fix, flipping the flag mid-session
+    // would start the projection log from the next shimmed event
+    // with no prior envelope history, leaving the projection in an
+    // inconsistent state.
+    //
+    // First read latches the cache at "true" (from the suite's
+    // `beforeEach`). Now flip localStorage to "0" WITHOUT calling
+    // `__setProjectionV1ForTests` (the test helper resets the
+    // cache); the cached value should win.
+    const warnSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    try {
+      // Prime the cache by issuing a mutation under projectionV1=true.
+      ThreadStore.addUserMessage(SID, {
+        text: "first",
+        clientMessageId: "cm-1",
+      });
+      ThreadStore.appendAssistantToken("cm-1", "hello");
+
+      const key = projectionStoreKey(SID);
+      expect(getEnvelopes(key).length).toBeGreaterThan(0);
+      const beforeFlipCount = getEnvelopes(key).length;
+
+      // Flip the raw flag bypassing the test helper.
+      globalThis.localStorage?.removeItem("octos_projection_v1");
+
+      // Subsequent mutation should STILL emit envelopes (the cached
+      // value wins), AND a single console.warn should fire.
+      ThreadStore.appendAssistantToken("cm-1", " world");
+      const afterFlipCount = getEnvelopes(key).length;
+      expect(afterFlipCount).toBeGreaterThan(beforeFlipCount);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][0]).toMatch(/octos_projection_v1/);
+
+      // Multiple subsequent mutations DO NOT spam the warning —
+      // it's a one-shot.
+      ThreadStore.appendAssistantToken("cm-1", "!");
+      ThreadStore.appendAssistantToken("cm-1", "?");
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
 });

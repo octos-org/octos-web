@@ -91,7 +91,6 @@ export function isProjectionV1Enabled(): boolean {
       const live = readFlagFromStorage();
       if (live !== cachedProjectionV1Enabled) {
         warnedAboutMidSessionChange = true;
-        // eslint-disable-next-line no-console
         console.warn(
           "[octos] octos_projection_v1 changed mid-session; the new " +
             "value is ignored until reload to avoid starting the " +
