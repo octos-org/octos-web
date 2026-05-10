@@ -39,6 +39,7 @@ import {
   type ThreadMessage,
   type ThreadToolCall,
 } from "@/store/thread-store";
+import { isProjectionV1Enabled } from "@/store/projection-store";
 import { uploadFiles } from "@/api/chat";
 import { sendMessage as bridgeSend } from "@/runtime/ui-protocol-send";
 import { getActiveBridge } from "@/runtime/ui-protocol-runtime";
@@ -46,6 +47,8 @@ import * as StreamManager from "@/runtime/stream-manager";
 import { MarkdownContent } from "./markdown-renderer";
 import { ThinkingIndicator } from "./thinking-indicator";
 import { ToolProgressIndicator } from "./tool-progress-indicator";
+import { GhostBubble } from "./GhostBubble";
+import { UserBubbleShell } from "./user-bubble-shell";
 import { buildAuthenticatedFileUrl, buildFileUrl } from "@/api/files";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { nextTopicForCommand } from "@/lib/slash-commands";
@@ -367,6 +370,33 @@ interface PendingFile {
 }
 
 // ---------------------------------------------------------------------------
+// M9-γ-4: optimistic GhostBubble overlay
+//
+// Mounted by `Composer.handleSend` when `projection_v1` is on; lives in
+// the `ChatThreadV2` React tree (NOT in `ThreadStore`) and unmounts as
+// soon as the projection captures `UserView.client_message_id` matching
+// the ghost's cmid.
+// ---------------------------------------------------------------------------
+
+interface GhostSpec {
+  /** Pinned `client_message_id` — same value the send dispatches with. */
+  clientMessageId: string;
+  /** What the user typed (visible bubble text). */
+  text: string;
+  /** Raw files at send time — purely for the ghost row's display. */
+  files: File[];
+  /** Closure that re-issues the original send. The GhostBubble surfaces
+   *  it via the Retry button after the 30s timeout. Invoked at most
+   *  once per ghost. */
+  retry: () => void;
+}
+
+/** Stable empty-array reference for the per-bucket ghost lookup so
+ *  `useThreads`-style identity comparisons in downstream consumers
+ *  don't churn when the current bucket has no ghosts. */
+const EMPTY_GHOSTS: ReadonlyArray<GhostSpec> = Object.freeze([]);
+
+// ---------------------------------------------------------------------------
 // Main ChatThread component
 // ---------------------------------------------------------------------------
 
@@ -411,30 +441,27 @@ const ThreadUserBubble = memo(function ThreadUserBubble({
   threadId: string;
 }) {
   const visibleText = threadMessageVisibleText(message);
+  // Visual layout is shared with `<GhostBubble>` via `<UserBubbleShell>`
+  // so the optimistic overlay and the canonical user bubble cannot drift
+  // (codex BLOCK 4 fix). Only the file-row content differs: the real
+  // bubble renders `<FileAttachment>` for server-resolved paths; the
+  // ghost renders pending pills for not-yet-uploaded `File` objects.
+  const fileRows =
+    message.files.length > 0 ? (
+      <>
+        {message.files.map((f) => (
+          <FileAttachment key={f.path} file={f} />
+        ))}
+      </>
+    ) : null;
   return (
-    <div className="flex justify-end px-4 py-3">
-      <div className="flex max-w-[74%] flex-col items-end">
-        {visibleText && (
-          <div
-            data-testid="user-message"
-            data-thread-id={threadId}
-            className="message-card message-card-user rounded-[14px] rounded-br-[4px] px-4 py-2.5 text-sm leading-relaxed text-text"
-          >
-            {visibleText}
-          </div>
-        )}
-        {message.files.length > 0 && (
-          <div className={`${visibleText ? "mt-2" : ""} flex flex-wrap gap-2`}>
-            {message.files.map((f) => (
-              <FileAttachment key={f.path} file={f} />
-            ))}
-          </div>
-        )}
-        <div className="mt-1.5 px-1 text-[10px] text-muted/50 select-none">
-          {formatTimestamp(message.timestamp)}
-        </div>
-      </div>
-    </div>
+    <UserBubbleShell
+      text={visibleText || null}
+      files={fileRows}
+      footer={formatTimestamp(message.timestamp)}
+      textTestId="user-message"
+      textDataAttributes={{ "data-thread-id": threadId }}
+    />
   );
 });
 
@@ -656,9 +683,17 @@ function ThreadView({
 
 function ThreadList({
   threads,
+  ghosts,
+  sessionId,
+  topic,
+  onSettleGhost,
   hideFileOnlyAssistantMessages,
 }: {
   threads: Thread[];
+  ghosts: ReadonlyArray<GhostSpec>;
+  sessionId: string;
+  topic?: string;
+  onSettleGhost: (clientMessageId: string) => void;
   hideFileOnlyAssistantMessages: boolean;
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -676,12 +711,13 @@ function ThreadList({
     return () => el.removeEventListener("scroll", handleScroll);
   }, []);
 
-  // Auto-scroll when threads update
+  // Auto-scroll when threads OR ghosts update — a fresh ghost on send
+  // should pull the viewport down just like a real user bubble would.
   useEffect(() => {
     if (stickToBottomRef.current && viewportRef.current) {
       viewportRef.current.scrollTop = viewportRef.current.scrollHeight;
     }
-  }, [threads]);
+  }, [threads, ghosts]);
 
   return (
     <div
@@ -698,6 +734,18 @@ function ThreadList({
             hideFileOnlyAssistantMessages={hideFileOnlyAssistantMessages}
           />
         ))}
+        {ghosts.map((g) => (
+          <GhostBubble
+            key={g.clientMessageId}
+            clientMessageId={g.clientMessageId}
+            text={g.text}
+            files={g.files}
+            sessionId={sessionId}
+            topic={topic}
+            onSettle={() => onSettleGhost(g.clientMessageId)}
+            onRetry={g.retry}
+          />
+        ))}
       </div>
     </div>
   );
@@ -708,7 +756,53 @@ function ChatThreadV2({
 }: ChatThreadProps) {
   const { currentSessionId, historyTopic } = useSession();
   const threads = useThreads(currentSessionId, historyTopic);
+  // M9-γ-4: optimistic ghost overlay state. Lives here (NOT in
+  // ThreadStore) so the renderer can mount/unmount rows without
+  // polluting the durable thread reducer. Composer pushes new ghosts
+  // via `mountGhost`; GhostBubble fires `onSettle` once the projection
+  // captures the matching cmid, which calls `unmountGhost`.
+  //
+  // Ghosts are bucketed by `(sessionId, historyTopic)` so a session
+  // switch doesn't bleed an in-flight optimistic bubble across to the
+  // next view. We render only the ghosts for the current bucket; stale
+  // entries in other buckets are dropped lazily by `mountGhost` when
+  // the same cmid re-enters, or via `__resetForTests`. No `useEffect`
+  // resets a bucket — that's exactly the cascading-rerender pattern the
+  // `react-hooks/set-state-in-effect` rule blocks.
+  const ghostBucketKey = `${currentSessionId}::${historyTopic ?? ""}`;
+  const [ghostsByBucket, setGhostsByBucket] = useState<
+    Record<string, GhostSpec[]>
+  >({});
+  const ghosts = ghostsByBucket[ghostBucketKey] ?? EMPTY_GHOSTS;
+  const mountGhost = useCallback(
+    (spec: GhostSpec) => {
+      setGhostsByBucket((prev) => {
+        const cur = prev[ghostBucketKey] ?? [];
+        // Idempotent: re-mounting the same cmid (e.g. a retry that mints
+        // the same id) replaces the existing entry instead of
+        // duplicating.
+        const filtered = cur.filter(
+          (g) => g.clientMessageId !== spec.clientMessageId,
+        );
+        return { ...prev, [ghostBucketKey]: [...filtered, spec] };
+      });
+    },
+    [ghostBucketKey],
+  );
+  const unmountGhost = useCallback(
+    (clientMessageId: string) => {
+      setGhostsByBucket((prev) => {
+        const cur = prev[ghostBucketKey];
+        if (!cur || cur.length === 0) return prev;
+        const next = cur.filter((g) => g.clientMessageId !== clientMessageId);
+        if (next.length === cur.length) return prev;
+        return { ...prev, [ghostBucketKey]: next };
+      });
+    },
+    [ghostBucketKey],
+  );
   const hasThreads = threads.length > 0;
+  const hasGhosts = ghosts.length > 0;
 
   // M8.10 follow-up (#633): rehydrate thread store from server history on mount
   // and on session/topic change. The flat-list path loads history via
@@ -749,9 +843,13 @@ function ChatThreadV2({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-transparent">
-      {hasThreads ? (
+      {hasThreads || hasGhosts ? (
         <ThreadList
           threads={threads}
+          ghosts={ghosts}
+          sessionId={currentSessionId}
+          topic={historyTopic}
+          onSettleGhost={unmountGhost}
           hideFileOnlyAssistantMessages={hideFileOnlyAssistantMessages}
         />
       ) : (
@@ -768,7 +866,7 @@ function ChatThreadV2({
         </div>
       )}
       <div className="shrink-0">
-        <Composer />
+        <Composer mountGhost={mountGhost} unmountGhost={unmountGhost} />
       </div>
     </div>
   );
@@ -778,7 +876,17 @@ function ChatThreadV2({
 // Composer
 // ---------------------------------------------------------------------------
 
-function Composer() {
+interface ComposerProps {
+  /** M9-γ-4: mount a `<GhostBubble>` overlay for the current send.
+   *  Composer calls this when `projection_v1` is on; otherwise the
+   *  legacy `addUserMessage` path keeps producing the optimistic row. */
+  mountGhost: (spec: GhostSpec) => void;
+  /** Tear down a ghost (used by the Retry path to clear a stale
+   *  overlay before re-issuing the send). */
+  unmountGhost: (clientMessageId: string) => void;
+}
+
+function Composer({ mountGhost, unmountGhost }: ComposerProps) {
   const {
     currentSessionId,
     historyTopic,
@@ -1011,6 +1119,26 @@ function Composer() {
     const trimmedInput = text.trim();
     const input = trimmedInput.startsWith("/") ? text.trimStart() : trimmedInput;
 
+    // M9-γ-4 (codex BLOCK 3): defer the ghost-bubble mount until AFTER
+    // every early-return path (slash interception, /help, upload
+    // failure, second beforeSend interception). A ghost mounted before
+    // those returns leaves a stale optimistic bubble on screen with no
+    // matching cmid in flight. We compute the cmid up-front (so the
+    // bridge call at the bottom can pin it) but only call `mountGhost`
+    // once we're past every return point and `bridgeSend` is about to
+    // fire.
+    //
+    // Snapshot the user-typed visible text + the raw files NOW, before
+    // upload mutates `pendingFiles`. The ghost's contents are frozen at
+    // send-click — exactly what the user sees in a live bubble — and
+    // the same snapshot powers retry (codex BLOCK 2).
+    const projectionV1 = isProjectionV1Enabled();
+    const pinnedClientMessageId = projectionV1
+      ? crypto.randomUUID()
+      : undefined;
+    const ghostTextSnapshot = trimmedInput;
+    const ghostFilesSnapshot = pendingFiles.map((pf) => pf.file);
+
     let mediaPaths: string[] = [];
     let audioUploadMode: "recording" | "upload" | undefined;
 
@@ -1128,10 +1256,74 @@ function Composer() {
       return;
     }
 
+    // M9-γ-4 (codex BLOCK 3): we're now past every early-return path.
+    // Mount the ghost immediately before dispatching `bridgeSend` so
+    // the optimistic bubble only appears when the send is actually
+    // about to leave the client. Hold onto the original payload so the
+    // ghost's Retry button can re-issue the send with a NEW cmid
+    // (codex BLOCK 2 — Retry truly resends, not just dismisses).
+    let ghostMounted = false;
+    if (projectionV1 && pinnedClientMessageId) {
+      const cmid = pinnedClientMessageId;
+      const retryPayload = {
+        ...finalPayload,
+        historyTopic: requestedTopic,
+      };
+      const retryFiles = ghostFilesSnapshot;
+      const retryText = ghostTextSnapshot;
+      // Recursive-closure factory: each retry mints a fresh cmid and
+      // mounts a new ghost; the new ghost's `retry` closure captures
+      // the freshly minted cmid so an N-th retry stays consistent.
+      const buildRetry = (currentCmid: string): (() => void) => () => {
+        unmountGhost(currentCmid);
+        const retryCmid = crypto.randomUUID();
+        mountGhost({
+          clientMessageId: retryCmid,
+          text: retryText,
+          files: retryFiles,
+          retry: buildRetry(retryCmid),
+        });
+        // Re-issue the send with the new cmid + the same payload.
+        // The bridge re-registers the pending cmid so the projection's
+        // first envelope on the new thread captures it. Failure of
+        // this retry must NOT pollute ThreadStore — the ghost's
+        // contract is purely visual.
+        bridgeSend({
+          ...retryPayload,
+          clientMessageId: retryCmid,
+          skipOptimisticUserMessage: true,
+          onSessionActive: (firstMsg) => markSessionActive(firstMsg),
+          onComplete: () => {
+            sendingRef.current = false;
+            refreshSessions();
+          },
+        });
+      };
+      mountGhost({
+        clientMessageId: cmid,
+        text: retryText,
+        files: retryFiles,
+        retry: buildRetry(cmid),
+      });
+      ghostMounted = true;
+    }
+
     // Send via SSE bridge (StreamManager queues if a stream is already active)
     bridgeSend({
       ...finalPayload,
       historyTopic: requestedTopic,
+      // M9-γ-4: pin the cmid through the send so the ghost's
+      // projection-match predicate sees an envelope tagged with the
+      // exact same value. When `pinnedClientMessageId` is undefined
+      // (projection_v1 OFF) the bridge mints its own as before.
+      ...(pinnedClientMessageId !== undefined
+        ? { clientMessageId: pinnedClientMessageId }
+        : {}),
+      // M9-γ-4: tell the bridge to skip the optimistic
+      // `ThreadStore.addUserMessage` mirror — we've already mounted a
+      // visual `<GhostBubble>` instead. The bridge still registers the
+      // pending cmid so the projection's first envelope captures it.
+      skipOptimisticUserMessage: ghostMounted,
       onSessionActive: (firstMsg) => markSessionActive(firstMsg),
       onComplete: () => {
         sendingRef.current = false;
@@ -1149,6 +1341,8 @@ function Composer() {
     refreshSessions,
     markSessionActive,
     beforeSend,
+    mountGhost,
+    unmountGhost,
   ]);
 
   const handleCancel = useCallback(() => {
