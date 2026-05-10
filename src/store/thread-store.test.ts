@@ -3026,9 +3026,10 @@ describe("ThreadStore projection-mode (M9-γ-3, octos#840)", () => {
   it("shim_synthesizes_per_thread_monotonic_seqs_so_re_projection_is_deterministic", () => {
     // Constraint from the brief: shim seq synthesis must be
     // per-thread monotonic (NOT `Date.now()`) so that re-projecting
-    // the committed log is deterministic. We verify by issuing a
-    // sequence of mutations and asserting the envelope log carries
-    // strictly-increasing seqs WITHIN each thread (not across).
+    // the committed log is deterministic. Synthetic seqs live in the
+    // NEGATIVE namespace (codex round-1 BLOCK 1) — they're monotonic
+    // in MAGNITUDE (-1, -2, -3, …) so `abs(seq)` is strictly
+    // increasing within a thread.
     ThreadStore.addUserMessage(SID, { text: "Q1", clientMessageId: "cm-1" });
     ThreadStore.addUserMessage(SID, { text: "Q2", clientMessageId: "cm-2" });
     ThreadStore.appendAssistantToken("cm-1", "A1.1");
@@ -3038,7 +3039,7 @@ describe("ThreadStore projection-mode (M9-γ-3, octos#840)", () => {
 
     const key = projectionStoreKey(SID);
     const log = getEnvelopes(key);
-    // Group by thread_id and verify monotonicity.
+    // Group by thread_id and verify monotonicity in MAGNITUDE.
     const byThread = new Map<string, number[]>();
     for (const env of log) {
       const arr = byThread.get(env.thread_id) ?? [];
@@ -3046,8 +3047,11 @@ describe("ThreadStore projection-mode (M9-γ-3, octos#840)", () => {
       byThread.set(env.thread_id, arr);
     }
     for (const seqs of byThread.values()) {
+      // All synthetic seqs are in the negative namespace.
+      for (const s of seqs) expect(s).toBeLessThan(0);
+      // |seq_i| > |seq_{i-1}| — strictly increasing magnitude.
       for (let i = 1; i < seqs.length; i += 1) {
-        expect(seqs[i]).toBeGreaterThan(seqs[i - 1]);
+        expect(Math.abs(seqs[i])).toBeGreaterThan(Math.abs(seqs[i - 1]));
       }
     }
     // Cross-thread independence: cm-1 and cm-2 each start their own

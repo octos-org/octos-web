@@ -21,15 +21,30 @@
  *     overlay + γ-5's full cutover.
  *
  * Single mutation entry point: `ingest(envelope)`. Identity is
- * `(thread_id, seq)`. The shim synthesizes client-side seqs from a
- * per-thread monotonic counter so the projection (which dedupes on
- * `(thread_id, seq)`) sees deterministic ordering even before the
- * server's authoritative seq lands.
+ * `(thread_id, sign(seq), abs(seq))` — see "Seq namespaces" below.
  *
  * Sessions are addressed by an opaque "store key" — the same string
  * `thread-store.ts` uses internally (`sessionId` or `sessionId#topic`).
  * Keeping the addressing space identical avoids a (sessionId, topic)
  * round-trip on every dual-write hot-path call.
+ *
+ * ─── Seq namespaces (codex round-1 BLOCK 1) ──────────────────────────────
+ *
+ * The shim mints client-side seqs when the caller has no server seq
+ * (streamed deltas, in-flight tool starts, etc.). The server also
+ * assigns its own seqs at persistence time (`historySeq`,
+ * `committedSeq`). Pre-fix, both lived in the SAME positive integer
+ * space starting at 1 — so a synthetic `seq=1` for a streamed delta
+ * collided with a server-issued `seq=1` on the persisted row, and the
+ * projection's `(thread_id, seq)` dedup falsely treated them as
+ * duplicates.
+ *
+ * Fix (Option A): SYNTHETIC seqs are NEGATIVE (-1, -2, -3, …); SERVER
+ * seqs stay NON-NEGATIVE (0, 1, 2, …). The projection dedups on
+ * `(thread_id, sign(seq), abs(seq))` so the two namespaces never
+ * collide. Out-of-order checks are done WITHIN each namespace
+ * separately — a `seq=+1` envelope arriving after `seq=-3` is NOT
+ * out-of-order; they live on different tracks.
  */
 
 import { project, projectWithMetrics } from "./projection";
@@ -42,9 +57,15 @@ import type { Envelope } from "../runtime/ui-protocol-types";
  *  default is OFF; tests flip the flag in their setup. */
 const PROJECTION_V1_FLAG_KEY = "octos_projection_v1";
 
-/** Read the projection-mode flag. Safe in non-browser test envs (jsdom
- *  exposes `localStorage`; Node doesn't — the access is wrapped). */
-export function isProjectionV1Enabled(): boolean {
+/** Cached snapshot of the flag's value on first read. The flag is
+ *  intentionally locked in at first read so a mid-session flip can't
+ *  start the projection log from the next shimmed event with no prior
+ *  envelope history (codex round-1 BLOCK 5). A subsequent flip is a
+ *  one-shot `console.warn` and ignored until reload. */
+let cachedProjectionV1Enabled: boolean | null = null;
+let warnedAboutMidSessionChange = false;
+
+function readFlagFromStorage(): boolean {
   try {
     if (typeof globalThis === "undefined") return false;
     const ls = (globalThis as { localStorage?: Storage }).localStorage;
@@ -57,16 +78,52 @@ export function isProjectionV1Enabled(): boolean {
   }
 }
 
-/** Test helper: flip the flag in the current jsdom origin. */
+/** Read the projection-mode flag. Cached on first call so a mid-session
+ *  flip can't start the projection log mid-stream. Subsequent flag
+ *  changes log a one-shot warning and are otherwise ignored until the
+ *  next reload. Tests reset the cache via `__setProjectionV1ForTests`. */
+export function isProjectionV1Enabled(): boolean {
+  if (cachedProjectionV1Enabled !== null) {
+    // Detect a mid-session flip and warn (once). The cache wins; the
+    // observed flag value at first read is the source of truth for the
+    // rest of the session.
+    if (!warnedAboutMidSessionChange) {
+      const live = readFlagFromStorage();
+      if (live !== cachedProjectionV1Enabled) {
+        warnedAboutMidSessionChange = true;
+        // eslint-disable-next-line no-console
+        console.warn(
+          "[octos] octos_projection_v1 changed mid-session; the new " +
+            "value is ignored until reload to avoid starting the " +
+            "projection log mid-stream.",
+        );
+      }
+    }
+    return cachedProjectionV1Enabled;
+  }
+  cachedProjectionV1Enabled = readFlagFromStorage();
+  return cachedProjectionV1Enabled;
+}
+
+/** Test helper: flip the flag in the current jsdom origin AND reset the
+ *  cache so the next `isProjectionV1Enabled()` call re-reads it. Without
+ *  the cache reset, vitest-level flips would all see the value latched
+ *  from the very first read in the worker process. */
 export function __setProjectionV1ForTests(enabled: boolean): void {
   try {
     const ls = (globalThis as { localStorage?: Storage }).localStorage;
-    if (!ls) return;
+    if (!ls) {
+      cachedProjectionV1Enabled = null;
+      warnedAboutMidSessionChange = false;
+      return;
+    }
     if (enabled) ls.setItem(PROJECTION_V1_FLAG_KEY, "1");
     else ls.removeItem(PROJECTION_V1_FLAG_KEY);
   } catch {
     // No-op when storage is unavailable.
   }
+  cachedProjectionV1Enabled = null;
+  warnedAboutMidSessionChange = false;
 }
 
 // ─── Internal state ────────────────────────────────────────────────────────
@@ -74,26 +131,26 @@ export function __setProjectionV1ForTests(enabled: boolean): void {
 /** Committed envelope log per session storeKey. Append-only. */
 const envelopesByKey = new Map<string, Envelope[]>();
 
-/** Per-(storeKey, thread) monotonic seq counter. Used by the shim when
- *  no server-assigned seq is available — the projection dedupes by
- *  `(thread_id, seq)` so deterministic per-thread ordering is what
- *  matters, not the absolute integer value. */
+/** Per-(storeKey, thread) monotonic counter for SYNTHETIC seqs. The
+ *  counter holds the magnitude (1, 2, 3, …) and `nextSeq` returns its
+ *  negation (-1, -2, -3, …) so synthetic seqs never collide with the
+ *  server's non-negative namespace. The projection dedupes on
+ *  `(thread_id, sign(seq), abs(seq))` — as long as our shim's magnitudes
+ *  are unique within the thread (which a monotonic counter guarantees),
+ *  the projection produces a stable view. */
 const seqCountersByKey = new Map<string, Map<string, number>>();
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
 /**
- * Synthesize the next client-side seq for a thread. Per-thread
+ * Synthesize the next client-side seq for a thread. Returns a NEGATIVE
+ * integer (-1, -2, -3, …) — the synthetic namespace. Per-thread
  * monotonic (NOT `Date.now()` — must be deterministic for
  * re-projection).
  *
- * The server's authoritative seq arrives separately on a real ingest
- * path; the projection dedupes by exact `(thread_id, seq)` match. As
- * long as our shim's seqs are unique within the thread (which a
- * monotonic counter guarantees), the projection produces a stable view.
- *
- * Counter is 1-based so that `seq >= 0` checks (the projection treats
- * `lastSeq = -1` as the initial sentinel) admit the first envelope.
+ * Server-issued seqs are non-negative; synthetic seqs are strictly
+ * negative. The two namespaces never collide. See the module-level
+ * "Seq namespaces" doc-comment.
  */
 export function nextSeq(storeKey: string, threadId: string): number {
   let perThread = seqCountersByKey.get(storeKey);
@@ -101,9 +158,9 @@ export function nextSeq(storeKey: string, threadId: string): number {
     perThread = new Map();
     seqCountersByKey.set(storeKey, perThread);
   }
-  const next = (perThread.get(threadId) ?? 0) + 1;
-  perThread.set(threadId, next);
-  return next;
+  const magnitude = (perThread.get(threadId) ?? 0) + 1;
+  perThread.set(threadId, magnitude);
+  return -magnitude;
 }
 
 /** The single mutation entry point. Append the envelope to the
