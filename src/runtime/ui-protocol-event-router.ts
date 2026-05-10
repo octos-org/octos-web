@@ -161,6 +161,26 @@ export function handleMessagePersisted(
       event,
     );
     if (promoted) return;
+    // Phantom-bubble defence (production bug 2026-05-09):
+    // Multi-iteration agent loops (assistant -> tool -> assistant) emit
+    // multiple `message/persisted` events per turn under the same
+    // `thread_id`. The router promotes/finalises the live
+    // `pendingAssistant` on the FIRST assistant persisted event for the
+    // turn. The wire shape per UPCR-2026-012 is metadata-only (no
+    // `content`) — every subsequent assistant persisted event for the
+    // same turn carries `content=""` and (typically) `media=[]`, and
+    // its streamed text already landed in the now-finalised bubble.
+    // Falling through to `appendPersistedMessage` for those events
+    // would synthesise an empty-content empty-media row that renders
+    // as a phantom timestamp-only bubble. Drop the event when it has
+    // no media (no attachment to render) — the streamed text is
+    // already on the bubble we finalised earlier. Media-bearing late
+    // artifacts still flow through to `appendPersistedMessage` for
+    // attachment merging.
+    const eventMedia = event.media ?? [];
+    if (eventMedia.length === 0) {
+      return;
+    }
   }
   ThreadStore.appendPersistedMessage(
     cfg.sessionId,
