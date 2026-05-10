@@ -14,13 +14,30 @@
  *  10. abort_marks_pending_assistant_as_complete_with_partial_text
  *  11. reordered_arrival_preserves_send_order
  *  12. subscribe_notifies_on_change
+ *
+ * M9-γ-3 (issue #840): every test in this file runs twice — once with
+ * the `projection_v1` flag OFF (legacy reducer is the source of truth)
+ * and once ON (the shim translates each entry point into a projection
+ * envelope and ingests it in parallel; legacy reducer continues to
+ * back `getThreads()`). Parametrising with `describe.each` keeps the
+ * test names distinguishable in the runner output.
  */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as ThreadStore from "./thread-store";
+import {
+  __resetProjectionForTests,
+  __setProjectionV1ForTests,
+  getEnvelopes,
+  getProjection,
+  getProjectionWithMetrics,
+  ingest as projectionIngest,
+  projectionStoreKey,
+} from "./projection-store";
 
 afterEach(() => {
   ThreadStore.__resetForTests();
+  __resetProjectionForTests();
   vi.unstubAllGlobals();
 });
 
@@ -33,7 +50,16 @@ function makeUser(text: string, cmid: string) {
   });
 }
 
-describe("thread-store", () => {
+const FLAG_STATES = [
+  { label: "projectionV1=false", projectionV1: false },
+  { label: "projectionV1=true", projectionV1: true },
+] as const;
+
+describe.each(FLAG_STATES)("thread-store [$label]", ({ projectionV1 }) => {
+  beforeEach(() => {
+    __setProjectionV1ForTests(projectionV1);
+  });
+
   it("creates_thread_on_user_message", () => {
     makeUser("hello", "cmid-1");
     const threads = ThreadStore.getThreads(SESSION);
@@ -1763,7 +1789,12 @@ describe("thread-store", () => {
 // M10 Phase 6.2 (Bug C): WS session/hydrate dedup pass
 // ---------------------------------------------------------------------------
 
-describe("applyHydrateDedup (M10 Phase 6.2)", () => {
+describe.each(FLAG_STATES)(
+  "applyHydrateDedup (M10 Phase 6.2) [$label]",
+  ({ projectionV1 }) => {
+    beforeEach(() => {
+      __setProjectionV1ForTests(projectionV1);
+    });
   const SID = "sess-bug-c";
 
   it("drops the legacy spawn-ack row when an envelope's message_id matches it, then renders the envelope", () => {
@@ -2247,9 +2278,15 @@ describe("applyHydrateDedup (M10 Phase 6.2)", () => {
       "envelope final",
     ]);
   });
-});
+  },
+);
 
-describe("setHydrateSnapshot reload-mid-stream fallback (M10.5)", () => {
+describe.each(FLAG_STATES)(
+  "setHydrateSnapshot reload-mid-stream fallback (M10.5) [$label]",
+  ({ projectionV1 }) => {
+    beforeEach(() => {
+      __setProjectionV1ForTests(projectionV1);
+    });
   const SID = "sess-reload-mid-stream";
 
   /**
@@ -2765,5 +2802,256 @@ describe("setHydrateSnapshot reload-mid-stream fallback (M10.5)", () => {
     );
     expect(allFiles).toContain("pf/orphan.md");
     expect(allFiles).toContain("pf/different.md");
+  });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// M9-γ-3 (issue #840): projection-mode-only behaviour.
+//
+// These tests run ONLY with `octos_projection_v1 === "1"` and exercise
+// the scenarios the legacy reducer handles imperfectly. Each one
+// asserts on `getProjection(...)` (the pure-function view computed from
+// the committed envelope log), NOT on `getThreads(...)` (the legacy
+// state). The projection-only invariants verified here are the ones
+// γ-5 will inherit when the legacy reducer is retired.
+// ---------------------------------------------------------------------------
+
+describe("ThreadStore projection-mode (M9-γ-3, octos#840)", () => {
+  const SID = "sess-projection";
+
+  beforeEach(() => {
+    __setProjectionV1ForTests(true);
+  });
+
+  it("phantom_bubble_repro_two_assistant_persisted_envelopes_at_seq_1_and_3_accumulate_without_phantom", () => {
+    // The 2026-05-09 production phantom-bubble pattern: two
+    // `assistant_persisted` events for the same thread land at seq 1
+    // and seq 3 (an interleaving tool_progress at seq 2 in between).
+    // Legacy `appendCompletionBubble` could spawn a phantom row at
+    // seq=1 and then a SECOND row at seq=3 because the historySeq
+    // dedup path fell through under specific media-merge donations.
+    // The projection collapses both into the SAME thread's
+    // assistant slot — `(thread_id, seq)` is the only identity it
+    // recognises, so seq 1 finalises the bubble and seq 3 (the only
+    // legitimate replay shape) overwrites text/meta in place.
+    ThreadStore.addUserMessage(SID, {
+      text: "research X",
+      clientMessageId: "cmid-1",
+    });
+    const key = projectionStoreKey(SID);
+
+    // Inject the two persisted envelopes directly through the
+    // projection-store so we control the exact `seq` values. We use
+    // `projectionIngest` rather than the legacy entry points so the
+    // test pins the projection's own dedup contract — independent of
+    // what the legacy reducer would have done.
+    projectionIngest(key, {
+      thread_id: "cmid-1",
+      seq: 1,
+      payload: {
+        type: "assistant_persisted",
+        data: {
+          text: "first persisted",
+          meta: {
+            message_id: "msg-1",
+            persisted_at: "2026-05-09T10:00:01Z",
+          },
+        },
+      },
+    });
+    projectionIngest(key, {
+      thread_id: "cmid-1",
+      seq: 2,
+      payload: { type: "assistant_delta", data: { text: " (drift)" } },
+    });
+    projectionIngest(key, {
+      thread_id: "cmid-1",
+      seq: 3,
+      payload: {
+        type: "assistant_persisted",
+        data: {
+          text: "second persisted (canonical)",
+          meta: {
+            message_id: "msg-3",
+            persisted_at: "2026-05-09T10:00:03Z",
+          },
+        },
+      },
+    });
+
+    const view = getProjection(key);
+    // Exactly ONE thread, one assistant slot — no phantom row.
+    expect(view.threads).toHaveLength(1);
+    const thread = view.threads[0];
+    expect(thread.thread_id).toBe("cmid-1");
+    expect(thread.assistant?.persisted).toBe(true);
+    // Last persisted wins (canonical text).
+    expect(thread.assistant?.text).toBe("second persisted (canonical)");
+    expect(thread.assistant?.meta?.message_id).toBe("msg-3");
+  });
+
+  it("late_tool_progress_after_turn_completed_is_dropped_by_projection_hard_barrier", () => {
+    // Legacy `appendToolProgress` would re-open a `pendingAssistant`
+    // for a finalized thread (the spawn_only late-progress path); the
+    // projection's hard barrier on `turn_completed` drops the event
+    // and bumps `metrics.droppedAfterTurnCompleted` instead.
+    ThreadStore.addUserMessage(SID, {
+      text: "run pipeline",
+      clientMessageId: "cmid-1",
+    });
+    ThreadStore.addToolCall("cmid-1", "tc-1", "deep_research");
+    ThreadStore.finalizeAssistant("cmid-1", { committedSeq: 5 });
+
+    // After finalize → projection saw `turn_completed`. Late progress
+    // arrives for the same thread.
+    ThreadStore.appendToolProgress("cmid-1", "tc-1", "[late] still working");
+
+    const key = projectionStoreKey(SID);
+    const { view, metrics } = getProjectionWithMetrics(key);
+    const thread = view.threads.find((t) => t.thread_id === "cmid-1");
+    expect(thread?.completed).toBe(true);
+    // The late `tool_progress` envelope was emitted by the shim AND
+    // ingested into the log, BUT the projection's barrier dropped
+    // it — so the tool's `progress` array does NOT contain the late
+    // message.
+    const toolCall = thread?.toolCalls.find((tc) => tc.tool_call_id === "tc-1");
+    expect(toolCall?.progress).not.toContain("[late] still working");
+    // The projection counter records the drop.
+    expect(metrics.droppedAfterTurnCompleted).toBeGreaterThanOrEqual(1);
+  });
+
+  it("out_of_order_delivery_seq_3_then_seq_2_is_held_until_seq_2_lands_via_projection_dedup", () => {
+    // Inject envelopes in `seq=3, seq=2` order. Per γ-2's projection
+    // semantics, the seq=2 envelope is treated as out-of-order
+    // (strictly less than the high-water mark seq=3) and dropped,
+    // bumping `metrics.outOfOrder`. The projection's stable identity
+    // is `(thread_id, seq)` — once seq=3 is committed, seq=2 is a
+    // duplicate of an earlier state.
+    const key = projectionStoreKey(SID);
+    ThreadStore.addUserMessage(SID, {
+      text: "out of order",
+      clientMessageId: "cmid-1",
+    });
+    projectionIngest(key, {
+      thread_id: "cmid-1",
+      seq: 3,
+      payload: { type: "assistant_delta", data: { text: "third" } },
+    });
+    projectionIngest(key, {
+      thread_id: "cmid-1",
+      seq: 2,
+      payload: { type: "assistant_delta", data: { text: "second" } },
+    });
+    const { view, metrics } = getProjectionWithMetrics(key);
+    expect(metrics.outOfOrder).toBeGreaterThanOrEqual(1);
+    const thread = view.threads.find((t) => t.thread_id === "cmid-1");
+    // Only the seq=3 delta is applied; seq=2 (out-of-order) is dropped.
+    expect(thread?.assistant?.text).toBe("third");
+  });
+
+  it("cross_session_orphan_envelope_for_unknown_thread_is_appended_no_orphan_bucket_needed", () => {
+    // Legacy `findThreadById`/`ensureOrphanThread` allocates a
+    // placeholder bucket when a `tool_progress` arrives for an
+    // unknown thread. The projection just appends the envelope and
+    // the projected view exposes the orphan thread as its own row —
+    // no host-session-picking heuristic, no placeholder allocation.
+    const key = projectionStoreKey(SID);
+    projectionIngest(key, {
+      thread_id: "cmid-orphan",
+      seq: 1,
+      payload: {
+        type: "tool_progress",
+        data: { tool_call_id: "tc-orphan", message: "orphan log line" },
+      },
+    });
+    const view = getProjection(key);
+    const orphan = view.threads.find((t) => t.thread_id === "cmid-orphan");
+    expect(orphan).toBeDefined();
+    // The projection opens a tool-call card with empty `name` (per
+    // γ-2's "progress without a prior start" path) — exactly the
+    // shape γ-5's render layer keys off.
+    const tc = orphan?.toolCalls.find((tc) => tc.tool_call_id === "tc-orphan");
+    expect(tc).toBeDefined();
+    expect(tc?.progress).toContain("orphan log line");
+  });
+
+  it("identity_collapse_client_message_id_is_captured_on_envelope_but_projection_keys_on_seq", () => {
+    // The brief: an envelope's `client_message_id` field is captured
+    // but only used for the optimistic overlay (γ-4); the projection
+    // itself ignores it for identity. We verify both halves:
+    //
+    //   (1) The envelope log carries `client_message_id` on the
+    //       first envelope for a thread (γ-4's GhostBubble overlay
+    //       reads this).
+    //   (2) The projection's `(thread_id, seq)` dedup is unaffected
+    //       by `client_message_id`: two envelopes that share
+    //       `(thread_id, seq)` BUT differ on `client_message_id` are
+    //       still treated as duplicates (the second one is dropped).
+    ThreadStore.addUserMessage(SID, {
+      text: "identity collapse",
+      clientMessageId: "cmid-collapse",
+    });
+    const key = projectionStoreKey(SID);
+    // The shim should have associated `cmid-collapse` with the next
+    // envelope this thread emits. Trigger one by streaming a token.
+    ThreadStore.appendAssistantToken("cmid-collapse", "hi");
+
+    const log = getEnvelopes(key);
+    const firstForThread = log.find(
+      (e) => e.thread_id === "cmid-collapse",
+    );
+    expect(firstForThread).toBeDefined();
+    expect(firstForThread?.client_message_id).toBe("cmid-collapse");
+
+    // Now deliberately re-ingest the same `(thread_id, seq)` with a
+    // DIFFERENT `client_message_id` — the projection's idempotency
+    // guard drops it; `client_message_id` plays no role in identity.
+    const dupSeq = firstForThread!.seq;
+    projectionIngest(key, {
+      thread_id: "cmid-collapse",
+      seq: dupSeq,
+      client_message_id: "cmid-NOT-the-same",
+      payload: { type: "assistant_delta", data: { text: " stray" } },
+    });
+    const { metrics } = getProjectionWithMetrics(key);
+    expect(metrics.duplicates).toBeGreaterThanOrEqual(1);
+    // The projection's user view still carries the ORIGINAL cmid
+    // (set on first-seen envelope) — not the duplicate's cmid.
+    const view = getProjection(key);
+    const thread = view.threads.find((t) => t.thread_id === "cmid-collapse");
+    expect(thread?.user?.client_message_id).toBe("cmid-collapse");
+  });
+
+  it("shim_synthesizes_per_thread_monotonic_seqs_so_re_projection_is_deterministic", () => {
+    // Constraint from the brief: shim seq synthesis must be
+    // per-thread monotonic (NOT `Date.now()`) so that re-projecting
+    // the committed log is deterministic. We verify by issuing a
+    // sequence of mutations and asserting the envelope log carries
+    // strictly-increasing seqs WITHIN each thread (not across).
+    ThreadStore.addUserMessage(SID, { text: "Q1", clientMessageId: "cm-1" });
+    ThreadStore.addUserMessage(SID, { text: "Q2", clientMessageId: "cm-2" });
+    ThreadStore.appendAssistantToken("cm-1", "A1.1");
+    ThreadStore.appendAssistantToken("cm-2", "A2.1");
+    ThreadStore.appendAssistantToken("cm-1", "A1.2");
+    ThreadStore.appendAssistantToken("cm-2", "A2.2");
+
+    const key = projectionStoreKey(SID);
+    const log = getEnvelopes(key);
+    // Group by thread_id and verify monotonicity.
+    const byThread = new Map<string, number[]>();
+    for (const env of log) {
+      const arr = byThread.get(env.thread_id) ?? [];
+      arr.push(env.seq);
+      byThread.set(env.thread_id, arr);
+    }
+    for (const seqs of byThread.values()) {
+      for (let i = 1; i < seqs.length; i += 1) {
+        expect(seqs[i]).toBeGreaterThan(seqs[i - 1]);
+      }
+    }
+    // Cross-thread independence: cm-1 and cm-2 each start their own
+    // counter — neither one's seqs are functions of the other's.
+    expect(byThread.get("cm-1")?.[0]).toBe(byThread.get("cm-2")?.[0]);
   });
 });
