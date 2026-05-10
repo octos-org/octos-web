@@ -42,6 +42,11 @@ export function App() {
           <Route element={<AuthGuard />}>
             <Route path="/" element={<HomePage />} />
             <Route path="/chat/*" element={<ChatPage />} />
+            {/* Stale Studio deep links → home. The Studio feature was
+                deprecated in M9-β-2 (atomic SSE delete left it as a
+                "temporarily unavailable" stub with no surviving entry
+                points); this redirect keeps any bookmarked
+                `/studio/...` URL from 404'ing. */}
             <Route path="/studio/*" element={<Navigate to="/" replace />} />
             <Route path="/settings" element={<RedirectToAdminSettings />} />
             <Route path="/slides" element={<SlidesGalleryPage />} />
