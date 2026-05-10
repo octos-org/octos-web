@@ -866,8 +866,20 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       throw new Error("ui-protocol-bridge: start requires sessionId");
     }
     this.stopped = false;
-    this.sessionId = opts.sessionId;
     this.profileId = opts.profileId ?? this.cfg.getProfileId();
+    // Auto-qualify bare session IDs (e.g. `web-1778...-abc123`) with the
+    // `<profile>:api:` prefix. The server's authenticated WS session-scope
+    // validator rejects bare IDs with `-32602 session_id must include the
+    // authenticated profile` and that RPC error never surfaces in the UI —
+    // it just leaves the ghost bubble stuck forever. Empirically reproduced
+    // 2026-05-10: bare `web-XXX` is rejected; `dspfac:api:web-XXX` is
+    // accepted. Admin-token connections bypass the check, which masked the
+    // bug in e2e harness runs.
+    let sid = opts.sessionId;
+    if (this.profileId && !sid.includes(":")) {
+      sid = `${this.profileId}:api:${sid}`;
+    }
+    this.sessionId = sid;
     this.reconnectAttempts = 0;
     this.reconnectAbandoned = false;
     await this.openSocket();
