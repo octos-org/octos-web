@@ -1236,19 +1236,12 @@ export function stampPendingHistorySeq(
   // `message/persisted` that arrived BEFORE its `message/delta`.
   // Intentionally no envelope emission here.
   //
-  // Why this no-op is safe under the projection (codex round-1
-  // BLOCK 4): the `historySeq` value here is the SERVER-issued seq
-  // (non-negative). After BLOCK 1's namespace separation, the server
-  // namespace is disjoint from the synthetic namespace minted by the
-  // shim, so this stamp doesn't need to be reflected in the
-  // projection log to keep dedup honest — the server seq will arrive
-  // on the wire as part of the eventual `assistant_persisted` /
-  // `turn_completed` envelope, and THAT envelope is what carries the
-  // text/meta the projection needs. Pre-fix (when synthetic and
-  // server seqs shared a namespace) a stamp-without-emission could
-  // have caused the eventual server-side envelope to be dropped as
-  // an out-of-order duplicate of an earlier synthetic seq; that race
-  // can no longer happen.
+  // Why this no-op is safe under the projection: the `historySeq`
+  // stamp is purely a legacy reducer detail. The projection's gap-
+  // buffer applies envelopes in canonical `(thread_id, seq)` order on
+  // arrival; the eventual `assistant_persisted` / `turn_completed`
+  // envelope is what finalises the bubble. A bare stamp without
+  // text/meta carries no projection-relevant payload, so we elide it.
 }
 
 export interface FinalizeAssistantOptions {

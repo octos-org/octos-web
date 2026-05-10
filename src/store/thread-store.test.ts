@@ -2826,15 +2826,14 @@ describe("ThreadStore projection-mode (M9-γ-3, octos#840)", () => {
 
   it("phantom_bubble_repro_two_assistant_persisted_envelopes_at_seq_1_and_3_accumulate_without_phantom", () => {
     // The 2026-05-09 production phantom-bubble pattern: two
-    // `assistant_persisted` events for the same thread land at seq 1
-    // and seq 3 (an interleaving tool_progress at seq 2 in between).
+    // `assistant_persisted` events for the same thread land at seq 0
+    // and seq 2 (an interleaving tool_progress at seq 1 in between).
     // Legacy `appendCompletionBubble` could spawn a phantom row at
-    // seq=1 and then a SECOND row at seq=3 because the historySeq
+    // seq=0 and then a SECOND row at seq=2 because the historySeq
     // dedup path fell through under specific media-merge donations.
-    // The projection collapses both into the SAME thread's
-    // assistant slot — `(thread_id, seq)` is the only identity it
-    // recognises, so seq 1 finalises the bubble and seq 3 (the only
-    // legitimate replay shape) overwrites text/meta in place.
+    // Under gap-buffer projection semantics, both seqs apply in
+    // canonical order; `assistant_persisted` REPLACES the assistant
+    // text/meta in-place, so seq=2 (the canonical replay) wins.
     ThreadStore.addUserMessage(SID, {
       text: "research X",
       clientMessageId: "cmid-1",
@@ -2848,7 +2847,7 @@ describe("ThreadStore projection-mode (M9-γ-3, octos#840)", () => {
     // what the legacy reducer would have done.
     projectionIngest(key, {
       thread_id: "cmid-1",
-      seq: 1,
+      seq: 0,
       payload: {
         type: "assistant_persisted",
         data: {
@@ -2862,12 +2861,12 @@ describe("ThreadStore projection-mode (M9-γ-3, octos#840)", () => {
     });
     projectionIngest(key, {
       thread_id: "cmid-1",
-      seq: 2,
+      seq: 1,
       payload: { type: "assistant_delta", data: { text: " (drift)" } },
     });
     projectionIngest(key, {
       thread_id: "cmid-1",
-      seq: 3,
+      seq: 2,
       payload: {
         type: "assistant_persisted",
         data: {
@@ -2921,13 +2920,15 @@ describe("ThreadStore projection-mode (M9-γ-3, octos#840)", () => {
     expect(metrics.droppedAfterTurnCompleted).toBeGreaterThanOrEqual(1);
   });
 
-  it("out_of_order_delivery_seq_3_then_seq_2_is_held_until_seq_2_lands_via_projection_dedup", () => {
-    // Inject envelopes in `seq=3, seq=2` order. Per γ-2's projection
-    // semantics, the seq=2 envelope is treated as out-of-order
-    // (strictly less than the high-water mark seq=3) and dropped,
-    // bumping `metrics.outOfOrder`. The projection's stable identity
-    // is `(thread_id, seq)` — once seq=3 is committed, seq=2 is a
-    // duplicate of an earlier state.
+  it("out_of_order_delivery_seq_2_then_seq_1_is_buffered_and_drained_in_canonical_order", () => {
+    // Inject envelopes in `seq=2, seq=1, seq=0` reverse order. Under
+    // γ-2's gap-buffer semantics, out-of-order envelopes are BUFFERED
+    // (not dropped) until the gap closes, then drained in canonical
+    // seq order. `metrics.outOfOrder` counts buffered-then-drained
+    // envelopes (back-compat name; not lost). The accumulated
+    // assistant text reflects canonical seq order: "zeroth firstthird"
+    // wait no — seqs 0,1,2 have text "zeroth", "first", "second"
+    // applied in that order, concatenated.
     const key = projectionStoreKey(SID);
     ThreadStore.addUserMessage(SID, {
       text: "out of order",
@@ -2935,19 +2936,30 @@ describe("ThreadStore projection-mode (M9-γ-3, octos#840)", () => {
     });
     projectionIngest(key, {
       thread_id: "cmid-1",
-      seq: 3,
-      payload: { type: "assistant_delta", data: { text: "third" } },
-    });
-    projectionIngest(key, {
-      thread_id: "cmid-1",
       seq: 2,
       payload: { type: "assistant_delta", data: { text: "second" } },
     });
+    projectionIngest(key, {
+      thread_id: "cmid-1",
+      seq: 1,
+      payload: { type: "assistant_delta", data: { text: "first" } },
+    });
+    projectionIngest(key, {
+      thread_id: "cmid-1",
+      seq: 0,
+      payload: { type: "assistant_delta", data: { text: "zeroth" } },
+    });
     const { view, metrics } = getProjectionWithMetrics(key);
-    expect(metrics.outOfOrder).toBeGreaterThanOrEqual(1);
+    // Two envelopes (seq=2, seq=1) were buffered; seq=0 closed the
+    // gap and drained both. The counter is back-compat-named
+    // `outOfOrder`.
+    expect(metrics.outOfOrder).toBeGreaterThanOrEqual(2);
+    expect(metrics.duplicates).toBe(0);
     const thread = view.threads.find((t) => t.thread_id === "cmid-1");
-    // Only the seq=3 delta is applied; seq=2 (out-of-order) is dropped.
-    expect(thread?.assistant?.text).toBe("third");
+    // Canonical-order concatenation: 0 → "zeroth", 1 → "first",
+    // 2 → "second" — gap-buffer drains them in seq order regardless
+    // of arrival order.
+    expect(thread?.assistant?.text).toBe("zeroth" + "first" + "second");
   });
 
   it("cross_session_orphan_envelope_for_unknown_thread_is_appended_no_orphan_bucket_needed", () => {
@@ -2959,7 +2971,7 @@ describe("ThreadStore projection-mode (M9-γ-3, octos#840)", () => {
     const key = projectionStoreKey(SID);
     projectionIngest(key, {
       thread_id: "cmid-orphan",
-      seq: 1,
+      seq: 0,
       payload: {
         type: "tool_progress",
         data: { tool_call_id: "tc-orphan", message: "orphan log line" },
@@ -3026,10 +3038,9 @@ describe("ThreadStore projection-mode (M9-γ-3, octos#840)", () => {
   it("shim_synthesizes_per_thread_monotonic_seqs_so_re_projection_is_deterministic", () => {
     // Constraint from the brief: shim seq synthesis must be
     // per-thread monotonic (NOT `Date.now()`) so that re-projecting
-    // the committed log is deterministic. Synthetic seqs live in the
-    // NEGATIVE namespace (codex round-1 BLOCK 1) — they're monotonic
-    // in MAGNITUDE (-1, -2, -3, …) so `abs(seq)` is strictly
-    // increasing within a thread.
+    // the committed log is deterministic. Under gap-buffer projection
+    // semantics, the shim mints non-negative seqs starting at 0 to
+    // match `expectedNextSeq=0` initialization.
     ThreadStore.addUserMessage(SID, { text: "Q1", clientMessageId: "cm-1" });
     ThreadStore.addUserMessage(SID, { text: "Q2", clientMessageId: "cm-2" });
     ThreadStore.appendAssistantToken("cm-1", "A1.1");
@@ -3039,7 +3050,7 @@ describe("ThreadStore projection-mode (M9-γ-3, octos#840)", () => {
 
     const key = projectionStoreKey(SID);
     const log = getEnvelopes(key);
-    // Group by thread_id and verify monotonicity in MAGNITUDE.
+    // Group by thread_id and verify monotonicity.
     const byThread = new Map<string, number[]>();
     for (const env of log) {
       const arr = byThread.get(env.thread_id) ?? [];
@@ -3047,11 +3058,12 @@ describe("ThreadStore projection-mode (M9-γ-3, octos#840)", () => {
       byThread.set(env.thread_id, arr);
     }
     for (const seqs of byThread.values()) {
-      // All synthetic seqs are in the negative namespace.
-      for (const s of seqs) expect(s).toBeLessThan(0);
-      // |seq_i| > |seq_{i-1}| — strictly increasing magnitude.
+      // Shim mints non-negative seqs so the gap-buffer projection's
+      // expectedNextSeq=0 initialization fits the first arrival.
+      for (const s of seqs) expect(s).toBeGreaterThanOrEqual(0);
+      // Strictly increasing per-thread.
       for (let i = 1; i < seqs.length; i += 1) {
-        expect(Math.abs(seqs[i])).toBeGreaterThan(Math.abs(seqs[i - 1]));
+        expect(seqs[i]).toBeGreaterThan(seqs[i - 1]);
       }
     }
     // Cross-thread independence: cm-1 and cm-2 each start their own
@@ -3061,26 +3073,23 @@ describe("ThreadStore projection-mode (M9-γ-3, octos#840)", () => {
 
   // ── codex round-1 BLOCK 1: synthetic / server seq namespaces ──────────
 
-  it("seq_namespace_synthetic_negative_does_not_collide_with_server_positive", () => {
-    // Pre-fix repro: shim minted synthetic seq=1 for an in-flight
-    // assistant_delta, and a subsequent server-issued
-    // assistant_persisted with historySeq=1 was treated as a duplicate
-    // of the same `(thread_id, seq)` and silently dropped — the
-    // persisted text never replaced the streamed delta. After
-    // BLOCK 1's namespace split, the shim mints seq=-1 for the delta
-    // and the projection accepts seq=+1 (server) as a distinct
-    // envelope on a different track.
+  it("streamed_delta_then_persisted_envelope_apply_in_canonical_seq_order_under_gap_buffer", () => {
+    // Under gap-buffer semantics, the shim mints a non-negative
+    // synthetic seq for the streamed delta (seq=0) and a subsequent
+    // server-issued `assistant_persisted` carries the next seq (seq=1
+    // here). Both apply in canonical order; the persisted payload
+    // REPLACES the assistant text/meta in place, so the persisted
+    // canonical text wins.
     ThreadStore.addUserMessage(SID, {
       text: "stream then persist",
       clientMessageId: "cmid-1",
     });
 
-    // Synthetic delta — minted by the shim with seq < 0.
+    // Synthetic delta — shim mints seq=0.
     ThreadStore.appendAssistantToken("cmid-1", "streamed");
 
-    // Server-issued persisted envelope with historySeq=1 (lands as
-    // `seq=+1` in the projection's server namespace). This is exactly
-    // the value where the pre-fix collision would have happened.
+    // Server-issued persisted envelope with seq=1 (next after the
+    // synthetic delta). The gap-buffer applies it in order.
     const key = projectionStoreKey(SID);
     projectionIngest(key, {
       thread_id: "cmid-1",
@@ -3098,52 +3107,58 @@ describe("ThreadStore projection-mode (M9-γ-3, octos#840)", () => {
     });
 
     const { view, metrics } = getProjectionWithMetrics(key);
-    // No duplicate dropped: the synthetic delta and the server
-    // persisted live in disjoint namespaces.
+    // Both applied in order — neither dropped as a duplicate.
     expect(metrics.duplicates).toBe(0);
     const thread = view.threads.find((t) => t.thread_id === "cmid-1");
-    // The persisted text wins (both were applied; persisted is the
-    // canonical finalised text).
+    // The persisted text wins (assistant_persisted REPLACES text).
     expect(thread?.assistant?.persisted).toBe(true);
     expect(thread?.assistant?.text).toBe("persisted-canonical");
   });
 
-  it("seq_namespace_server_seq_after_synthetic_is_not_out_of_order", () => {
-    // Verify that an out-of-order check is INSIDE each namespace, not
-    // across them. A synthetic seq=-3 followed by a server seq=+1 is
-    // legitimate: the synthetic high-water mark (magnitude=3) does
-    // not block the first server-namespace envelope.
+  it("late_arriving_envelope_with_seq_below_high_water_buffers_then_drains_under_gap_buffer", () => {
+    // Under the canonical gap-buffer projection (γ-2 fixup), an
+    // envelope arriving with `seq < expectedNextSeq` is BUFFERED for
+    // a possible canonical replay rather than dropped. The shim mints
+    // non-negative monotonic seqs so a streamed delta and a
+    // subsequent late-fill on a lower seq are reconciled by the
+    // projection's drain logic.
     ThreadStore.addUserMessage(SID, {
-      text: "interleaved namespaces",
+      text: "interleaved arrivals",
       clientMessageId: "cmid-1",
     });
 
-    // Bump the synthetic high-water mark via three streamed tokens
-    // (each shim mint allocates one synthetic seq).
+    // Two streamed tokens through the shim — synthetic seqs 0, 1.
     ThreadStore.appendAssistantToken("cmid-1", "a");
     ThreadStore.appendAssistantToken("cmid-1", "b");
-    ThreadStore.appendAssistantToken("cmid-1", "c");
 
-    // Server-namespace envelope with seq=1 — would-be-rejected
-    // pre-fix because |seq|=3 was already the per-thread high water.
+    // A late-arriving envelope at seq=3 (gap above expected=2). The
+    // gap-buffer holds it pending. seq=3 contributes a tool_start.
     const key = projectionStoreKey(SID);
     projectionIngest(key, {
       thread_id: "cmid-1",
-      seq: 1,
+      seq: 3,
       payload: {
         type: "tool_start",
         data: { tool_call_id: "tc-srv", name: "external_tool" },
       },
     });
+    // seq=2 closes the gap; seq=3 drains immediately after.
+    projectionIngest(key, {
+      thread_id: "cmid-1",
+      seq: 2,
+      payload: { type: "assistant_delta", data: { text: "c" } },
+    });
 
     const { view, metrics } = getProjectionWithMetrics(key);
-    // The server envelope was applied — not classified as
-    // out-of-order, not classified as a duplicate.
-    expect(metrics.outOfOrder).toBe(0);
+    // seq=3 was buffered then drained; counted in `outOfOrder`
+    // (back-compat name for buffered-then-applied).
+    expect(metrics.outOfOrder).toBeGreaterThanOrEqual(1);
+    expect(metrics.duplicates).toBe(0);
     const thread = view.threads.find((t) => t.thread_id === "cmid-1");
     expect(
       thread?.toolCalls.find((tc) => tc.tool_call_id === "tc-srv"),
     ).toBeDefined();
+    expect(thread?.assistant?.text).toBe("abc");
   });
 
   // ── codex round-1 BLOCK 2: retry-collapse emits tool_start ────────────

@@ -21,33 +21,30 @@
  *     overlay + γ-5's full cutover.
  *
  * Single mutation entry point: `ingest(envelope)`. Identity is
- * `(thread_id, sign(seq), abs(seq))` — see "Seq namespaces" below.
+ * `(thread_id, seq)`.
  *
  * Sessions are addressed by an opaque "store key" — the same string
  * `thread-store.ts` uses internally (`sessionId` or `sessionId#topic`).
  * Keeping the addressing space identical avoids a (sessionId, topic)
  * round-trip on every dual-write hot-path call.
  *
- * ─── Seq namespaces (codex round-1 BLOCK 1) ──────────────────────────────
+ * ─── Seq policy (gap-buffer canonical) ───────────────────────────────────
  *
  * The shim mints client-side seqs when the caller has no server seq
- * (streamed deltas, in-flight tool starts, etc.). The server also
- * assigns its own seqs at persistence time (`historySeq`,
- * `committedSeq`). Pre-fix, both lived in the SAME positive integer
- * space starting at 1 — so a synthetic `seq=1` for a streamed delta
- * collided with a server-issued `seq=1` on the persisted row, and the
- * projection's `(thread_id, seq)` dedup falsely treated them as
- * duplicates.
- *
- * Fix (Option A): SYNTHETIC seqs are NEGATIVE (-1, -2, -3, …); SERVER
- * seqs stay NON-NEGATIVE (0, 1, 2, …). The projection dedups on
- * `(thread_id, sign(seq), abs(seq))` so the two namespaces never
- * collide. Out-of-order checks are done WITHIN each namespace
- * separately — a `seq=+1` envelope arriving after `seq=-3` is NOT
- * out-of-order; they live on different tracks.
+ * (streamed deltas, in-flight tool starts, etc.). The shim's seqs are
+ * 0-based per-thread monotonic — matching the projection's gap-buffer
+ * `expectedNextSeq=0` initialization. Server-issued seqs (historySeq /
+ * committedSeq) flow through `ingest()` with the server's own seq value;
+ * the projection's gap-buffer drains in canonical order regardless of
+ * arrival order. Identity is `(thread_id, seq)`; same-seq arrivals are
+ * deduplicated, gap-buffered fills drain when the gap closes.
  */
 
-import { project, projectWithMetrics } from "./projection";
+import {
+  __resetProjectionCacheForTesting,
+  project,
+  projectWithMetrics,
+} from "./projection";
 import type { ChatViewModel, ProjectionMetrics } from "./projection";
 import type { Envelope } from "../runtime/ui-protocol-types";
 
@@ -130,26 +127,23 @@ export function __setProjectionV1ForTests(enabled: boolean): void {
 /** Committed envelope log per session storeKey. Append-only. */
 const envelopesByKey = new Map<string, Envelope[]>();
 
-/** Per-(storeKey, thread) monotonic counter for SYNTHETIC seqs. The
- *  counter holds the magnitude (1, 2, 3, …) and `nextSeq` returns its
- *  negation (-1, -2, -3, …) so synthetic seqs never collide with the
- *  server's non-negative namespace. The projection dedupes on
- *  `(thread_id, sign(seq), abs(seq))` — as long as our shim's magnitudes
- *  are unique within the thread (which a monotonic counter guarantees),
- *  the projection produces a stable view. */
+/** Per-(storeKey, thread) monotonic counter for shim-minted seqs.
+ *  Counter advances by 1 on each call; first value returned is 0,
+ *  matching projection's `expectedNextSeq=0` initialization so the very
+ *  first envelope on a thread applies in-order under gap-buffer
+ *  semantics. */
 const seqCountersByKey = new Map<string, Map<string, number>>();
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
 /**
- * Synthesize the next client-side seq for a thread. Returns a NEGATIVE
- * integer (-1, -2, -3, …) — the synthetic namespace. Per-thread
- * monotonic (NOT `Date.now()` — must be deterministic for
- * re-projection).
- *
- * Server-issued seqs are non-negative; synthetic seqs are strictly
- * negative. The two namespaces never collide. See the module-level
- * "Seq namespaces" doc-comment.
+ * Synthesize the next client-side seq for a thread. Returns a
+ * non-negative integer (0, 1, 2, …) — per-thread monotonic, not
+ * `Date.now()`-based, so re-projecting the committed log is
+ * deterministic. The projection dedupes on `(thread_id, seq)`; the shim
+ * caller is responsible for not minting a synthetic seq when the server
+ * is going to assign its own (the migration shim only mints for
+ * pre-persistence in-flight events).
  */
 export function nextSeq(storeKey: string, threadId: string): number {
   let perThread = seqCountersByKey.get(storeKey);
@@ -157,9 +151,9 @@ export function nextSeq(storeKey: string, threadId: string): number {
     perThread = new Map();
     seqCountersByKey.set(storeKey, perThread);
   }
-  const magnitude = (perThread.get(threadId) ?? 0) + 1;
-  perThread.set(threadId, magnitude);
-  return -magnitude;
+  const next = perThread.get(threadId) ?? 0;
+  perThread.set(threadId, next + 1);
+  return next;
 }
 
 /** The single mutation entry point. Append the envelope to the
@@ -228,9 +222,14 @@ export function projectionStoreKey(
   return trimmedTopic ? `${sessionId}#${trimmedTopic}` : sessionId;
 }
 
-/** Test-only helper: reset all projection-store state. */
+/** Test-only helper: reset all projection-store state, including the
+ *  pure-function projection's per-thread ThreadView cache. The cache
+ *  lives in `projection.ts` module scope; without clearing it, a thread
+ *  whose `(appliedCount, lastSeq)` matches a stale entry from a previous
+ *  test would return the stale view. */
 export function __resetProjectionForTests(): void {
   envelopesByKey.clear();
   seqCountersByKey.clear();
+  __resetProjectionCacheForTesting();
   __setProjectionV1ForTests(false);
 }
