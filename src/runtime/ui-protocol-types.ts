@@ -28,6 +28,50 @@ export interface TurnStartInput {
   text: string;
 }
 
+/**
+ * UPCR-2026-015 (M9-β-1): wire-form file reference carried on
+ * `TurnStartParams.media`. Mirrors the Rust `FileRef` reused from
+ * UPCR-2026-014 (γ-1) — `path` is the durable filesystem handle
+ * returned from `POST /api/upload`; `mime` and `size_bytes` are
+ * captured at upload time. The web client populates all three.
+ *
+ * Note: the projection-side `FileRef` (lower in this file) leaves
+ * `mime` and `size_bytes` optional to tolerate envelopes the server
+ * emits with bare paths. The send-side shape here keeps them required
+ * because the upload endpoint always returns them.
+ */
+export interface TurnStartMediaRef {
+  path: string;
+  mime: string;
+  size_bytes: number;
+}
+
+/**
+ * UPCR-2026-015 (M9-β-1): the full `turn/start` params envelope the
+ * bridge serialises onto the wire. Strict-additive on top of the legacy
+ * `{ session_id, turn_id, input }` shape — every new field is optional
+ * and serialised only when populated.
+ *
+ * Mirrors the Rust `TurnStartParams` struct in
+ * `crates/octos-core/src/ui_protocol.rs`. Keep these in lockstep —
+ * `tsc --noEmit` is the only structural check; a drift between the
+ * two is a wire bug.
+ */
+export interface TurnStartExtras {
+  /** Pre-uploaded media references the user attached. Empty / omitted
+   *  for text-only sends. */
+  media?: TurnStartMediaRef[];
+  /** Sub-topic suffix that scopes this send to a per-topic session
+   *  bucket (`<session>#<topic>` form). Server folds it into the
+   *  resolved `SessionKey` before scope validation. */
+  topic?: string;
+  /** When set, this turn rewrites an existing queued user message
+   *  identified by its `client_message_id` (the `/queue` slash-command
+   *  flow). β-1 server logs the field; durable in-place ledger
+   *  replace lands in a follow-up. */
+  rewrite_for?: string;
+}
+
 export interface SessionOpenedResult {
   session_id: string;
   active_profile_id?: string;
@@ -273,6 +317,45 @@ export interface ApprovalRequestedEvent {
 export interface WarningEvent {
   reason: string;
   context?: unknown;
+}
+
+/**
+ * UPCR-2026-016 (M9-β-2) `session/closed` notification.
+ *
+ * Server emits this after `DELETE /api/sessions/:id` clears at least
+ * one entry from the standalone session store. Web clients use it to
+ * remove the row from the sidebar in real time so a delete action on
+ * one tab reflects on every other open tab without polling.
+ *
+ * `reason` is a free-form discriminator; the canonical value today is
+ * `"deleted"`. Future producers may emit `"expired"`, `"forked"`, etc.
+ * Treat unknown values as opaque so a server upgrade does not break
+ * the client.
+ */
+export interface SessionClosedEvent {
+  session_id: string;
+  reason?: string;
+  timestamp?: string;
+  cursor?: UiCursor;
+}
+
+/**
+ * UPCR-2026-016 (M9-β-2) `session/title-updated` notification.
+ *
+ * Server emits this after a successful `PATCH /api/sessions/:id/title`.
+ * Web clients re-render the sidebar row in place — the auto-titler
+ * fires the same REST PATCH from its caller, so this event covers both
+ * manual rename and auto-naming flows the user perceives.
+ *
+ * `reason` is `"manual"` for direct PATCH calls today. Future producers
+ * may emit `"auto"`, `"bulk_rename"`, etc.
+ */
+export interface SessionTitleUpdatedEvent {
+  session_id: string;
+  title: string;
+  reason?: string;
+  timestamp?: string;
+  cursor?: UiCursor;
 }
 
 export interface RpcErrorPayload {

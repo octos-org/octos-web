@@ -509,6 +509,31 @@ describe("project — user_message variant (codex BLOCK 3)", () => {
     const view = project(log);
     expect(view.threads[0].user?.text).toBe("first");
   });
+
+  // M9-β-1 (UPCR-2026-015): a user_message envelope server-mirrored
+  // from a turn/start that carried `media: FileRef[]` must surface
+  // those files on the projection's `UserView.files`. This is the
+  // end-to-end contract: client uploads → POST /api/upload returns
+  // path → SPA pins it on `SendOptions.media` → bridge serialises as
+  // `extras.media` on `turn/start` → server projects into the
+  // `user_message` envelope's `files` field → projection populates
+  // `UserView.files`. Test asserts the projection-side observable.
+  it("should populate UserView.files non-empty when β-1 turn/start carried media", () => {
+    const files: FileRef[] = [
+      { path: "/tmp/upload-1.png", mime: "image/png", size_bytes: 4096 },
+      { path: "/tmp/voice.mp3", mime: "audio/mpeg", size_bytes: 32_768 },
+    ];
+    const log: Envelope[] = [
+      env("t1", 0, uMsg("look at this", files), "cmid-beta1"),
+      env("t1", 1, aDelta("noted")),
+    ];
+    const view = project(log);
+    const u = view.threads[0].user!;
+    expect(u.files.length).toBeGreaterThan(0);
+    expect(u.files).toEqual(files);
+    expect(u.client_message_id).toBe("cmid-beta1");
+    expect(u.text).toBe("look at this");
+  });
 });
 
 // ─── BLOCK 4: referential stability across project() calls ───────────────

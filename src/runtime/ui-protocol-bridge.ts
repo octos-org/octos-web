@@ -33,6 +33,7 @@ import type {
   TurnErrorEvent,
   TurnInterruptResult,
   TurnSpawnCompleteEvent,
+  TurnStartExtras,
   TurnStartInput,
   TurnStartResult,
   TurnStartedEvent,
@@ -59,7 +60,9 @@ export type {
   TurnErrorEvent,
   TurnInterruptResult,
   TurnSpawnCompleteEvent,
+  TurnStartExtras,
   TurnStartInput,
+  TurnStartMediaRef,
   TurnStartResult,
   TurnStartedEvent,
   UiCursor,
@@ -170,7 +173,16 @@ export interface UiProtocolBridge {
   start(opts: { sessionId: string; profileId?: string }): Promise<void>;
   stop(): Promise<void>;
 
-  sendTurn(turn_id: string, input: TurnStartInput[]): Promise<TurnStartResult>;
+  sendTurn(
+    turn_id: string,
+    input: TurnStartInput[],
+    /** UPCR-2026-015 (M9-β-1): optional `media`, `topic`,
+     *  `rewrite_for` extras carried alongside `input`. Each is
+     *  forwarded onto the wire only when populated; omitted entirely
+     *  for legacy text-only sends so the on-wire shape stays
+     *  byte-identical to a pre-β-1 build. */
+    extras?: TurnStartExtras,
+  ): Promise<TurnStartResult>;
   interruptTurn(turn_id: string, reason?: string): Promise<TurnInterruptResult>;
   respondToApproval(
     approval_id: string,
@@ -889,15 +901,35 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.subState.clear();
   }
 
-  sendTurn(turn_id: string, input: TurnStartInput[]): Promise<TurnStartResult> {
+  sendTurn(
+    turn_id: string,
+    input: TurnStartInput[],
+    extras?: TurnStartExtras,
+  ): Promise<TurnStartResult> {
     if (!isString(turn_id)) {
       return Promise.reject(new Error("ui-protocol-bridge: sendTurn requires turn_id"));
     }
-    return this.request<TurnStartResult>(METHODS.TURN_START, {
+    // UPCR-2026-015 (M9-β-1): the three optional `media` / `topic` /
+    // `rewrite_for` params land on the wire only when populated. The
+    // server's serde shape skip-when-empty / skip-when-None on the
+    // matching Rust struct, so an old server (or this client without
+    // β-1 callers) sees byte-identical bytes to the legacy text-only
+    // shape.
+    const params: Record<string, unknown> = {
       session_id: this.requireSessionId(),
       turn_id,
       input,
-    });
+    };
+    if (extras?.media && extras.media.length > 0) {
+      params.media = extras.media;
+    }
+    if (extras?.topic && extras.topic.trim().length > 0) {
+      params.topic = extras.topic;
+    }
+    if (extras?.rewrite_for && extras.rewrite_for.length > 0) {
+      params.rewrite_for = extras.rewrite_for;
+    }
+    return this.request<TurnStartResult>(METHODS.TURN_START, params);
   }
 
   interruptTurn(
