@@ -4,7 +4,7 @@ import { useAllTasksBySession } from "@/store/task-store";
 import { Plus, MessageSquare, Trash2, Check, X, Loader2 } from "lucide-react";
 
 export function SessionList() {
-  const { sessions, currentSessionId, activeTaskOnServer, switchSession, createSession, removeSession } =
+  const { sessions, currentSessionId, switchSession, createSession, removeSession } =
     useSession();
   const taskEntries = useAllTasksBySession();
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
@@ -13,9 +13,18 @@ export function SessionList() {
   // (driven by SSE) is gone. The WS bridge owns the active-turn signal
   // via `task/updated` + `turn/started/completed`, which feed
   // `useAllTasksBySession` above; the per-session "currently streaming"
-  // pill follows from `backgroundTaskSessions` until the WS bridge
+  // pill follows from background task entries until the WS bridge
   // exposes a turn-active selector directly.
   const streamingSessions: Set<string> = useMemo(() => new Set<string>(), []);
+  const backgroundTaskSessions: Set<string> = useMemo(() => {
+    const s = new Set<string>();
+    for (const [sessionId, tasks] of taskEntries) {
+      if (tasks.some((t) => t.status === "spawned" || t.status === "running")) {
+        s.add(sessionId);
+      }
+    }
+    return s;
+  }, [taskEntries]);
 
   const handleDelete = useCallback(async (id: string) => {
     setDeletingId(id);
