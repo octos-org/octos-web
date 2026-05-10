@@ -1,6 +1,5 @@
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { useSession } from "@/runtime/session-context";
-import * as StreamManager from "@/runtime/stream-manager";
 import { useAllTasksBySession } from "@/store/task-store";
 import { Plus, MessageSquare, Trash2, Check, X, Loader2 } from "lucide-react";
 
@@ -10,39 +9,13 @@ export function SessionList() {
   const taskEntries = useAllTasksBySession();
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [streamingSessions, setStreamingSessions] = useState<Set<string>>(new Set());
-
-  const backgroundTaskSessions = useMemo(() => {
-    const ids = new Set<string>();
-    for (const [sessionId, tasks] of taskEntries) {
-      if (tasks.some((task) => task.status === "spawned" || task.status === "running")) {
-        ids.add(sessionId);
-      }
-    }
-    if (activeTaskOnServer) ids.add(currentSessionId);
-    return ids;
-  }, [activeTaskOnServer, currentSessionId, taskEntries]);
-
-  useEffect(() => {
-    const sync = () => {
-      setStreamingSessions((prev) => {
-        const next = new Set<string>();
-        for (const s of sessions) {
-          if (StreamManager.isActive(s.id)) next.add(s.id);
-        }
-        if (next.size === prev.size && [...next].every((id) => prev.has(id))) return prev;
-        return next;
-      });
-    };
-    sync();
-    const onStreamChange = () => sync();
-    window.addEventListener("crew:stream_state", onStreamChange);
-    const interval = setInterval(sync, 3000);
-    return () => {
-      window.removeEventListener("crew:stream_state", onStreamChange);
-      clearInterval(interval);
-    };
-  }, [sessions]);
+  // M9-α-5/α-6 (ADR PR #830): the legacy `StreamManager.isActive` poll
+  // (driven by SSE) is gone. The WS bridge owns the active-turn signal
+  // via `task/updated` + `turn/started/completed`, which feed
+  // `useAllTasksBySession` above; the per-session "currently streaming"
+  // pill follows from `backgroundTaskSessions` until the WS bridge
+  // exposes a turn-active selector directly.
+  const streamingSessions: Set<string> = useMemo(() => new Set<string>(), []);
 
   const handleDelete = useCallback(async (id: string) => {
     setDeletingId(id);

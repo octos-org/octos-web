@@ -1,9 +1,14 @@
 /**
  * Global task watcher — session/topic-scoped background monitor.
  *
- * Uses the per-session event stream as the primary truth source for
- * task/result delivery. Falls back to `/tasks` + incremental `/messages`
- * polling only while the live stream is unavailable.
+ * Uses `/api/sessions/{id}/tasks` + incremental `/api/sessions/{id}/messages`
+ * polling for task/result delivery. M9-α-5/α-6 (ADR PR #830 / audit
+ * issue #845) deleted the SSE `/api/sessions/{id}/events/stream` stream
+ * that previously served as the primary truth path; the WS bridge owns
+ * live `task/updated`, `message/persisted`, and per-turn lifecycle
+ * notifications now, so the polling fallback is sufficient for the
+ * background-only signal this watcher needs (the foreground chat thread
+ * never reaches this module).
  */
 
 import {
@@ -18,11 +23,9 @@ import * as FileStore from "@/store/file-store";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { dispatchCrewFileEvent } from "./file-events";
 import { recordRuntimeCounter } from "./observability";
-import { eventSessionId, eventTopic } from "./event-scope";
 import type { BackgroundTaskInfo, MessageInfo } from "@/api/types";
 
 const POLL_INTERVAL_MS = 2500;
-const STREAM_RETRY_MS = 1000;
 const TERMINAL_GRACE_MS = 10_000;
 const WATCH_PERSISTENCE_KEY = "octos_task_watcher_sessions_v1";
 const WATCH_PERSISTENCE_TTL_MS = 12 * 60 * 60 * 1000;
@@ -43,9 +46,7 @@ interface WatchedSession {
   knownPaths: Set<string>;
   activeIds: Set<string>;
   replayComplete: boolean;
-  streamHealthy: boolean;
   terminalSince: number | null;
-  eventAbort?: AbortController;
 }
 
 interface PersistedWatchedSession {
@@ -134,14 +135,11 @@ function seedWatchedSession(entry: {
     knownPaths,
     activeIds: new Set(),
     replayComplete: false,
-    streamHealthy: false,
     terminalSince: null,
   });
 }
 
 function removeWatchedSession(key: string): void {
-  const entry = watchedSessions.get(key);
-  entry?.eventAbort?.abort();
   watchedSessions.delete(key);
   persistWatchedSessions();
   if (watchedSessions.size === 0) stopPolling();
@@ -262,7 +260,6 @@ export function watchSession(sessionId: string, topic?: string): void {
     );
     entry.terminalSince = null;
     persistWatchedSessions();
-    ensureEventStream(key);
     ensurePolling();
     return;
   }
@@ -273,7 +270,6 @@ export function watchSession(sessionId: string, topic?: string): void {
     lastCommittedSeq: ThreadStore.getMaxHistorySeq(sessionId, currentTopic),
   });
   persistWatchedSessions();
-  ensureEventStream(key);
   ensurePolling();
 }
 
@@ -306,145 +302,6 @@ function stopPolling(): void {
   pollTimer = null;
 }
 
-function ensureEventStream(key: string): void {
-  const entry = watchedSessions.get(key);
-  if (!entry || entry.eventAbort) return;
-
-  const abort = new AbortController();
-  entry.eventAbort = abort;
-  entry.streamHealthy = false;
-  entry.replayComplete = false;
-
-  void (async () => {
-    try {
-      const params = new URLSearchParams();
-      if (entry.lastCommittedSeq >= 0) {
-        params.set("since_seq", String(entry.lastCommittedSeq));
-      }
-      if (entry.topic) {
-        params.set("topic", entry.topic);
-      }
-      const url = `${API_BASE}/api/sessions/${encodeURIComponent(entry.sessionId)}/events/stream${
-        params.size > 0 ? `?${params.toString()}` : ""
-      }`;
-      const response = await fetch(url, {
-        headers: buildApiHeaders(),
-        signal: abort.signal,
-      });
-      const contentType = response.headers.get("content-type") ?? "";
-      if (
-        !response.ok ||
-        !response.body ||
-        !contentType.toLowerCase().includes("text/event-stream")
-      ) {
-        recordRuntimeCounter("octos_replay_fallback_total", {
-          mode: "task_watcher_stream",
-          reason: !response.ok
-            ? `http_${response.status}`
-            : !response.body
-              ? "missing_body"
-              : "invalid_content_type",
-        });
-        return;
-      }
-
-      entry.streamHealthy = true;
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
-
-          for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            const data = line.slice(6).trim();
-            if (!data || data === "[DONE]") continue;
-
-            let event:
-              | { type: "task_status"; task: BackgroundTaskInfo }
-              | { type: "session_result"; message: MessageInfo }
-              | { type: "replay_complete" }
-              | { type: string };
-            try {
-              event = JSON.parse(data);
-            } catch {
-              continue;
-            }
-
-            const current = watchedSessions.get(key);
-            if (!current) return;
-
-            const scopedSessionId = eventSessionId(event);
-            if (scopedSessionId !== undefined && scopedSessionId !== current.sessionId) {
-              recordRuntimeCounter("octos_session_mismatch_total", {
-                surface: "task_watcher_stream",
-              });
-              continue;
-            }
-
-            const scopedTopic = eventTopic(event);
-            if (scopedTopic !== undefined && scopedTopic !== current.topic) {
-              recordRuntimeCounter("octos_topic_mismatch_total", {
-                surface: "task_watcher_stream",
-              });
-              continue;
-            }
-
-            if (event.type === "task_status" && "task" in event) {
-              TaskStore.mergeTask(current.sessionId, event.task, current.topic);
-              applyTaskUpdate(current, event.task);
-              dispatchTaskStatusEvent(current.sessionId, current.topic, event.task);
-              continue;
-            }
-
-            if (event.type === "session_result" && "message" in event) {
-              const previousSeq = current.lastCommittedSeq;
-              applyCommittedMessages(current.sessionId, current, [event.message]);
-              const observedSeq =
-                typeof event.message.seq === "number"
-                  ? event.message.seq
-                  : current.lastCommittedSeq;
-              await backfillCommittedGap(current, previousSeq, observedSeq);
-              continue;
-            }
-
-            if (event.type === "replay_complete") {
-              current.replayComplete = true;
-              if (current.activeIds.size === 0) {
-                current.terminalSince = Date.now();
-              }
-            }
-          }
-        }
-      } finally {
-        reader.releaseLock();
-      }
-    } catch {
-      recordRuntimeCounter("octos_replay_fallback_total", {
-        mode: "task_watcher_stream",
-        reason: "stream_error",
-      });
-      // Polling becomes the fallback while the stream is unavailable.
-    } finally {
-      const current = watchedSessions.get(key);
-      if (current && current.eventAbort === abort) {
-        current.eventAbort = undefined;
-        current.streamHealthy = false;
-        persistWatchedSessions();
-        if (current.activeIds.size > 0) {
-          setTimeout(() => ensureEventStream(key), STREAM_RETRY_MS);
-        }
-      }
-    }
-  })();
-}
 
 async function pollAll(): Promise<void> {
   const entries = [...watchedSessions.entries()];
@@ -459,41 +316,32 @@ async function pollAll(): Promise<void> {
 async function pollSession(entry: WatchedSession): Promise<void> {
   try {
     const key = watchKey(entry.sessionId, entry.topic);
-    if (!entry.eventAbort) {
-      ensureEventStream(key);
+
+    const [tasks, messages] = await Promise.all([
+      getSessionTasks(entry.sessionId, entry.topic).catch(
+        () => [] as BackgroundTaskInfo[],
+      ),
+      fetchSessionMessages(
+        entry.sessionId,
+        500,
+        0,
+        entry.lastCommittedSeq >= 0 ? entry.lastCommittedSeq : undefined,
+        entry.topic,
+      ),
+    ]);
+
+    TaskStore.replaceTasks(entry.sessionId, tasks, entry.topic);
+    for (const task of tasks) {
+      dispatchTaskStatusEvent(entry.sessionId, entry.topic, task);
     }
-
-    // Stream is the primary truth path. Poll while the stream is unavailable,
-    // even if a connection attempt is currently in flight. This prevents
-    // redirects/HTML fallback responses from starving `/messages` replay.
-    if (!entry.streamHealthy) {
-      const [tasks, messages] = await Promise.all([
-        getSessionTasks(entry.sessionId, entry.topic).catch(
-          () => [] as BackgroundTaskInfo[],
-        ),
-        fetchSessionMessages(
-          entry.sessionId,
-          500,
-          0,
-          entry.lastCommittedSeq >= 0 ? entry.lastCommittedSeq : undefined,
-          entry.topic,
-        ),
-      ]);
-
-      TaskStore.replaceTasks(entry.sessionId, tasks, entry.topic);
-      for (const task of tasks) {
-        dispatchTaskStatusEvent(entry.sessionId, entry.topic, task);
-      }
-      updateActiveIds(entry, tasks);
-      applyCommittedMessages(entry.sessionId, entry, messages);
-      entry.replayComplete = true;
-      if (entry.activeIds.size === 0 && entry.terminalSince == null) {
-        entry.terminalSince = Date.now();
-      }
+    updateActiveIds(entry, tasks);
+    applyCommittedMessages(entry.sessionId, entry, messages);
+    entry.replayComplete = true;
+    if (entry.activeIds.size === 0 && entry.terminalSince == null) {
+      entry.terminalSince = Date.now();
     }
 
     if (
-      entry.replayComplete &&
       entry.activeIds.size === 0 &&
       entry.terminalSince != null &&
       Date.now() - entry.terminalSince >= TERMINAL_GRACE_MS
@@ -505,6 +353,6 @@ async function pollSession(entry: WatchedSession): Promise<void> {
       mode: "task_watcher_poll",
       reason: "poll_error",
     });
-    // Keep watching; the next poll will retry fallback sync.
+    // Keep watching; the next poll will retry sync.
   }
 }

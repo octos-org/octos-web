@@ -43,7 +43,6 @@ import { isProjectionV1Enabled } from "@/store/projection-store";
 import { uploadFiles } from "@/api/chat";
 import { sendMessage as bridgeSend } from "@/runtime/ui-protocol-send";
 import { getActiveBridge } from "@/runtime/ui-protocol-runtime";
-import * as StreamManager from "@/runtime/stream-manager";
 import { MarkdownContent } from "./markdown-renderer";
 import { ThinkingIndicator } from "./thinking-indicator";
 import { ToolProgressIndicator } from "./tool-progress-indicator";
@@ -1305,7 +1304,9 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
       ghostMounted = true;
     }
 
-    // Send via SSE bridge (StreamManager queues if a stream is already active)
+    // Send via the WS UI Protocol bridge (`/api/ui-protocol/ws`).
+    // M9-α-5/α-6 deleted the legacy SSE chat transport — `bridgeSend`
+    // is the sole entry point now.
     bridgeSend({
       ...finalPayload,
       historyTopic: requestedTopic,
@@ -1343,11 +1344,9 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
   ]);
 
   const handleCancel = useCallback(() => {
-    // Cancel the in-flight WS turn (v1 path) AND any legacy SSE stream.
-    // Both may exist: a topic-scoped session uses the legacy SSE upload;
-    // a default-scope text turn uses the WS bridge. `interruptTurn` is
-    // a no-op when no matching turn is in flight on the bridge, and
-    // `destroyStream` is a no-op when no SSE stream is active.
+    // Cancel the in-flight WS turn (v1 path). M9-α-5/α-6 removed the
+    // legacy SSE stream destroyer; `interruptTurn` is a no-op when no
+    // matching turn is in flight on the bridge.
     const bridge = getActiveBridge(currentSessionId, historyTopic);
     if (bridge) {
       const pendingTurnId = threadsForRunning.find(
@@ -1357,12 +1356,10 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
       )?.id;
       if (pendingTurnId) {
         void bridge.interruptTurn(pendingTurnId, "user cancelled").catch(() => {
-          // best-effort: swallow transport errors so the legacy
-          // destroyStream path still runs.
+          // best-effort: swallow transport errors.
         });
       }
     }
-    StreamManager.destroyStream(currentSessionId, historyTopic);
   }, [currentSessionId, historyTopic, threadsForRunning]);
 
   const handlePaste = useCallback(

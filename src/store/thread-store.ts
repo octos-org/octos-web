@@ -2311,14 +2311,16 @@ export function applyHydrateDedup(
 }
 
 /**
- * Ingest a single persisted `MessageInfo` (e.g. from a `session_result` SSE
- * event) into the appropriate thread without replaying the whole session.
+ * Ingest a single persisted `MessageInfo` (e.g. from a `session_result`
+ * notification on the WS bridge) into the appropriate thread without
+ * replaying the whole session.
  *
  * Closes the M8.10 wave-6 leak: pre-fix, late `session_result` events for
  * deep_research / mofa / run_pipeline turns landed only in the legacy
- * MessageStore — which the v2 renderer ignores — leaving the v2 UI stuck on
- * the finalized spawn-ack. Now the `sse-bridge` handler also calls this
- * helper so the persisted record reaches `ThreadStore.responses`.
+ * MessageStore — which the v2 renderer ignores — leaving the v2 UI stuck
+ * on the finalized spawn-ack. The WS event router now calls this helper
+ * (M9-α-5/α-6 deleted the SSE bridge that previously fanned out the same
+ * event) so the persisted record reaches `ThreadStore.responses`.
  *
  * Routing:
  *   • Use `message.thread_id` when present (server stamps it for both the
