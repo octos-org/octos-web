@@ -8,33 +8,43 @@
  * (`sse-bridge.ts`) has been deleted along with the server-side SSE
  * chat transport. `/api/ui-protocol/ws` is now the sole chat transport.
  *
- * **Known follow-up**: the WS bridge's `TurnStartInput` only accepts
- * `kind: "text"` today, so media uploads, `/queue` rewrites, and
- * topic-scoped sends are temporarily blocked here — `sendMessage`
- * surfaces an explicit error on the assistant bubble and emits a
- * `console.warn` instead of falling back to a deleted SSE path. The
- * follow-up to extend `TurnStartInput` lives in M9-β.
+ * M9-β-1 (UPCR-2026-015 / server PR #860): `TurnStartParams` gained
+ * three optional fields — `media: FileRef[]`, `topic: string`,
+ * `rewrite_for: client_message_id`. The web client populates them
+ * from the existing `SendOptions.media` / `historyTopic` /
+ * `requestText` fields; the bridge serialises only the populated
+ * extras onto the wire so the on-wire shape stays byte-identical to
+ * a pre-β-1 build for text-only sends.
  */
 
 import * as ThreadStore from "@/store/thread-store";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { getActiveBridge } from "./ui-protocol-runtime";
+import type { TurnStartExtras, TurnStartMediaRef } from "./ui-protocol-types";
 import { request } from "@/api/client";
 
 /** Per-turn send options. The legacy SSE bridge previously re-exported
  *  this type; with that file deleted, the canonical home is here. */
 export interface SendOptions {
   sessionId: string;
-  /** Topic ('/new <slug>' surfaces). Currently unsupported by the WS
-   *  bridge — sends with a non-empty topic surface an error. */
+  /** Sub-topic suffix (`/new <slug>` surfaces, slides/sites scoping).
+   *  M9-β-1 (UPCR-2026-015): forwarded to the server as `topic` on
+   *  `turn/start` so history / ledger / `task/list` see the per-topic
+   *  bucket. Empty / undefined sends to the default-topic bucket. */
   historyTopic?: string;
   text: string;
-  /** Optional rewrite (e.g. `/queue` slash-commands). Currently
-   *  unsupported by the WS bridge — sends where `requestText !== text`
-   *  surface an error. */
+  /** Optional rewrite (e.g. `/queue` slash-commands). M9-β-1:
+   *  forwarded as `rewrite_for: <client_message_id>` so the server
+   *  can replace the queued user message in place rather than
+   *  appending. (β-1 server logs the field; durable in-place ledger
+   *  replace lands in a follow-up — the wire field is forward-
+   *  compatible.) Sends where `requestText === text` (or undefined)
+   *  carry no `rewrite_for`. */
   requestText?: string;
-  /** Pre-uploaded media paths from `/api/upload`. Currently unsupported
-   *  by the WS bridge — sends with non-empty media surface an error. */
+  /** Pre-uploaded media paths from `/api/upload`. M9-β-1: forwarded
+   *  as `media: FileRef[]` on `turn/start`. The server feeds the
+   *  paths to `Agent::process_message`, the same entry the
+   *  gateway-mode `ApiChannel` and `octos chat` CLI use. */
   media: string[];
   clientMessageId?: string;
   /** Recording vs upload (audio surface). Unused on the WS path today. */
@@ -74,21 +84,56 @@ export function sendMessage(opts: SendOptions): void {
   void enqueueSendV1(opts);
 }
 
-/** Return a human-readable reason when this send is unsupported by the
- *  WS-only path, else `null`. M9-α-5/α-6 deleted the legacy SSE
- *  fallback — when this returns non-null, the send fails fast with an
- *  errored assistant bubble rather than silently dropping. */
-function unsupportedSendReason(opts: SendOptions): string | null {
+/** UPCR-2026-015 (M9-β-1): build the `TurnStartParams` extras envelope
+ *  from `SendOptions`. Returns `undefined` when no extras are
+ *  populated so the bridge omits all three fields and the on-wire
+ *  shape stays byte-identical to a pre-β-1 text-only send. */
+function buildTurnStartExtras(opts: SendOptions): TurnStartExtras | undefined {
+  const extras: TurnStartExtras = {};
+
   if (opts.media.length > 0) {
-    return "media uploads are not yet supported on the WS chat transport (follow-up: M9-β extension to `TurnStartInput`)";
+    // The `/api/upload` endpoint returns paths only — `mime` and
+    // `size_bytes` are not propagated through `SendOptions.media`
+    // (the legacy SSE path also had this limitation). Surface what
+    // we know and let the server resolve metadata at consume time.
+    // The wire-shape requires the fields, so synthesise placeholders
+    // (mirroring the legacy SSE behaviour); the server's
+    // `process_message` only reads `path`, so the placeholders never
+    // leak into render.
+    const media: TurnStartMediaRef[] = opts.media.map((path) => ({
+      path,
+      mime: "application/octet-stream",
+      size_bytes: 0,
+    }));
+    extras.media = media;
   }
-  if (opts.requestText !== undefined && opts.requestText !== opts.text) {
-    return "`/queue`-style rewrites are not yet supported on the WS chat transport (follow-up: M9-β extension to `TurnStartInput`)";
+
+  const topic = opts.historyTopic?.trim();
+  if (topic && topic.length > 0) {
+    extras.topic = topic;
   }
-  if ((opts.historyTopic?.trim().length ?? 0) > 0) {
-    return "topic-scoped sends are not yet supported on the WS chat transport (follow-up: M9-β extension to `session/open` / `TurnStartInput`)";
+
+  // `rewrite_for` carries the client_message_id of the original
+  // queued send. The Composer's `/queue` slash-command flow stashes
+  // the user-edited prompt in `requestText` while `text` keeps the
+  // original-with-attached-files form. When the two diverge, treat
+  // it as a rewrite and pass the cmid for the original turn.
+  if (
+    opts.requestText !== undefined &&
+    opts.requestText !== opts.text &&
+    opts.clientMessageId !== undefined
+  ) {
+    extras.rewrite_for = opts.clientMessageId;
   }
-  return null;
+
+  if (
+    (extras.media === undefined || extras.media.length === 0) &&
+    (extras.topic === undefined || extras.topic.length === 0) &&
+    extras.rewrite_for === undefined
+  ) {
+    return undefined;
+  }
+  return extras;
 }
 
 // ---------------------------------------------------------------------------
@@ -189,21 +234,14 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
 
   try {
     await prev;
-    // M9-α-5/α-6: legacy SSE fallback removed. If the send is
-    // unsupported by the WS path (media, /queue rewrite, topic-scoped),
-    // surface an error on the assistant bubble and release the gate
-    // immediately so subsequent sends drain.
-    const reason = unsupportedSendReason(pinnedOpts);
-    if (reason !== null) {
-      if (typeof console !== "undefined" && console.warn) {
-        console.warn(`ui-protocol-send: ${reason}`);
-      }
-      ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
-      pinnedOpts.onComplete?.();
-      release();
-    } else {
-      await sendMessageV1(pinnedOpts, release);
-    }
+    // M9-β-1 (UPCR-2026-015 / server PR #860): the three previously
+    // unsupported variants — media-bearing, /queue-rewrite, and
+    // topic-scoped sends — are now first-class on the WS path.
+    // `sendMessageV1` builds a `TurnStartExtras` envelope from the
+    // populated `SendOptions` fields and the bridge serialises only
+    // the populated extras onto the wire (so the on-wire shape stays
+    // byte-identical to a pre-β-1 build for text-only sends).
+    await sendMessageV1(pinnedOpts, release);
     // Wait for the lifecycle to complete before we let the chain advance.
     // `sendMessageV1` always calls `release()` — on success via the
     // `turn/completed`/`turn/error` listener, on early fallback or RPC
@@ -358,12 +396,16 @@ async function sendMessageV1(
   );
 
   try {
-    const result = await bridge.sendTurn(clientMessageId, [
-      { kind: "text", text },
-      // File / voice attachments stay on REST — see fallback above. The
-      // bridge schema already accepts a TurnStartInput[] so a future PR
-      // can add file references here without changing this call site.
-    ]);
+    // M9-β-1 (UPCR-2026-015): build the `TurnStartExtras` envelope
+    // from the populated `SendOptions` fields. The bridge serialises
+    // only the populated extras onto the wire, so a text-only send
+    // produces the same bytes a pre-β-1 build did.
+    const extras = buildTurnStartExtras(opts);
+    const result = await bridge.sendTurn(
+      clientMessageId,
+      [{ kind: "text", text }],
+      extras,
+    );
     // Codex round 7 P2: if the server's RPC reply is structurally
     // valid but reports `{ accepted: false }`, no `turn/started` will
     // ever fire — the lifecycle gate would otherwise wait the full

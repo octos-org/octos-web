@@ -4,13 +4,21 @@
  * M9-α-5/α-6 (ADR PR #830 / audit issue #845): the legacy SSE bridge has
  * been deleted; `/api/ui-protocol/ws` is the sole chat transport.
  *
+ * M9-β-1 (UPCR-2026-015 / server PR #860): the WS turn/start envelope
+ * gained three optional fields (`media`, `topic`, `rewrite_for`). The
+ * tests below assert the bridge dispatches them through unchanged for
+ * each variant.
+ *
  * Coverage:
  *   - active bridge: dispatches via `bridge.sendTurn` and mirrors the
  *     user message into the thread store
  *   - no active bridge: surfaces an error on the assistant bubble (no
  *     legacy fallback exists anymore)
- *   - media / requestText / topic-scoped sends: surface an error
- *     (`TurnStartInput` is text-only today; M9-β extension follow-up)
+ *   - β-1 media-bearing sends: `bridge.sendTurn` called with `extras.media`
+ *     populated (`FileRef`-shaped entries)
+ *   - β-1 topic-scoped sends: `bridge.sendTurn` called with `extras.topic`
+ *   - β-1 /queue rewrites: `bridge.sendTurn` called with `extras.rewrite_for`
+ *     carrying the original `client_message_id`
  *   - per-session FIFO turn queue contract from M10 follow-up Bug B
  *     (rapid sends serialise behind `turn/completed`/`turn/error`)
  */
@@ -109,9 +117,11 @@ describe("sendMessage", () => {
       clientMessageId: "cmid-on",
     });
     for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(bridge.sendTurn).toHaveBeenCalledWith("cmid-on", [
-      { kind: "text", text: "hello" },
-    ]);
+    expect(bridge.sendTurn).toHaveBeenCalledWith(
+      "cmid-on",
+      [{ kind: "text", text: "hello" }],
+      undefined,
+    );
     const threads = ThreadStore.getThreads(SESSION);
     expect(threads).toHaveLength(1);
     expect(threads[0].userMsg.text).toBe("hello");
@@ -134,9 +144,11 @@ describe("sendMessage", () => {
       skipOptimisticUserMessage: true,
     });
     for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(bridge.sendTurn).toHaveBeenCalledWith("cmid-ghost", [
-      { kind: "text", text: "ghost" },
-    ]);
+    expect(bridge.sendTurn).toHaveBeenCalledWith(
+      "cmid-ghost",
+      [{ kind: "text", text: "ghost" }],
+      undefined,
+    );
     expect(ThreadStore.getThreads(SESSION)).toHaveLength(0);
   });
 
@@ -192,28 +204,38 @@ describe("sendMessage", () => {
     expect(onComplete).toHaveBeenCalledTimes(1);
   });
 
-  // M9-α-5/α-6: media-bearing turns no longer have a legacy SSE
-  // fallback. The send surfaces an error instead of silently dropping;
-  // the assistant bubble is finalised as errored and the queue advances.
-  it("errors the bubble when media is present (WS path is text-only)", async () => {
+  // M9-β-1 (UPCR-2026-015): media-bearing turns now ride the WS path.
+  // The bridge is called with `extras.media` populated as
+  // `FileRef`-shaped entries; the user bubble carries the local files.
+  it("forwards media on bridge.sendTurn extras when media is present", async () => {
     const bridge = makeBridge();
     __setActiveBridgeForTest(SESSION, bridge);
     sendMessage({
       sessionId: SESSION,
       text: "with image",
-      media: ["/tmp/foo.png"],
+      media: ["/tmp/foo.png", "/tmp/bar.mp3"],
       clientMessageId: "cmid-media",
     });
-    await Promise.resolve();
-    expect(ThreadStore.getThreads(SESSION)).toHaveLength(1);
     for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(bridge.sendTurn).not.toHaveBeenCalled();
+    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
+    const call = bridge.sendTurn.mock.calls[0];
+    expect(call[0]).toBe("cmid-media");
+    expect(call[1]).toEqual([{ kind: "text", text: "with image" }]);
+    const extras = call[2];
+    expect(extras).toBeDefined();
+    expect(extras.media).toHaveLength(2);
+    expect(extras.media[0]).toMatchObject({ path: "/tmp/foo.png" });
+    expect(extras.media[1]).toMatchObject({ path: "/tmp/bar.mp3" });
+    // No error finalisation — the optimistic user bubble is still
+    // pending an assistant response.
     const threads = ThreadStore.getThreads(SESSION);
-    expect(threads[0].responses[0]?.status).toBe("error");
+    expect(threads[0].responses[0]?.status).not.toBe("error");
   });
 
-  // M9-α-5/α-6: `/queue interrupt` style rewrites also surface an error.
-  it("errors the bubble when requestText differs from text", async () => {
+  // M9-β-1: `/queue` rewrites carry the original cmid via
+  // `extras.rewrite_for` so the server can replace the queued user
+  // message in place rather than appending.
+  it("forwards rewrite_for on bridge.sendTurn extras when requestText differs from text", async () => {
     const bridge = makeBridge();
     __setActiveBridgeForTest(SESSION, bridge);
     sendMessage({
@@ -224,15 +246,24 @@ describe("sendMessage", () => {
       clientMessageId: "cmid-rewrite",
     });
     for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(bridge.sendTurn).not.toHaveBeenCalled();
-    const threads = ThreadStore.getThreads(SESSION);
-    expect(threads[0].responses[0]?.status).toBe("error");
+    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
+    const call = bridge.sendTurn.mock.calls[0];
+    expect(call[0]).toBe("cmid-rewrite");
+    const extras = call[2];
+    expect(extras).toBeDefined();
+    expect(extras.rewrite_for).toBe("cmid-rewrite");
+    expect(extras.media).toBeUndefined();
+    expect(extras.topic).toBeUndefined();
   });
 
-  // M9-α-5/α-6: topic-scoped sends surface an error too.
-  it("errors the bubble when historyTopic is set", async () => {
+  // M9-β-1: topic-scoped sends carry `extras.topic` so the server
+  // folds it into the resolved SessionKey before scope validation.
+  // The active bridge is registered against the same `(sessionId,
+  // topic)` scope the SPA's runtime would publish — `getActiveBridge`
+  // gates by scope, so the test mirrors production wiring.
+  it("forwards topic on bridge.sendTurn extras when historyTopic is set", async () => {
     const bridge = makeBridge();
-    __setActiveBridgeForTest(SESSION, bridge);
+    __setActiveBridgeForTest(SESSION, bridge, "slides");
     sendMessage({
       sessionId: SESSION,
       historyTopic: "slides",
@@ -241,9 +272,55 @@ describe("sendMessage", () => {
       clientMessageId: "cmid-topic",
     });
     for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(bridge.sendTurn).not.toHaveBeenCalled();
-    const threads = ThreadStore.getThreads(SESSION, "slides");
-    expect(threads[0].responses[0]?.status).toBe("error");
+    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
+    const call = bridge.sendTurn.mock.calls[0];
+    expect(call[0]).toBe("cmid-topic");
+    const extras = call[2];
+    expect(extras).toBeDefined();
+    expect(extras.topic).toBe("slides");
+    expect(extras.media).toBeUndefined();
+    expect(extras.rewrite_for).toBeUndefined();
+  });
+
+  // M9-β-1: text-only sends produce NO extras envelope so the on-wire
+  // shape stays byte-identical to a pre-β-1 build (back-compat).
+  it("omits the extras envelope for plain text-only sends", async () => {
+    const bridge = makeBridge();
+    __setActiveBridgeForTest(SESSION, bridge);
+    sendMessage({
+      sessionId: SESSION,
+      text: "plain text",
+      media: [],
+      clientMessageId: "cmid-plain",
+    });
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
+    const call = bridge.sendTurn.mock.calls[0];
+    expect(call[2]).toBeUndefined();
+  });
+
+  // M9-β-1: when all three β-1 surfaces are populated together (a
+  // /queue rewrite under a topic-scoped session that swaps in new
+  // media), every extra rides through.
+  it("forwards all three β-1 extras when populated together", async () => {
+    const bridge = makeBridge();
+    __setActiveBridgeForTest(SESSION, bridge, "research");
+    sendMessage({
+      sessionId: SESSION,
+      historyTopic: "research",
+      text: "redo with this image",
+      requestText: "edited prompt",
+      media: ["/tmp/replacement.png"],
+      clientMessageId: "cmid-all",
+    });
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
+    const extras = bridge.sendTurn.mock.calls[0][2];
+    expect(extras).toBeDefined();
+    expect(extras.media).toHaveLength(1);
+    expect(extras.media[0]).toMatchObject({ path: "/tmp/replacement.png" });
+    expect(extras.topic).toBe("research");
+    expect(extras.rewrite_for).toBe("cmid-all");
   });
 
   // Codex review must-fix #5B: the lifecycle subscription must be
@@ -361,23 +438,29 @@ describe("sendMessage", () => {
 
     for (let i = 0; i < 12; i++) await Promise.resolve();
     expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
-    expect(bridge.sendTurn).toHaveBeenLastCalledWith("cmid-Q1", [
-      { kind: "text", text: "Q1" },
-    ]);
+    expect(bridge.sendTurn).toHaveBeenLastCalledWith(
+      "cmid-Q1",
+      [{ kind: "text", text: "Q1" }],
+      undefined,
+    );
 
     lifecycleHandler?.({ turn_id: "cmid-Q1", reason: "stop" });
     for (let i = 0; i < 12; i++) await Promise.resolve();
     expect(bridge.sendTurn).toHaveBeenCalledTimes(2);
-    expect(bridge.sendTurn).toHaveBeenLastCalledWith("cmid-Q2", [
-      { kind: "text", text: "Q2" },
-    ]);
+    expect(bridge.sendTurn).toHaveBeenLastCalledWith(
+      "cmid-Q2",
+      [{ kind: "text", text: "Q2" }],
+      undefined,
+    );
 
     lifecycleHandler?.({ turn_id: "cmid-Q2", reason: "stop" });
     for (let i = 0; i < 12; i++) await Promise.resolve();
     expect(bridge.sendTurn).toHaveBeenCalledTimes(3);
-    expect(bridge.sendTurn).toHaveBeenLastCalledWith("cmid-Q3", [
-      { kind: "text", text: "Q3" },
-    ]);
+    expect(bridge.sendTurn).toHaveBeenLastCalledWith(
+      "cmid-Q3",
+      [{ kind: "text", text: "Q3" }],
+      undefined,
+    );
   });
 
   // Codex P2 round 7 (M10 follow-up Bug B): a `bridge.sendTurn`
@@ -456,9 +539,11 @@ describe("sendMessage", () => {
     expect(threads[1].userMsg.text).toBe("Q2");
     for (let i = 0; i < 12; i++) await Promise.resolve();
     expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
-    expect(bridge.sendTurn).toHaveBeenLastCalledWith("cmid-Q1", [
-      { kind: "text", text: "Q1" },
-    ]);
+    expect(bridge.sendTurn).toHaveBeenLastCalledWith(
+      "cmid-Q1",
+      [{ kind: "text", text: "Q1" }],
+      undefined,
+    );
 
     lifecycleHandler?.({ turn_id: "cmid-Q1", reason: "stop" });
     for (let i = 0; i < 12; i++) await Promise.resolve();
@@ -512,9 +597,11 @@ describe("sendMessage", () => {
     expect(onCompleteThrowing).toHaveBeenCalledTimes(1);
     for (let i = 0; i < 12; i++) await Promise.resolve();
     expect(bridge.sendTurn).toHaveBeenCalledTimes(2);
-    expect(bridge.sendTurn).toHaveBeenLastCalledWith("cmid-Q2", [
-      { kind: "text", text: "Q2" },
-    ]);
+    expect(bridge.sendTurn).toHaveBeenLastCalledWith(
+      "cmid-Q2",
+      [{ kind: "text", text: "Q2" }],
+      undefined,
+    );
   });
 
   // Codex P2 round 2 (M10 follow-up Bug B): when the bridge transitions
