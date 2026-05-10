@@ -221,6 +221,13 @@ export function nextSeq(storeKey: string, threadId: string): number {
  *  the BLOCK 1 race where the legacy thread-store called `notify()`
  *  BEFORE its projection dual-write.
  *
+ *  M9-γ-5 (issue #842): projection identity is `(thread_id, seq)` ONLY.
+ *  The cmid is carried on the user-rooted envelope as a passenger field
+ *  so γ-4's GhostBubble overlay can match a server reflection and
+ *  unmount; the projection's own dedup does NOT consult it. The
+ *  cmidToThreadByKey index above is a render-side helper, not part of
+ *  the canonical projection state.
+ *
  *  The projection dedupes / orders / barriers — this function does NOT
  *  validate the envelope's seq nor enforce monotonicity; that's the
  *  projection's job (and the bridge's, in production). */

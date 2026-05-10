@@ -1,20 +1,20 @@
 /**
  * Thread store — thread-by-cmid chat data model (M8.10 PR #3, issue #627).
  *
- * Replaces the flat-list semantic from `message-store.ts`. Every user
- * message roots a `Thread` keyed by its `client_message_id`. Assistant and
- * tool messages bind to the thread via `response_to_client_message_id` (=
- * `thread_id` from PR #2's SSE events). Conversations are an ordered list
- * of threads sorted by `userMsg.timestamp` — no timestamp-primary sort
- * within a thread, no `Number.MAX_SAFE_INTEGER` fallback.
+ * Every user message roots a `Thread` keyed by its `client_message_id`.
+ * Assistant and tool messages bind to the thread via
+ * `response_to_client_message_id` (= `thread_id` from PR #2's SSE events).
+ * Conversations are an ordered list of threads sorted by
+ * `userMsg.timestamp` — no timestamp-primary sort within a thread, no
+ * `Number.MAX_SAFE_INTEGER` fallback.
  *
- * The store is feature-flag gated. Activated only when
- * `localStorage.octos_thread_store_v2 === '1'`. Otherwise the existing
- * flat-list `message-store.ts` remains the default code path. PR #5
- * flips the flag default and deletes `message-store.ts`.
- *
- * Public API mirrors the shape of `message-store.ts` so the renderer
- * (PR #4) can swap stores without rebuilding its component tree.
+ * M9-γ-6 (issue #843): the parallel legacy flat-list store has been
+ * deleted; ThreadStore is the single source of truth for chat state.
+ * The projection-mode shim (γ-3) translates every mutation entry point
+ * into an `Envelope` and dual-writes it through `projection-store.ts`
+ * when the `octos_projection_v1` flag is on; the legacy reducer that
+ * builds `Thread[]` for `getThreads()` keeps running so the UI keeps
+ * the same shape.
  */
 
 import { useSyncExternalStore } from "react";
@@ -76,10 +76,27 @@ export interface ThreadMessage {
   timestamp: number;
   /** Server-side per-session sequence (assigned on persistence). */
   historySeq?: number;
-  /** Per-thread sequence — order within a thread. */
+  /**
+   * Per-thread sequence — order within a thread.
+   *
+   * @deprecated M9-γ-5 (issue #842): the projection collapses identity
+   * to server `seq` (`(thread_id, seq)`); per-thread ordering is implicit
+   * in the envelope arrival order. Field kept on the legacy reducer's
+   * `Thread`/`ThreadMessage` shape so flag-OFF code paths still compile;
+   * projection-mode consumers MUST NOT depend on it.
+   */
   intra_thread_seq?: number;
   meta?: MessageMeta;
-  /** For assistant/tool messages: parent thread root cmid. */
+  /**
+   * For assistant/tool messages: parent thread root cmid.
+   *
+   * @deprecated M9-γ-5 (issue #842): under projection_v1, `client_message_id`
+   * lives ONLY on `user_message` envelopes (per the locked rule from γ-1
+   * round-2); thread membership is derived from `(thread_id, seq)`. Field
+   * kept on the legacy reducer's `Thread`/`ThreadMessage` shape so flag-OFF
+   * code paths still compile; projection-mode consumers MUST NOT depend
+   * on it.
+   */
   responseToClientMessageId?: string;
   /** For user messages: their own cmid (= thread.id). */
   clientMessageId?: string;
@@ -370,36 +387,43 @@ function shimResolveKey(threadId: string): string | null {
   return findStoreKeyForThread(threadId);
 }
 
-/** Pending `client_message_id` per (storeKey, threadId). Set when
+/** Pending `client_message_id` SET per storeKey. Set when
  *  `addUserMessage` opens a thread; consumed (cleared) on the FIRST
  *  envelope emitted for that thread so the cmid lands exactly once on
  *  the wire. The projection captures the cmid into its `UserView` from
- *  the first envelope it sees for a given thread. */
-const pendingClientMessageIds = new Map<string, Map<string, string>>();
+ *  the first envelope it sees for a given thread.
+ *
+ *  M9-γ-5 (issue #842): the prior implementation keyed cmids by
+ *  threadId — but for a fresh user-rooted thread the threadId IS the
+ *  cmid (callers in `sse-bridge` and `ui-protocol-send` pass the same
+ *  string for both). The projection re-derives thread membership from
+ *  `(thread_id, seq)` ordering, so the threadId-keyed inner map is
+ *  redundant. A flat `Set<cmid>` per storeKey is the minimal carrier:
+ *  on shim ingest, if `threadId` is in the set we attach + remove. */
+const pendingClientMessageIds = new Map<string, Set<string>>();
 
 function setPendingClientMessageId(
   storeKey: string,
-  threadId: string,
   cmid: string,
 ): void {
-  let perThread = pendingClientMessageIds.get(storeKey);
-  if (!perThread) {
-    perThread = new Map();
-    pendingClientMessageIds.set(storeKey, perThread);
+  let perKey = pendingClientMessageIds.get(storeKey);
+  if (!perKey) {
+    perKey = new Set();
+    pendingClientMessageIds.set(storeKey, perKey);
   }
-  perThread.set(threadId, cmid);
+  perKey.add(cmid);
 }
 
 function consumePendingClientMessageId(
   storeKey: string,
   threadId: string,
 ): string | undefined {
-  const perThread = pendingClientMessageIds.get(storeKey);
-  if (!perThread) return undefined;
-  const cmid = perThread.get(threadId);
-  if (cmid === undefined) return undefined;
-  perThread.delete(threadId);
-  return cmid;
+  // For fresh user-rooted threads, `threadId === cmid`. Look up the
+  // threadId in the set; if present, that IS the cmid.
+  const perKey = pendingClientMessageIds.get(storeKey);
+  if (!perKey || !perKey.has(threadId)) return undefined;
+  perKey.delete(threadId);
+  return threadId;
 }
 
 /** Translate-and-ingest helper for the dual-write path. Handles the
@@ -445,12 +469,12 @@ function shimMapToolEndStatus(
 // ---------------------------------------------------------------------------
 
 /**
- * M9-γ-4: Register a pending `client_message_id` for a thread WITHOUT
- * mutating the legacy reducer. Used by the `<GhostBubble>` overlay so
- * the very first dual-write envelope on this thread (e.g. an
- * `assistant_delta` from the server's reflected response) carries the
- * cmid — which the projection captures into `UserView.client_message_id`
- * and the GhostBubble matches on to settle.
+ * M9-γ-4: Register a pending `client_message_id` WITHOUT mutating the
+ * legacy reducer. Used by the `<GhostBubble>` overlay so the very first
+ * dual-write envelope on this thread (e.g. an `assistant_delta` from
+ * the server's reflected response) carries the cmid — which the
+ * projection captures into `UserView.client_message_id` and the
+ * GhostBubble matches on to settle.
  *
  * The legacy reducer is intentionally untouched: under projection_v1,
  * the optimistic user bubble is a pure visual overlay; the durable user
@@ -458,15 +482,19 @@ function shimMapToolEndStatus(
  * a later assistant token (`appendAssistantToken` calls
  * `ensureOrphanThread`). This guarantees the acceptance criterion:
  * "ThreadStore must NOT have a `<GhostBubble>` row when flag ON."
+ *
+ * M9-γ-5 (issue #842): the redundant `threadId` parameter is gone. The
+ * threadId IS the cmid for fresh user-rooted threads, and the projection
+ * re-derives thread membership from `(thread_id, seq)` — there is
+ * nothing additional to bucket the cmid by.
  */
 export function registerPendingClientMessageId(
   sessionId: string,
-  threadId: string,
   clientMessageId: string,
   topic?: string,
 ): void {
   const key = storeKey(sessionId, topic);
-  setPendingClientMessageId(key, threadId, clientMessageId);
+  setPendingClientMessageId(key, clientMessageId);
 }
 
 export interface AddUserMessageOptions {
@@ -579,7 +607,7 @@ export function addUserMessage(
   // for this thread carries `client_message_id` on the wire — that's
   // what γ-4's GhostBubble overlay matches against.
   if (isProjectionV1Enabled()) {
-    setPendingClientMessageId(key, thread.id, opts.clientMessageId);
+    setPendingClientMessageId(key, opts.clientMessageId);
   }
 
   return {
@@ -2521,6 +2549,89 @@ export function getThreads(sessionId: string, topic?: string): Thread[] {
   const data = state ? state.threads.slice() : [];
   snapshotCache.set(key, { version, data });
   return data;
+}
+
+/**
+ * Snapshot of the pending streaming assistant for a given thread.
+ * Returns null when the thread doesn't exist or has no pending slot.
+ * M9-γ-6 (issue #843): replaces the legacy
+ * `MessageStore.getMessages(...).find(m => m.id === assistantMsgId)`
+ * lookup the bridge used to detect "stream ended without `done`"
+ * conditions.
+ */
+export function getPendingAssistantSnapshot(
+  sessionId: string,
+  threadId: string,
+  topic?: string,
+): { text: string; status: "streaming" | "complete" | "error" } | null {
+  const key = storeKey(sessionId, topic);
+  const state = sessionsByKey.get(key);
+  if (!state) return null;
+  const thread = state.byId.get(threadId);
+  if (!thread || !thread.pendingAssistant) return null;
+  const p = thread.pendingAssistant;
+  return { text: p.text, status: p.status };
+}
+
+/**
+ * Highest server-side `historySeq` observed for any persisted message
+ * in this session/topic. Returns -1 when no persisted messages have
+ * been ingested. M9-γ-6 (issue #843): replaces
+ * `MessageStore.getMaxHistorySeq` for the task-watcher's incremental
+ * sync cursor.
+ */
+export function getMaxHistorySeq(
+  sessionId: string,
+  topic?: string,
+): number {
+  const key = storeKey(sessionId, topic);
+  const state = sessionsByKey.get(key);
+  if (!state) return -1;
+  let max = -1;
+  for (const t of state.threads) {
+    if (typeof t.userMsg.historySeq === "number" && t.userMsg.historySeq > max) {
+      max = t.userMsg.historySeq;
+    }
+    for (const r of t.responses) {
+      if (typeof r.historySeq === "number" && r.historySeq > max) {
+        max = r.historySeq;
+      }
+    }
+    if (
+      t.pendingAssistant &&
+      typeof t.pendingAssistant.historySeq === "number" &&
+      t.pendingAssistant.historySeq > max
+    ) {
+      max = t.pendingAssistant.historySeq;
+    }
+  }
+  return max;
+}
+
+/**
+ * Flat list of file paths attached to any message in this session/topic.
+ * M9-γ-6 (issue #843): replaces the task-watcher's
+ * `MessageStore.getMessages(...).flatMap(m => m.files.map(f => f.path))`
+ * call without exposing the legacy flat-`Message[]` shape.
+ */
+export function getKnownFilePaths(
+  sessionId: string,
+  topic?: string,
+): string[] {
+  const key = storeKey(sessionId, topic);
+  const state = sessionsByKey.get(key);
+  if (!state) return [];
+  const out: string[] = [];
+  for (const t of state.threads) {
+    for (const f of t.userMsg.files) out.push(f.path);
+    for (const r of t.responses) {
+      for (const f of r.files) out.push(f.path);
+    }
+    if (t.pendingAssistant) {
+      for (const f of t.pendingAssistant.files) out.push(f.path);
+    }
+  }
+  return out;
 }
 
 export function clearSession(sessionId: string, topic?: string): void {

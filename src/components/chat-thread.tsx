@@ -805,11 +805,8 @@ function ChatThreadV2({
   const hasGhosts = ghosts.length > 0;
 
   // M8.10 follow-up (#633): rehydrate thread store from server history on mount
-  // and on session/topic change. The flat-list path loads history via
-  // `runtime-provider.tsx`'s `MessageStore.loadHistory(...)` effect; under the
-  // v2 flag the runtime provider also triggers MessageStore but the thread
-  // store stays empty after reload, so a session with prior chat history
-  // renders as an empty conversation.
+  // and on session/topic change. M9-γ-6: ThreadStore is now the single sink;
+  // `runtime-provider.tsx` calls `ThreadStore.loadHistory(...)` directly.
   //
   // The reload path is also racy with server persistence: the SSE `done`
   // event fires before the JSONL is fully committed, so an immediate reload

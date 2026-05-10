@@ -11,7 +11,6 @@ import { SessionProvider, useSession } from "./session-context";
 import * as StreamManager from "./stream-manager";
 import { resumeSessionStream } from "./sse-bridge";
 import * as FileStore from "@/store/file-store";
-import * as MessageStore from "@/store/message-store";
 import * as TaskStore from "@/store/task-store";
 import * as ThreadStore from "@/store/thread-store";
 import { getSessionStatus } from "@/api/sessions";
@@ -107,7 +106,7 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
 
   // Load message history into the store when a session is activated
   useEffect(() => {
-    MessageStore.loadHistory(currentSessionId, historyTopic);
+    void ThreadStore.loadHistory(currentSessionId, historyTopic);
     void FileStore.loadSessionFiles(currentSessionId);
     mountedRef.current.add(currentSessionId);
 
@@ -116,7 +115,7 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
       for (const id of mountedRef.current) {
         if (id !== currentSessionId && !StreamManager.isActive(id)) {
           mountedRef.current.delete(id);
-          MessageStore.clearMessages(id);
+          ThreadStore.clearSession(id);
           TaskStore.clearTasks(id);
           break;
         }
@@ -187,12 +186,9 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
         );
 
         // Resume an active stream the server is still working on.
+        // M9-γ-6: ThreadStore's orphan-thread path opens the bucket on
+        // the first incoming token; no pre-emptive placeholder write.
         if (status.active && !StreamManager.isActive(currentSessionId)) {
-          MessageStore.ensureStreamingAssistantMessage(
-            currentSessionId,
-            "Resuming ongoing work...",
-            historyTopic,
-          );
           resumeSessionStream(currentSessionId, historyTopic);
           window.dispatchEvent(
             new CustomEvent("crew:thinking", {
@@ -205,12 +201,6 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
             }),
           );
         }
-
-        MessageStore.reconcileRecoveredStreamingMessages(
-          currentSessionId,
-          historyTopic,
-          { streamActive: status.active },
-        );
 
         // Register with the global task watcher for background work.
         if (hasBackgroundWork) {
@@ -244,10 +234,10 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
       const task = detail?.task as BackgroundTaskInfo | undefined;
       if (task) {
         TaskStore.mergeTask(sessionId, task, topic);
-        MessageStore.bindBackgroundTask(sessionId, task, topic);
+        // M9-γ-6: bg-task↔message binding lived only in MessageStore.
         // Mirror the status as a synthetic progress line into the
-        // tool-call's runtime timeline. Background subagents (e.g.
-        // deep_research / run_pipeline) emit their per-step
+        // ThreadStore's tool-call timeline. Background subagents
+        // (e.g. deep_research / run_pipeline) emit their per-step
         // `tool_progress` SSE events on the spawned task's own stream,
         // not the parent chat stream — without this mirror the
         // tool-call bubble in the parent thread renders empty even
@@ -257,20 +247,13 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
         // tolerate task_status replays without doubling the timeline.
         const progressLine = synthesizeTaskProgressLine(task);
         if (progressLine && task.tool_call_id) {
-          MessageStore.appendToolProgressByCallId(
-            sessionId,
-            task.tool_call_id,
-            progressLine,
-            topic,
-          );
-          // Mirror into the v2 thread store when it already knows
-          // about this tool_call_id (i.e. tool_start arrived before
+          // Mirror into the thread store when it already knows about
+          // this tool_call_id (i.e. tool_start arrived before
           // task_status). When the lookup misses we deliberately drop
-          // the synthetic progress for v2 rather than synthesize an
-          // orphan thread — the v1 path is still authoritative until
-          // the v2 flag is flipped, and creating phantom threads for
-          // every backgrounded task on first paint would race with
-          // the real tool_start that arrives moments later.
+          // the synthetic progress rather than synthesize an orphan
+          // thread — creating phantom threads for every backgrounded
+          // task on first paint would race with the real tool_start
+          // that arrives moments later.
           const threadId = ThreadStore.findThreadIdForToolCall(
             sessionId,
             topic,

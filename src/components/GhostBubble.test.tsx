@@ -417,7 +417,6 @@ describe("GhostBubble × ThreadStore [flag invariant]", () => {
     ThreadStore.registerPendingClientMessageId(
       SESSION,
       "cmid-ghost",
-      "cmid-ghost",
     );
     const onSettle = vi.fn();
     const harness = mount(

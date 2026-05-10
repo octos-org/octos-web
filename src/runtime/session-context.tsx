@@ -15,7 +15,7 @@ import {
 } from "@/api/sessions";
 import type { BackgroundTaskInfo, SessionInfo, MessageInfo } from "@/api/types";
 import { nextTopicForCommand } from "@/lib/slash-commands";
-import * as MessageStore from "@/store/message-store";
+import * as ThreadStore from "@/store/thread-store";
 import * as TaskStore from "@/store/task-store";
 import * as FileStore from "@/store/file-store";
 
@@ -388,7 +388,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setServerTaskActiveBySession((prev) =>
       setSessionActiveFlag(prev, sessionId, false),
     );
-    MessageStore.clearMessages(sessionId);
+    ThreadStore.clearSession(sessionId);
     TaskStore.clearTasks(sessionId);
     FileStore.clearSessionFiles(sessionId);
     setSessions((prev) => prev.filter((s) => s.id !== sessionId));
@@ -410,7 +410,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       getMessages(saved, 500, 0, undefined, restoredTopic).then((msgs) => {
         if (msgs.length > 0) {
           setInitialMessages(msgs);
-          MessageStore.replaceHistory(saved, msgs, restoredTopic);
+          ThreadStore.replayHistory(saved, msgs, restoredTopic);
         }
       }).catch(() => {});
       getSessionTasks(saved, restoredTopic)
@@ -605,7 +605,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         getSessionTasks(id, topic).catch(() => [] as BackgroundTaskInfo[]),
       ]);
       if (switchRequestRef.current !== requestId) return; // stale
-      MessageStore.replaceHistory(id, messages, topic);
+      ThreadStore.replayHistory(id, messages, topic);
       setInitialMessages(messages);
       setServerTaskActive(id, tasks.some(isTaskActive));
       setActiveHistoryTopic(topic);
