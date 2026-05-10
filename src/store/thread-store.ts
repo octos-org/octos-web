@@ -444,6 +444,31 @@ function shimMapToolEndStatus(
 // Public API — mutators
 // ---------------------------------------------------------------------------
 
+/**
+ * M9-γ-4: Register a pending `client_message_id` for a thread WITHOUT
+ * mutating the legacy reducer. Used by the `<GhostBubble>` overlay so
+ * the very first dual-write envelope on this thread (e.g. an
+ * `assistant_delta` from the server's reflected response) carries the
+ * cmid — which the projection captures into `UserView.client_message_id`
+ * and the GhostBubble matches on to settle.
+ *
+ * The legacy reducer is intentionally untouched: under projection_v1,
+ * the optimistic user bubble is a pure visual overlay; the durable user
+ * row only enters `getThreads()` if/when an orphan thread is opened by
+ * a later assistant token (`appendAssistantToken` calls
+ * `ensureOrphanThread`). This guarantees the acceptance criterion:
+ * "ThreadStore must NOT have a `<GhostBubble>` row when flag ON."
+ */
+export function registerPendingClientMessageId(
+  sessionId: string,
+  threadId: string,
+  clientMessageId: string,
+  topic?: string,
+): void {
+  const key = storeKey(sessionId, topic);
+  setPendingClientMessageId(key, threadId, clientMessageId);
+}
+
 export interface AddUserMessageOptions {
   text: string;
   clientMessageId: string;

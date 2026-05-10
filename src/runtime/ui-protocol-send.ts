@@ -160,12 +160,27 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
     path,
     caption: "",
   }));
-  ThreadStore.addUserMessage(pinnedOpts.sessionId, {
-    text: pinnedOpts.text,
-    clientMessageId,
-    files: localFiles,
-    topic: pinnedOpts.historyTopic,
-  });
+  // M9-γ-4: Composer renders a `<GhostBubble>` overlay under
+  // projection_v1; it pre-registers the cmid so the first server-side
+  // envelope on this thread carries it (the projection captures it
+  // into `UserView.client_message_id` so the ghost can match-and-unmount).
+  // Skip the legacy reducer mutation so the ThreadStore stays free of an
+  // optimistic row.
+  if (!pinnedOpts.skipOptimisticUserMessage) {
+    ThreadStore.addUserMessage(pinnedOpts.sessionId, {
+      text: pinnedOpts.text,
+      clientMessageId,
+      files: localFiles,
+      topic: pinnedOpts.historyTopic,
+    });
+  } else {
+    ThreadStore.registerPendingClientMessageId(
+      pinnedOpts.sessionId,
+      clientMessageId,
+      clientMessageId,
+      pinnedOpts.historyTopic,
+    );
+  }
   pinnedOpts.onSessionActive?.(pinnedOpts.text);
 
   // The signal we hand to `sendMessageV1`. The lifecycle handler resolves

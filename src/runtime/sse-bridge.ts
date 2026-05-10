@@ -273,6 +273,14 @@ export interface SendOptions {
   onSessionActive?: (firstMessage: string) => void;
   /** Called when the assistant response is complete. */
   onComplete?: () => void;
+  /**
+   * M9-γ-4: when true, skip the optimistic user-message mirror into
+   * ThreadStore. The Composer mounts a `<GhostBubble>` overlay instead
+   * (purely visual, lives outside the store). The legacy `MessageStore`
+   * mirror still runs so flat-list renderers / history persistence keep
+   * working. Defaults to false (legacy behaviour).
+   */
+  skipOptimisticUserMessage?: boolean;
 }
 
 /**
@@ -313,12 +321,27 @@ export function sendMessage(opts: SendOptions): void {
   // 1b. Mirror the user message into the thread store when the feature flag
   //     is on — keeps both stores populated so the renderer can flag-switch
   //     without losing state.
-  ThreadStore.addUserMessage(sessionId, {
-    text,
-    clientMessageId,
-    files: localFiles,
-    topic: historyTopic,
-  });
+  //
+  //     M9-γ-4: under projection_v1 the Composer renders a `<GhostBubble>`
+  //     overlay instead of mutating the store. The caller signals this via
+  //     `skipOptimisticUserMessage` so we keep ThreadStore untouched here
+  //     and let the orphan-thread path open a bucket if/when assistant
+  //     content streams back.
+  if (!opts.skipOptimisticUserMessage) {
+    ThreadStore.addUserMessage(sessionId, {
+      text,
+      clientMessageId,
+      files: localFiles,
+      topic: historyTopic,
+    });
+  } else {
+    ThreadStore.registerPendingClientMessageId(
+      sessionId,
+      clientMessageId,
+      clientMessageId,
+      historyTopic,
+    );
+  }
 
   // Notify sidebar
   onSessionActive?.(text);
