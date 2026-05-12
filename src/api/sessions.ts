@@ -13,6 +13,10 @@ import {
 } from "@/runtime/ui-protocol-bridge";
 import { getAnyConnectedBridge } from "@/runtime/ui-protocol-runtime";
 import { isAuxRestToWsV1Enabled } from "@/lib/feature-flags";
+import {
+  MESSAGES_PAGE_LIMIT_CAP,
+  MESSAGES_PAGE_OFFSET_CAP,
+} from "@/lib/constants";
 
 export interface SessionFileInfo {
   filename: string;
@@ -92,6 +96,10 @@ function translateBridgeError(err: unknown): Error {
   // string). Codex review M9-β-2 prefers a single `Error` subclass at
   // the wrapper boundary so panels can drop both code paths into one
   // `try { ... } catch (e: any) { setError(e.message) }`.
+  //
+  // Phase D-2 intentionally does NOT trigger the REST 401 reaper on WS
+  // auth failures. See ADR PR #910 — Phase D-4 narrows the reaper scope,
+  // so cross-transport coupling here is undesirable.
   if (err instanceof BridgeRpcError) {
     return new Error(err.message);
   }
@@ -138,6 +146,24 @@ export async function listSessions(): Promise<SessionInfo[]> {
 // session/messages_page — `GET /api/sessions/:id/messages`
 // ---------------------------------------------------------------------------
 
+// Clamp pagination args to the same caps the server applies in both
+// transports, BEFORE branching, so REST-synthesized pagination metadata
+// matches the WS-returned metadata when callers exceed the caps.
+function clampPagination(limit: number, offset: number): {
+  limit: number;
+  offset: number;
+} {
+  const clampedLimit = Math.max(
+    0,
+    Math.min(MESSAGES_PAGE_LIMIT_CAP, Math.floor(limit)),
+  );
+  const clampedOffset = Math.max(
+    0,
+    Math.min(MESSAGES_PAGE_OFFSET_CAP, Math.floor(offset)),
+  );
+  return { limit: clampedLimit, offset: clampedOffset };
+}
+
 export async function getMessages(
   sessionId: string,
   limit = 500,
@@ -145,11 +171,15 @@ export async function getMessages(
   sinceSeq?: number,
   topic?: string,
 ): Promise<MessageInfo[]> {
+  const { limit: clampedLimit, offset: clampedOffset } = clampPagination(
+    limit,
+    offset,
+  );
   if (shouldUseWs()) {
     const params: Record<string, unknown> = {
       session_id: sessionId,
-      limit,
-      offset,
+      limit: clampedLimit,
+      offset: clampedOffset,
     };
     if (
       typeof sinceSeq === "number" &&
@@ -168,8 +198,8 @@ export async function getMessages(
   }
 
   const params = new URLSearchParams({
-    limit: String(limit),
-    offset: String(offset),
+    limit: String(clampedLimit),
+    offset: String(clampedOffset),
     source: "full",
   });
   if (
@@ -201,11 +231,18 @@ export async function getMessagesPage(
   sinceSeq?: number,
   topic?: string,
 ): Promise<SessionMessagesPage> {
+  // Clamp once, up-front, so both transports see the same effective
+  // limit/offset and the REST fallback's synthesized `next_offset` /
+  // `has_more` match the WS server's clamped metadata.
+  const { limit: clampedLimit, offset: clampedOffset } = clampPagination(
+    limit,
+    offset,
+  );
   if (shouldUseWs()) {
     const params: Record<string, unknown> = {
       session_id: sessionId,
-      limit,
-      offset,
+      limit: clampedLimit,
+      offset: clampedOffset,
     };
     if (
       typeof sinceSeq === "number" &&
@@ -225,12 +262,21 @@ export async function getMessagesPage(
   // REST fallback: synthesize the pagination metadata from the array
   // shape the existing handler returns. has_more is true iff a full
   // page was returned (matches the server-side dispatcher in PR #912).
-  const messages = await getMessages(sessionId, limit, offset, sinceSeq, topic);
-  const hasMore = messages.length === limit;
+  // Use the clamped values so the metadata is consistent across transports.
+  const messages = await getMessages(
+    sessionId,
+    clampedLimit,
+    clampedOffset,
+    sinceSeq,
+    topic,
+  );
+  const hasMore = messages.length === clampedLimit;
   return {
     messages,
     has_more: hasMore,
-    next_offset: hasMore ? offset + limit : offset + messages.length,
+    next_offset: hasMore
+      ? clampedOffset + clampedLimit
+      : clampedOffset + messages.length,
   };
 }
 

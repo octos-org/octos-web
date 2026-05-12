@@ -330,6 +330,52 @@ describe("getMessagesPage", () => {
     expect(page.next_offset).toBe(100);
     expect(page.messages.length).toBe(100);
   });
+
+  // M12 Phase D-2 codex review (MEDIUM 1): the WS transport clamps
+  // limit→500 and offset→10000 server-side. The REST fallback used to
+  // synthesize `next_offset` from the caller's raw args, so
+  // `getMessagesPage(id, 1000)` reported different metadata across
+  // transports. The wrapper now clamps once up-front so the metadata
+  // is identical regardless of transport.
+  it("clamps over-limit and over-offset args to the same caps on both transports", async () => {
+    // First leg: flag OFF, REST path with limit=1000 (clamped to 500),
+    // offset=20000 (clamped to 10000). REST returns 500 rows → has_more.
+    const oversized = Array.from({ length: 500 }, (_, i) => ({
+      role: "user" as const,
+      content: `m${i}`,
+      timestamp: "2026-05-12T00:00:00Z",
+    }));
+    mockFetchOnceJson(oversized);
+    const restPage = await getMessagesPage("sess-clamp", 1000, 20000);
+    // REST URL should embed the CLAMPED values, not the raw ones.
+    expect(fetchCalls[0].url).toContain("limit=500");
+    expect(fetchCalls[0].url).toContain("offset=10000");
+    expect(restPage.has_more).toBe(true);
+    expect(restPage.next_offset).toBe(10500); // 10000 + 500
+
+    // Second leg: flag ON, WS path with the same args. The bridge must
+    // see the clamped values, not the raw ones. The server returns
+    // metadata derived from clamped values too.
+    resetFetchCalls();
+    __setAuxRestToWsV1ForTests(true);
+    const bridge = makeMockBridge();
+    bridge.setReply(METHODS.SESSION_MESSAGES_PAGE, {
+      messages: [],
+      has_more: true,
+      next_offset: 10500,
+    });
+    __setActiveBridgeForTest("any", bridge);
+
+    const wsPage = await getMessagesPage("sess-clamp", 1000, 20000);
+    expect(bridge.calls[0].params).toEqual({
+      session_id: "sess-clamp",
+      limit: 500,
+      offset: 10000,
+    });
+    // Both transports report the same next_offset for the same caller args.
+    expect(wsPage.next_offset).toBe(restPage.next_offset);
+    expect(wsPage.has_more).toBe(restPage.has_more);
+  });
 });
 
 describe("getSessionStatus [session/status.get]", () => {
