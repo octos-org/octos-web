@@ -15,6 +15,10 @@
 
 import { getToken, getSelectedProfileId } from "@/api/client";
 import { TOKEN_KEY, ADMIN_TOKEN_KEY } from "@/lib/constants";
+import {
+  AUX_REST_TO_WS_V1_FEATURE,
+  isAuxRestToWsV1Enabled,
+} from "@/lib/feature-flags";
 import type {
   ApprovalDecision,
   ApprovalRequestedEvent,
@@ -86,6 +90,23 @@ export const METHODS = {
   DIFF_PREVIEW_GET: "diff/preview/get",
   TURN_STATE_GET: "turn/state/get",
   PING: "ping",
+  // M12 Phase D-1 (octos PR #912): auxiliary.rest_to_ws.v1 methods.
+  // Each mirrors the JSON body of the corresponding REST handler so
+  // the WS path can stand in 1:1 for the REST callsite when the
+  // client-side `auxiliary_rest_to_ws_v1` feature flag is on.
+  SESSION_LIST: "session/list",
+  SESSION_SNAPSHOT: "session/snapshot",
+  SESSION_MESSAGES_PAGE: "session/messages_page",
+  SESSION_STATUS_GET: "session/status.get",
+  SESSION_FILES_LIST: "session/files.list",
+  SESSION_TASKS_LIST: "session/tasks.list",
+  SESSION_WORKSPACE_GET: "session/workspace.get",
+  SESSION_TITLE_SET: "session/title.set",
+  SESSION_DELETE: "session/delete",
+  SYSTEM_STATUS_GET: "system/status.get",
+  CONTENT_LIST: "content/list",
+  CONTENT_DELETE: "content/delete",
+  CONTENT_BULK_DELETE: "content/bulk_delete",
   // server → client
   MESSAGE_DELTA: "message/delta",
   MESSAGE_PERSISTED: "message/persisted",
@@ -99,6 +120,14 @@ export const METHODS = {
   WARNING: "warning",
 } as const;
 
+/**
+ * Static base capability list — always negotiated.
+ *
+ * The full negotiated list at runtime is computed by
+ * `getUiProtocolFeatures()`, which appends opt-in capabilities
+ * controlled by client-side feature flags (`auxiliary.rest_to_ws.v1`
+ * under `octos_auxiliary_rest_to_ws_v1`).
+ */
 export const UI_PROTOCOL_FEATURES = [
   "approval.typed.v1",
   "pane.snapshots.v1",
@@ -127,6 +156,28 @@ export const UI_PROTOCOL_FEATURES = [
   // is what eliminates the N+1 bubble render after page reload.
   "state.session_hydrate.v1",
 ] as const;
+
+/**
+ * Resolve the live `ui_feature` capability list to send on the WS open
+ * query. Adds opt-in capabilities gated on client-side feature flags.
+ *
+ * M12 Phase D-2 (octos PR #912 / octos-web #103): when the
+ * `octos_auxiliary_rest_to_ws_v1` localStorage flag is on, append
+ * `auxiliary.rest_to_ws.v1`. Without that capability in the WS query,
+ * the server advertises the 13 aux methods in `SessionOpened.capabilities`
+ * but the dispatcher rejects every call (octos #913 — server polish
+ * follow-up). The client must negotiate properly regardless of that
+ * server bug, so the flag explicitly controls inclusion here.
+ *
+ * Tests can override the full list via `BridgeConfig.features`.
+ */
+export function getUiProtocolFeatures(): readonly string[] {
+  const base: string[] = [...UI_PROTOCOL_FEATURES];
+  if (isAuxRestToWsV1Enabled()) {
+    base.push(AUX_REST_TO_WS_V1_FEATURE);
+  }
+  return base;
+}
 
 const JSON_RPC_VERSION = "2.0";
 
@@ -206,6 +257,27 @@ export interface UiProtocolBridge {
   hydrateSession(
     include?: ReadonlyArray<"messages" | "threads" | "turns" | "pending_approvals">,
   ): Promise<SessionHydrateResult | null>;
+
+  /**
+   * Generic JSON-RPC request escape hatch.
+   *
+   * M12 Phase D-2 (octos-web #103): used by the auxiliary REST-to-WS
+   * wrappers in `src/api/sessions.ts` and `src/api/content.ts` for the
+   * 13 methods that share the same WS connection as the chat bridge.
+   * The dedicated typed methods above (`sendTurn`, `interruptTurn`, ...)
+   * remain the only entry points for the chat lifecycle; this escape
+   * hatch is intentionally untyped so each wrapper can own its own
+   * request/response DTOs without bloating the bridge surface.
+   *
+   * Rejects with `BridgeRpcError` when the server returns a JSON-RPC
+   * error envelope, with `BridgeTimeoutError` if the response exceeds
+   * the bridge's per-RPC timeout, and with `BridgeStoppedError` when
+   * the connection is closed or the bridge has given up reconnecting.
+   * Callers MUST translate those into their existing REST error shape
+   * so the flag-on / flag-off code paths surface the same error
+   * envelope to the rest of the UI.
+   */
+  callMethod<T = unknown>(method: string, params?: unknown): Promise<T>;
 
   onMessageDelta(handler: (e: MessageDeltaEvent) => void): () => void;
   onMessagePersisted(handler: (e: MessagePersistedEvent) => void): () => void;
@@ -848,7 +920,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
         cfg.clearTimeout ??
         ((handle) => globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>)),
       now: cfg.now ?? (() => Date.now()),
-      features: cfg.features ?? UI_PROTOCOL_FEATURES,
+      features: cfg.features ?? getUiProtocolFeatures(),
       rpcTimeoutMs: cfg.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS,
       sendQueueLimit: cfg.sendQueueLimit ?? DEFAULT_SEND_QUEUE_LIMIT,
       maxReconnectAttempts:
@@ -1002,6 +1074,15 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       });
       return null;
     }
+  }
+
+  callMethod<T = unknown>(method: string, params?: unknown): Promise<T> {
+    if (!isString(method)) {
+      return Promise.reject(
+        new Error("ui-protocol-bridge: callMethod requires method"),
+      );
+    }
+    return this.request<T>(method, params ?? null);
   }
 
   onMessageDelta(handler: Listener<MessageDeltaEvent>): () => void {

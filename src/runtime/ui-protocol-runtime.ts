@@ -195,6 +195,26 @@ export function getActiveBridge(
   return active.bridge;
 }
 
+/**
+ * Return the live bridge regardless of session scope, but only when it
+ * has reached `"connected"`.
+ *
+ * M12 Phase D-2 (octos-web #103): the auxiliary REST-to-WS wrappers in
+ * `src/api/sessions.ts` / `src/api/content.ts` are not session-scoped —
+ * `session/list`, `system/status.get`, `content/list`, etc. address the
+ * whole tenant. They reuse whatever bridge happens to be live (started
+ * by an open chat session). When no bridge is connected, the wrappers
+ * fall back to the existing REST helpers — exactly the behavior the
+ * flag-off path uses. The pre-`connected` gate matches the chat send
+ * path's policy: a bridge that has not yet completed `session/open` is
+ * not yet usable.
+ */
+export function getAnyConnectedBridge(): UiProtocolBridge | null {
+  if (!active) return null;
+  if (active.connectionState !== "connected") return null;
+  return active.bridge;
+}
+
 /** Stop the currently-active bridge and detach the router. Idempotent.
  *  Bumps the generation counter so any in-flight `startBridgeForSession`
  *  awaiting a handshake recognizes itself as superseded and stops its

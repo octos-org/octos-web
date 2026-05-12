@@ -662,6 +662,81 @@ describe("connection lifecycle", () => {
     expect(ws.protocols).toBeUndefined();
   });
 
+  it("auxiliary.rest_to_ws.v1 — appended to ui_feature ONLY when flag is ON", async () => {
+    // Import the flag helper inside the test so we don't pollute the
+    // module-scope cache for other tests in this file.
+    const {
+      __setAuxRestToWsV1ForTests,
+      AUX_REST_TO_WS_V1_FEATURE,
+    } = await import("@/lib/feature-flags");
+
+    try {
+      // Flag OFF (default) — the aux capability is NOT advertised.
+      __setAuxRestToWsV1ForTests(false);
+      let bridge = createUiProtocolBridge(makeBridgeOpts());
+      void bridge.start({ sessionId: "sess-a" });
+      await Promise.resolve();
+      let ws = lastInstance();
+      expect(ws.url.includes(`ui_feature=${AUX_REST_TO_WS_V1_FEATURE}`)).toBe(
+        false,
+      );
+      await bridge.stop();
+
+      // Flag ON — the aux capability MUST be in the negotiated list, or
+      // the M12 Phase D-1 dispatcher rejects every aux RPC even though
+      // `SessionOpened.capabilities` advertises them (octos #913).
+      __setAuxRestToWsV1ForTests(true);
+      bridge = createUiProtocolBridge(makeBridgeOpts());
+      void bridge.start({ sessionId: "sess-b" });
+      await Promise.resolve();
+      ws = lastInstance();
+      expect(ws.url).toContain(`ui_feature=${AUX_REST_TO_WS_V1_FEATURE}`);
+      // Exact-count assertion: the aux feature MUST appear once, never
+      // duplicated. A double `push` in `getUiProtocolFeatures()` would
+      // pass the `toContain` check above but break the server-side
+      // capability set comparison.
+      const auxOccurrences = ws.url.split(
+        `ui_feature=${AUX_REST_TO_WS_V1_FEATURE}`,
+      ).length - 1;
+      expect(auxOccurrences).toBe(1);
+      await bridge.stop();
+    } finally {
+      __setAuxRestToWsV1ForTests(false);
+    }
+  });
+
+  it("callMethod() forwards arbitrary JSON-RPC over the open socket", async () => {
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    void bridge.start({ sessionId: "sess-c" });
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(ws, METHODS.SESSION_OPEN);
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      result: { opened: { session_id: "sess-c" } },
+    });
+    await Promise.resolve();
+
+    const pending = bridge.callMethod<{ sessions: unknown[] }>(
+      METHODS.SESSION_LIST,
+      {},
+    );
+    // Drain microtasks so the queued frame lands in `ws.sent`.
+    await Promise.resolve();
+    const sent = findRequest(ws, METHODS.SESSION_LIST);
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: sent.id,
+      result: { sessions: [{ id: "s-9" }] },
+    });
+    const out = await pending;
+    expect(out.sessions).toEqual([{ id: "s-9" }]);
+    await bridge.stop();
+  });
+
   it("session/open params include profile_id when provided to start()", async () => {
     const bridge = createUiProtocolBridge(makeBridgeOpts());
     void bridge.start({ sessionId: "sess-1", profileId: "prof-y" });

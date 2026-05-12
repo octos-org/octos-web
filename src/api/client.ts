@@ -127,6 +127,12 @@ export async function request<T>(
 
   if (!resp.ok) {
     // Auto-logout on auth failure (expired/invalid token)
+    //
+    // Phase D-2 intentionally does NOT trigger this REST 401 reaper from
+    // WS auth failures (see `translateBridgeError` in `sessions.ts` /
+    // `content.ts`). See ADR PR #910 — Phase D-4 narrows this reaper to
+    // `/api/auth/*` only, so cross-transport coupling here is
+    // undesirable until that lands.
     if (resp.status === 401 || resp.status === 403) {
       clearToken();
       // Redirect to login unless already there
