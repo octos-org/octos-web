@@ -126,14 +126,36 @@ export async function request<T>(
   });
 
   if (!resp.ok) {
-    // Auto-logout on auth failure (expired/invalid token)
+    // ───── Auth-flow-only 401/403 reaper (M12 Phase D-4) ─────
     //
-    // Phase D-2 intentionally does NOT trigger this REST 401 reaper from
-    // WS auth failures (see `translateBridgeError` in `sessions.ts` /
-    // `content.ts`). See ADR PR #910 — Phase D-4 narrows this reaper to
-    // `/api/auth/*` only, so cross-transport coupling here is
-    // undesirable until that lands.
-    if (resp.status === 401 || resp.status === 403) {
+    // Auto-logout on auth failure (expired/invalid token), but ONLY
+    // when the failing path is the auth flow itself (`/api/auth/*`).
+    //
+    // Pre-D-4 this reaper fired on EVERY 401/403 from EVERY REST call,
+    // which meant a 401 on an unrelated REST request would clear the
+    // user's tokens and hard-redirect them to `/login`. With the data
+    // plane on WS UI Protocol v1 (post-D-4 default-ON cutover),
+    // auxiliary REST calls are minimal — only blob/file ops and the
+    // auth flow itself. A 401 from a blob upload (e.g. expired session
+    // mid-stream) should propagate as a normal error so the upload UI
+    // can render a contextual retry, not nuke the user's tokens and
+    // boot them to /login.
+    //
+    // The mini5 user-incident motivating ADR PR octos-org/octos#910
+    // (a stale REST callsite on `/api/sessions/*` 401'd after a
+    // background token refresh, triggering this reaper and ejecting
+    // the user mid-rename) is the structural failure mode this
+    // tightening eliminates. See `docs/adr/m12-phase-d-auxiliary-rest-to-ws.md`
+    // for the full motivation, and `src/api/sessions.ts` /
+    // `src/api/content.ts` (`translateBridgeError`) for the WS-side
+    // counterpart that already declines to trigger this reaper.
+    //
+    // Paths under `/api/auth/*` (e.g. `/api/auth/me`, `/api/auth/status`)
+    // still trigger the reaper — a 401 there means the session token
+    // has truly expired, which is exactly the case the redirect was
+    // designed for.
+    const isAuthPath = path.startsWith("/api/auth/");
+    if ((resp.status === 401 || resp.status === 403) && isAuthPath) {
       clearToken();
       // Redirect to login unless already there
       if (!window.location.pathname.endsWith("/login")) {

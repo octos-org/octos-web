@@ -27,6 +27,7 @@ import {
 } from "vitest";
 
 import {
+  __clearAuxRestToWsV1ForTests,
   __setAuxRestToWsV1ForTests,
   isAuxRestToWsV1Enabled,
 } from "@/lib/feature-flags";
@@ -203,8 +204,9 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("auxiliary_rest_to_ws_v1 feature flag", () => {
-  it("defaults OFF", () => {
-    expect(isAuxRestToWsV1Enabled()).toBe(false);
+  it("defaults ON when localStorage key is unset (Phase D-4 cutover)", () => {
+    __clearAuxRestToWsV1ForTests();
+    expect(isAuxRestToWsV1Enabled()).toBe(true);
   });
 
   it("reads `1` from localStorage as ON", () => {
@@ -212,11 +214,56 @@ describe("auxiliary_rest_to_ws_v1 feature flag", () => {
     expect(isAuxRestToWsV1Enabled()).toBe(true);
   });
 
-  it("returns to OFF after the test helper resets it", () => {
+  it("explicit `0` opts out (emergency-rollback escape hatch)", () => {
     __setAuxRestToWsV1ForTests(true);
     expect(isAuxRestToWsV1Enabled()).toBe(true);
     __setAuxRestToWsV1ForTests(false);
     expect(isAuxRestToWsV1Enabled()).toBe(false);
+  });
+
+  it("explicit `false` (string) also opts out", () => {
+    globalThis.localStorage?.setItem(
+      "octos_auxiliary_rest_to_ws_v1",
+      "false",
+    );
+    __clearAuxRestToWsV1ForTests();
+    // Re-set after clear so the read sees "false"
+    globalThis.localStorage?.setItem(
+      "octos_auxiliary_rest_to_ws_v1",
+      "false",
+    );
+    expect(isAuxRestToWsV1Enabled()).toBe(false);
+  });
+
+  it("flag-OFF wrapper routing: explicit opt-out routes through REST", async () => {
+    __setAuxRestToWsV1ForTests(false);
+    mockFetchOnceJson([{ id: "s-rest", message_count: 0 }]);
+    const bridge = makeMockBridge();
+    bridge.setReply(METHODS.SESSION_LIST, {
+      sessions: [{ id: "should-not-see" }],
+    });
+    __setActiveBridgeForTest("any", bridge);
+
+    const out = await listSessions();
+    // REST hit, bridge untouched.
+    expect(fetchCalls.length).toBe(1);
+    expect(bridge.calls.length).toBe(0);
+    expect(out).toEqual([{ id: "s-rest", message_count: 0 }]);
+  });
+
+  it("default-ON wrapper routing: unset key + connected bridge → WS path", async () => {
+    __clearAuxRestToWsV1ForTests();
+    const bridge = makeMockBridge();
+    bridge.setReply(METHODS.SESSION_LIST, {
+      sessions: [{ id: "s-ws", message_count: 7 }],
+    });
+    __setActiveBridgeForTest("any", bridge);
+
+    const out = await listSessions();
+    // Bridge hit, no REST.
+    expect(bridge.calls.length).toBe(1);
+    expect(fetchCalls.length).toBe(0);
+    expect(out).toEqual([{ id: "s-ws", message_count: 7 }]);
   });
 });
 
