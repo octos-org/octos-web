@@ -253,6 +253,29 @@ describe("client.request — 401/403 on non-auth paths does NOT trigger reaper",
     expect(hrefWrites.length).toBe(0);
   });
 
+  it("401 from /api/admin/* → no reaper (admin endpoints are NOT auth flow)", async () => {
+    // Documents the boundary intent: the reaper fires for `/api/auth/*`
+    // ONLY. Admin endpoints, while privileged, are not the auth flow
+    // and a 401 on one should propagate as a normal error so admin UI
+    // can surface a contextual permissions message rather than nuking
+    // the session and booting the admin to /login.
+    mockFetchStatus(401, "admin scope required");
+
+    let caught: unknown;
+    try {
+      await request("/api/admin/users");
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain("admin scope required");
+
+    expect(localStorage.getItem(TOKEN_KEY)).toBe("session-token");
+    expect(localStorage.getItem(ADMIN_TOKEN_KEY)).toBe("admin-token");
+    expect(hrefWrites.length).toBe(0);
+  });
+
   it("500 from /api/auth/me does NOT trigger reaper (only 401/403 do)", async () => {
     mockFetchStatus(500, "server error");
 
