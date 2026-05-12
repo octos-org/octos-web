@@ -59,6 +59,8 @@ export async function loadContent(filters: ContentFilters = {}) {
     // (WS: `filters.session_id`) and the legacy path-pattern post-filter
     // (REST), so callers no longer need to strip + re-filter. Keep
     // `loadContent` transport-agnostic.
+    // Note: REST path filters within a single page only — see
+    // octos-web#105 for full pagination parity follow-up.
     const result = await fetchContent(filters);
     entries = result.entries;
     total = result.total;
