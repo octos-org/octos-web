@@ -767,6 +767,137 @@ describe("bulkDeleteContent [content/bulk_delete]", () => {
     expect(bridge.calls[0].method).toBe(METHODS.CONTENT_BULK_DELETE);
     expect(bridge.calls[0].params).toEqual({ ids: ["c-1", "c-2"] });
   });
+
+  // M12 Phase D-2 codex review (MEDIUM 3): the WS dispatcher caps
+  // `content/bulk_delete` at 256 IDs server-side. The REST endpoint
+  // has no equivalent cap, so a 300-ID delete used to succeed with
+  // the flag OFF and fail with the flag ON. The wrapper now chunks
+  // client-side to BATCH_SIZE on both transports so 300 IDs succeed
+  // regardless of flag state.
+  it("chunks 300 IDs into 2 batches (256 + 44) on the WS transport", async () => {
+    __setAuxRestToWsV1ForTests(true);
+    const bridge = makeMockBridge();
+    bridge.setReply(METHODS.CONTENT_BULK_DELETE, { deleted: 256 });
+    __setActiveBridgeForTest("any", bridge);
+
+    const ids = Array.from({ length: 300 }, (_, i) => `c-${i}`);
+    const out = await bulkDeleteContent(ids);
+
+    // Two chunks: 256 + 44.
+    expect(bridge.calls.length).toBe(2);
+    expect((bridge.calls[0].params as { ids: string[] }).ids.length).toBe(256);
+    expect((bridge.calls[1].params as { ids: string[] }).ids.length).toBe(44);
+    // First chunk's first ID is the array's first ID.
+    expect((bridge.calls[0].params as { ids: string[] }).ids[0]).toBe("c-0");
+    // Second chunk starts at index 256.
+    expect((bridge.calls[1].params as { ids: string[] }).ids[0]).toBe("c-256");
+    // Aggregated count tracks per-chunk replies.
+    expect(out.deleted_count).toBe(512); // both replies returned `deleted: 256`
+    expect(out.failed_ids).toEqual([]);
+  });
+
+  it("chunks 300 IDs into 2 batches on the REST transport too", async () => {
+    // Default fetchMock returns 200 OK for every call. The wrapper
+    // counts each chunk's length when no `deleted` body is returned.
+    const ids = Array.from({ length: 300 }, (_, i) => `c-${i}`);
+    const out = await bulkDeleteContent(ids);
+
+    // Two REST POSTs.
+    expect(fetchCalls.length).toBe(2);
+    const body1 = JSON.parse(fetchCalls[0].init?.body as string);
+    const body2 = JSON.parse(fetchCalls[1].init?.body as string);
+    expect(body1.ids.length).toBe(256);
+    expect(body2.ids.length).toBe(44);
+    expect(out.deleted_count).toBe(300);
+    expect(out.failed_ids).toEqual([]);
+  });
+
+  it("handles edge sizes 0, 1, 256, 257 correctly", async () => {
+    // 0 IDs → no transport call.
+    const empty = await bulkDeleteContent([]);
+    expect(fetchCalls.length).toBe(0);
+    expect(empty).toEqual({ deleted_count: 0, failed_ids: [] });
+
+    // 1 ID → exactly one chunk of 1.
+    const one = await bulkDeleteContent(["c-only"]);
+    expect(fetchCalls.length).toBe(1);
+    expect(JSON.parse(fetchCalls[0].init?.body as string).ids).toEqual([
+      "c-only",
+    ]);
+    expect(one.deleted_count).toBe(1);
+
+    // 256 IDs → exactly one chunk.
+    resetFetchCalls();
+    await bulkDeleteContent(Array.from({ length: 256 }, (_, i) => `c-${i}`));
+    expect(fetchCalls.length).toBe(1);
+    expect(JSON.parse(fetchCalls[0].init?.body as string).ids.length).toBe(256);
+
+    // 257 IDs → two chunks (256 + 1).
+    resetFetchCalls();
+    await bulkDeleteContent(Array.from({ length: 257 }, (_, i) => `c-${i}`));
+    expect(fetchCalls.length).toBe(2);
+    expect(JSON.parse(fetchCalls[0].init?.body as string).ids.length).toBe(256);
+    expect(JSON.parse(fetchCalls[1].init?.body as string).ids.length).toBe(1);
+  });
+
+  it("returns aggregated failed_ids when a chunk fails (REST)", async () => {
+    // First chunk: 256 IDs succeed (default fetchMock returns 200).
+    // Second chunk: forced 500. The wrapper aggregates failed_ids
+    // instead of throwing so callers can see partial-success.
+    currentFetchMock?.mockImplementationOnce(
+      async (url: string, init?: RequestInit) => {
+        currentCalls?.push({ url, init });
+        return new Response("{}", {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    );
+    currentFetchMock?.mockImplementationOnce(
+      async (url: string, init?: RequestInit) => {
+        currentCalls?.push({ url, init });
+        return new Response("server boom", { status: 500 });
+      },
+    );
+
+    const ids = Array.from({ length: 300 }, (_, i) => `c-${i}`);
+    const out = await bulkDeleteContent(ids);
+
+    // Chunk 1 (256 IDs) succeeded; chunk 2 (44 IDs) failed.
+    expect(out.deleted_count).toBe(256);
+    expect(out.failed_ids.length).toBe(44);
+    expect(out.failed_ids[0]).toBe("c-256");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature flag — mid-session flip is ignored (NIT 1)
+// ---------------------------------------------------------------------------
+describe("auxiliary_rest_to_ws_v1 mid-session flip semantics", () => {
+  it("flipping the flag mid-session does NOT change subsequent wrapper routing", async () => {
+    // Initial read latches the flag value to OFF.
+    expect(isAuxRestToWsV1Enabled()).toBe(false);
+
+    // Flip storage directly WITHOUT calling the test reset helper, so
+    // the cached value stays. This mirrors a user toggling the flag in
+    // localStorage from devtools mid-session.
+    globalThis.localStorage?.setItem("octos_auxiliary_rest_to_ws_v1", "1");
+
+    // Cached value still wins. (One-shot warn fires once and is then
+    // suppressed.)
+    expect(isAuxRestToWsV1Enabled()).toBe(false);
+
+    // Wrapper routing must follow the latched value — REST path, not WS.
+    mockFetchOnceJson([]);
+    const bridge = makeMockBridge();
+    bridge.setReply(METHODS.SESSION_LIST, { sessions: [{ id: "should-not-see" }] });
+    __setActiveBridgeForTest("any", bridge);
+    const out = await listSessions();
+    // Routed through REST because the cached flag is still OFF.
+    expect(fetchCalls.length).toBe(1);
+    expect(bridge.calls.length).toBe(0);
+    expect(out).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------

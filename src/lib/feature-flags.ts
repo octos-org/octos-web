@@ -23,11 +23,12 @@
 // `src/api/sessions.ts` / `src/api/content.ts` so the wire stays
 // byte-identical to a pre-D-2 build.
 //
-// The flag is read at every wrapper call (not cached at module init)
-// because Phase D-3 will flip individual UI panels through the wrapper
-// independently and may want to toggle the flag at runtime during
-// debugging. The cache-once pattern below still protects against a flip
-// in the middle of a single RPC.
+// Cached on first read; mid-session flips do not take effect until the
+// next page reload — matches `projection_v1` behavior. The cache-once
+// pattern protects against a flip in the middle of a single RPC and
+// against half-the-app-on / half-off routing within a page load. Phase
+// D-3 panels that want to toggle the flag at runtime must reload to
+// pick up the change (consistent with how `projection_v1` is flipped).
 
 /** localStorage key gating Phase D-2 WS wrappers. Production default
  *  is OFF; Phase D-4 will flip the default. Tests flip via

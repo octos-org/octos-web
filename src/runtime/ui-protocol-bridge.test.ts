@@ -691,6 +691,14 @@ describe("connection lifecycle", () => {
       await Promise.resolve();
       ws = lastInstance();
       expect(ws.url).toContain(`ui_feature=${AUX_REST_TO_WS_V1_FEATURE}`);
+      // Exact-count assertion: the aux feature MUST appear once, never
+      // duplicated. A double `push` in `getUiProtocolFeatures()` would
+      // pass the `toContain` check above but break the server-side
+      // capability set comparison.
+      const auxOccurrences = ws.url.split(
+        `ui_feature=${AUX_REST_TO_WS_V1_FEATURE}`,
+      ).length - 1;
+      expect(auxOccurrences).toBe(1);
       await bridge.stop();
     } finally {
       __setAuxRestToWsV1ForTests(false);
