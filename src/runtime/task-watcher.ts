@@ -1,14 +1,20 @@
 /**
  * Global task watcher — session/topic-scoped background monitor.
  *
- * Uses `/api/sessions/{id}/tasks` + incremental `/api/sessions/{id}/messages`
- * polling for task/result delivery. M9-α-5/α-6 (ADR PR #830 / audit
- * issue #845) deleted the SSE `/api/sessions/{id}/events/stream` stream
- * that previously served as the primary truth path; the WS bridge owns
- * live `task/updated`, `message/persisted`, and per-turn lifecycle
- * notifications now, so the polling fallback is sufficient for the
- * background-only signal this watcher needs (the foreground chat thread
- * never reaches this module).
+ * M12 Phase D-3: traffic goes through the Phase D-2 `getSessionTasks`
+ * and `getMessages` wrappers in src/api/sessions.ts. Both flip between
+ * the WS UI Protocol v1 methods (`session/tasks.list`,
+ * `session/messages_page`) and the legacy REST endpoints
+ * (`GET /api/sessions/:id/tasks`, `GET /api/sessions/:id/messages`)
+ * under the `auxiliary_rest_to_ws_v1` flag.
+ *
+ * M9-α-5/α-6 (ADR PR #830 / audit issue #845) deleted the SSE
+ * `/api/sessions/{id}/events/stream` stream that previously served as
+ * the primary truth path; the WS bridge owns live `task/updated`,
+ * `message/persisted`, and per-turn lifecycle notifications now, so
+ * the polling fallback is sufficient for the background-only signal
+ * this watcher needs (the foreground chat thread never reaches this
+ * module).
  */
 
 import {
