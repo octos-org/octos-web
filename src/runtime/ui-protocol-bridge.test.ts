@@ -671,7 +671,9 @@ describe("connection lifecycle", () => {
     } = await import("@/lib/feature-flags");
 
     try {
-      // Flag OFF (default) — the aux capability is NOT advertised.
+      // Flag explicit OFF (emergency-rollback escape hatch) — the aux
+      // capability is NOT advertised. (Phase D-4 flipped the default to
+      // ON; tests still cover the explicit-OFF leg.)
       __setAuxRestToWsV1ForTests(false);
       let bridge = createUiProtocolBridge(makeBridgeOpts());
       void bridge.start({ sessionId: "sess-a" });

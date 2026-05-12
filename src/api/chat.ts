@@ -1,4 +1,4 @@
-import { buildApiHeaders, clearToken } from "./client";
+import { buildApiHeaders } from "./client";
 import { API_BASE } from "@/lib/constants";
 import type { ChatResponse } from "./types";
 import { request } from "./client";
@@ -42,14 +42,14 @@ export async function uploadFiles(
   });
 
   if (!resp.ok) {
-    // Mirror the auto-logout behavior from request() on auth failure
-    if (resp.status === 401 || resp.status === 403) {
-      clearToken();
-      if (!window.location.pathname.endsWith("/login")) {
-        window.location.href =
-          "/login?redirect=" + encodeURIComponent(window.location.pathname);
-      }
-    }
+    // ───── M12 Phase D-4 follow-up: no upload-side 401/403 reaper ─────
+    //
+    // Pre-D-4 this branch mirrored `request()` and called
+    // `clearToken()` + hard-redirected to `/login` on a 401/403.
+    // That contradicted D-4's promise that blob/file ops propagate
+    // normal errors so the upload UI can render a contextual retry
+    // instead of nuking the user's tokens mid-flow. The reaper now
+    // lives ONLY in `src/api/client.ts` and ONLY for `/api/auth/*`.
     const text = await resp.text();
     throw new Error(text || `Upload failed: HTTP ${resp.status}`);
   }
