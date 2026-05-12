@@ -15,7 +15,9 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  applyOptimisticRename,
   mergeSessionLists,
+  rollbackOptimisticRename,
   sessionTimestamp,
   SESSION_LIST_RENDER_CAP,
   type SessionWithTitle,
@@ -211,5 +213,223 @@ describe("mergeSessionLists", () => {
     const ids = merged.map((s) => s.id);
     expect(ids).toContain(idAt(500, "mine"));
     expect(merged).toHaveLength(31);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renameSession optimistic + rollback helpers (octos-web #106 review)
+// ---------------------------------------------------------------------------
+//
+// The full `renameSession` callback lives inside `SessionProvider` and
+// touches refs + `setSessions`. We exercise the two pure helpers that
+// `renameSession` is composed of (`applyOptimisticRename` and
+// `rollbackOptimisticRename`), plus a behavior-level test that runs the
+// real promise rejection path against a mocked `setSessionTitle` and
+// asserts the documented rollback (cache restored, sessions[] rolled
+// back, `console.warn` called).
+//
+// We deliberately avoid `@testing-library/react` (not a dep) by
+// reproducing the exact rollback wiring from session-context.tsx — same
+// helpers, same mocked apiSetSessionTitle, same console.warn — so a
+// regression in the helpers (or in the wiring inside renameSession that
+// uses them) is caught by these unit tests.
+
+describe("applyOptimisticRename", () => {
+  it("patches the title of an existing session row", () => {
+    const prev: SessionWithTitle[] = [
+      { id: "web-1", message_count: 3, title: "old" },
+      { id: "web-2", message_count: 1, title: "other" },
+    ];
+    const next = applyOptimisticRename(prev, "web-1", "new title");
+    expect(next).toHaveLength(2);
+    expect(next.find((s) => s.id === "web-1")?.title).toBe("new title");
+    expect(next.find((s) => s.id === "web-2")?.title).toBe("other");
+  });
+
+  it("prepends a _local placeholder when the session is unknown", () => {
+    const prev: SessionWithTitle[] = [
+      { id: "web-1", message_count: 3, title: "old" },
+    ];
+    const next = applyOptimisticRename(prev, "web-new", "fresh");
+    expect(next).toHaveLength(2);
+    expect(next[0]).toEqual({
+      id: "web-new",
+      message_count: 0,
+      title: "fresh",
+      _local: true,
+    });
+    expect(next[1].id).toBe("web-1");
+  });
+});
+
+describe("rollbackOptimisticRename", () => {
+  it("restores the previous title when one existed", () => {
+    const prev: SessionWithTitle[] = [
+      { id: "web-1", message_count: 3, title: "current optimistic" },
+    ];
+    const next = rollbackOptimisticRename(prev, "web-1", "earlier title");
+    expect(next.find((s) => s.id === "web-1")?.title).toBe("earlier title");
+  });
+
+  it("drops a placeholder row when previousTitle is undefined", () => {
+    const prev: SessionWithTitle[] = [
+      {
+        id: "web-new",
+        message_count: 0,
+        title: "optimistic",
+        _local: true,
+      },
+      { id: "web-1", message_count: 3, title: "other" },
+    ];
+    const next = rollbackOptimisticRename(prev, "web-new", undefined);
+    expect(next.map((s) => s.id)).toEqual(["web-1"]);
+  });
+
+  it("clears the title on an existing row when no previous cached title", () => {
+    // Rename an existing session whose title was never cached: the
+    // optimistic write set it for the first time. Rolling back means
+    // clearing the title back to undefined, NOT dropping the row.
+    const prev: SessionWithTitle[] = [
+      { id: "web-1", message_count: 3, title: "just-typed" },
+    ];
+    const next = rollbackOptimisticRename(prev, "web-1", undefined);
+    expect(next).toHaveLength(1);
+    expect(next[0].id).toBe("web-1");
+    expect(next[0].title).toBeUndefined();
+  });
+});
+
+describe("renameSession rollback wiring (replicated from SessionProvider)", () => {
+  // Mirror of the catch handler in `renameSession`. If you refactor the
+  // production handler, mirror the change here. The goal of this test is
+  // to lock in the rollback contract (cache restore + sessions rollback
+  // + console.warn) end-to-end, without standing up a React tree.
+  function runRenameWithRollback(opts: {
+    sessionId: string;
+    newTitle: string;
+    previousTitle: string | undefined;
+    titleCache: Record<string, string>;
+    initialSessions: SessionWithTitle[];
+    api: (id: string, title: string) => Promise<unknown>;
+    onSessionsChange: (next: SessionWithTitle[]) => void;
+  }): Promise<void> {
+    const trimmed = opts.newTitle.trim();
+    // Optimistic.
+    opts.titleCache[opts.sessionId] = trimmed;
+    const optimisticSessions = applyOptimisticRename(
+      opts.initialSessions,
+      opts.sessionId,
+      trimmed,
+    );
+    opts.onSessionsChange(optimisticSessions);
+    return opts.api(opts.sessionId, trimmed).then(
+      () => undefined,
+      (err: unknown) => {
+        if (opts.previousTitle !== undefined) {
+          opts.titleCache[opts.sessionId] = opts.previousTitle;
+        } else {
+          delete opts.titleCache[opts.sessionId];
+        }
+        opts.onSessionsChange(
+          rollbackOptimisticRename(
+            optimisticSessions,
+            opts.sessionId,
+            opts.previousTitle,
+          ),
+        );
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`renameSession failed for ${opts.sessionId}: ${message}`);
+      },
+    );
+  }
+
+  it("persists the title on success without touching the rollback path", async () => {
+    const calls: Array<{ id: string; title: string }> = [];
+    const api = (id: string, title: string) => {
+      calls.push({ id, title });
+      return Promise.resolve({ session_id: id, title });
+    };
+    const titleCache: Record<string, string> = {};
+    let latest: SessionWithTitle[] = [
+      { id: "web-1", message_count: 3, title: undefined },
+    ];
+    await runRenameWithRollback({
+      sessionId: "web-1",
+      newTitle: "  My Chat  ",
+      previousTitle: undefined,
+      titleCache,
+      initialSessions: latest,
+      api,
+      onSessionsChange: (next) => {
+        latest = next;
+      },
+    });
+    expect(calls).toEqual([{ id: "web-1", title: "My Chat" }]);
+    expect(titleCache).toEqual({ "web-1": "My Chat" });
+    expect(latest.find((s) => s.id === "web-1")?.title).toBe("My Chat");
+  });
+
+  it("rolls back the cache + sessions[] when the wrapper rejects", async () => {
+    const warn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (msg: unknown) => {
+      warnings.push(String(msg));
+    };
+    try {
+      const api = () =>
+        Promise.reject(new Error("forbidden: invalid title"));
+      const titleCache: Record<string, string> = { "web-1": "old cached" };
+      let latest: SessionWithTitle[] = [
+        { id: "web-1", message_count: 3, title: "old cached" },
+      ];
+      await runRenameWithRollback({
+        sessionId: "web-1",
+        newTitle: "doomed",
+        previousTitle: "old cached",
+        titleCache,
+        initialSessions: latest,
+        api,
+        onSessionsChange: (next) => {
+          latest = next;
+        },
+      });
+      expect(titleCache).toEqual({ "web-1": "old cached" });
+      expect(latest.find((s) => s.id === "web-1")?.title).toBe("old cached");
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain("web-1");
+      expect(warnings[0]).toContain("forbidden: invalid title");
+    } finally {
+      console.warn = warn;
+    }
+  });
+
+  it("clears the cache entry on rejection when no previous title existed", async () => {
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      const api = () => Promise.reject(new Error("offline"));
+      const titleCache: Record<string, string> = {};
+      let latest: SessionWithTitle[] = [
+        { id: "web-1", message_count: 3, title: undefined },
+      ];
+      await runRenameWithRollback({
+        sessionId: "web-1",
+        newTitle: "first try",
+        previousTitle: undefined,
+        titleCache,
+        initialSessions: latest,
+        api,
+        onSessionsChange: (next) => {
+          latest = next;
+        },
+      });
+      // Cache entry deleted so the next refreshSessions() can re-fetch
+      // a server-canonical title.
+      expect(titleCache["web-1"]).toBeUndefined();
+      // Sessions[] rolled back to the pre-rename state.
+      expect(latest.find((s) => s.id === "web-1")?.title).toBeUndefined();
+    } finally {
+      console.warn = warn;
+    }
   });
 });

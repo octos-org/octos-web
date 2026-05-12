@@ -12,6 +12,7 @@ import {
   getMessages,
   getSessionTasks,
   deleteSession as apiDeleteSession,
+  setSessionTitle as apiSetSessionTitle,
 } from "@/api/sessions";
 import type { BackgroundTaskInfo, SessionInfo, MessageInfo } from "@/api/types";
 import { nextTopicForCommand } from "@/lib/slash-commands";
@@ -328,6 +329,58 @@ export function mergeSessionLists(
   return [...carryover, ...fromApi];
 }
 
+/** Apply a rename optimistically to the sidebar `sessions[]` list.
+ *
+ *  If `sessionId` is already in the list, patches its `title`. Otherwise
+ *  prepends a `_local: true` placeholder so the user sees their rename
+ *  immediately even before the API list has caught up.
+ *
+ *  Extracted from `renameSession` so the optimistic + rollback paths are
+ *  unit-testable without rendering the full provider.
+ */
+export function applyOptimisticRename(
+  prev: SessionWithTitle[],
+  sessionId: string,
+  newTitle: string,
+): SessionWithTitle[] {
+  const existing = prev.find((s) => s.id === sessionId);
+  if (existing) {
+    return prev.map((s) =>
+      s.id === sessionId ? { ...s, title: newTitle } : s,
+    );
+  }
+  return [
+    { id: sessionId, message_count: 0, title: newTitle, _local: true },
+    ...prev,
+  ];
+}
+
+/** Roll back an optimistic rename in `sessions[]`.
+ *
+ *  When `previousTitle` is `undefined` the rename created a placeholder
+ *  `_local: true` row (no prior cache entry, no prior sessions entry);
+ *  drop it. Otherwise restore the prior title onto the existing row.
+ */
+export function rollbackOptimisticRename(
+  prev: SessionWithTitle[],
+  sessionId: string,
+  previousTitle: string | undefined,
+): SessionWithTitle[] {
+  if (previousTitle === undefined) {
+    // The optimistic write either replaced an unset title or inserted a
+    // brand-new `_local: true` placeholder. In both cases the right
+    // rollback is to clear the title back to undefined; if the row was
+    // a pure placeholder (no prior server row) we also drop it so the
+    // sidebar matches the pre-rename state.
+    return prev
+      .filter((s) => !(s.id === sessionId && s._local && s.message_count === 0))
+      .map((s) => (s.id === sessionId ? { ...s, title: undefined } : s));
+  }
+  return prev.map((s) =>
+    s.id === sessionId ? { ...s, title: previousTitle } : s,
+  );
+}
+
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [sessions, setSessions] = useState<SessionWithTitle[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState(() => {
@@ -566,14 +619,44 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const renameSession = useCallback((sessionId: string, title: string) => {
     const trimmed = title.trim();
     if (!trimmed) return;
+    // Capture the pre-update state so we can roll the optimistic write
+    // back if the server-side wrapper rejects. `previousTitle` is
+    // `undefined` when no cached title existed yet — in that case the
+    // rollback path deletes the cache entry so the next
+    // `refreshSessions()` re-fetches from the server instead of pinning
+    // the stale optimistic value.
+    const previousTitle: string | undefined = titleCache.current[sessionId];
+    // Optimistic local update: always update the in-memory cache and
+    // sessions list first, so the UI re-renders immediately regardless
+    // of the wrapper's eventual outcome.
     titleCache.current[sessionId] = trimmed;
     persistStoredTitles(titleCache.current);
-    setSessions((prev) => {
-      const existing = prev.find((s) => s.id === sessionId);
-      if (existing) {
-        return prev.map((s) => (s.id === sessionId ? { ...s, title: trimmed } : s));
+    setSessions((prev) => applyOptimisticRename(prev, sessionId, trimmed));
+    // M12 Phase D-3: persist the rename server-side via the Phase D-2
+    // `setSessionTitle` wrapper. The wrapper routes through the WS
+    // `session/title.set` method when `auxiliary_rest_to_ws_v1` is ON
+    // (and a connected bridge exists), and falls back to the legacy
+    // REST PATCH `/api/sessions/:id/title` otherwise. On rejection we
+    // roll the optimistic cache + sessions write back so the UI does
+    // not end up with a stale title that `refreshSessions()` would
+    // never overwrite (it skips title fetches while
+    // `titleCache.current[id]` is populated).
+    void apiSetSessionTitle(sessionId, trimmed).catch((err: unknown) => {
+      // Roll back cache. Restore the previous value if one existed,
+      // otherwise drop the entry entirely so the next refresh can
+      // re-fetch from the server.
+      if (previousTitle !== undefined) {
+        titleCache.current[sessionId] = previousTitle;
+      } else {
+        delete titleCache.current[sessionId];
       }
-      return [{ id: sessionId, message_count: 0, title: trimmed, _local: true }, ...prev];
+      persistStoredTitles(titleCache.current);
+      // Roll back the optimistic sidebar update.
+      setSessions((curr) =>
+        rollbackOptimisticRename(curr, sessionId, previousTitle),
+      );
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`renameSession failed for ${sessionId}: ${message}`);
     });
   }, []);
 

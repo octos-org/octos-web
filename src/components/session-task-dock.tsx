@@ -3,6 +3,13 @@ import type { BackgroundTaskInfo as TaskInfo } from "@/api/types";
 import { useTasks } from "@/store/task-store";
 import { useSession } from "@/runtime/session-context";
 
+// M12 Phase D-3: the tasks dock reads from `useTasks()`, which is fed by
+// `runtime/task-watcher.ts` polling through the Phase D-2
+// `getSessionTasks` wrapper (WS `session/tasks.list` or REST
+// `/api/sessions/:id/tasks` under `auxiliary_rest_to_ws_v1`). Live
+// task transitions also arrive via the WS bridge's `task/updated`
+// notifications. This component never hits an HTTP endpoint directly.
+
 function isTaskActive(task: TaskInfo): boolean {
   return task.status === "spawned" || task.status === "running";
 }

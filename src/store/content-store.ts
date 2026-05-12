@@ -1,7 +1,17 @@
 import { useSyncExternalStore, useEffect } from "react";
+// M12 Phase D-3: content library page routes through the Phase D-2
+// wrappers in src/api/content.ts. `fetchContent` flips between WS
+// `content/list` and REST `GET /api/my/content` under the
+// `auxiliary_rest_to_ws_v1` flag; `deleteContent` / `bulkDeleteContent`
+// flip between WS `content/delete` + `content/bulk_delete` and REST
+// `DELETE /api/my/content/:id` + `POST /api/my/content/bulk-delete`.
+// All three wrappers preserve their REST return shapes; the sessionId
+// filter is now applied INSIDE the wrapper (in REST mode the wrapper
+// post-filters via `matchesContentSession`, in WS mode the server
+// pre-filters via `filters.session_id`), so this store no longer
+// strips/re-applies the filter itself.
 import {
   fetchContent,
-  matchesContentSession,
   deleteContent as apiDelete,
   bulkDeleteContent as apiBulkDelete,
   type ContentEntry,
@@ -44,13 +54,16 @@ export async function loadContent(filters: ContentFilters = {}) {
   notify();
 
   try {
-    const { sessionId, ...serverFilters } = filters;
-    const result = await fetchContent(serverFilters);
-    const filteredEntries = sessionId
-      ? result.entries.filter((entry) => matchesContentSession(entry, sessionId))
-      : result.entries;
-    entries = filteredEntries;
-    total = filteredEntries.length;
+    // M12 Phase D-3: pass `filters` (including `sessionId`) straight to
+    // the wrapper. The wrapper now owns the sessionId-to-server mapping
+    // (WS: `filters.session_id`) and the legacy path-pattern post-filter
+    // (REST), so callers no longer need to strip + re-filter. Keep
+    // `loadContent` transport-agnostic.
+    // Note: REST path filters within a single page only — see
+    // octos-web#105 for full pagination parity follow-up.
+    const result = await fetchContent(filters);
+    entries = result.entries;
+    total = result.total;
     loading = false;
     notify();
   } catch (e) {

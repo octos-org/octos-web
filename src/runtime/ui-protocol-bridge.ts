@@ -118,6 +118,11 @@ export const METHODS = {
   TURN_SPAWN_COMPLETE: "turn/spawn_complete",
   APPROVAL_REQUESTED: "approval/requested",
   WARNING: "warning",
+  // M12 Phase D-3 (octos-web #106 review follow-up): server emits
+  // `session/title-updated` after a successful `session/title.set` so
+  // cross-tab / auto-title flows can refresh their cache without polling
+  // the REST list. See the M12 Phase D ADR.
+  SESSION_TITLE_UPDATED: "session/title-updated",
 } as const;
 
 /**
@@ -791,6 +796,22 @@ function guardWarning(p: unknown): WarningEvent | null {
   return { reason: p.reason, context: p.context };
 }
 
+/** Minimal guard for `session/title-updated`.
+ *
+ *  The server's ADR-defined payload is
+ *  `{ session_id: string, title: string }`. We accept and ignore extra
+ *  fields so a server-side payload extension doesn't trip the
+ *  fail-closed reject path. Returns the typed event or `null`.
+ */
+function guardSessionTitleUpdated(
+  p: unknown,
+): { session_id: string; title: string } | null {
+  if (!isPlainObject(p)) return null;
+  if (typeof p.session_id !== "string") return null;
+  if (typeof p.title !== "string") return null;
+  return { session_id: p.session_id, title: p.title };
+}
+
 // ---------------------------------------------------------------------------
 // Bridge implementation
 // ---------------------------------------------------------------------------
@@ -895,6 +916,24 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     [METHODS.WARNING]: {
       guard: guardWarning,
       emit: (v) => this.subWarning.emit(v as WarningEvent),
+    },
+    // M12 Phase D-3 (octos-web #106 review follow-up). The server emits
+    // `session/title-updated` after a successful `session/title.set`. We
+    // register the table entry so the bridge does not warn-and-drop the
+    // notification as "unknown method"; the no-op guard + emit means we
+    // still throw away the payload until SessionProvider wires a
+    // subscriber path to patch `titleCache` + `sessions[]`.
+    //
+    // TODO: expose `onSessionTitleUpdated(handler)` on the bridge and
+    // hook it from SessionProvider so the cache stays in sync across
+    // tabs and with server-side auto-title flows. The optimistic update
+    // and the notification are idempotent (both write the same title),
+    // so re-wiring this is safe vs the local rename path.
+    [METHODS.SESSION_TITLE_UPDATED]: {
+      guard: guardSessionTitleUpdated,
+      emit: () => {
+        // no-op until subscriber wiring lands
+      },
     },
   };
 
