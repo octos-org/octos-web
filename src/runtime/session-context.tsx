@@ -12,6 +12,7 @@ import {
   getMessages,
   getSessionTasks,
   deleteSession as apiDeleteSession,
+  setSessionTitle as apiSetSessionTitle,
 } from "@/api/sessions";
 import type { BackgroundTaskInfo, SessionInfo, MessageInfo } from "@/api/types";
 import { nextTopicForCommand } from "@/lib/slash-commands";
@@ -566,6 +567,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const renameSession = useCallback((sessionId: string, title: string) => {
     const trimmed = title.trim();
     if (!trimmed) return;
+    // Optimistic local update: always update the in-memory cache and
+    // sessions list first, so the UI re-renders immediately regardless
+    // of the wrapper's eventual outcome.
     titleCache.current[sessionId] = trimmed;
     persistStoredTitles(titleCache.current);
     setSessions((prev) => {
@@ -574,6 +578,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         return prev.map((s) => (s.id === sessionId ? { ...s, title: trimmed } : s));
       }
       return [{ id: sessionId, message_count: 0, title: trimmed, _local: true }, ...prev];
+    });
+    // M12 Phase D-3: persist the rename server-side via the Phase D-2
+    // `setSessionTitle` wrapper. The wrapper routes through the WS
+    // `session/title.set` method when `auxiliary_rest_to_ws_v1` is ON
+    // (and a connected bridge exists), and falls back to the legacy
+    // REST PATCH `/api/sessions/:id/title` otherwise. Fire-and-forget
+    // — the optimistic local update is the source of truth in the UI;
+    // if the server rejects (e.g. permissions, network flake), the
+    // next `refreshSessions()` will reconcile.
+    void apiSetSessionTitle(sessionId, trimmed).catch(() => {
+      // Swallow: the optimistic update wins for now. A future
+      // round-trip with the server can surface failures via a toast.
     });
   }, []);
 
