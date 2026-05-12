@@ -664,6 +664,66 @@ describe("fetchContent [content/list]", () => {
       filters: { session_id: "abc" },
     });
   });
+
+  // M12 Phase D-2 codex review (MEDIUM 2): the WS path filters by
+  // `filters.session_id` server-side. The REST GET endpoint has no
+  // equivalent query param, so direct `fetchContent({sessionId})`
+  // callers used to see UNFILTERED results when the flag was OFF
+  // (the store worked around it by client-filtering, but only
+  // `loadContent` did so). The REST fallback now applies the same
+  // client-side filter so caller-observable behavior is byte-identical
+  // across transports.
+  it("fetchContent({sessionId}) returns same filtered subset across transports", async () => {
+    const backendEntries = [
+      {
+        id: "a",
+        filename: "a.txt",
+        path: "/api/sessions/sess-x/files/a.txt",
+        category: "report" as const,
+        size_bytes: 1,
+        created_at: "2026-05-12T00:00:00Z",
+        thumbnail_path: null,
+        session_id: "sess-x",
+        tool_name: null,
+        caption: null,
+      },
+      {
+        id: "b",
+        filename: "b.txt",
+        path: "/api/sessions/sess-y/files/b.txt",
+        category: "report" as const,
+        size_bytes: 1,
+        created_at: "2026-05-12T00:00:00Z",
+        thumbnail_path: null,
+        session_id: "sess-y",
+        tool_name: null,
+        caption: null,
+      },
+    ];
+
+    // Leg 1: flag OFF (REST) — the server returns all entries, the
+    // wrapper filters client-side to those matching session_id.
+    mockFetchOnceJson({ entries: backendEntries, total: 2 });
+    const restOut = await fetchContent({ sessionId: "sess-x" });
+    expect(restOut.entries.map((e) => e.id)).toEqual(["a"]);
+    expect(restOut.total).toBe(1);
+
+    // Leg 2: flag ON (WS) — the server pre-filters; wrapper passes
+    // result through unchanged. Same caller-observable shape.
+    __setAuxRestToWsV1ForTests(true);
+    const bridge = makeMockBridge();
+    bridge.setReply(METHODS.CONTENT_LIST, {
+      entries: [backendEntries[0]],
+      total: 1,
+    });
+    __setActiveBridgeForTest("any", bridge);
+    const wsOut = await fetchContent({ sessionId: "sess-x" });
+    expect(wsOut.entries.map((e) => e.id)).toEqual(["a"]);
+    expect(wsOut.total).toBe(1);
+
+    // Equal under both transports.
+    expect(wsOut).toEqual(restOut);
+  });
 });
 
 describe("deleteContent [content/delete]", () => {

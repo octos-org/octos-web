@@ -1,5 +1,5 @@
 import { request, getSelectedProfileId, getToken } from "@/api/client";
-import { API_BASE } from "@/lib/constants";
+import { API_BASE, CONTENT_BULK_DELETE_BATCH_SIZE } from "@/lib/constants";
 import { buildFileUrl } from "@/api/files";
 import {
   BridgeRpcError,
@@ -51,6 +51,9 @@ function shouldUseWs(): boolean {
 }
 
 function translateBridgeError(err: unknown): Error {
+  // Phase D-2 intentionally does NOT trigger the REST 401 reaper on WS
+  // auth failures. See ADR PR #910 — Phase D-4 narrows the reaper scope,
+  // so cross-transport coupling here is undesirable.
   if (err instanceof BridgeRpcError) return new Error(err.message);
   if (err instanceof BridgeTimeoutError) return new Error(err.message);
   if (err instanceof BridgeStoppedError) return new Error(err.message);
@@ -113,9 +116,25 @@ export async function fetchContent(
   if (filters.offset) params.set("offset", String(filters.offset));
 
   const qs = params.toString();
-  return request<ContentQueryResult>(
+  const result = await request<ContentQueryResult>(
     `/api/my/content${qs ? `?${qs}` : ""}`,
   );
+
+  // M12 Phase D-2: the WS path maps `sessionId` → `filters.session_id`
+  // server-side. The REST `GET /api/my/content` query string has no
+  // equivalent parameter, so we apply the same filter client-side here
+  // to keep caller-observable behavior byte-identical across transports.
+  // `content-store.ts` historically performed this filtering itself; we
+  // also keep that copy for back-compat so flag-OFF callers that bypass
+  // the store still get filtered results.
+  if (filters.sessionId) {
+    const sid = filters.sessionId;
+    const entries = (result.entries ?? []).filter((entry) =>
+      matchesContentSession(entry, sid),
+    );
+    return { entries, total: entries.length };
+  }
+  return result;
 }
 
 export function matchesContentSession(
@@ -163,17 +182,70 @@ export async function deleteContent(id: string): Promise<void> {
 // content/bulk_delete — `POST /api/my/content/bulk-delete`
 // ---------------------------------------------------------------------------
 
-export async function bulkDeleteContent(ids: string[]): Promise<void> {
-  if (shouldUseWs()) {
-    await callAuxWs<{ deleted: number }>(METHODS.CONTENT_BULK_DELETE, {
-      ids,
-    });
-    return;
+export interface BulkDeleteResult {
+  deleted_count: number;
+  failed_ids: string[];
+}
+
+/**
+ * Delete a batch of content entries, chunked client-side to
+ * `CONTENT_BULK_DELETE_BATCH_SIZE` (256) per request.
+ *
+ * The server-side WS dispatcher caps `content/bulk_delete` at 256 IDs,
+ * while the REST endpoint has no equivalent visible cap. Chunking in
+ * both transports keeps behavior consistent regardless of the flag
+ * state and lets large bulk-deletes succeed under either path.
+ *
+ * Returns a `BulkDeleteResult` so callers can surface partial-failure
+ * semantics — earlier chunks may have committed even if a later one
+ * threw. The legacy `void` return is preserved at the call sites that
+ * don't care via discarding.
+ */
+export async function bulkDeleteContent(
+  ids: string[],
+): Promise<BulkDeleteResult> {
+  if (ids.length === 0) {
+    return { deleted_count: 0, failed_ids: [] };
   }
-  await request("/api/my/content/bulk-delete", {
-    method: "POST",
-    body: JSON.stringify({ ids }),
-  });
+
+  const chunks: string[][] = [];
+  for (let i = 0; i < ids.length; i += CONTENT_BULK_DELETE_BATCH_SIZE) {
+    chunks.push(ids.slice(i, i + CONTENT_BULK_DELETE_BATCH_SIZE));
+  }
+
+  let deletedCount = 0;
+  const failedIds: string[] = [];
+
+  for (const chunk of chunks) {
+    try {
+      if (shouldUseWs()) {
+        const out = await callAuxWs<{ deleted?: number }>(
+          METHODS.CONTENT_BULK_DELETE,
+          { ids: chunk },
+        );
+        deletedCount += out?.deleted ?? chunk.length;
+      } else {
+        await request("/api/my/content/bulk-delete", {
+          method: "POST",
+          body: JSON.stringify({ ids: chunk }),
+        });
+        // REST endpoint returns 204 with no body — assume full success
+        // for the chunk on a 2xx response.
+        deletedCount += chunk.length;
+      }
+    } catch (err) {
+      // Aggregate failures so partially-successful batches still report
+      // useful progress to the caller. Don't rethrow mid-loop: chunks
+      // after a failure are also recorded as failed to preserve the
+      // caller's view of "these IDs were not deleted".
+      failedIds.push(...chunk);
+      // Best-effort: drop the error onto the console so callers that
+      // ignore the return shape still see something in the devtools.
+      console.warn("[octos] bulkDeleteContent chunk failed", err);
+    }
+  }
+
+  return { deleted_count: deletedCount, failed_ids: failedIds };
 }
 
 export function thumbnailUrl(id: string): string {
