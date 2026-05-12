@@ -31,12 +31,17 @@
 //   - UNSET (no entry in localStorage) → treat as ON. This is the new
 //     default and applies to every existing user on first page load
 //     after the cutover ships.
-//   - "1"   → ON (explicit opt-in; identical to the default).
-//   - "0" / "false" / any other non-"1" value → OFF. This is the
-//     emergency-rollback escape hatch: a user who hits a bug in the WS
-//     wrappers can `localStorage.setItem("octos_auxiliary_rest_to_ws_v1",
-//     "false")` in devtools and the next page reload restores the
-//     pre-D-4 REST behavior.
+//   - "0" / "false" / "off" (case-insensitive, whitespace trimmed) →
+//     OFF. This is the emergency-rollback escape hatch: a user who
+//     hits a bug in the WS wrappers can
+//     `localStorage.setItem("octos_auxiliary_rest_to_ws_v1", "0")` in
+//     devtools and the next page reload restores the pre-D-4 REST
+//     behavior. `"false"`, `"FALSE"`, `" 0 "`, and `"off"` all work.
+//   - Any other value (`"1"`, `"true"`, `"yes"`, garbage, etc.) → ON.
+//     Opt-out is a positive match on the known disable tokens — stale
+//     experimental values from earlier phases (e.g. `"true"`,
+//     `"enabled"`) that used to mean ON now correctly stay ON instead
+//     of silently flipping a user back to REST.
 //
 // Cached on first read; mid-session flips do not take effect until the
 // next page reload — matches `projection_v1` behavior. The cache-once
@@ -63,9 +68,15 @@ function readAuxRestToWsV1FromStorage(): boolean {
     const ls = (globalThis as { localStorage?: Storage }).localStorage;
     if (!ls) return true;
     const raw = ls.getItem(AUX_REST_TO_WS_V1_FLAG_KEY);
-    // UNSET → ON (new default). Only an explicit non-"1" value opts out.
+    // UNSET → ON (new default). Otherwise, only an explicit "0",
+    // "false", or "off" (case-insensitive, whitespace trimmed) opts
+    // out. Any other value (including "true", "yes", garbage) → ON.
     if (raw === null) return true;
-    return raw === "1";
+    const trimmed = raw.trim().toLowerCase();
+    if (trimmed === "0" || trimmed === "false" || trimmed === "off") {
+      return false;
+    }
+    return true;
   } catch {
     // Some jsdom configurations throw on `localStorage` access (security
     // origin checks). Treat unreachable storage as flag-on, matching
