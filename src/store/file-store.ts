@@ -1,6 +1,12 @@
 import { useSyncExternalStore } from "react";
 import { buildApiHeaders } from "@/api/client";
 import { buildFileUrl } from "@/api/files";
+// M12 Phase D-3: files panel routes through the Phase D-2
+// `getSessionFiles` wrapper in src/api/sessions.ts, which flips
+// between the WS `session/files.list` method and the legacy REST
+// `/api/sessions/:id/files` endpoint under the
+// `auxiliary_rest_to_ws_v1` flag. The wrapper returns a plain
+// `SessionFileInfo[]` array, matching what loadSessionFiles consumes.
 import { getSessionFiles } from "@/api/sessions";
 import { API_BASE } from "@/lib/constants";
 import { displayFilenameFromPath } from "@/lib/utils";
