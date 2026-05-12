@@ -18,6 +18,14 @@
  */
 
 import { useSyncExternalStore } from "react";
+// M12 Phase D-3: history panel routes through the Phase D-2
+// `getMessages` wrapper in src/api/sessions.ts, which flips between
+// the WS `session/messages_page` method and the legacy REST
+// `/api/sessions/:id/messages` endpoint under the
+// `auxiliary_rest_to_ws_v1` flag. The wrapper preserves the array
+// return shape that `replayHistory` consumes; pagination metadata
+// (`has_more` / `next_offset`) is available via `getMessagesPage`
+// for the future paged-history loader.
 import { getMessages as fetchMessages } from "@/api/sessions";
 import type { MessageInfo } from "@/api/types";
 import { displayFilenameFromPath } from "@/lib/utils";
