@@ -100,7 +100,7 @@ function flattenThreadsToMessages(threads: Thread[]): Message[] {
   return out;
 }
 
-import { buildSitePreviewUrl, hydrateSiteProjectFromSession } from "../api";
+import { hydrateSiteProjectFromSession } from "../api";
 import { useSites } from "../context/sites-context";
 import { extractMessageText, inferSitePreset } from "../intake";
 import { SITE_PRESETS } from "../types";
@@ -200,9 +200,16 @@ export function SitesChat({ sessionId }: Props) {
         // turn lifecycle to complete; the project hydration below
         // is the success signal (the server-side scaffold task
         // persists the project before completing the turn).
+        //
+        // Codex BLOCK B: include `historyTopic: "site <preset>"` so
+        // the scaffold turn lands on the same topic the embedded
+        // chat listens on. Without it the turn errored into the
+        // root-scope thread store with no bubble visible to the user.
+        const scaffoldTopic = `site ${inferredPreset}`;
         await new Promise<void>((resolve) => {
           bridgeSend({
             sessionId,
+            historyTopic: scaffoldTopic,
             text: `/new site ${inferredPreset}`,
             media: [],
             onComplete: () => resolve(),
@@ -223,20 +230,22 @@ export function SitesChat({ sessionId }: Props) {
           await sleep(300);
         }
 
-        // No hydrated slug arrived during the polling window; this
-        // indicates the scaffold turn failed server-side (the
-        // assistant bubble in the embedded chat surfaces the error
-        // to the user). Persist a fallback slug so subsequent edits
-        // can still proceed against the chosen preset.
+        // Codex BLOCK C: no hydrated slug means the scaffold turn
+        // never persisted a project — keep `scaffolded: false` and
+        // surface `scaffoldError` so the UI can prompt a retry.
+        // The fallback slug is preserved as draft metadata only
+        // (so subsequent reattempts share the inferred preset);
+        // pre-fix we toggled `scaffolded: true` here, which made a
+        // failed scaffold look like success.
         const fallbackSlug =
           current.slug || SITE_PRESETS[inferredPreset].slug;
         save({
-          scaffolded: true,
+          scaffolded: false,
           preset: inferredPreset,
           profileId,
           slug: fallbackSlug,
-          previewUrl: buildSitePreviewUrl(sessionId, fallbackSlug, profileId),
-          scaffoldError: undefined,
+          previewUrl: undefined,
+          scaffoldError: "Site scaffold did not complete; please retry.",
         });
       })()
         .catch((error) => {
