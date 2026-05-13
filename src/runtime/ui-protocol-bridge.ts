@@ -1381,6 +1381,27 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       this.rejectAllPending(new BridgeStoppedError("connection closed"));
       return;
     }
+    // Issue #111.1: the server rejects an authenticated WS upgrade
+    // with close-code 1008 ("policy violation") when the token is
+    // expired/invalid. Pre-fix the bridge silently retried the
+    // handshake on every backoff tick — burning auth-rejected
+    // handshakes forever and leaving the user stuck on /chat with no
+    // path to re-login. Surface a typed `crew:auth_expired` window
+    // event so AuthProvider's subscriber can call `revalidate()`,
+    // which clears tokens and navigates to /login.
+    if (ev?.code === 1008 && typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("crew:auth_expired", {
+          detail: { reason: ev.reason ?? "policy_violation" },
+        }),
+      );
+      // Stop reconnect attempts — the token is dead, retrying is
+      // wasted load on the server and noise on the client.
+      this.reconnectAbandoned = true;
+      this.setState("error");
+      this.rejectAllPending(new BridgeStoppedError("auth expired"));
+      return;
+    }
     this.scheduleReconnect();
   }
 
