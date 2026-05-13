@@ -32,7 +32,6 @@ import {
 import { useSession } from "@/runtime/session-context";
 import {
   useThreads,
-  loadHistory as loadThreadHistory,
   type MessageFile,
   type MessageMeta,
   type Thread,
@@ -803,39 +802,14 @@ function ChatThreadV2({
   const hasThreads = threads.length > 0;
   const hasGhosts = ghosts.length > 0;
 
-  // M8.10 follow-up (#633): rehydrate thread store from server history on mount
-  // and on session/topic change. M9-γ-6: ThreadStore is now the single sink;
-  // `runtime-provider.tsx` calls `ThreadStore.loadHistory(...)` directly.
-  //
-  // The reload path is also racy with server persistence: the SSE `done`
-  // event fires before the JSONL is fully committed, so an immediate reload
-  // gets back only the user messages. Schedule a small number of forced
-  // re-fetches over the first ~12s so the assistant messages catch up once
-  // the server commits them. The retries no-op as soon as the loaded thread
-  // count stops growing, so the cost is at most 3 extra requests in the
-  // worst case.
-  useEffect(() => {
-    let cancelled = false;
-    void loadThreadHistory(currentSessionId, historyTopic);
-
-    const retryDelaysMs = [2_000, 5_000, 12_000];
-    const timers: number[] = [];
-    for (const delay of retryDelaysMs) {
-      timers.push(
-        window.setTimeout(() => {
-          if (cancelled) return;
-          void loadThreadHistory(currentSessionId, historyTopic, {
-            force: true,
-          });
-        }, delay),
-      );
-    }
-
-    return () => {
-      cancelled = true;
-      for (const t of timers) window.clearTimeout(t);
-    };
-  }, [currentSessionId, historyTopic]);
+  // Issue #110.2: history hydration is owned by `SessionProvider`
+  // (its restored-on-mount effect + switchSession). Pre-fix this
+  // effect fired its own `loadThreadHistory` plus 3 retry timers at
+  // 2s/5s/12s — multiplying every /chat mount into 4 /messages
+  // round-trips that competed with SessionProvider's load. The
+  // retries were originally added to recover from SSE-era persistence
+  // latency; the M9 WS transport persists synchronously before
+  // emitting `message/persisted`, so the retries are obsolete.
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-transparent">

@@ -452,7 +452,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     localStorage.setItem("octos_current_session", currentSessionId);
   }, [currentSessionId]);
 
-  // Load history for restored session on mount
+  // Load history for restored session on mount. Issue #110.2: this
+  // is THE single owner of current-session hydration — runtime-provider
+  // and chat-thread previously each fired their own /messages call.
+  // Issue #110.3: paginates via `ThreadStore.loadHistory`.
   const restoredRef = useRef(false);
   useEffect(() => {
     if (restoredRef.current) return;
@@ -460,12 +463,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const saved = localStorage.getItem("octos_current_session");
     if (saved && saved.startsWith("web-")) {
       const restoredTopic = sessionTopics[saved];
-      getMessages(saved, 500, 0, undefined, restoredTopic).then((msgs) => {
-        if (msgs.length > 0) {
-          setInitialMessages(msgs);
-          ThreadStore.replayHistory(saved, msgs, restoredTopic);
-        }
-      }).catch(() => {});
+      void ThreadStore.loadHistory(saved, restoredTopic);
       getSessionTasks(saved, restoredTopic)
         .then((tasks) => {
           setServerTaskActiveBySession((prev) =>
@@ -494,28 +492,45 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         .sort((a, b) => sessionTimestamp(b) - sessionTimestamp(a))
         .slice(0, SESSION_LIST_RENDER_CAP);
 
-      // Fetch titles for sessions we haven't seen.
-      const needTitle = visibleCandidates.filter(
-        (s) => !titleCache.current[s.id],
-      );
-      await Promise.all(
-        needTitle.slice(0, 10).map(async (s) => {
-          try {
-            const msgs = await getMessages(s.id, 10);
-            const firstUser = msgs.find((m) => m.role === "user" && m.content?.trim());
-            if (firstUser) {
-              titleCache.current[s.id] = extractTitle(firstUser.content);
-              persistStoredTitles(titleCache.current);
-            }
-          } catch {
-            // ignore
-          }
-        }),
-      );
-
+      // Issue #110.2: render the session list IMMEDIATELY using
+      // whatever titles are cached locally. Title fetches for newly
+      // observed sessions run as background fire-and-forget — they
+      // do not block the sidebar render so a slow per-session
+      // /messages call does not hold up the refresh path. When a
+      // background fetch completes it patches both the cache and the
+      // visible `sessions[]` so the sidebar updates without waiting
+      // for the next 15s refresh tick.
       setSessions((prev) =>
         mergeSessionLists(prev, list, deletedIds, titleCache.current),
       );
+
+      const needTitle = visibleCandidates.filter(
+        (s) => !titleCache.current[s.id],
+      );
+      for (const s of needTitle.slice(0, 10)) {
+        void (async () => {
+          try {
+            const msgs = await getMessages(s.id, 10);
+            const firstUser = msgs.find(
+              (m) => m.role === "user" && m.content?.trim(),
+            );
+            if (!firstUser) return;
+            const title = extractTitle(firstUser.content);
+            if (!title) return;
+            titleCache.current[s.id] = title;
+            persistStoredTitles(titleCache.current);
+            // Patch the visible list so the sidebar reflects the new
+            // title without waiting for the next 15s refresh tick.
+            setSessions((curr) =>
+              curr.map((row) =>
+                row.id === s.id && !row.title ? { ...row, title } : row,
+              ),
+            );
+          } catch {
+            // ignore
+          }
+        })();
+      }
     } catch {
       // ignore
     }
@@ -675,30 +690,44 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     [storeSessionStats],
   );
 
-  const switchSession = useCallback(async (id: string) => {
+  const switchSession = useCallback((id: string) => {
     if (id !== currentSessionId) {
       previousSessionIdRef.current = currentSessionId;
     }
-    // Guard against race: only the latest switch request wins
+    // Issue #110.1: switch the visible session/topic SYNCHRONOUSLY so
+    // the sidebar click does not feel frozen on a slow `/messages`
+    // round-trip. Hydration runs async in the background with the
+    // existing stale-request guard so a rapid switch-then-back does
+    // not race messages from session A into session B's view.
+    //
+    // Issue #110.3: history loads via `ThreadStore.loadHistory`, which
+    // pages through `getMessagesPage` so >500-msg sessions render in
+    // full instead of silent truncation.
     const requestId = ++switchRequestRef.current;
     const topic = sessionTopics[id];
-    try {
-      const [messages, tasks] = await Promise.all([
-        getMessages(id, 500, 0, undefined, topic),
-        getSessionTasks(id, topic).catch(() => [] as BackgroundTaskInfo[]),
-      ]);
-      if (switchRequestRef.current !== requestId) return; // stale
-      ThreadStore.replayHistory(id, messages, topic);
-      setInitialMessages(messages);
-      setServerTaskActive(id, tasks.some(isTaskActive));
-      setActiveHistoryTopic(topic);
-    } catch {
-      if (switchRequestRef.current !== requestId) return;
-      setInitialMessages([]);
-      setServerTaskActive(id, false);
-      setActiveHistoryTopic(topic);
-    }
     setCurrentSessionId(id);
+    setActiveHistoryTopic(topic);
+    setInitialMessages([]);
+
+    void (async () => {
+      try {
+        await Promise.all([
+          ThreadStore.loadHistory(id, topic, { force: true }),
+          getSessionTasks(id, topic)
+            .then((tasks) => {
+              if (switchRequestRef.current !== requestId) return;
+              setServerTaskActive(id, tasks.some(isTaskActive));
+            })
+            .catch(() => {
+              if (switchRequestRef.current !== requestId) return;
+              setServerTaskActive(id, false);
+            }),
+        ]);
+      } catch {
+        // ignore — loadHistory swallows internally; the catch here is
+        // defensive against task-watcher rejections that escape.
+      }
+    })();
   }, [currentSessionId, sessionTopics, setServerTaskActive]);
 
   const createSession = useCallback((title?: string) => {
@@ -722,7 +751,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const goBack = useCallback(async () => {
     const previous = previousSessionIdRef.current;
     if (!previous || previous === currentSessionId) return false;
-    await switchSession(previous);
+    switchSession(previous);
     return true;
   }, [currentSessionId, switchSession]);
 

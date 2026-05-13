@@ -107,9 +107,15 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
     restoreWatchedSessions();
   }, []);
 
-  // Load message history into the store when a session is activated
+  // Load message history into the store when a session is activated.
+  // Issue #110.2: `ThreadStore.loadHistory` is now owned by
+  // `SessionProvider` (which fires it on mount + switchSession);
+  // RuntimeProvider only needs to drive the per-session FileStore
+  // and the eviction LRU here. Pre-fix this effect was a duplicate
+  // loadHistory call that competed with SessionProvider's load and
+  // chat-thread's retry timers, producing 3+ /messages requests on
+  // every mount.
   useEffect(() => {
-    void ThreadStore.loadHistory(currentSessionId, historyTopic);
     void FileStore.loadSessionFiles(currentSessionId);
     mountedRef.current.add(currentSessionId);
 
