@@ -413,6 +413,22 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const { queueMode, adaptiveMode } = useModeState();
   const previousSessionIdRef = useRef<string | null>(null);
   const titleCache = useRef<Record<string, string>>(loadStoredTitles());
+  // Codex NIT G: track per-session title-fetch state to prevent the
+  // top-10 cap from starving later sessions. Without this, the same
+  // 10 failed / no-user-msg rows would dominate `needTitle` forever,
+  // blocking every later session's title from ever being fetched.
+  //
+  // `titleFetchInflight` carries every session id whose fetch has
+  // been launched but not yet resolved. `titleFetchAttempted` carries
+  // sessions whose fetch RESOLVED without producing a title (no user
+  // msg in the first 10 / extractTitle returned empty / API error)
+  // — those are effectively permanent failures from the SPA's
+  // perspective and stay out of `needTitle` to let later sessions
+  // win the next refresh tick. The maps are populated synchronously
+  // before launching the async fetch so a quick second refreshSessions
+  // pass within the same JS tick can't double-launch.
+  const titleFetchInflight = useRef<Set<string>>(new Set());
+  const titleFetchAttempted = useRef<Set<string>>(new Set());
   const statsCache = useRef<Record<string, SessionRunStats>>(loadStoredStats());
   const [currentSessionStatsState, setCurrentSessionStatsState] =
     useState<SessionRunStats | null>(() => statsCache.current[currentSessionId] ?? null);
@@ -440,6 +456,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       delete titleCache.current[sessionId];
       persistStoredTitles(titleCache.current);
     }
+    // Codex NIT G: also clear the in-flight / attempted markers so a
+    // session that's recreated under the same id is allowed to retry.
+    titleFetchInflight.current.delete(sessionId);
+    titleFetchAttempted.current.delete(sessionId);
     if (statsCache.current[sessionId]) {
       delete statsCache.current[sessionId];
       persistStoredStats(statsCache.current);
@@ -517,19 +537,35 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         mergeSessionLists(prev, list, deletedIds, titleCache.current),
       );
 
+      // Codex NIT G: skip sessions whose fetch is already in flight or
+      // already resolved without producing a title — otherwise the
+      // top-10 cap parks on the same head-of-list failures forever and
+      // later sessions never get a title fetch.
       const needTitle = visibleCandidates.filter(
-        (s) => !titleCache.current[s.id],
+        (s) =>
+          !titleCache.current[s.id] &&
+          !titleFetchInflight.current.has(s.id) &&
+          !titleFetchAttempted.current.has(s.id),
       );
       for (const s of needTitle.slice(0, 10)) {
+        titleFetchInflight.current.add(s.id);
         void (async () => {
           try {
             const msgs = await getMessages(s.id, 10);
             const firstUser = msgs.find(
               (m) => m.role === "user" && m.content?.trim(),
             );
-            if (!firstUser) return;
+            if (!firstUser) {
+              // No user message in first 10 — mark as attempted so we
+              // don't keep parking on this row at every refresh tick.
+              titleFetchAttempted.current.add(s.id);
+              return;
+            }
             const title = extractTitle(firstUser.content);
-            if (!title) return;
+            if (!title) {
+              titleFetchAttempted.current.add(s.id);
+              return;
+            }
             titleCache.current[s.id] = title;
             persistStoredTitles(titleCache.current);
             // Patch the visible list so the sidebar reflects the new
@@ -540,7 +576,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
               ),
             );
           } catch {
-            // ignore
+            // API error: mark as attempted so this row doesn't block
+            // later sessions. A subsequent refresh after the user
+            // navigates back through `forgetSessionLocalState`-friendly
+            // flows (e.g. delete + recreate) clears the marker.
+            titleFetchAttempted.current.add(s.id);
+          } finally {
+            titleFetchInflight.current.delete(s.id);
           }
         })();
       }

@@ -32,6 +32,34 @@ import {
   vi,
 } from "vitest";
 
+// Codex NIT H rewrite: the "failed-start / no-orphan" contract test
+// needs `createUiProtocolBridge().start()` to reject. Hoist a per-test
+// override slot so individual tests can install a failing factory
+// while every other test sees the unmocked production export.
+const { __bridgeFactoryOverride } = vi.hoisted(() => ({
+  __bridgeFactoryOverride: { current: null as null | (() => unknown) },
+}));
+
+vi.mock("./ui-protocol-bridge", async () => {
+  const actual =
+    await vi.importActual<typeof import("./ui-protocol-bridge")>(
+      "./ui-protocol-bridge",
+    );
+  return {
+    ...actual,
+    createUiProtocolBridge: (
+      ...args: Parameters<typeof actual.createUiProtocolBridge>
+    ) => {
+      if (__bridgeFactoryOverride.current) {
+        return __bridgeFactoryOverride.current() as ReturnType<
+          typeof actual.createUiProtocolBridge
+        >;
+      }
+      return actual.createUiProtocolBridge(...args);
+    },
+  };
+});
+
 import * as ThreadStore from "@/store/thread-store";
 import {
   sendMessage,
@@ -78,41 +106,68 @@ beforeEach(() => {
   __resetSendQueueForTest();
   ThreadStore.__resetForTests();
   window.localStorage.clear();
+  __bridgeFactoryOverride.current = null;
 });
 
 afterEach(() => {
   window.localStorage.clear();
   __resetUiProtocolRuntimeForTest();
   __resetSendQueueForTest();
+  __bridgeFactoryOverride.current = null;
 });
 
 describe("sendMessage", () => {
-  it("issue #109.1: bridge start runs before optimistic mirror so a failed start cannot orphan a user bubble", async () => {
-    // Pre-fix, `enqueueSendV1` mirrored the user bubble synchronously
-    // (before any await), so a bridge that never resolved to a usable
-    // state still left a projected row in ThreadStore. Post-fix the
-    // mirror runs only AFTER `startBridgeForSession` resolves; if it
-    // throws we skip projection entirely. Use an injected mock bridge
-    // here so the happy path is exercised — the failure path is
-    // covered indirectly via the runtime's terminal-state behavior in
-    // `ui-protocol-runtime.test.ts`.
-    const bridge = makeBridge();
-    __setActiveBridgeForTest(SESSION, bridge);
+  // Codex NIT H rewrite: this test now exercises the actual #109.1
+  // contract — when `startBridgeForSession`'s underlying bridge start
+  // REJECTS, no optimistic user row is mirrored AND `onComplete`
+  // still fires so the chat input lock releases. Pre-fix the happy
+  // path duplicated coverage from "dispatches via bridge.sendTurn and
+  // mirrors the user message" below and the failure path was
+  // exercised nowhere directly.
+  it("issue #109.1: a failed bridge start does NOT orphan a user bubble and fires onComplete", async () => {
+    // Install a factory that returns a bridge whose `start()` rejects.
+    // No `__setActiveBridgeForTest` here so `enqueueSendV1` hits
+    // `startBridgeForSession` → `createUiProtocolBridge().start()` →
+    // rejected promise → catch branch in `enqueueSendV1`.
+    __bridgeFactoryOverride.current = () => ({
+      start: vi.fn(async () => {
+        throw new Error("bridge start refused");
+      }),
+      stop: vi.fn(async () => {}),
+      sendTurn: vi.fn(async () => {
+        throw new Error("should not be called");
+      }),
+      interruptTurn: vi.fn(),
+      respondToApproval: vi.fn(),
+      hydrateSession: vi.fn(async () => null),
+      callMethod: vi.fn(),
+      onMessageDelta: vi.fn(() => () => {}),
+      onMessagePersisted: vi.fn(() => () => {}),
+      onSpawnComplete: vi.fn(() => () => {}),
+      onTaskUpdated: vi.fn(() => () => {}),
+      onTaskOutputDelta: vi.fn(() => () => {}),
+      onTurnLifecycle: vi.fn(() => () => {}),
+      onApprovalRequested: vi.fn(() => () => {}),
+      onConnectionStateChange: vi.fn(() => () => {}),
+      onWarning: vi.fn(() => () => {}),
+      onSessionTitleUpdated: vi.fn(() => () => {}),
+    });
+    const onComplete = vi.fn();
+
     sendMessage({
       sessionId: SESSION,
       text: "hello-109-1",
       media: [],
       clientMessageId: "cmid-109-1",
+      onComplete,
     });
     for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(bridge.sendTurn).toHaveBeenCalledWith(
-      "cmid-109-1",
-      [{ kind: "text", text: "hello-109-1" }],
-      undefined,
-    );
-    const threads = ThreadStore.getThreads(SESSION);
-    expect(threads).toHaveLength(1);
-    expect(threads[0].id).toBe("cmid-109-1");
+
+    // No optimistic row materialised — failed start MUST NOT orphan a
+    // bubble.
+    expect(ThreadStore.getThreads(SESSION)).toHaveLength(0);
+    // `onComplete` fired so the composer's sending-lock can release.
+    expect(onComplete).toHaveBeenCalledTimes(1);
   });
 
   it("dispatches via bridge.sendTurn and mirrors the user message", async () => {
@@ -619,11 +674,29 @@ describe("sendMessage", () => {
     );
   });
 
-  // Codex P2 round 2 (M10 follow-up Bug B): when the bridge transitions
-  // to `closed`, the in-flight send forces the lifecycle gate to release
-  // so subsequent sends drain. Issue #109.1 split the mirror to run
-  // after bridge start; the gate-release behavior is unchanged.
-  it("releases the per-session queue when the bridge transitions to closed", async () => {
+  // Codex NIT I rewrite: when the bridge transitions to `closed`
+  // mid-Q1, Q1's lifecycle gate must release immediately so the chain
+  // can advance. The pre-fix test then asserted Q2 reused the SAME
+  // closed mock bridge to re-issue `sendTurn` — that's only possible
+  // because `__setActiveBridgeForTest` keeps the runtime registry's
+  // `connectionState` stuck at "connected" regardless of what the
+  // bridge's own state subscriber sees. Production runs a different
+  // path: `getActiveBridge` reflects the live `connectionState`, and
+  // `startBridgeForSession` tears down a same-scope bridge whose
+  // state has gone terminal (issue #109.4). So Q2 either:
+  //   (a) finalizes immediately because the bridge is gone, or
+  //   (b) reaches `sendTurn` on a FRESH bridge (a `restartBridge`-
+  //       equivalent path), not on the closed one.
+  //
+  // To make this assertable in the harness, switch the runtime
+  // registry into `connectionState: "closed"` right after the
+  // state-transition. Then Q2's `startBridgeForSession` call sees
+  // the terminal state and would normally tear down + start fresh —
+  // since there's no real WS in the harness, the second start path
+  // surfaces as a `bridge start failed` warning, `onComplete2` fires,
+  // and the original mock bridge's `sendTurn` is NOT called a second
+  // time. Assert that contract.
+  it("on bridge `closed`: Q1's gate releases and Q2 does NOT reuse the closed bridge", async () => {
     const bridge = makeBridge();
     __setActiveBridgeForTest(SESSION, bridge);
 
@@ -659,21 +732,57 @@ describe("sendMessage", () => {
     expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
     expect(stateHandler).toBeDefined();
 
-    // Bridge teardown: connection state goes to `closed`. The lifecycle
-    // gate must release WITHOUT waiting for `turn/completed`.
+    // Bridge teardown: connection state goes to `closed`. The Q1
+    // lifecycle gate must release WITHOUT waiting for `turn/completed`
+    // (codex P2 round 2 contract).
     stateHandler?.("closed");
     expect(onComplete1).toHaveBeenCalledTimes(1);
 
-    // Q2 must drain. After issue #109.1 the next send's bridge-start
-    // await will see the cached active bridge (still registered for
-    // tests) and proceed to mirror + sendTurn — so Q2 reaches sendTurn
-    // on the same mock bridge.
+    // Reflect the same closed state into the runtime registry — this
+    // is what production wires up automatically through the runtime's
+    // own `onConnectionStateChange` subscriber. The test harness's
+    // `__setActiveBridgeForTest` doesn't, so we drive it explicitly to
+    // exercise the post-closed `startBridgeForSession` path.
+    __setActiveBridgeForTest(SESSION, bridge, undefined, "closed");
+
+    // The post-closed `startBridgeForSession` tears down the active
+    // bridge and creates a fresh one via `createUiProtocolBridge`. In
+    // production that's a real bridge against a real WS; in this
+    // harness we install a factory that rejects `start()` so the
+    // bridge-start branch in `enqueueSendV1` finalises Q2 immediately
+    // and onComplete2 fires. (Without the override the fresh real
+    // bridge would block on a never-resolving WS in jsdom.)
+    __bridgeFactoryOverride.current = () => ({
+      start: vi.fn(async () => {
+        throw new Error("fresh bridge: jsdom has no live WS");
+      }),
+      stop: vi.fn(async () => {}),
+      sendTurn: vi.fn(),
+      interruptTurn: vi.fn(),
+      respondToApproval: vi.fn(),
+      hydrateSession: vi.fn(async () => null),
+      callMethod: vi.fn(),
+      onMessageDelta: vi.fn(() => () => {}),
+      onMessagePersisted: vi.fn(() => () => {}),
+      onSpawnComplete: vi.fn(() => () => {}),
+      onTaskUpdated: vi.fn(() => () => {}),
+      onTaskOutputDelta: vi.fn(() => () => {}),
+      onTurnLifecycle: vi.fn(() => () => {}),
+      onApprovalRequested: vi.fn(() => () => {}),
+      onConnectionStateChange: vi.fn(() => () => {}),
+      onWarning: vi.fn(() => () => {}),
+      onSessionTitleUpdated: vi.fn(() => () => {}),
+    });
+
     for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(bridge.sendTurn).toHaveBeenCalledTimes(2);
-    expect(bridge.sendTurn).toHaveBeenLastCalledWith(
-      "cmid-Q2",
-      [{ kind: "text", text: "Q2" }],
-      undefined,
-    );
+
+    // Production contract: Q2 must complete (so the composer's
+    // sending lock clears) but the closed bridge MUST NOT see a
+    // second `sendTurn`. With the harness driven into the closed
+    // state, the bridge-start path tears down + restarts a fresh
+    // bridge — and the fresh bridge's start-fail surfaces through
+    // `enqueueSendV1`'s catch branch.
+    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
+    expect(onComplete2).toHaveBeenCalledTimes(1);
   });
 });
