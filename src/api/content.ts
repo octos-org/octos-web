@@ -1,4 +1,4 @@
-import { request, getSelectedProfileId, getToken } from "@/api/client";
+import { getSelectedProfileId, getToken } from "@/api/client";
 import { API_BASE, CONTENT_BULK_DELETE_BATCH_SIZE } from "@/lib/constants";
 import { buildFileUrl } from "@/api/files";
 import {
@@ -8,7 +8,6 @@ import {
   METHODS,
 } from "@/runtime/ui-protocol-bridge";
 import { getAnyConnectedBridge } from "@/runtime/ui-protocol-runtime";
-import { isAuxRestToWsV1Enabled } from "@/lib/feature-flags";
 
 // --- Types ---
 
@@ -41,19 +40,7 @@ export interface ContentFilters {
   sessionId?: string;
 }
 
-// ---------------------------------------------------------------------------
-// M12 Phase D-2 wrapper helpers — see header in `src/api/sessions.ts`.
-// ---------------------------------------------------------------------------
-
-function shouldUseWs(): boolean {
-  if (!isAuxRestToWsV1Enabled()) return false;
-  return getAnyConnectedBridge() !== null;
-}
-
 function translateBridgeError(err: unknown): Error {
-  // Phase D-2 intentionally does NOT trigger the REST 401 reaper on WS
-  // auth failures. See ADR PR #910 — Phase D-4 narrows the reaper scope,
-  // so cross-transport coupling here is undesirable.
   if (err instanceof BridgeRpcError) return new Error(err.message);
   if (err instanceof BridgeTimeoutError) return new Error(err.message);
   if (err instanceof BridgeStoppedError) return new Error(err.message);
@@ -76,12 +63,6 @@ async function callAuxWs<T>(method: string, params: unknown): Promise<T> {
 // --- API ---
 
 function filtersToWsParams(filters: ContentFilters): Record<string, unknown> {
-  // Server-side `ContentListParams.filters` is a free-form JSON object
-  // mirrored 1:1 onto the existing REST `ContentQuery` shape (snake_case
-  // server-side; the UI passes camelCase `sessionId`, which the REST
-  // query param flattener has historically not used — the REST `GET`
-  // accepts no sessionId at all). For WS we pass through the keys the
-  // server actually consumes.
   const filterObj: Record<string, unknown> = {};
   if (filters.category) filterObj.category = filters.category;
   if (filters.search) filterObj.search = filters.search;
@@ -94,47 +75,12 @@ function filtersToWsParams(filters: ContentFilters): Record<string, unknown> {
   return filterObj;
 }
 
-// ---------------------------------------------------------------------------
-// content/list — `GET /api/my/content`
-// ---------------------------------------------------------------------------
-
 export async function fetchContent(
   filters: ContentFilters = {},
 ): Promise<ContentQueryResult> {
-  if (shouldUseWs()) {
-    return callAuxWs<ContentQueryResult>(METHODS.CONTENT_LIST, {
-      filters: filtersToWsParams(filters),
-    });
-  }
-  const params = new URLSearchParams();
-  if (filters.category) params.set("category", filters.category);
-  if (filters.search) params.set("search", filters.search);
-  if (filters.from) params.set("from", filters.from);
-  if (filters.to) params.set("to", filters.to);
-  if (filters.sort) params.set("sort", filters.sort);
-  if (filters.limit) params.set("limit", String(filters.limit));
-  if (filters.offset) params.set("offset", String(filters.offset));
-
-  const qs = params.toString();
-  const result = await request<ContentQueryResult>(
-    `/api/my/content${qs ? `?${qs}` : ""}`,
-  );
-
-  // M12 Phase D-2: the WS path maps `sessionId` → `filters.session_id`
-  // server-side. The REST `GET /api/my/content` query string has no
-  // equivalent parameter, so we apply the same filter client-side here
-  // to keep caller-observable behavior byte-identical across transports.
-  // `content-store.ts` historically performed this filtering itself; we
-  // also keep that copy for back-compat so flag-OFF callers that bypass
-  // the store still get filtered results.
-  if (filters.sessionId) {
-    const sid = filters.sessionId;
-    const entries = (result.entries ?? []).filter((entry) =>
-      matchesContentSession(entry, sid),
-    );
-    return { entries, total: entries.length };
-  }
-  return result;
+  return callAuxWs<ContentQueryResult>(METHODS.CONTENT_LIST, {
+    filters: filtersToWsParams(filters),
+  });
 }
 
 export function matchesContentSession(
@@ -166,21 +112,9 @@ export function matchesContentSession(
   });
 }
 
-// ---------------------------------------------------------------------------
-// content/delete — `DELETE /api/my/content/:id`
-// ---------------------------------------------------------------------------
-
 export async function deleteContent(id: string): Promise<void> {
-  if (shouldUseWs()) {
-    await callAuxWs<{ deleted: boolean }>(METHODS.CONTENT_DELETE, { id });
-    return;
-  }
-  await request(`/api/my/content/${id}`, { method: "DELETE" });
+  await callAuxWs<{ deleted: boolean }>(METHODS.CONTENT_DELETE, { id });
 }
-
-// ---------------------------------------------------------------------------
-// content/bulk_delete — `POST /api/my/content/bulk-delete`
-// ---------------------------------------------------------------------------
 
 export interface BulkDeleteResult {
   deleted_count: number;
@@ -191,10 +125,7 @@ export interface BulkDeleteResult {
  * Delete a batch of content entries, chunked client-side to
  * `CONTENT_BULK_DELETE_BATCH_SIZE` (256) per request.
  *
- * The server-side WS dispatcher caps `content/bulk_delete` at 256 IDs,
- * while the REST endpoint has no equivalent visible cap. Chunking in
- * both transports keeps behavior consistent regardless of the flag
- * state and lets large bulk-deletes succeed under either path.
+ * The server-side WS dispatcher caps `content/bulk_delete` at 256 IDs.
  *
  * Returns a `BulkDeleteResult` so callers can surface partial-failure
  * semantics — earlier chunks may have committed even if a later one
@@ -218,29 +149,17 @@ export async function bulkDeleteContent(
 
   for (const chunk of chunks) {
     try {
-      if (shouldUseWs()) {
-        const out = await callAuxWs<{ deleted?: number }>(
-          METHODS.CONTENT_BULK_DELETE,
-          { ids: chunk },
-        );
-        deletedCount += out?.deleted ?? chunk.length;
-      } else {
-        await request("/api/my/content/bulk-delete", {
-          method: "POST",
-          body: JSON.stringify({ ids: chunk }),
-        });
-        // REST endpoint returns 204 with no body — assume full success
-        // for the chunk on a 2xx response.
-        deletedCount += chunk.length;
-      }
+      const out = await callAuxWs<{ deleted?: number }>(
+        METHODS.CONTENT_BULK_DELETE,
+        { ids: chunk },
+      );
+      deletedCount += out?.deleted ?? chunk.length;
     } catch (err) {
       // Aggregate failures so partially-successful batches still report
       // useful progress to the caller. Don't rethrow mid-loop: chunks
       // after a failure are also recorded as failed to preserve the
       // caller's view of "these IDs were not deleted".
       failedIds.push(...chunk);
-      // Best-effort: drop the error onto the console so callers that
-      // ignore the return shape still see something in the devtools.
       console.warn("[octos] bulkDeleteContent chunk failed", err);
     }
   }

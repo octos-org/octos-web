@@ -34,10 +34,53 @@ import {
   ingest as projectionIngest,
   projectionStoreKey,
 } from "./projection-store";
+import {
+  __resetUiProtocolRuntimeForTest,
+  __setActiveBridgeForTest,
+} from "@/runtime/ui-protocol-runtime";
+import { METHODS, type UiProtocolBridge } from "@/runtime/ui-protocol-bridge";
+
+function stubBridgeForMessagesPage(messages: unknown[]): {
+  callCount: () => number;
+} {
+  let count = 0;
+  const stub: Partial<UiProtocolBridge> = {
+    callMethod: async <T,>(method: string): Promise<T> => {
+      if (method === METHODS.SESSION_MESSAGES_PAGE) {
+        count += 1;
+        return {
+          messages,
+          has_more: false,
+          next_offset: messages.length,
+        } as T;
+      }
+      throw new Error("unexpected method: " + method);
+    },
+    start: async () => {},
+    stop: async () => {},
+    sendTurn: () => Promise.reject(new Error("not used")),
+    interruptTurn: () => Promise.reject(new Error("not used")),
+    respondToApproval: () => Promise.reject(new Error("not used")),
+    hydrateSession: () => Promise.resolve(null),
+    onMessageDelta: () => () => {},
+    onMessagePersisted: () => () => {},
+    onSpawnComplete: () => () => {},
+    onTaskUpdated: () => () => {},
+    onTaskOutputDelta: () => () => {},
+    onTurnLifecycle: () => () => {},
+    onApprovalRequested: () => () => {},
+    onConnectionStateChange: () => () => {},
+    getConnectionState: () => "connected" as const,
+    onWarning: () => () => {},
+  };
+  __setActiveBridgeForTest("any", stub as UiProtocolBridge);
+  return { callCount: () => count };
+}
 
 afterEach(() => {
   ThreadStore.__resetForTests();
   __resetProjectionForTests();
+  __resetUiProtocolRuntimeForTest();
   vi.unstubAllGlobals();
 });
 
@@ -400,20 +443,10 @@ describe.each(FLAG_STATES)("thread-store [$label]", ({ projectionV1 }) => {
       },
     ];
 
-    const fetchMock = vi.fn(async (url: string | URL | Request) => {
-      const path = typeof url === "string" ? url : url.toString();
-      expect(path).toContain(
-        `/api/sessions/${encodeURIComponent(SESSION)}/messages`,
-      );
-      return new Response(JSON.stringify(messages), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    });
-    vi.stubGlobal("fetch", fetchMock);
+    const { callCount } = stubBridgeForMessagesPage(messages);
 
     await ThreadStore.loadHistory(SESSION);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(callCount()).toBe(1);
 
     const threads = ThreadStore.getThreads(SESSION);
     expect(threads.map((t) => t.id)).toEqual(["cmid-1", "cmid-2"]);
@@ -426,12 +459,12 @@ describe.each(FLAG_STATES)("thread-store [$label]", ({ projectionV1 }) => {
 
     // Second call is a no-op — already loaded for this session/topic key.
     await ThreadStore.loadHistory(SESSION);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(callCount()).toBe(1);
 
     // `force: true` bypasses the cache so the mount-effect retry can recover
     // from server persistence latency that returned a partial first fetch.
     await ThreadStore.loadHistory(SESSION, undefined, { force: true });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(callCount()).toBe(2);
   });
 
   // ---------------------------------------------------------------------------
@@ -546,16 +579,7 @@ describe.each(FLAG_STATES)("thread-store [$label]", ({ projectionV1 }) => {
       },
     ];
 
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(JSON.stringify(messages), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-      ),
-    );
+    stubBridgeForMessagesPage(messages);
 
     await ThreadStore.loadHistory(SESSION);
 
