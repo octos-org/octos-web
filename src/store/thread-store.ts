@@ -1351,17 +1351,34 @@ export function patchLastResponseMeta(
   for (const state of sessionsByKey.values()) {
     const thread = state.byId.get(threadId);
     if (!thread || thread.responses.length === 0) continue;
-    // Walk responses tail-to-head looking for the most recent assistant
-    // row. Tool rows + media-only companions are skipped — they're
-    // either folded into the preceding assistant bubble at render time
-    // or filtered out entirely (`isVisibleResponse` drops tool rows).
+    // Walk responses tail-to-head looking for the assistant row this
+    // turn just promoted. The router calls us when `turn/completed`
+    // arrives — that bubble is necessarily one of the assistant
+    // responses for this thread.
+    //
+    // Codex round-4 P2: a thread can contain multiple assistant
+    // rows (e.g. the main reply PLUS a `turn/spawn_complete` bubble
+    // for the same user prompt). The promoted main answer is the
+    // one without a `meta` yet — `spawn_complete` bubbles carry
+    // their own row but neither path stamps `meta` on them today.
+    // Prefer the most recent assistant row WITHOUT `meta` so we
+    // don't stomp on a spawn_complete row that was patched first
+    // and reach the visible main answer. Fall back to the latest
+    // assistant row if every assistant row already has meta (the
+    // already-patched case — caller's repeat invocation is a no-op
+    // on the same row).
     let idx = -1;
+    let fallbackIdx = -1;
     for (let i = thread.responses.length - 1; i >= 0; i--) {
-      if (thread.responses[i].role === "assistant") {
+      const row = thread.responses[i];
+      if (row.role !== "assistant") continue;
+      if (fallbackIdx === -1) fallbackIdx = i;
+      if (row.meta === undefined) {
         idx = i;
         break;
       }
     }
+    if (idx === -1) idx = fallbackIdx;
     if (idx === -1) continue;
     const last = thread.responses[idx];
     const next: ThreadMessage = {

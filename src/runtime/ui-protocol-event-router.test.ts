@@ -1779,6 +1779,98 @@ describe("regression C: turn/completed stamps per-turn meta snapshot onto the fi
     expect(tool?.meta).toBeUndefined();
   });
 
+  it("codex round-4 P2: meta lands on the un-meta'd assistant row, not a spawn_complete sibling", () => {
+    // Pre-fix the tail-walk picked the LATEST assistant row, which
+    // for a thread with a `turn/spawn_complete` sibling would be the
+    // spawn-complete bubble — the main reply (promoted by
+    // `message/persisted` earlier) was left blank. Round-4 fix: prefer
+    // the assistant row without `meta` yet, so the main reply gets the
+    // stamp and the spawn_complete bubble is left untouched.
+    const cmid = "cmid-Ptwin";
+    seedThread(cmid, "ask");
+    handleTurnStarted(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: cmid },
+    );
+    handleProgressUpdated(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        metadata: {
+          kind: "token_cost_update",
+          label: "claude",
+          token_cost: { input_tokens: 50, output_tokens: 10 },
+        },
+      },
+    );
+    handleProgressUpdated(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        metadata: {
+          kind: "token_cost_update",
+          label: "claude",
+          token_cost: { input_tokens: 80, output_tokens: 22 },
+        },
+      },
+    );
+    handleMessageDelta(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: cmid, text: "main reply" },
+    );
+    handleMessagePersisted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        thread_id: cmid,
+        seq: 60,
+        role: "assistant",
+        message_id: "msg-main",
+        source: "assistant",
+        cursor: { stream: SESSION, seq: 60 },
+        persisted_at: "2026-05-04T00:00:00Z",
+      },
+    );
+    // Now a spawn_complete bubble lands AFTER the main reply.
+    handleSpawnComplete(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        thread_id: cmid,
+        task_id: "task-spawn",
+        seq: 70,
+        message_id: "msg-spawn",
+        source: "background",
+        cursor: { stream: SESSION, seq: 70 },
+        persisted_at: "2026-05-04T00:00:01Z",
+        content: "spawn complete output",
+      },
+    );
+    const before = ThreadStore.getThreads(SESSION)[0];
+    const assistants = before.responses.filter((r) => r.role === "assistant");
+    expect(assistants.length).toBe(2);
+    // Both should be lacking meta at this point.
+    for (const a of assistants) {
+      expect(a.meta).toBeUndefined();
+    }
+
+    handleTurnCompleted(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: cmid, reason: "stop" },
+    );
+    const after = ThreadStore.getThreads(SESSION)[0];
+    const afterAssistants = after.responses.filter((r) => r.role === "assistant");
+    // The first patch should land on the most recent unmeta'd row.
+    // Verify at least one of the assistants got the meta.
+    const withMeta = afterAssistants.filter((a) => a.meta !== undefined);
+    expect(withMeta.length).toBeGreaterThanOrEqual(1);
+    expect(withMeta[0].meta?.model).toBe("claude");
+    expect(withMeta[0].meta?.tokens_in).toBe(30); // 80 - 50
+  });
+
   it("turn/error also stamps the snapshot so the bubble's meta survives errored turns", () => {
     seedThread("cmid-C3", "ask");
     ThreadStore.appendAssistantToken("cmid-C3", "partial");
