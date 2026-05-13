@@ -832,10 +832,36 @@ export function handleProgressUpdated(
   if (event.turn_id) {
     const snap = turnMetaByTurnId.get(event.turn_id) ?? {};
     if (modelLabel) snap.model = modelLabel;
-    const baseline = lastTurnEndCumulativeBySession.get(cfg.sessionId) ?? {
-      inputTokens: 0,
-      outputTokens: 0,
-    };
+    // Codex round-3 P2: when no per-session baseline exists yet (first
+    // turn after page reload / fresh session restore), the
+    // `progress/updated` payload's cumulative counters include
+    // pre-reload history we never saw. Falling back to a zero
+    // baseline would attribute ALL of those historical tokens to
+    // this turn's footer. Instead, seed the baseline from the FIRST
+    // cumulative we observe — that gives us a conservative delta = 0
+    // on the seeding frame and the delta grows monotonically for
+    // subsequent frames within the same turn. Trade-off: a restored
+    // session loses precise per-turn breakdown for the FIRST turn
+    // post-reload (footer shows "0 in / 0 out" if only one cost
+    // frame ever arrives that turn), but never shows misleading
+    // session totals. A subsequent server-side surface that
+    // exposes per-turn rather than cumulative counters would let
+    // us drop this seeding heuristic entirely.
+    const existing = lastTurnEndCumulativeBySession.get(cfg.sessionId);
+    const baseline =
+      existing ??
+      (() => {
+        // Self-seeding: snapshot the first observed cumulative as
+        // the baseline. This means turn N (first after reload) gets
+        // delta == 0; turn N+1 gets a real delta against THIS
+        // turn's last observed cumulative.
+        const seeded = {
+          inputTokens: typeof inputTokens === "number" ? inputTokens : 0,
+          outputTokens: typeof outputTokens === "number" ? outputTokens : 0,
+        };
+        lastTurnEndCumulativeBySession.set(cfg.sessionId, seeded);
+        return seeded;
+      })();
     if (typeof inputTokens === "number") {
       snap.baselineInputTokens = baseline.inputTokens;
       snap.latestCumulativeInputTokens = inputTokens;

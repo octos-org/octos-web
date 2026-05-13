@@ -1392,7 +1392,9 @@ describe("regression C: turn/completed stamps per-turn meta snapshot onto the fi
       { sessionId: SESSION },
       { session_id: SESSION, turn_id: "cmid-C1" },
     );
-    // A cost frame mid-turn populates the snapshot.
+    // TWO cost frames so we get a real delta (the first frame just
+    // sets the baseline per codex round-3 P2 — see the multi-frame
+    // turn test below for the rationale).
     handleProgressUpdated(
       { sessionId: SESSION },
       {
@@ -1401,7 +1403,19 @@ describe("regression C: turn/completed stamps per-turn meta snapshot onto the fi
         metadata: {
           kind: "token_cost_update",
           label: "moonshot@autodl/kimi-k2.5",
-          token_cost: { input_tokens: 100, output_tokens: 20 },
+          token_cost: { input_tokens: 50, output_tokens: 5 },
+        },
+      },
+    );
+    handleProgressUpdated(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-C1",
+        metadata: {
+          kind: "token_cost_update",
+          label: "moonshot@autodl/kimi-k2.5",
+          token_cost: { input_tokens: 150, output_tokens: 25 },
         },
       },
     );
@@ -1414,19 +1428,30 @@ describe("regression C: turn/completed stamps per-turn meta snapshot onto the fi
     const meta = thread.responses[0].meta;
     expect(meta).toBeDefined();
     expect(meta!.model).toBe("moonshot@autodl/kimi-k2.5");
-    expect(meta!.tokens_in).toBe(100);
-    expect(meta!.tokens_out).toBe(20);
+    expect(meta!.tokens_in).toBe(100); // 150 - 50 baseline
+    expect(meta!.tokens_out).toBe(20); // 25 - 5 baseline
     // duration_s is computed from `nowMs() - firstSeenAtMs`; under
     // synchronous test execution it should be a tiny non-negative
     // number. Asserting `>= 0` keeps the test stable across hosts.
     expect(meta!.duration_s).toBeGreaterThanOrEqual(0);
   });
 
-  it("codex round-2 P2: per-turn meta tokens are the DELTA, not session cumulative totals", () => {
-    // Wire ordering: turn-1 emits one cost frame; turn-2 emits another
-    // whose `input_tokens` / `output_tokens` reflect the
-    // session-cumulative growth. The finalised bubble for turn-2 must
-    // show DELTA tokens (turn-2 alone), not session totals.
+  it("codex round-2 + 3 P2: per-turn meta tokens are the DELTA, not session cumulative totals", () => {
+    // Wire ordering: turn-1 emits one cost frame, then turn-2's
+    // frame whose `input_tokens` / `output_tokens` reflect
+    // session-cumulative growth across both turns. The finalised
+    // bubble for turn-2 must show the DELTA (turn-2 alone), not the
+    // session-total.
+    //
+    // Codex round-3 P2 follow-up: the FIRST turn after a fresh
+    // session/restore has no baseline yet, so the snapshot self-seeds
+    // from the first observed cumulative — turn-1's footer shows
+    // tokens_in/out=0 (delta against itself). This is the conservative
+    // fallback for the restored-session case the codex review flagged;
+    // a fresh session does the same thing because the runtime can't
+    // distinguish the two. The PR description explains the trade-off
+    // and links a follow-up issue for a per-turn rather than
+    // cumulative counter on the server surface.
     seedThread("cmid-T1", "first ask");
     ThreadStore.appendAssistantToken("cmid-T1", "first reply");
     handleTurnStarted(
@@ -1449,11 +1474,13 @@ describe("regression C: turn/completed stamps per-turn meta snapshot onto the fi
       { sessionId: SESSION },
       { session_id: SESSION, turn_id: "cmid-T1", reason: "stop" },
     );
+    // Turn-1: cumulative=(100,20), baseline self-seeded to (100,20),
+    // delta=(0,0). Footer text effectively omits tokens.
     let [thread] = ThreadStore.getThreads(SESSION);
-    expect(thread.responses[0].meta?.tokens_in).toBe(100);
-    expect(thread.responses[0].meta?.tokens_out).toBe(20);
+    expect(thread.responses[0].meta?.tokens_in).toBe(0);
+    expect(thread.responses[0].meta?.tokens_out).toBe(0);
 
-    // Turn 2: cumulative is 250 / 60. Per-turn delta is 150 / 40.
+    // Turn 2: cumulative is (250, 60); per-turn delta is (150, 40).
     seedThread("cmid-T2", "second ask");
     ThreadStore.appendAssistantToken("cmid-T2", "second reply");
     handleTurnStarted(
@@ -1484,6 +1511,52 @@ describe("regression C: turn/completed stamps per-turn meta snapshot onto the fi
     expect(turn2.meta?.tokens_out).toBe(40); // 60 - 20 baseline
   });
 
+  it("codex round-3 P2: multi-frame turn within a session computes delta against baseline correctly", () => {
+    // Within a single turn, multiple `progress/updated` frames carry
+    // the same cumulative growing across the turn. The DELTA should
+    // always be against the per-session baseline, not the first frame
+    // we saw this turn.
+    seedThread("cmid-multi", "ask");
+    ThreadStore.appendAssistantToken("cmid-multi", "reply");
+    handleTurnStarted(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: "cmid-multi" },
+    );
+    // Two frames in this turn — first sets the baseline self-seed,
+    // second should derive a non-zero delta against that baseline.
+    handleProgressUpdated(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-multi",
+        metadata: {
+          kind: "token_cost_update",
+          label: "test",
+          token_cost: { input_tokens: 1000, output_tokens: 100 },
+        },
+      },
+    );
+    handleProgressUpdated(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-multi",
+        metadata: {
+          kind: "token_cost_update",
+          label: "test",
+          token_cost: { input_tokens: 1050, output_tokens: 130 },
+        },
+      },
+    );
+    handleTurnCompleted(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: "cmid-multi", reason: "stop" },
+    );
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses[0].meta?.tokens_in).toBe(50); // 1050 - 1000
+    expect(thread.responses[0].meta?.tokens_out).toBe(30); // 130 - 100
+  });
+
   it("turn/completed without any cost snapshot still finalises the bubble (no meta)", () => {
     seedThread("cmid-C2", "ask");
     ThreadStore.appendAssistantToken("cmid-C2", "Hello.");
@@ -1509,6 +1582,8 @@ describe("regression C: turn/completed stamps per-turn meta snapshot onto the fi
       { sessionId: SESSION },
       { session_id: SESSION, turn_id: cmid },
     );
+    // TWO frames (codex round-3 P2: first frame seeds baseline, second
+    // gives the real delta).
     handleProgressUpdated(
       { sessionId: SESSION },
       {
@@ -1517,7 +1592,19 @@ describe("regression C: turn/completed stamps per-turn meta snapshot onto the fi
         metadata: {
           kind: "token_cost_update",
           label: "moonshot@autodl/kimi-k2.5",
-          token_cost: { input_tokens: 9000, output_tokens: 300 },
+          token_cost: { input_tokens: 4000, output_tokens: 100 },
+        },
+      },
+    );
+    handleProgressUpdated(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        metadata: {
+          kind: "token_cost_update",
+          label: "moonshot@autodl/kimi-k2.5",
+          token_cost: { input_tokens: 13000, output_tokens: 400 },
         },
       },
     );
@@ -1554,8 +1641,94 @@ describe("regression C: turn/completed stamps per-turn meta snapshot onto the fi
     );
     const [thread] = ThreadStore.getThreads(SESSION);
     expect(thread.responses[0].meta?.model).toBe("moonshot@autodl/kimi-k2.5");
-    expect(thread.responses[0].meta?.tokens_in).toBe(9000);
-    expect(thread.responses[0].meta?.tokens_out).toBe(300);
+    expect(thread.responses[0].meta?.tokens_in).toBe(9000); // 13000 - 4000
+    expect(thread.responses[0].meta?.tokens_out).toBe(300); // 400 - 100
+  });
+
+  it("codex round-3 P2: patchLastResponseMeta targets the assistant row, not a tool/media tail", () => {
+    // After `message/persisted` promotes the text assistant, a
+    // subsequent tool result or media companion can land as the new
+    // tail of `responses`. The naive tail-stamp would put the meta
+    // on the wrong row and leave the visible answer blank. The fix
+    // walks the responses tail-to-head looking for an assistant row.
+    const cmid = "cmid-Ptail";
+    seedThread(cmid, "ask");
+    handleTurnStarted(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: cmid },
+    );
+    handleProgressUpdated(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        metadata: {
+          kind: "token_cost_update",
+          label: "claude",
+          token_cost: { input_tokens: 50, output_tokens: 10 },
+        },
+      },
+    );
+    handleProgressUpdated(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        metadata: {
+          kind: "token_cost_update",
+          label: "claude",
+          token_cost: { input_tokens: 120, output_tokens: 25 },
+        },
+      },
+    );
+    handleMessageDelta(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: cmid, text: "answer text" },
+    );
+    handleMessagePersisted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        thread_id: cmid,
+        seq: 50,
+        role: "assistant",
+        message_id: "msg-assistant",
+        source: "assistant",
+        cursor: { stream: SESSION, seq: 50 },
+        persisted_at: "2026-05-04T00:00:00Z",
+      },
+    );
+    // Inject a tool row after the assistant promotion. The tail of
+    // responses is now this tool row, NOT the assistant answer.
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      role: "tool",
+      content: "tool output",
+      thread_id: cmid,
+      timestamp: "2026-05-04T00:00:01Z",
+      seq: 51,
+    });
+    const beforeCompleted = ThreadStore.getThreads(SESSION)[0];
+    // The assistant row is responses[0]; some tool row is responses[1].
+    expect(beforeCompleted.responses.length).toBeGreaterThanOrEqual(2);
+    const tailRoleBefore =
+      beforeCompleted.responses[beforeCompleted.responses.length - 1].role;
+    expect(tailRoleBefore).toBe("tool");
+
+    handleTurnCompleted(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: cmid, reason: "stop" },
+    );
+    const [thread] = ThreadStore.getThreads(SESSION);
+    // Find the assistant response by role — that's the one that
+    // should now carry the meta.
+    const assistant = thread.responses.find((r) => r.role === "assistant");
+    expect(assistant).toBeDefined();
+    expect(assistant!.meta?.model).toBe("claude");
+    expect(assistant!.meta?.tokens_in).toBe(70); // 120 - 50 baseline
+    // The tool row must NOT have been stamped.
+    const tool = thread.responses.find((r) => r.role === "tool");
+    expect(tool?.meta).toBeUndefined();
   });
 
   it("turn/error also stamps the snapshot so the bubble's meta survives errored turns", () => {
