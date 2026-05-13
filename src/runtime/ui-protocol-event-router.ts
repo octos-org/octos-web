@@ -106,10 +106,19 @@ const turnMetaByTurnId = new Map<string, TurnMetaSnapshot>();
 /** Session-cumulative token totals at the close of the most recent
  *  turn. The next turn's baseline = this value, so its per-turn delta
  *  comes out as `latest - lastTurnEndCumulative`. Keyed by `sessionId`
- *  so cross-session leakage can't happen. Codex round-2 P2 fix. */
+ *  so cross-session leakage can't happen. Codex round-2 P2 fix.
+ *
+ *  Codex round-4: each counter is independently optional — a server
+ *  frame may carry only `output_tokens` (or only `session_cost` and
+ *  no token counters at all). We seed each counter's baseline ONLY
+ *  when that specific counter is observed. Otherwise a later frame's
+ *  first `input_tokens` value would get attributed in full to the
+ *  current turn (as if baseline=0), which is exactly the
+ *  session-cumulative-leak the round-3 self-seeding heuristic tried
+ *  to prevent. */
 const lastTurnEndCumulativeBySession = new Map<
   string,
-  { inputTokens: number; outputTokens: number }
+  { inputTokens?: number; outputTokens?: number }
 >();
 
 /** `tool_call_id` → `tool_name` map, populated by `tool/started` so a
@@ -532,16 +541,13 @@ export function handleTurnCompleted(
     const elapsedMs = Math.max(0, nowMs() - snap.firstSeenAtMs);
     snap.durationS = Math.round((elapsedMs / 1000) * 10) / 10;
   }
-  // Codex round-2 P2: roll the session-cumulative baseline forward so
-  // the next turn's per-turn delta is correct. We use the latest
-  // cumulative we saw on a cost frame this turn (which is the
-  // session-end total for this turn); if we never saw a cost frame,
-  // we preserve the existing baseline rather than zeroing it.
+  // Codex round-2/4 P2: roll the session-cumulative baseline forward
+  // so the next turn's per-turn delta is correct. Use the latest
+  // cumulative we saw on a cost frame this turn (per-counter); if a
+  // counter never appeared this turn, preserve the existing baseline
+  // for that counter rather than zeroing it.
   if (snap?.latestCumulativeInputTokens !== undefined || snap?.latestCumulativeOutputTokens !== undefined) {
-    const prior = lastTurnEndCumulativeBySession.get(cfg.sessionId) ?? {
-      inputTokens: 0,
-      outputTokens: 0,
-    };
+    const prior = lastTurnEndCumulativeBySession.get(cfg.sessionId) ?? {};
     lastTurnEndCumulativeBySession.set(cfg.sessionId, {
       inputTokens: snap.latestCumulativeInputTokens ?? prior.inputTokens,
       outputTokens: snap.latestCumulativeOutputTokens ?? prior.outputTokens,
@@ -587,10 +593,7 @@ export function handleTurnError(
     snap.durationS = Math.round((elapsedMs / 1000) * 10) / 10;
   }
   if (snap?.latestCumulativeInputTokens !== undefined || snap?.latestCumulativeOutputTokens !== undefined) {
-    const prior = lastTurnEndCumulativeBySession.get(cfg.sessionId) ?? {
-      inputTokens: 0,
-      outputTokens: 0,
-    };
+    const prior = lastTurnEndCumulativeBySession.get(cfg.sessionId) ?? {};
     lastTurnEndCumulativeBySession.set(cfg.sessionId, {
       inputTokens: snap.latestCumulativeInputTokens ?? prior.inputTokens,
       outputTokens: snap.latestCumulativeOutputTokens ?? prior.outputTokens,
@@ -832,45 +835,42 @@ export function handleProgressUpdated(
   if (event.turn_id) {
     const snap = turnMetaByTurnId.get(event.turn_id) ?? {};
     if (modelLabel) snap.model = modelLabel;
-    // Codex round-3 P2: when no per-session baseline exists yet (first
-    // turn after page reload / fresh session restore), the
+    // Codex round-3/4 P2: when no per-counter baseline exists yet
+    // (first turn after page reload / fresh session restore), the
     // `progress/updated` payload's cumulative counters include
-    // pre-reload history we never saw. Falling back to a zero
-    // baseline would attribute ALL of those historical tokens to
-    // this turn's footer. Instead, seed the baseline from the FIRST
-    // cumulative we observe — that gives us a conservative delta = 0
-    // on the seeding frame and the delta grows monotonically for
-    // subsequent frames within the same turn. Trade-off: a restored
-    // session loses precise per-turn breakdown for the FIRST turn
-    // post-reload (footer shows "0 in / 0 out" if only one cost
-    // frame ever arrives that turn), but never shows misleading
-    // session totals. A subsequent server-side surface that
-    // exposes per-turn rather than cumulative counters would let
-    // us drop this seeding heuristic entirely.
-    const existing = lastTurnEndCumulativeBySession.get(cfg.sessionId);
-    const baseline =
-      existing ??
-      (() => {
-        // Self-seeding: snapshot the first observed cumulative as
-        // the baseline. This means turn N (first after reload) gets
-        // delta == 0; turn N+1 gets a real delta against THIS
-        // turn's last observed cumulative.
-        const seeded = {
-          inputTokens: typeof inputTokens === "number" ? inputTokens : 0,
-          outputTokens: typeof outputTokens === "number" ? outputTokens : 0,
-        };
-        lastTurnEndCumulativeBySession.set(cfg.sessionId, seeded);
-        return seeded;
-      })();
+    // pre-reload history we never saw. Self-seed from the FIRST
+    // observed value of EACH counter independently — a frame that
+    // carries only `output_tokens` should NOT pin
+    // `inputTokens.baseline = 0` (round-4 fix), because the next
+    // frame's first `input_tokens` would then be attributed in full
+    // to this turn (defeating the round-3 anti-leak).
+    const existing = lastTurnEndCumulativeBySession.get(cfg.sessionId) ?? {};
+    let baselineIn = existing.inputTokens;
+    let baselineOut = existing.outputTokens;
+    if (typeof inputTokens === "number" && baselineIn === undefined) {
+      baselineIn = inputTokens;
+    }
+    if (typeof outputTokens === "number" && baselineOut === undefined) {
+      baselineOut = outputTokens;
+    }
+    // Persist the self-seeded baselines back to the session map so a
+    // later frame in the same turn doesn't re-seed against a fresh
+    // initial value.
+    lastTurnEndCumulativeBySession.set(cfg.sessionId, {
+      inputTokens: baselineIn,
+      outputTokens: baselineOut,
+    });
     if (typeof inputTokens === "number") {
-      snap.baselineInputTokens = baseline.inputTokens;
+      snap.baselineInputTokens = baselineIn;
       snap.latestCumulativeInputTokens = inputTokens;
-      snap.tokensIn = Math.max(0, inputTokens - baseline.inputTokens);
+      // `baselineIn` is guaranteed defined when `inputTokens` is a
+      // number because we seed it on the same frame.
+      snap.tokensIn = Math.max(0, inputTokens - (baselineIn ?? 0));
     }
     if (typeof outputTokens === "number") {
-      snap.baselineOutputTokens = baseline.outputTokens;
+      snap.baselineOutputTokens = baselineOut;
       snap.latestCumulativeOutputTokens = outputTokens;
-      snap.tokensOut = Math.max(0, outputTokens - baseline.outputTokens);
+      snap.tokensOut = Math.max(0, outputTokens - (baselineOut ?? 0));
     }
     if (snap.firstSeenAtMs === undefined) snap.firstSeenAtMs = nowMs();
     turnMetaByTurnId.set(event.turn_id, snap);

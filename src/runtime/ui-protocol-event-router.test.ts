@@ -1645,6 +1645,54 @@ describe("regression C: turn/completed stamps per-turn meta snapshot onto the fi
     expect(thread.responses[0].meta?.tokens_out).toBe(300); // 400 - 100
   });
 
+  it("codex round-4 P2: counter baselines seed independently per-counter", () => {
+    // Frame 1 carries only output_tokens. Round-3 self-seed pinned
+    // inputTokens baseline to 0; a later frame's first input_tokens
+    // value of 9000 was then attributed in full to this turn. Round-4
+    // fix: each counter seeds INDEPENDENTLY when first observed.
+    seedThread("cmid-RT4", "ask");
+    handleTurnStarted(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: "cmid-RT4" },
+    );
+    // Frame 1: output_tokens only.
+    handleProgressUpdated(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-RT4",
+        metadata: {
+          kind: "token_cost_update",
+          label: "test",
+          token_cost: { output_tokens: 80 },
+        },
+      },
+    );
+    // Frame 2: introduces input_tokens for the first time. Its
+    // baseline must self-seed here (not be pinned to 0 by frame 1).
+    handleProgressUpdated(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-RT4",
+        metadata: {
+          kind: "token_cost_update",
+          label: "test",
+          token_cost: { input_tokens: 9000, output_tokens: 90 },
+        },
+      },
+    );
+    handleTurnCompleted(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: "cmid-RT4", reason: "stop" },
+    );
+    const [thread] = ThreadStore.getThreads(SESSION);
+    // tokens_in must be 0 (frame 2 = self-seed baseline for input),
+    // NOT 9000 (the historical cumulative).
+    expect(thread.responses[0].meta?.tokens_in).toBe(0);
+    expect(thread.responses[0].meta?.tokens_out).toBe(10); // 90 - 80
+  });
+
   it("codex round-3 P2: patchLastResponseMeta targets the assistant row, not a tool/media tail", () => {
     // After `message/persisted` promotes the text assistant, a
     // subsequent tool result or media companion can land as the new
