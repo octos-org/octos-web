@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef } from "react";
 
-import { buildApiHeaders } from "@/api/client";
 import { ChatThread } from "@/components/chat-thread";
-import { API_BASE } from "@/lib/constants";
 import { SessionContext, useModeState } from "@/runtime/session-context";
+import { ScopedRuntimeBridge } from "@/runtime/runtime-provider";
+import { sendMessage as bridgeSend } from "@/runtime/ui-protocol-send";
 import * as ThreadStore from "@/store/thread-store";
 
 import { buildSlidesSlug } from "../api";
@@ -39,30 +39,25 @@ export function SlidesChat({ sessionId }: Props) {
     }
 
     const slug = projectSlug || buildSlidesSlug(projectTitle, projectId);
-    const abort = new AbortController();
     scaffoldStartedRef.current = true;
 
-    void fetch(`${API_BASE}/api/chat`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...buildApiHeaders(),
-      },
-      body: JSON.stringify({
-        message: `/new slides ${slug}`,
-        session_id: sessionId,
-      }),
-      signal: abort.signal,
-    })
-      .then(async (resp) => {
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    // Issue #112.2: pre-fix this POSTed to `/api/chat`, the retired
+    // SSE chat transport. Route the scaffold prompt through the WS
+    // bridge via `bridgeSend` — same path the user composer uses, so
+    // the slides scope's bridge handles the turn lifecycle natively.
+    // Persistence success isn't waited on inline (the bridge fires
+    // `turn/completed` async); we mark scaffolded optimistically so
+    // the editor unblocks. If the scaffold turn errors the user
+    // sees it surface as a normal assistant error bubble in the
+    // embedded chat — same recovery path as a manual prompt.
+    bridgeSend({
+      sessionId,
+      text: `/new slides ${slug}`,
+      media: [],
+      onComplete: () => {
         save({ scaffolded: true, slug });
-      })
-      .catch(() => {
-        scaffoldStartedRef.current = false;
-      });
-
-    return () => abort.abort();
+      },
+    });
   }, [
     projectId,
     projectScaffolded,
@@ -100,20 +95,22 @@ export function SlidesChat({ sessionId }: Props) {
 
   return (
     <SessionContext.Provider value={sessionValue}>
-      <div className="flex flex-col h-full">
-        <div className="px-3 py-2 border-b border-border">
-          <p className="text-xs text-muted truncate">
-            {project?.title || "Slides Agent"}
-          </p>
-          <SlidesTaskStatusIndicator
-            sessionId={sessionId}
-            historyTopic={historyTopic}
-          />
+      <ScopedRuntimeBridge>
+        <div className="flex flex-col h-full">
+          <div className="px-3 py-2 border-b border-border">
+            <p className="text-xs text-muted truncate">
+              {project?.title || "Slides Agent"}
+            </p>
+            <SlidesTaskStatusIndicator
+              sessionId={sessionId}
+              historyTopic={historyTopic}
+            />
+          </div>
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <ChatThread hideFileOnlyAssistantMessages />
+          </div>
         </div>
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <ChatThread hideFileOnlyAssistantMessages />
-        </div>
-      </div>
+      </ScopedRuntimeBridge>
     </SessionContext.Provider>
   );
 }

@@ -95,7 +95,11 @@ function synthesizeTaskProgressLine(
   }
 }
 
-/** Tracks which sessions have been mounted so we can evict old ones. */
+/** Tracks which sessions have been mounted so we can evict old ones.
+ *  Exported as `ScopedRuntimeBridge` so embedded chat surfaces
+ *  (slides/sites) can wire the bridge into their own
+ *  `SessionContext.Provider` scope without nesting two SessionProviders.
+ *  Issue #112.2. */
 function RuntimeWithSession({ children }: { children: ReactNode }) {
   const { currentSessionId, historyTopic, setServerTaskActive } = useSession();
   const mountedRef = useRef(new Set<string>());
@@ -137,20 +141,15 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
   }, [currentSessionId, historyTopic]);
 
   // Mount the UI Protocol v1 `ui-protocol-bridge` over WS for every
-  // root-scope chat session. Topic-scoped sessions (sites/slides,
-  // `/new <topic>`) skip the bridge entirely until the WS protocol
-  // carries `topic`: `session/open` and `TurnStartInput` only carry
-  // `sessionId`, so a bridge mounted under an active topic would route
-  // root-session notifications into the topic's ThreadStore and render
-  // unrelated root messages there. (codex review M10.5 round 3 P2.)
-  // The bridge owns the streaming-turn slice; the router fans bridge
-  // events out to ThreadStore mutations. M9-α-5/α-6: the legacy SSE
-  // `/api/chat` POST has been deleted, so media / voice / topic-scoped
-  // sends temporarily error out until the WS protocol's
-  // `TurnStartInput` is extended (M9-β follow-up).
+  // chat session, INCLUDING topic-scoped ones (sites/slides,
+  // `/new <topic>`). Issue #112.1: pre-fix the effect short-circuited
+  // when `historyTopic` was non-empty, so topic-scoped sends saw
+  // `getActiveBridge(sessionId, topic) === null` and failed with
+  // "bridge unavailable". The router already passes `topic` through
+  // on every event so event-scoping is correct; the M9-β-1 wire
+  // shape carries `topic` on `turn/start` so the server processes
+  // topic-scoped turns natively.
   useEffect(() => {
-    const topicTrimmed = historyTopic?.trim() ?? "";
-    if (topicTrimmed.length > 0) return;
     let cancelled = false;
     let mineStarted = false;
     void (async () => {
@@ -314,4 +313,13 @@ export function OctosRuntimeProvider({ children }: { children: ReactNode }) {
       <RuntimeWithSession>{children}</RuntimeWithSession>
     </SessionProvider>
   );
+}
+
+/** Issue #112.2: mount the runtime bridge / task-watcher / file-store
+ *  loaders against an EXISTING `SessionContext.Provider` (e.g. the
+ *  slim provider that slides-chat / sites-chat construct manually).
+ *  Use this when the caller already owns its session context value
+ *  and just needs the bridge wired up. */
+export function ScopedRuntimeBridge({ children }: { children: ReactNode }) {
+  return <RuntimeWithSession>{children}</RuntimeWithSession>;
 }
