@@ -12,16 +12,32 @@ import { SlidesTaskStatusIndicator } from "./slides-task-status-indicator";
 
 interface Props {
   sessionId: string;
+  /** Codex round-3 BLOCK D.b: bumped by the editor layout's retry
+   *  button after a scaffold failure. Including it in the
+   *  auto-scaffold effect deps re-runs the effect even when the
+   *  project still has `scaffolded: false` from the previous run. */
+  retryNonce?: number;
 }
 
-export function SlidesChat({ sessionId }: Props) {
+export function SlidesChat({ sessionId, retryNonce = 0 }: Props) {
   const { project, save } = useSlides();
   const scaffoldStartedRef = useRef(false);
   const projectId = project?.id;
   const projectTitle = project?.title;
   const projectSlug = project?.slug;
   const projectScaffolded = project?.scaffolded;
+  const projectScaffoldError = project?.scaffoldError;
   const historyTopic = projectSlug ? `slides ${projectSlug}` : undefined;
+
+  // Codex round-3 BLOCK D.b: when the retry button fires, the layout
+  // clears `scaffoldError` and bumps `retryNonce`. Reset the
+  // "already started" gate here so the effect re-issues the
+  // scaffold instead of bailing out via `scaffoldStartedRef`.
+  useEffect(() => {
+    if (retryNonce > 0) {
+      scaffoldStartedRef.current = false;
+    }
+  }, [retryNonce]);
 
   // Load history for this session
   useEffect(() => {
@@ -29,10 +45,17 @@ export function SlidesChat({ sessionId }: Props) {
   }, [historyTopic, sessionId]);
 
   useEffect(() => {
+    // Codex round-3 BLOCK D.b: also gate on `projectScaffoldError`.
+    // Without this gate, a freshly-loaded project that previously
+    // failed (`scaffolded: false`, `scaffoldError: "..."`) would
+    // auto-retry on every mount/hydration. The retry path
+    // explicitly clears `scaffoldError` AND bumps `retryNonce`,
+    // which resets `scaffoldStartedRef` above.
     if (
       !projectId ||
       !projectTitle ||
       projectScaffolded ||
+      projectScaffoldError ||
       scaffoldStartedRef.current
     ) {
       return;
@@ -102,8 +125,10 @@ export function SlidesChat({ sessionId }: Props) {
   }, [
     projectId,
     projectScaffolded,
+    projectScaffoldError,
     projectSlug,
     projectTitle,
+    retryNonce,
     save,
     sessionId,
   ]);

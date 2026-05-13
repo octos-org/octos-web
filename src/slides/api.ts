@@ -76,6 +76,29 @@ export async function listSlidesFiles(
   dirs: string | string[],
   options: ListSlidesFilesOptions = {},
 ): Promise<SlidesFileEntry[]> {
+  const { filtered, requestedDirs } = await fetchSlidesFiles(dirs, options);
+  return ensureCoreSlidesFiles(filtered, requestedDirs);
+}
+
+// Codex round-3 BLOCK D.a: artifact-presence checks (e.g. the
+// scaffold poller) must NOT route through `ensureCoreSlidesFiles`,
+// which synthesizes zero-byte placeholders for the core trio
+// (script.js / memory.md / changelog.md) whenever ANY file lives
+// under `slides/<slug>`. The synthesizer makes a "do all three exist"
+// check trivially true, masking real scaffold failures. The raw API
+// returns only what the server actually saw on disk.
+export async function listSlidesFilesRaw(
+  dirs: string | string[],
+  options: ListSlidesFilesOptions = {},
+): Promise<SlidesFileEntry[]> {
+  const { filtered } = await fetchSlidesFiles(dirs, options);
+  return filtered;
+}
+
+async function fetchSlidesFiles(
+  dirs: string | string[],
+  options: ListSlidesFilesOptions,
+): Promise<{ filtered: SlidesFileEntry[]; requestedDirs: string[] }> {
   const requestedDirs = (Array.isArray(dirs) ? dirs : [dirs]).map(
     normalizeSlidesDir,
   );
@@ -96,7 +119,7 @@ export async function listSlidesFiles(
   const filtered = files.filter((file) =>
     requestedDirs.some((dir) => fileMatchesSlidesDir(file, dir)),
   );
-  return ensureCoreSlidesFiles(filtered, requestedDirs);
+  return { filtered, requestedDirs };
 }
 
 export async function waitForSlidesScaffold({
@@ -106,16 +129,35 @@ export async function waitForSlidesScaffold({
   attempts = 12,
   delayMs = 500,
 }: WaitForSlidesScaffoldOptions): Promise<SlidesFileEntry[]> {
+  // Codex round-3 BLOCK D.a: poll the RAW server response (no
+  // `ensureCoreSlidesFiles` synthesis) and verify each of the three
+  // canonical scaffold artifacts shows up at its exact expected path
+  // under `slides/<slug>/`. Pre-fix this called `listSlidesFiles`
+  // which silently synthesized the trio whenever any unrelated file
+  // landed under the dir, so the poller would declare success on
+  // "scaffold partially failed" or even "wrong file appeared" runs.
+  const expectedPaths = [
+    `slides/${slug}/script.js`,
+    `slides/${slug}/memory.md`,
+    `slides/${slug}/changelog.md`,
+  ];
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     throwIfAborted(signal);
     try {
-      const files = await listSlidesFiles(`slides/${slug}`, { sessionId });
-      const filenames = new Set(files.map((file) => file.filename));
-      if (
-        filenames.has("script.js") &&
-        filenames.has("memory.md") &&
-        filenames.has("changelog.md")
-      ) {
+      const files = await listSlidesFilesRaw(`slides/${slug}`, { sessionId });
+      const paths = new Set(
+        files.map((file) => normalizeSlidesDir(file.path)),
+      );
+      const haveAll = expectedPaths.every((expected) => {
+        const normalized = normalizeSlidesDir(expected);
+        for (const path of paths) {
+          if (path === normalized || path.endsWith(`/${normalized}`)) {
+            return true;
+          }
+        }
+        return false;
+      });
+      if (haveAll) {
         return files;
       }
     } catch (error) {
