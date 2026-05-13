@@ -512,6 +512,24 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     try {
       const deletedIds = loadDeletedSessionIds();
       const list = await listSessions();
+      // Server-supplied title wins: populate the title cache from
+      // `session/list` directly so the sidebar paints with real titles
+      // on first render — no per-session `messages_page` round-trip
+      // needed. Pre-fix, `SessionInfo` had no `title` field so the
+      // server's title was silently discarded and the SPA derived
+      // titles from the first user message via N (≤10) serial
+      // `messages_page` calls, adding 1–5 s of latency on `/chat` load.
+      let titleCacheDirty = false;
+      for (const s of list) {
+        const t = s.title?.trim();
+        if (t && titleCache.current[s.id] !== t) {
+          titleCache.current[s.id] = t;
+          titleCacheDirty = true;
+        }
+      }
+      if (titleCacheDirty) {
+        persistStoredTitles(titleCache.current);
+      }
       // Pre-merge filter + sort just to decide which sessions need a title
       // fetch. The actual merge runs again inside `setSessions` so it sees
       // the latest `prev`.
