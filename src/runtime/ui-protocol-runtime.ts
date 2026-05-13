@@ -90,7 +90,11 @@ export async function startBridgeForSession(
   const myGeneration = ++generation;
   const bridge = createUiProtocolBridge();
   try {
-    await bridge.start({ sessionId });
+    // Codex BLOCK E: pass `topic` so the bridge can drop cross-topic
+    // envelopes client-side. The server-side replay/live scoping by
+    // topic is a separate PR; this is best-effort defense in the
+    // meantime.
+    await bridge.start({ sessionId, topic });
   } catch (err) {
     if (myGeneration === generation) {
       // No newer start raced us; surface the failure.

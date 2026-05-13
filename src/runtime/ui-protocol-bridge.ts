@@ -233,7 +233,18 @@ export class BridgeTimeoutError extends Error {
 }
 
 export interface UiProtocolBridge {
-  start(opts: { sessionId: string; profileId?: string }): Promise<void>;
+  /** Start the bridge. The optional `topic` arg is used purely client-side
+   *  to drop event envelopes whose `params.topic` carries a different
+   *  topic (codex BLOCK E). Until the server scopes its replay/live
+   *  broadcast to the negotiated topic (separate server PR), this is
+   *  best-effort defense — only events whose Rust struct includes the
+   *  `topic` field carry it on the wire (e.g. `TurnStartedEvent`); other
+   *  envelopes pass through unfiltered. */
+  start(opts: {
+    sessionId: string;
+    profileId?: string;
+    topic?: string;
+  }): Promise<void>;
   stop(): Promise<void>;
 
   sendTurn(
@@ -865,6 +876,14 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private ws: WebSocket | null = null;
   private sessionId: string | null = null;
   private profileId: string | null | undefined = undefined;
+  /** Codex BLOCK E: client-side topic scope for envelope filtering.
+   *  The server still replays root-scope events to every topic-bridge
+   *  today (parallel server PR will add scope-by-topic replay + live).
+   *  Until that lands, drop envelopes whose `params.topic` is set and
+   *  mismatches — events without `topic` on the wire pass through
+   *  because the bridge cannot tell what scope they belong to without
+   *  server help. Tracked as a follow-up server issue. */
+  private topicScope: string | null = null;
   private stopped = false;
   private reconnectAttempts = 0;
   /** True only after `scheduleReconnect` has exhausted
@@ -1009,13 +1028,21 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
 
   // ----- public API --------------------------------------------------------
 
-  async start(opts: { sessionId: string; profileId?: string }): Promise<void> {
+  async start(opts: {
+    sessionId: string;
+    profileId?: string;
+    topic?: string;
+  }): Promise<void> {
     if (!opts || !isString(opts.sessionId)) {
       throw new Error("ui-protocol-bridge: start requires sessionId");
     }
     this.stopped = false;
     this.sessionId = opts.sessionId;
     this.profileId = opts.profileId ?? this.cfg.getProfileId();
+    // Codex BLOCK E: stash the topic scope for the client-side
+    // envelope-mismatch drop. Empty string => no scope (root).
+    const t = opts.topic?.trim();
+    this.topicScope = t && t.length > 0 ? t : null;
     this.reconnectAttempts = 0;
     this.reconnectAbandoned = false;
     this.hasEverOpened = false;
@@ -1415,6 +1442,21 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     const handler = this.notificationTable[note.method];
     if (!handler) {
       return;
+    }
+    // Codex BLOCK E: client-side topic scope defense. If THIS bridge
+    // negotiated a topic (`topicScope !== null`) and the envelope
+    // carries a different `topic` string, drop the event before the
+    // typed guard runs — the server PR that scopes replay/live by
+    // topic is separate; until then this filter prevents cross-topic
+    // bleed for the envelopes that DO carry `topic` on the wire (e.g.
+    // `TurnStartedEvent`). Envelopes without a `topic` field still
+    // pass through unfiltered; that's documented as best-effort
+    // pending the server-side fix.
+    if (this.topicScope !== null && isPlainObject(params)) {
+      const envTopic = params.topic;
+      if (typeof envTopic === "string" && envTopic !== this.topicScope) {
+        return;
+      }
     }
     const result = handler.guard(params);
     if (!result) {
