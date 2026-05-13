@@ -196,6 +196,13 @@ const DEFAULT_KEEPALIVE_MS = 30000;
 const DEFAULT_KEEPALIVE_TIMEOUT_MS = 60000;
 const NORMAL_CLOSURE = 1000;
 
+// Spec §10 `permission_denied` (`crates/octos-core/src/ui_protocol.rs`
+// `PERMISSION_DENIED: i64 = -32120`). When the server rejects
+// `session/open` or `turn/start` with this RPC code, the token is
+// effectively dead for the chat surface — surface `crew:auth_expired`
+// so AuthProvider can revalidate / drop the user back to /login.
+const RPC_ERROR_PERMISSION_DENIED = -32120;
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -871,6 +878,20 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private reconnectTimer: unknown = null;
   private keepaliveTimer: unknown = null;
   private lastInboundAt = 0;
+  /** True once the bridge has reached `connected` at least once in this
+   *  lifecycle. The HTTP-401-at-upgrade fallback uses this to scope the
+   *  /api/auth/me probe to the "have never opened" case — a mid-session
+   *  reconnect that fails with `onerror+onclose(1006)` after the bridge
+   *  was happily live for hours is a transport blip, not an auth-rejected
+   *  upgrade. Issue #111.1 (codex BLOCK A): the 1008 hook covers the case
+   *  the server WILL emit (parallel server PR); this guard covers what
+   *  the server emits TODAY (HTTP 401 at the WS upgrade surfaces as
+   *  `onerror` followed by `onclose` with no `onopen`). */
+  private hasEverOpened = false;
+  /** True once we have dispatched `crew:auth_expired` for this bridge
+   *  lifecycle. Prevents spamming AuthProvider with one event per
+   *  reconnect attempt during the auth-rejected case. */
+  private authExpiredDispatched = false;
   private readonly pending: Map<string, PendingRpc> = new Map();
   private readonly sendQueue: QueuedFrame[] = [];
 
@@ -997,6 +1018,8 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.profileId = opts.profileId ?? this.cfg.getProfileId();
     this.reconnectAttempts = 0;
     this.reconnectAbandoned = false;
+    this.hasEverOpened = false;
+    this.authExpiredDispatched = false;
     await this.openSocket();
   }
 
@@ -1287,6 +1310,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       if (this.stopped) return;
       this.reconnectAttempts = 0;
       this.reconnectAbandoned = false;
+      this.hasEverOpened = true;
       this.setState("connected");
       this.startKeepalive();
       this.flushSendQueue();
@@ -1296,6 +1320,20 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
         reason: "session_open_failed",
         context: err instanceof Error ? err.message : err,
       });
+      // Codex BLOCK A: an RPC `permission_denied` (-32120) on
+      // `session/open` means the server accepted the WS upgrade
+      // (token was structurally present) but refused the open
+      // because the user has no scope on this session — for the
+      // chat surface that's auth-equivalent to a dead token, so
+      // route through `crew:auth_expired` rather than burning
+      // reconnect cycles.
+      if (err instanceof BridgeRpcError && err.code === RPC_ERROR_PERMISSION_DENIED) {
+        this.dispatchAuthExpired("permission_denied:session/open");
+        this.reconnectAbandoned = true;
+        this.setState("error");
+        this.rejectAllPending(new BridgeStoppedError("auth permission denied"));
+        return;
+      }
       this.scheduleReconnect();
     }
   }
@@ -1348,6 +1386,18 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.pending.delete(resp.id);
     this.cfg.clearTimeout(pending.timer);
     if (resp.error) {
+      // Codex BLOCK A: RPC-level `permission_denied` (-32120) on
+      // `session/open` or `turn/start` signals the user no longer has
+      // scope on this surface. Treat it as auth-expired so AuthProvider
+      // probes `/api/auth/me` and (when 401s) drops to /login. We do
+      // NOT dispatch on `internal_error` etc — only this typed code.
+      if (
+        resp.error.code === RPC_ERROR_PERMISSION_DENIED &&
+        (pending.method === METHODS.SESSION_OPEN ||
+          pending.method === METHODS.TURN_START)
+      ) {
+        this.dispatchAuthExpired(`permission_denied:${pending.method}`);
+      }
       pending.reject(
         new BridgeRpcError(
           resp.error.code,
@@ -1401,12 +1451,8 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     // path to re-login. Surface a typed `crew:auth_expired` window
     // event so AuthProvider's subscriber can call `revalidate()`,
     // which clears tokens and navigates to /login.
-    if (ev?.code === 1008 && typeof window !== "undefined") {
-      window.dispatchEvent(
-        new CustomEvent("crew:auth_expired", {
-          detail: { reason: ev.reason ?? "policy_violation" },
-        }),
-      );
+    if (ev?.code === 1008) {
+      this.dispatchAuthExpired(ev.reason ?? "policy_violation");
       // Stop reconnect attempts — the token is dead, retrying is
       // wasted load on the server and noise on the client.
       this.reconnectAbandoned = true;
@@ -1414,7 +1460,59 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       this.rejectAllPending(new BridgeStoppedError("auth expired"));
       return;
     }
+    // Codex BLOCK A: the server today rejects an authenticated WS
+    // upgrade with HTTP 401 — the browser surfaces that as
+    // `onerror` followed by `onclose(1006, "")` with no `onopen`.
+    // Probe `/api/auth/me`: a 401 there closes the loop via api/client's
+    // 401 interceptor (which clears tokens and redirects to /login),
+    // and the probe also dispatches `crew:auth_expired` so AuthProvider's
+    // revalidate path takes effect even when the interceptor lets the
+    // 401 through. We only run this when the bridge has NEVER opened
+    // in this lifecycle — a mid-session 1006 close after the bridge
+    // was happily live is a transport blip, not an auth expiry.
+    // The parallel server PR will add the 1008 emit above, after which
+    // this fallback can stay as a defense for older servers.
+    if (!this.hasEverOpened) {
+      void this.probeAuthAndMaybeExpire();
+    }
     this.scheduleReconnect();
+  }
+
+  /** Dispatch the `crew:auth_expired` window event idempotently per
+   *  bridge lifecycle. AuthProvider subscribes and runs `revalidate()`,
+   *  which probes `/api/auth/me` and (on 401) clears tokens + redirects. */
+  private dispatchAuthExpired(reason: string): void {
+    if (this.authExpiredDispatched) return;
+    this.authExpiredDispatched = true;
+    if (typeof window === "undefined") return;
+    try {
+      window.dispatchEvent(
+        new CustomEvent("crew:auth_expired", { detail: { reason } }),
+      );
+    } catch {
+      // CustomEvent / dispatchEvent unavailable in the sandbox — best-effort.
+    }
+  }
+
+  /** Codex BLOCK A: probe `/api/auth/me` after a never-opened WS close.
+   *  Treat any 401 there as auth-expired. Best-effort — failures here
+   *  (network down, /api/auth/me 500s) don't dispatch the event so
+   *  legitimate transport blips before the first connect don't surface
+   *  a spurious re-login prompt. The actual 401 path is also driven by
+   *  api/client's existing 401 interceptor (clears tokens, redirects);
+   *  the explicit dispatch covers the gap when the probe runs ahead
+   *  of any other authenticated REST call. */
+  private async probeAuthAndMaybeExpire(): Promise<void> {
+    if (typeof fetch !== "function") return;
+    try {
+      const resp = await fetch("/api/auth/me", { credentials: "same-origin" });
+      if (resp.status === 401) {
+        this.dispatchAuthExpired("upgrade_401");
+        this.reconnectAbandoned = true;
+      }
+    } catch {
+      // Network probe failed — leave reconnect scheduling alone.
+    }
   }
 
   private scheduleReconnect(): void {
