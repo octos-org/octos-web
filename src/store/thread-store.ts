@@ -1319,6 +1319,41 @@ export interface FinalizeAssistantOptions {
  * thread. Stamps `intra_thread_seq` from `committedSeq`, attaches optional
  * meta, and clears `pendingAssistant`.
  */
+/**
+ * Stamp `meta` (and optionally `status`) onto the most recently
+ * finalised response for `threadId`. Used by the UI Protocol event
+ * router (`handleTurnCompleted` / `handleTurnError`) when an earlier
+ * `message/persisted` already promoted the pending bubble — by the
+ * time `turn/completed` lands, `pendingAssistant` is null and
+ * `finalizeAssistant`'s pending-required guard would otherwise drop the
+ * accumulated per-turn cost snapshot on the floor. Codex P2 fix.
+ *
+ * No-ops when:
+ *   - no thread matches `threadId` in any session,
+ *   - the thread has no finalised responses yet (the snapshot is just
+ *     lost, same as before this helper existed; `handleTurnCompleted`
+ *     fall back to `finalizeAssistant` for the pending-present case).
+ */
+export function patchLastResponseMeta(
+  threadId: string,
+  opts: { meta?: MessageMeta; status?: ThreadMessage["status"] },
+): void {
+  for (const state of sessionsByKey.values()) {
+    const thread = state.byId.get(threadId);
+    if (!thread || thread.responses.length === 0) continue;
+    const idx = thread.responses.length - 1;
+    const last = thread.responses[idx];
+    const next: ThreadMessage = {
+      ...last,
+      meta: opts.meta ?? last.meta,
+      status: opts.status ?? last.status,
+    };
+    thread.responses[idx] = next;
+    notify();
+    return;
+  }
+}
+
 export function finalizeAssistant(
   threadId: string,
   opts: FinalizeAssistantOptions = {},

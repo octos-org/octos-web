@@ -15,13 +15,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as ThreadStore from "@/store/thread-store";
 import {
   __resetRouterStateForTest,
+  __resetTurnMetaForTest,
   attachRouter,
   handleApprovalRequested,
   handleMessageDelta,
   handleMessagePersisted,
+  handleProgressUpdated,
   handleSpawnComplete,
   handleTaskOutputDelta,
   handleTaskUpdated,
+  handleToolCompleted,
+  handleToolProgress,
+  handleToolStarted,
   handleTurnCompleted,
   handleTurnError,
   handleTurnStarted,
@@ -30,8 +35,12 @@ import type {
   ApprovalRequestedEvent,
   MessageDeltaEvent,
   MessagePersistedEvent,
+  ProgressUpdatedEvent,
   TaskOutputDeltaEvent,
   TaskUpdatedEvent,
+  ToolCompletedEvent,
+  ToolProgressEvent,
+  ToolStartedEvent,
   TurnCompletedEvent,
   TurnErrorEvent,
   TurnSpawnCompleteEvent,
@@ -51,6 +60,7 @@ function seedThread(cmid: string, text = "hi") {
 afterEach(() => {
   ThreadStore.__resetForTests();
   __resetRouterStateForTest();
+  __resetTurnMetaForTest();
 });
 
 describe("router event mapping", () => {
@@ -963,6 +973,10 @@ class FakeBridge implements UiProtocolBridge {
     e: TurnStartedEvent | TurnCompletedEvent | TurnErrorEvent,
   ) => void;
   emitApprovalRequested?: (e: ApprovalRequestedEvent) => void;
+  emitToolStarted?: (e: ToolStartedEvent) => void;
+  emitToolProgress?: (e: ToolProgressEvent) => void;
+  emitToolCompleted?: (e: ToolCompletedEvent) => void;
+  emitProgressUpdated?: (e: ProgressUpdatedEvent) => void;
 
   start = vi.fn(async () => {});
   stop = vi.fn(async () => {});
@@ -973,6 +987,8 @@ class FakeBridge implements UiProtocolBridge {
     accepted: true,
     status: "ok",
   }));
+  hydrateSession = vi.fn(async () => null);
+  callMethod = vi.fn(async () => null);
 
   onMessageDelta(h: (e: MessageDeltaEvent) => void) {
     this.emitMessageDelta = h;
@@ -1018,6 +1034,30 @@ class FakeBridge implements UiProtocolBridge {
       this.emitApprovalRequested = undefined;
     };
   }
+  onToolStarted(h: (e: ToolStartedEvent) => void) {
+    this.emitToolStarted = h;
+    return () => {
+      this.emitToolStarted = undefined;
+    };
+  }
+  onToolProgress(h: (e: ToolProgressEvent) => void) {
+    this.emitToolProgress = h;
+    return () => {
+      this.emitToolProgress = undefined;
+    };
+  }
+  onToolCompleted(h: (e: ToolCompletedEvent) => void) {
+    this.emitToolCompleted = h;
+    return () => {
+      this.emitToolCompleted = undefined;
+    };
+  }
+  onProgressUpdated(h: (e: ProgressUpdatedEvent) => void) {
+    this.emitProgressUpdated = h;
+    return () => {
+      this.emitProgressUpdated = undefined;
+    };
+  }
   onConnectionStateChange(): () => void {
     return () => {};
   }
@@ -1025,6 +1065,9 @@ class FakeBridge implements UiProtocolBridge {
     return "connected";
   }
   onWarning(): () => void {
+    return () => {};
+  }
+  onSessionTitleUpdated(): () => void {
     return () => {};
   }
 }
@@ -1076,5 +1119,334 @@ describe("attachRouter", () => {
     });
     state = ThreadStore.getThreads(SESSION);
     expect(state[0].responses[0].status).toBe("error");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR fix/restore-progress-cost-meta-events — regressions A / B / C
+// ---------------------------------------------------------------------------
+
+describe("regression A: tool/* events fan out into crew:tool_progress", () => {
+  it("tool/started dispatches crew:tool_progress with the tool name", () => {
+    const dispatched: Event[] = [];
+    handleToolStarted(
+      { sessionId: SESSION, dispatchEvent: (e) => dispatched.push(e) },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-A1",
+        tool_call_id: "tc-1",
+        tool_name: "shell",
+        arguments: { command: "cargo test" },
+      },
+    );
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0].type).toBe("crew:tool_progress");
+    const detail = (dispatched[0] as CustomEvent).detail;
+    expect(detail.tool).toBe("shell");
+    expect(detail.sessionId).toBe(SESSION);
+    expect(detail.turnId).toBe("cmid-A1");
+    // The component reads `detail.message` (eventually rendered after the
+    // `[info]/.../` prefix strip), so a non-empty placeholder is required
+    // to flip the spinner ON.
+    expect(typeof detail.message).toBe("string");
+    expect(detail.message.length).toBeGreaterThan(0);
+  });
+
+  it("tool/progress dispatches crew:tool_progress with the status message", () => {
+    const dispatched: Event[] = [];
+    handleToolProgress(
+      { sessionId: SESSION, dispatchEvent: (e) => dispatched.push(e) },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-A2",
+        tool_call_id: "tc-2",
+        message: "downloading 42%",
+        progress_pct: 42,
+      },
+    );
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0].type).toBe("crew:tool_progress");
+    const detail = (dispatched[0] as CustomEvent).detail;
+    expect(detail.message).toBe("downloading 42%");
+  });
+
+  it("codex P3: tool/progress preserves the tool_name from the preceding tool/started", () => {
+    // Without the cache, the spinner row's tool label flipped from
+    // e.g. `shell` to `tc-xyz` on the first progress frame because
+    // `tool/progress` carries no `tool_name` on the wire. The cache
+    // populated by `handleToolStarted` keeps the friendly name
+    // sticky for the whole call.
+    const dispatched: Event[] = [];
+    const cfg = {
+      sessionId: SESSION,
+      dispatchEvent: (e: Event) => dispatched.push(e),
+    };
+    handleToolStarted(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-A4",
+      tool_call_id: "tc-keep",
+      tool_name: "shell",
+    });
+    handleToolProgress(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-A4",
+      tool_call_id: "tc-keep",
+      message: "running",
+    });
+    expect(dispatched).toHaveLength(2);
+    expect((dispatched[0] as CustomEvent).detail.tool).toBe("shell");
+    // The crucial regression: the SECOND event must still show "shell"
+    // instead of "tc-keep".
+    expect((dispatched[1] as CustomEvent).detail.tool).toBe("shell");
+  });
+
+  it("tool/progress falls back to tool_call_id when no tool/started was seen", () => {
+    // Defensive case: server-side bug or replay skips the
+    // `tool/started` frame. We still want to render *something*.
+    const dispatched: Event[] = [];
+    handleToolProgress(
+      { sessionId: SESSION, dispatchEvent: (e) => dispatched.push(e) },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-A5",
+        tool_call_id: "tc-unknown",
+        message: "running",
+      },
+    );
+    expect(dispatched).toHaveLength(1);
+    expect((dispatched[0] as CustomEvent).detail.tool).toBe("tc-unknown");
+  });
+
+  it("tool/completed dispatches crew:tool_progress with success status", () => {
+    const dispatched: Event[] = [];
+    handleToolCompleted(
+      { sessionId: SESSION, dispatchEvent: (e) => dispatched.push(e) },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-A3",
+        tool_call_id: "tc-3",
+        tool_name: "shell",
+        success: true,
+        duration_ms: 1250,
+      },
+    );
+    expect(dispatched).toHaveLength(1);
+    expect((dispatched[0] as CustomEvent).detail.tool).toBe("shell");
+  });
+});
+
+describe("regression B: progress/updated fans out into crew:cost (+ crew:message_meta)", () => {
+  it("token_cost_update dispatches crew:cost with input/output tokens + session cost", () => {
+    const dispatched: Event[] = [];
+    handleProgressUpdated(
+      { sessionId: SESSION, dispatchEvent: (e) => dispatched.push(e) },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-B1",
+        metadata: {
+          kind: "token_cost_update",
+          token_cost: {
+            input_tokens: 1000,
+            output_tokens: 50,
+            session_cost: 0.0085,
+          },
+        },
+      },
+    );
+    const cost = dispatched.find((e) => e.type === "crew:cost") as
+      | CustomEvent
+      | undefined;
+    expect(cost).toBeDefined();
+    expect(cost!.detail.sessionId).toBe(SESSION);
+    expect(cost!.detail.input_tokens).toBe(1000);
+    expect(cost!.detail.output_tokens).toBe(50);
+    expect(cost!.detail.session_cost).toBe(0.0085);
+  });
+
+  it("token_cost_update with model label ALSO dispatches crew:message_meta", () => {
+    const dispatched: Event[] = [];
+    handleProgressUpdated(
+      { sessionId: SESSION, dispatchEvent: (e) => dispatched.push(e) },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-B2",
+        metadata: {
+          kind: "token_cost_update",
+          label: "moonshot@autodl/kimi-k2.5",
+          token_cost: {
+            input_tokens: 30000,
+            output_tokens: 2000,
+            session_cost: 0.0228,
+          },
+        },
+      },
+    );
+    const meta = dispatched.find((e) => e.type === "crew:message_meta") as
+      | CustomEvent
+      | undefined;
+    expect(meta).toBeDefined();
+    expect(meta!.detail.model).toBe("moonshot@autodl/kimi-k2.5");
+    expect(meta!.detail.tokens_in).toBe(30000);
+    expect(meta!.detail.tokens_out).toBe(2000);
+    expect(meta!.detail.session_cost).toBe(0.0228);
+  });
+
+  it("ignores progress/updated with kind != token_cost_update", () => {
+    const dispatched: Event[] = [];
+    handleProgressUpdated(
+      { sessionId: SESSION, dispatchEvent: (e) => dispatched.push(e) },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-B3",
+        metadata: { kind: "status", message: "thinking" },
+      },
+    );
+    expect(dispatched).toHaveLength(0);
+  });
+});
+
+describe("regression C: turn/completed stamps per-turn meta snapshot onto the finalised bubble", () => {
+  it("snapshot accumulated from progress/updated lands as message.meta on completion", () => {
+    seedThread("cmid-C1", "ask");
+    ThreadStore.appendAssistantToken("cmid-C1", "Hello.");
+    // Seed the turn-start anchor (sets firstSeenAtMs).
+    handleTurnStarted(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: "cmid-C1" },
+    );
+    // A cost frame mid-turn populates the snapshot.
+    handleProgressUpdated(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-C1",
+        metadata: {
+          kind: "token_cost_update",
+          label: "moonshot@autodl/kimi-k2.5",
+          token_cost: { input_tokens: 100, output_tokens: 20 },
+        },
+      },
+    );
+    handleTurnCompleted(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: "cmid-C1", reason: "stop" },
+    );
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses).toHaveLength(1);
+    const meta = thread.responses[0].meta;
+    expect(meta).toBeDefined();
+    expect(meta!.model).toBe("moonshot@autodl/kimi-k2.5");
+    expect(meta!.tokens_in).toBe(100);
+    expect(meta!.tokens_out).toBe(20);
+    // duration_s is computed from `nowMs() - firstSeenAtMs`; under
+    // synchronous test execution it should be a tiny non-negative
+    // number. Asserting `>= 0` keeps the test stable across hosts.
+    expect(meta!.duration_s).toBeGreaterThanOrEqual(0);
+  });
+
+  it("turn/completed without any cost snapshot still finalises the bubble (no meta)", () => {
+    seedThread("cmid-C2", "ask");
+    ThreadStore.appendAssistantToken("cmid-C2", "Hello.");
+    handleTurnCompleted(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: "cmid-C2", reason: "stop" },
+    );
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses).toHaveLength(1);
+    expect(thread.responses[0].text).toBe("Hello.");
+  });
+
+  it("codex P2: meta lands on the response even when message/persisted finalised the bubble first", () => {
+    // Wire ordering: progress/updated → message/delta →
+    // message/persisted (with content, finalises) → turn/completed.
+    // Pre-fix the snapshot was deleted at turn/completed because
+    // `finalizeAssistant` bails when `pendingAssistant` is null. The
+    // `patchLastResponseMeta` fall-back lands the meta on the
+    // already-finalised response.
+    const cmid = "cmid-Cpersist";
+    seedThread(cmid, "ask");
+    handleTurnStarted(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: cmid },
+    );
+    handleProgressUpdated(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        metadata: {
+          kind: "token_cost_update",
+          label: "moonshot@autodl/kimi-k2.5",
+          token_cost: { input_tokens: 9000, output_tokens: 300 },
+        },
+      },
+    );
+    handleMessageDelta(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: cmid, text: "Hello." },
+    );
+    // `message/persisted` arrives with a non-empty pending → promotion
+    // finalises the bubble before `turn/completed` ever lands.
+    handleMessagePersisted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        thread_id: cmid,
+        seq: 99,
+        role: "assistant",
+        message_id: "msg-Cpersist",
+        source: "assistant",
+        cursor: { stream: SESSION, seq: 99 },
+        persisted_at: "2026-05-04T00:00:00Z",
+      },
+    );
+    // At this point the bubble is already in `responses`, pending is
+    // null. The pre-fix `handleTurnCompleted` lost the snapshot here.
+    const beforeCompleted = ThreadStore.getThreads(SESSION)[0];
+    expect(beforeCompleted.pendingAssistant).toBeNull();
+    expect(beforeCompleted.responses).toHaveLength(1);
+    expect(beforeCompleted.responses[0].meta).toBeUndefined();
+
+    handleTurnCompleted(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: cmid, reason: "stop" },
+    );
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses[0].meta?.model).toBe("moonshot@autodl/kimi-k2.5");
+    expect(thread.responses[0].meta?.tokens_in).toBe(9000);
+    expect(thread.responses[0].meta?.tokens_out).toBe(300);
+  });
+
+  it("turn/error also stamps the snapshot so the bubble's meta survives errored turns", () => {
+    seedThread("cmid-C3", "ask");
+    ThreadStore.appendAssistantToken("cmid-C3", "partial");
+    handleTurnStarted(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: "cmid-C3" },
+    );
+    handleProgressUpdated(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-C3",
+        metadata: {
+          kind: "token_cost_update",
+          label: "anthropic/claude",
+          token_cost: { input_tokens: 5, output_tokens: 1 },
+        },
+      },
+    );
+    handleTurnError(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-C3",
+        error: { code: -1, message: "boom" },
+      },
+    );
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses[0].status).toBe("error");
+    expect(thread.responses[0].meta?.model).toBe("anthropic/claude");
   });
 });

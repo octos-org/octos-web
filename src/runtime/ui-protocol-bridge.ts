@@ -28,11 +28,15 @@ import type {
   HydratedMessage,
   MessageDeltaEvent,
   MessagePersistedEvent,
+  ProgressUpdatedEvent,
   RpcErrorPayload,
   SessionHydrateResult,
   SessionOpenResult,
   TaskOutputDeltaEvent,
   TaskUpdatedEvent,
+  ToolCompletedEvent,
+  ToolProgressEvent,
+  ToolStartedEvent,
   TurnCompletedEvent,
   TurnErrorEvent,
   TurnInterruptResult,
@@ -41,6 +45,10 @@ import type {
   TurnStartInput,
   TurnStartResult,
   TurnStartedEvent,
+  UiProgressMetadata,
+  UiRetryBackoff,
+  UiTokenCostUpdate,
+  UiFileMutationNotice,
   WarningEvent,
 } from "./ui-protocol-types";
 
@@ -55,11 +63,15 @@ export type {
   MessagePersistedEvent,
   PersistedMessage,
   PersistedMessageFile,
+  ProgressUpdatedEvent,
   SessionHydrateResult,
   SessionOpenResult,
   SessionOpenedResult,
   TaskOutputDeltaEvent,
   TaskUpdatedEvent,
+  ToolCompletedEvent,
+  ToolProgressEvent,
+  ToolStartedEvent,
   TurnCompletedEvent,
   TurnErrorEvent,
   TurnInterruptResult,
@@ -70,6 +82,10 @@ export type {
   TurnStartResult,
   TurnStartedEvent,
   UiCursor,
+  UiFileMutationNotice,
+  UiProgressMetadata,
+  UiRetryBackoff,
+  UiTokenCostUpdate,
   WarningEvent,
 } from "./ui-protocol-types";
 
@@ -118,6 +134,22 @@ export const METHODS = {
   TURN_SPAWN_COMPLETE: "turn/spawn_complete",
   APPROVAL_REQUESTED: "approval/requested",
   WARNING: "warning",
+  // Synchronous tool-call lifecycle. Server emits these as
+  // `UiNotification::ToolStarted/Progress/Completed` for non-spawn tool
+  // calls. The event-router fans them out into the legacy
+  // `crew:tool_progress` DOM event so the streaming-bubble spinner
+  // (`ToolProgressIndicator`) lights up — the SSE bridge predecessor of
+  // this surface was the sole dispatcher prior to PR #96. See
+  // `crates/octos-cli/src/api/ui_protocol_progress.rs:99-363`.
+  TOOL_STARTED: "tool/started",
+  TOOL_PROGRESS: "tool/progress",
+  TOOL_COMPLETED: "tool/completed",
+  /// Generic progress envelope — server uses this for cost / status /
+  /// retry / file-mutation frames. The event-router fans `kind ===
+  /// "token_cost_update"` notifications out into `crew:cost` (header
+  /// model + cost badge) and, when model + duration are populated, also
+  /// `crew:message_meta` (assistant bubble footer).
+  PROGRESS_UPDATED: "progress/updated",
   // M12 Phase D-3 (octos-web #106 review follow-up): server emits
   // `session/title-updated` after a successful `session/title.set` so
   // cross-tab / auto-title flows can refresh their cache without polling
@@ -310,6 +342,19 @@ export interface UiProtocolBridge {
     ) => void,
   ): () => void;
   onApprovalRequested(handler: (e: ApprovalRequestedEvent) => void): () => void;
+  /** Synchronous tool-call lifecycle event surface. The event-router
+   *  attaches a handler that re-emits each variant as a
+   *  `crew:tool_progress` DOM event so the streaming-bubble spinner keeps
+   *  firing post-PR-#96 SSE-bridge deletion. */
+  onToolStarted(handler: (e: ToolStartedEvent) => void): () => void;
+  onToolProgress(handler: (e: ToolProgressEvent) => void): () => void;
+  onToolCompleted(handler: (e: ToolCompletedEvent) => void): () => void;
+  /** Generic progress envelope subscriber. The event-router fans
+   *  `metadata.kind === "token_cost_update"` notifications out into the
+   *  legacy `crew:cost` and (model + duration permitting) `crew:message_meta`
+   *  DOM events so the header cost badge and assistant-bubble footer
+   *  keep firing post-PR-#96 SSE-bridge deletion. */
+  onProgressUpdated(handler: (e: ProgressUpdatedEvent) => void): () => void;
   onConnectionStateChange(handler: (state: ConnectionState) => void): () => void;
   /** Codex BLOCK F: synchronous read of the bridge's current
    *  connection state. The `onConnectionStateChange` listener fires on
@@ -835,6 +880,162 @@ function guardWarning(p: unknown): WarningEvent | null {
   return { reason: p.reason, context: p.context };
 }
 
+function guardToolStarted(p: unknown): ToolStartedEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (
+    !isString(p.session_id) ||
+    !isString(p.turn_id) ||
+    !isString(p.tool_call_id) ||
+    !isString(p.tool_name)
+  ) {
+    return null;
+  }
+  return {
+    session_id: p.session_id,
+    turn_id: p.turn_id,
+    tool_call_id: p.tool_call_id,
+    tool_name: p.tool_name,
+    arguments: p.arguments,
+  };
+}
+
+function guardToolProgress(p: unknown): ToolProgressEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (
+    !isString(p.session_id) ||
+    !isString(p.turn_id) ||
+    !isString(p.tool_call_id)
+  ) {
+    return null;
+  }
+  return {
+    session_id: p.session_id,
+    turn_id: p.turn_id,
+    tool_call_id: p.tool_call_id,
+    message: typeof p.message === "string" ? p.message : undefined,
+    progress_pct:
+      typeof p.progress_pct === "number" && Number.isFinite(p.progress_pct)
+        ? p.progress_pct
+        : undefined,
+  };
+}
+
+function guardToolCompleted(p: unknown): ToolCompletedEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (
+    !isString(p.session_id) ||
+    !isString(p.turn_id) ||
+    !isString(p.tool_call_id) ||
+    !isString(p.tool_name)
+  ) {
+    return null;
+  }
+  return {
+    session_id: p.session_id,
+    turn_id: p.turn_id,
+    tool_call_id: p.tool_call_id,
+    tool_name: p.tool_name,
+    success: typeof p.success === "boolean" ? p.success : undefined,
+    output_preview:
+      typeof p.output_preview === "string" ? p.output_preview : undefined,
+    duration_ms:
+      typeof p.duration_ms === "number" && Number.isFinite(p.duration_ms)
+        ? p.duration_ms
+        : undefined,
+  };
+}
+
+function guardUiTokenCost(p: unknown): UiTokenCostUpdate | undefined {
+  if (!isPlainObject(p)) return undefined;
+  const out: UiTokenCostUpdate = {};
+  if (typeof p.input_tokens === "number") out.input_tokens = p.input_tokens;
+  if (typeof p.output_tokens === "number") out.output_tokens = p.output_tokens;
+  if (typeof p.reasoning_tokens === "number")
+    out.reasoning_tokens = p.reasoning_tokens;
+  if (typeof p.cache_read_tokens === "number")
+    out.cache_read_tokens = p.cache_read_tokens;
+  if (typeof p.cache_write_tokens === "number")
+    out.cache_write_tokens = p.cache_write_tokens;
+  if (typeof p.total_tokens === "number") out.total_tokens = p.total_tokens;
+  if (typeof p.response_cost === "number") out.response_cost = p.response_cost;
+  if (typeof p.session_cost === "number") out.session_cost = p.session_cost;
+  if (typeof p.currency === "string") out.currency = p.currency;
+  return out;
+}
+
+function guardUiRetryBackoff(p: unknown): UiRetryBackoff | undefined {
+  if (!isPlainObject(p)) return undefined;
+  const out: UiRetryBackoff = {};
+  if (typeof p.attempt === "number") out.attempt = p.attempt;
+  if (typeof p.max_attempts === "number") out.max_attempts = p.max_attempts;
+  if (typeof p.backoff_ms === "number") out.backoff_ms = p.backoff_ms;
+  if (typeof p.reason === "string") out.reason = p.reason;
+  if (typeof p.provider === "string") out.provider = p.provider;
+  if (typeof p.next_provider === "string") out.next_provider = p.next_provider;
+  return out;
+}
+
+function guardUiFileMutationNotice(
+  p: unknown,
+): UiFileMutationNotice | undefined {
+  if (!isPlainObject(p)) return undefined;
+  if (!isString(p.path) || !isString(p.operation)) return undefined;
+  const out: UiFileMutationNotice = {
+    path: p.path,
+    operation: p.operation,
+  };
+  if (typeof p.tool_call_id === "string") out.tool_call_id = p.tool_call_id;
+  if (typeof p.bytes_written === "number") out.bytes_written = p.bytes_written;
+  return out;
+}
+
+function guardProgressUpdated(p: unknown): ProgressUpdatedEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.session_id)) return null;
+  if (!isPlainObject(p.metadata)) return null;
+  const m = p.metadata;
+  if (!isString(m.kind)) return null;
+  const metadata: UiProgressMetadata = {
+    kind: m.kind,
+  };
+  if (typeof m.label === "string") metadata.label = m.label;
+  if (typeof m.message === "string") metadata.message = m.message;
+  if (typeof m.detail === "string") metadata.detail = m.detail;
+  if (typeof m.iteration === "number") metadata.iteration = m.iteration;
+  if (typeof m.progress_pct === "number") metadata.progress_pct = m.progress_pct;
+  const retry = guardUiRetryBackoff(m.retry);
+  if (retry) metadata.retry = retry;
+  const fileMutation = guardUiFileMutationNotice(m.file_mutation);
+  if (fileMutation) metadata.file_mutation = fileMutation;
+  const tokenCost = guardUiTokenCost(m.token_cost);
+  if (tokenCost) metadata.token_cost = tokenCost;
+  // Pass through any unknown `extra` fields verbatim so a server-side
+  // schema extension doesn't trip the fail-closed reject path. Skips the
+  // known keys we already lifted above.
+  const known = new Set([
+    "kind",
+    "label",
+    "message",
+    "detail",
+    "iteration",
+    "progress_pct",
+    "retry",
+    "file_mutation",
+    "token_cost",
+  ]);
+  for (const key of Object.keys(m)) {
+    if (!known.has(key)) metadata[key] = m[key];
+  }
+  return {
+    session_id: p.session_id,
+    turn_id:
+      typeof p.turn_id === "string" && p.turn_id.length > 0
+        ? p.turn_id
+        : undefined,
+    metadata,
+  };
+}
+
 /** Minimal guard for `session/title-updated`.
  *
  *  The server's ADR-defined payload is
@@ -928,6 +1129,10 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     TurnStartedEvent | TurnCompletedEvent | TurnErrorEvent
   >();
   private readonly subApprovalRequested = new Subscribers<ApprovalRequestedEvent>();
+  private readonly subToolStarted = new Subscribers<ToolStartedEvent>();
+  private readonly subToolProgress = new Subscribers<ToolProgressEvent>();
+  private readonly subToolCompleted = new Subscribers<ToolCompletedEvent>();
+  private readonly subProgressUpdated = new Subscribers<ProgressUpdatedEvent>();
   private readonly subWarning = new Subscribers<WarningEvent>();
   private readonly subState = new Subscribers<ConnectionState>();
   private readonly subSessionTitleUpdated = new Subscribers<{
@@ -977,6 +1182,22 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     [METHODS.APPROVAL_REQUESTED]: {
       guard: guardApprovalRequested,
       emit: (v) => this.subApprovalRequested.emit(v as ApprovalRequestedEvent),
+    },
+    [METHODS.TOOL_STARTED]: {
+      guard: guardToolStarted,
+      emit: (v) => this.subToolStarted.emit(v as ToolStartedEvent),
+    },
+    [METHODS.TOOL_PROGRESS]: {
+      guard: guardToolProgress,
+      emit: (v) => this.subToolProgress.emit(v as ToolProgressEvent),
+    },
+    [METHODS.TOOL_COMPLETED]: {
+      guard: guardToolCompleted,
+      emit: (v) => this.subToolCompleted.emit(v as ToolCompletedEvent),
+    },
+    [METHODS.PROGRESS_UPDATED]: {
+      guard: guardProgressUpdated,
+      emit: (v) => this.subProgressUpdated.emit(v as ProgressUpdatedEvent),
     },
     [METHODS.WARNING]: {
       guard: guardWarning,
@@ -1079,6 +1300,10 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.subTaskOutputDelta.clear();
     this.subTurnLifecycle.clear();
     this.subApprovalRequested.clear();
+    this.subToolStarted.clear();
+    this.subToolProgress.clear();
+    this.subToolCompleted.clear();
+    this.subProgressUpdated.clear();
     this.subWarning.clear();
     this.subState.clear();
     this.subSessionTitleUpdated.clear();
@@ -1218,6 +1443,18 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   }
   onApprovalRequested(handler: Listener<ApprovalRequestedEvent>): () => void {
     return this.subApprovalRequested.add(handler);
+  }
+  onToolStarted(handler: Listener<ToolStartedEvent>): () => void {
+    return this.subToolStarted.add(handler);
+  }
+  onToolProgress(handler: Listener<ToolProgressEvent>): () => void {
+    return this.subToolProgress.add(handler);
+  }
+  onToolCompleted(handler: Listener<ToolCompletedEvent>): () => void {
+    return this.subToolCompleted.add(handler);
+  }
+  onProgressUpdated(handler: Listener<ProgressUpdatedEvent>): () => void {
+    return this.subProgressUpdated.add(handler);
   }
   onConnectionStateChange(handler: Listener<ConnectionState>): () => void {
     return this.subState.add(handler);
@@ -1820,5 +2057,9 @@ export const __INTERNAL_GUARDS_FOR_TEST__ = {
   guardTurnCompleted,
   guardTurnError,
   guardApprovalRequested,
+  guardToolStarted,
+  guardToolProgress,
+  guardToolCompleted,
+  guardProgressUpdated,
   guardWarning,
 };

@@ -601,6 +601,77 @@ describe("type guards (fail-closed)", () => {
       guards.guardTurnError({ session_id: "s", turn_id: "t" }),
     ).toBeNull();
   });
+
+  // PR fix/restore-progress-cost-meta-events guards (regression A / B)
+  it("accepts a well-formed tool/started event", () => {
+    const ok = guards.guardToolStarted({
+      session_id: "s",
+      turn_id: "t",
+      tool_call_id: "tc-1",
+      tool_name: "shell",
+      arguments: { command: "ls" },
+    });
+    expect(ok?.tool_call_id).toBe("tc-1");
+    expect(ok?.tool_name).toBe("shell");
+  });
+
+  it("rejects tool/started missing tool_name", () => {
+    expect(
+      guards.guardToolStarted({
+        session_id: "s",
+        turn_id: "t",
+        tool_call_id: "tc-1",
+      }),
+    ).toBeNull();
+  });
+
+  it("accepts tool/progress with optional message + progress_pct", () => {
+    const ok = guards.guardToolProgress({
+      session_id: "s",
+      turn_id: "t",
+      tool_call_id: "tc-2",
+      message: "running",
+      progress_pct: 42,
+    });
+    expect(ok?.message).toBe("running");
+    expect(ok?.progress_pct).toBe(42);
+  });
+
+  it("accepts tool/completed and lifts success + duration_ms", () => {
+    const ok = guards.guardToolCompleted({
+      session_id: "s",
+      turn_id: "t",
+      tool_call_id: "tc-3",
+      tool_name: "shell",
+      success: true,
+      duration_ms: 1250,
+    });
+    expect(ok?.success).toBe(true);
+    expect(ok?.duration_ms).toBe(1250);
+  });
+
+  it("accepts progress/updated and lifts token_cost.input_tokens", () => {
+    const ok = guards.guardProgressUpdated({
+      session_id: "s",
+      turn_id: "t",
+      metadata: {
+        kind: "token_cost_update",
+        token_cost: { input_tokens: 100, output_tokens: 20, session_cost: 0.01 },
+      },
+    });
+    expect(ok?.metadata.kind).toBe("token_cost_update");
+    expect(ok?.metadata.token_cost?.input_tokens).toBe(100);
+    expect(ok?.metadata.token_cost?.session_cost).toBe(0.01);
+  });
+
+  it("rejects progress/updated missing metadata.kind", () => {
+    expect(
+      guards.guardProgressUpdated({
+        session_id: "s",
+        metadata: { token_cost: { input_tokens: 100 } },
+      }),
+    ).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1192,6 +1263,71 @@ describe("notification dispatch", () => {
     expect(
       warnings.some((w) => w.reason === "invalid_event:turn/spawn_complete"),
     ).toBe(true);
+  });
+
+  it("routes tool/started, tool/progress, tool/completed, progress/updated through the new subscribers", async () => {
+    // PR fix/restore-progress-cost-meta-events: end-to-end bridge dispatch
+    // test for the four notification methods restored after the SSE
+    // bridge deletion in PR #96.
+    const { bridge, ws } = await freshConnected();
+    const started: unknown[] = [];
+    const progressed: unknown[] = [];
+    const completed: unknown[] = [];
+    const updates: unknown[] = [];
+    bridge.onToolStarted((e) => started.push(e));
+    bridge.onToolProgress((e) => progressed.push(e));
+    bridge.onToolCompleted((e) => completed.push(e));
+    bridge.onProgressUpdated((e) => updates.push(e));
+
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.TOOL_STARTED,
+      params: {
+        session_id: "sess-1",
+        turn_id: "t1",
+        tool_call_id: "tc-1",
+        tool_name: "shell",
+      },
+    });
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.TOOL_PROGRESS,
+      params: {
+        session_id: "sess-1",
+        turn_id: "t1",
+        tool_call_id: "tc-1",
+        message: "running",
+      },
+    });
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.TOOL_COMPLETED,
+      params: {
+        session_id: "sess-1",
+        turn_id: "t1",
+        tool_call_id: "tc-1",
+        tool_name: "shell",
+        success: true,
+        duration_ms: 100,
+      },
+    });
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.PROGRESS_UPDATED,
+      params: {
+        session_id: "sess-1",
+        turn_id: "t1",
+        metadata: {
+          kind: "token_cost_update",
+          label: "moonshot@autodl/kimi-k2.5",
+          token_cost: { input_tokens: 1, output_tokens: 2, session_cost: 0.001 },
+        },
+      },
+    });
+    expect(started).toHaveLength(1);
+    expect(progressed).toHaveLength(1);
+    expect(completed).toHaveLength(1);
+    expect(updates).toHaveLength(1);
   });
 
   it("routes turn lifecycle and approval/requested", async () => {

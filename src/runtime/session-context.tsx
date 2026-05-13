@@ -141,7 +141,7 @@ export function useModeState() {
   return { queueMode, adaptiveMode };
 }
 
-interface SessionContextValue {
+export interface SessionContextValue {
   sessions: SessionWithTitle[];
   currentSessionId: string;
   historyTopic?: string;
