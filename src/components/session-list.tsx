@@ -4,16 +4,15 @@ import { useAllTasksBySession } from "@/store/task-store";
 import { Plus, MessageSquare, Trash2, Check, X, Loader2 } from "lucide-react";
 
 /**
- * Sidebar session list (M12 Phase D-3).
+ * Sidebar session list.
  *
  * All session-fetch / delete traffic goes through `useSession()`, which
- * routes through the Phase D-2 `listSessions` / `deleteSession`
- * wrappers in `src/api/sessions.ts`. Those wrappers flip between the WS
- * UI Protocol v1 `session/list` + `session/delete` methods and the
- * legacy REST endpoints based on the `auxiliary_rest_to_ws_v1`
- * feature flag. This component never calls `request()` or `fetch()`
- * directly — keep it that way to preserve the single transport
- * boundary the wrappers establish.
+ * routes through the `listSessions` / `deleteSession` wrappers in
+ * `src/api/sessions.ts`. Those wrappers call the WS UI Protocol v1
+ * `session/list` + `session/delete` methods. The legacy REST fallbacks
+ * were retired in M12 Phase D-5. This component never calls
+ * `request()` or `fetch()` directly — keep it that way to preserve
+ * the single transport boundary the wrappers establish.
  */
 export function SessionList() {
   const { sessions, currentSessionId, switchSession, createSession, removeSession } =

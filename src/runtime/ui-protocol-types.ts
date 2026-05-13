@@ -322,10 +322,10 @@ export interface WarningEvent {
 /**
  * UPCR-2026-016 (M9-β-2) `session/closed` notification.
  *
- * Server emits this after `DELETE /api/sessions/:id` clears at least
- * one entry from the standalone session store. Web clients use it to
- * remove the row from the sidebar in real time so a delete action on
- * one tab reflects on every other open tab without polling.
+ * Server emits this after a successful `session/delete` clears at
+ * least one entry from the standalone session store. Web clients use
+ * it to remove the row from the sidebar in real time so a delete
+ * action on one tab reflects on every other open tab without polling.
  *
  * `reason` is a free-form discriminator; the canonical value today is
  * `"deleted"`. Future producers may emit `"expired"`, `"forked"`, etc.
@@ -342,13 +342,13 @@ export interface SessionClosedEvent {
 /**
  * UPCR-2026-016 (M9-β-2) `session/title-updated` notification.
  *
- * Server emits this after a successful `PATCH /api/sessions/:id/title`.
- * Web clients re-render the sidebar row in place — the auto-titler
- * fires the same REST PATCH from its caller, so this event covers both
+ * Server emits this after a successful `session/title.set` call. Web
+ * clients re-render the sidebar row in place — the auto-titler fires
+ * the same JSON-RPC method from its caller, so this event covers both
  * manual rename and auto-naming flows the user perceives.
  *
- * `reason` is `"manual"` for direct PATCH calls today. Future producers
- * may emit `"auto"`, `"bulk_rename"`, etc.
+ * `reason` is `"manual"` for direct user-driven renames today. Future
+ * producers may emit `"auto"`, `"bulk_rename"`, etc.
  */
 export interface SessionTitleUpdatedEvent {
   session_id: string;
