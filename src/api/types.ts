@@ -17,6 +17,12 @@ export interface ChatResponse {
 export interface SessionInfo {
   id: string;
   message_count: number;
+  /// Server-computed title (from session JSONL metadata or a stored
+  /// rename). May be missing or empty for legacy sessions — when
+  /// present, the SPA uses it directly and skips the per-session
+  /// `messages_page` round-trip used to derive a title from the first
+  /// user message.
+  title?: string | null;
 }
 
 export interface MessageInfo {
