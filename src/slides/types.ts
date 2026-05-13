@@ -30,6 +30,11 @@ export interface SlidesProject {
   updatedAt: number;
   /** True once the backend `/new slides ...` scaffold has been created. */
   scaffolded?: boolean;
+  /** Set when the scaffold turn failed or the artifact never landed.
+   *  Mirrors `SiteProject.scaffoldError`: lets the SlidesChat UI surface
+   *  a retry prompt and keeps `scaffolded` honest about the actual
+   *  on-disk state. */
+  scaffoldError?: string;
   /** Backend directory slug under `slides/`. */
   slug?: string;
   slides: Slide[];

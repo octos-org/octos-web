@@ -29,12 +29,29 @@ export function getToken(): string | null {
 }
 
 export function setToken(token: string, isAdmin = false) {
-  localStorage.setItem(isAdmin ? ADMIN_TOKEN_KEY : TOKEN_KEY, token);
+  // Issue #111.2: when writing the new token, clear the OTHER slot
+  // first. Pre-fix, admin-token login wrote `octos_auth_token` but
+  // `getToken()` (which prefers `octos_session_token`) kept returning
+  // the stale session token — so subsequent requests used the wrong
+  // credentials. Always clearing the opposite slot guarantees
+  // `getToken()` returns the just-written value.
+  if (isAdmin) {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.setItem(ADMIN_TOKEN_KEY, token);
+  } else {
+    localStorage.removeItem(ADMIN_TOKEN_KEY);
+    localStorage.setItem(TOKEN_KEY, token);
+  }
 }
 
 export function clearToken() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(ADMIN_TOKEN_KEY);
+  // Issue #111.3: clear `selected_profile` on token change so a
+  // logout (or admin-login that follows a different account's
+  // session) does not surface the prior profile id into the next
+  // session's headers.
+  localStorage.removeItem("selected_profile");
 }
 
 export function getSelectedProfileId(includeStoredFallback = true): string | null {

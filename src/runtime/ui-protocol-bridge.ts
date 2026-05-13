@@ -196,6 +196,13 @@ const DEFAULT_KEEPALIVE_MS = 30000;
 const DEFAULT_KEEPALIVE_TIMEOUT_MS = 60000;
 const NORMAL_CLOSURE = 1000;
 
+// Spec §10 `permission_denied` (`crates/octos-core/src/ui_protocol.rs`
+// `PERMISSION_DENIED: i64 = -32120`). When the server rejects
+// `session/open` or `turn/start` with this RPC code, the token is
+// effectively dead for the chat surface — surface `crew:auth_expired`
+// so AuthProvider can revalidate / drop the user back to /login.
+const RPC_ERROR_PERMISSION_DENIED = -32120;
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -226,7 +233,18 @@ export class BridgeTimeoutError extends Error {
 }
 
 export interface UiProtocolBridge {
-  start(opts: { sessionId: string; profileId?: string }): Promise<void>;
+  /** Start the bridge. The optional `topic` arg is used purely client-side
+   *  to drop event envelopes whose `params.topic` carries a different
+   *  topic (codex BLOCK E). Until the server scopes its replay/live
+   *  broadcast to the negotiated topic (separate server PR), this is
+   *  best-effort defense — only events whose Rust struct includes the
+   *  `topic` field carry it on the wire (e.g. `TurnStartedEvent`); other
+   *  envelopes pass through unfiltered. */
+  start(opts: {
+    sessionId: string;
+    profileId?: string;
+    topic?: string;
+  }): Promise<void>;
   stop(): Promise<void>;
 
   sendTurn(
@@ -296,7 +314,21 @@ export interface UiProtocolBridge {
   ): () => void;
   onApprovalRequested(handler: (e: ApprovalRequestedEvent) => void): () => void;
   onConnectionStateChange(handler: (state: ConnectionState) => void): () => void;
+  /** Codex BLOCK F: synchronous read of the bridge's current
+   *  connection state. The `onConnectionStateChange` listener fires on
+   *  TRANSITIONS, so a subscriber installed AFTER the bridge is
+   *  already terminal never sees the entry-state. Send-path callers
+   *  read this at send-start so a `BridgeStoppedError` raised before
+   *  the listener fires can be classified as terminal-fast-reject
+   *  (skip the 45s grace) vs reconnectable. */
+  getConnectionState(): ConnectionState;
   onWarning(handler: (e: WarningEvent) => void): () => void;
+  /** Issue #113.2: server-emitted title update for cross-tab and
+   *  auto-title flows. SessionProvider subscribes to keep its
+   *  `titleCache` and `sessions[]` in sync. */
+  onSessionTitleUpdated(
+    handler: (e: { session_id: string; title: string }) => void,
+  ): () => void;
 }
 
 export interface BridgeConfig {
@@ -353,7 +385,17 @@ interface JsonRpcNotification {
   params?: unknown;
 }
 
-type QueuedFrame = string;
+/**
+ * Queued WS frame. Issue #109.2: RPC frames are tagged with their
+ * request id so that an RPC timeout / cancellation can remove the
+ * matching frame from `sendQueue` instead of leaving it parked to
+ * re-fire after reconnect. Plain notifications (no `id`) flush
+ * normally.
+ */
+interface QueuedFrame {
+  text: string;
+  rpcId?: string;
+}
 
 interface PendingRpc {
   method: string;
@@ -842,6 +884,14 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private ws: WebSocket | null = null;
   private sessionId: string | null = null;
   private profileId: string | null | undefined = undefined;
+  /** Codex BLOCK E: client-side topic scope for envelope filtering.
+   *  The server still replays root-scope events to every topic-bridge
+   *  today (parallel server PR will add scope-by-topic replay + live).
+   *  Until that lands, drop envelopes whose `params.topic` is set and
+   *  mismatches — events without `topic` on the wire pass through
+   *  because the bridge cannot tell what scope they belong to without
+   *  server help. Tracked as a follow-up server issue. */
+  private topicScope: string | null = null;
   private stopped = false;
   private reconnectAttempts = 0;
   /** True only after `scheduleReconnect` has exhausted
@@ -855,6 +905,20 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private reconnectTimer: unknown = null;
   private keepaliveTimer: unknown = null;
   private lastInboundAt = 0;
+  /** True once the bridge has reached `connected` at least once in this
+   *  lifecycle. The HTTP-401-at-upgrade fallback uses this to scope the
+   *  /api/auth/me probe to the "have never opened" case — a mid-session
+   *  reconnect that fails with `onerror+onclose(1006)` after the bridge
+   *  was happily live for hours is a transport blip, not an auth-rejected
+   *  upgrade. Issue #111.1 (codex BLOCK A): the 1008 hook covers the case
+   *  the server WILL emit (parallel server PR); this guard covers what
+   *  the server emits TODAY (HTTP 401 at the WS upgrade surfaces as
+   *  `onerror` followed by `onclose` with no `onopen`). */
+  private hasEverOpened = false;
+  /** True once we have dispatched `crew:auth_expired` for this bridge
+   *  lifecycle. Prevents spamming AuthProvider with one event per
+   *  reconnect attempt during the auth-rejected case. */
+  private authExpiredDispatched = false;
   private readonly pending: Map<string, PendingRpc> = new Map();
   private readonly sendQueue: QueuedFrame[] = [];
 
@@ -869,6 +933,10 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private readonly subApprovalRequested = new Subscribers<ApprovalRequestedEvent>();
   private readonly subWarning = new Subscribers<WarningEvent>();
   private readonly subState = new Subscribers<ConnectionState>();
+  private readonly subSessionTitleUpdated = new Subscribers<{
+    session_id: string;
+    title: string;
+  }>();
 
   private readonly notificationTable: Record<
     string,
@@ -917,23 +985,19 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       guard: guardWarning,
       emit: (v) => this.subWarning.emit(v as WarningEvent),
     },
-    // M12 Phase D-3 (octos-web #106 review follow-up). The server emits
-    // `session/title-updated` after a successful `session/title.set`. We
-    // register the table entry so the bridge does not warn-and-drop the
-    // notification as "unknown method"; the no-op guard + emit means we
-    // still throw away the payload until SessionProvider wires a
-    // subscriber path to patch `titleCache` + `sessions[]`.
-    //
-    // TODO: expose `onSessionTitleUpdated(handler)` on the bridge and
-    // hook it from SessionProvider so the cache stays in sync across
-    // tabs and with server-side auto-title flows. The optimistic update
-    // and the notification are idempotent (both write the same title),
-    // so re-wiring this is safe vs the local rename path.
+    // Issue #113.2 (was M12 Phase D-3 TODO): the server emits
+    // `session/title-updated` after a successful `session/title.set`,
+    // so cross-tab and server-side auto-title flows can refresh the
+    // sidebar without polling the REST list. SessionProvider subscribes
+    // via `onSessionTitleUpdated`; the optimistic update and the
+    // notification are idempotent (both write the same title), so the
+    // dispatch is safe vs the local rename path.
     [METHODS.SESSION_TITLE_UPDATED]: {
       guard: guardSessionTitleUpdated,
-      emit: () => {
-        // no-op until subscriber wiring lands
-      },
+      emit: (v) =>
+        this.subSessionTitleUpdated.emit(
+          v as { session_id: string; title: string },
+        ),
     },
   };
 
@@ -972,15 +1036,25 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
 
   // ----- public API --------------------------------------------------------
 
-  async start(opts: { sessionId: string; profileId?: string }): Promise<void> {
+  async start(opts: {
+    sessionId: string;
+    profileId?: string;
+    topic?: string;
+  }): Promise<void> {
     if (!opts || !isString(opts.sessionId)) {
       throw new Error("ui-protocol-bridge: start requires sessionId");
     }
     this.stopped = false;
     this.sessionId = opts.sessionId;
     this.profileId = opts.profileId ?? this.cfg.getProfileId();
+    // Codex BLOCK E: stash the topic scope for the client-side
+    // envelope-mismatch drop. Empty string => no scope (root).
+    const t = opts.topic?.trim();
+    this.topicScope = t && t.length > 0 ? t : null;
     this.reconnectAttempts = 0;
     this.reconnectAbandoned = false;
+    this.hasEverOpened = false;
+    this.authExpiredDispatched = false;
     await this.openSocket();
   }
 
@@ -1010,6 +1084,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.subApprovalRequested.clear();
     this.subWarning.clear();
     this.subState.clear();
+    this.subSessionTitleUpdated.clear();
   }
 
   sendTurn(
@@ -1150,8 +1225,16 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   onConnectionStateChange(handler: Listener<ConnectionState>): () => void {
     return this.subState.add(handler);
   }
+  getConnectionState(): ConnectionState {
+    return this.state;
+  }
   onWarning(handler: Listener<WarningEvent>): () => void {
     return this.subWarning.add(handler);
+  }
+  onSessionTitleUpdated(
+    handler: Listener<{ session_id: string; title: string }>,
+  ): () => void {
+    return this.subSessionTitleUpdated.add(handler);
   }
 
   // ----- internals ---------------------------------------------------------
@@ -1265,6 +1348,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       if (this.stopped) return;
       this.reconnectAttempts = 0;
       this.reconnectAbandoned = false;
+      this.hasEverOpened = true;
       this.setState("connected");
       this.startKeepalive();
       this.flushSendQueue();
@@ -1274,6 +1358,20 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
         reason: "session_open_failed",
         context: err instanceof Error ? err.message : err,
       });
+      // Codex BLOCK A: an RPC `permission_denied` (-32120) on
+      // `session/open` means the server accepted the WS upgrade
+      // (token was structurally present) but refused the open
+      // because the user has no scope on this session — for the
+      // chat surface that's auth-equivalent to a dead token, so
+      // route through `crew:auth_expired` rather than burning
+      // reconnect cycles.
+      if (err instanceof BridgeRpcError && err.code === RPC_ERROR_PERMISSION_DENIED) {
+        this.dispatchAuthExpired("permission_denied:session/open");
+        this.reconnectAbandoned = true;
+        this.setState("error");
+        this.rejectAllPending(new BridgeStoppedError("auth permission denied"));
+        return;
+      }
       this.scheduleReconnect();
     }
   }
@@ -1326,6 +1424,18 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.pending.delete(resp.id);
     this.cfg.clearTimeout(pending.timer);
     if (resp.error) {
+      // Codex BLOCK A: RPC-level `permission_denied` (-32120) on
+      // `session/open` or `turn/start` signals the user no longer has
+      // scope on this surface. Treat it as auth-expired so AuthProvider
+      // probes `/api/auth/me` and (when 401s) drops to /login. We do
+      // NOT dispatch on `internal_error` etc — only this typed code.
+      if (
+        resp.error.code === RPC_ERROR_PERMISSION_DENIED &&
+        (pending.method === METHODS.SESSION_OPEN ||
+          pending.method === METHODS.TURN_START)
+      ) {
+        this.dispatchAuthExpired(`permission_denied:${pending.method}`);
+      }
       pending.reject(
         new BridgeRpcError(
           resp.error.code,
@@ -1343,6 +1453,21 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     const handler = this.notificationTable[note.method];
     if (!handler) {
       return;
+    }
+    // Codex BLOCK E: client-side topic scope defense. If THIS bridge
+    // negotiated a topic (`topicScope !== null`) and the envelope
+    // carries a different `topic` string, drop the event before the
+    // typed guard runs — the server PR that scopes replay/live by
+    // topic is separate; until then this filter prevents cross-topic
+    // bleed for the envelopes that DO carry `topic` on the wire (e.g.
+    // `TurnStartedEvent`). Envelopes without a `topic` field still
+    // pass through unfiltered; that's documented as best-effort
+    // pending the server-side fix.
+    if (this.topicScope !== null && isPlainObject(params)) {
+      const envTopic = params.topic;
+      if (typeof envTopic === "string" && envTopic !== this.topicScope) {
+        return;
+      }
     }
     const result = handler.guard(params);
     if (!result) {
@@ -1371,7 +1496,76 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       this.rejectAllPending(new BridgeStoppedError("connection closed"));
       return;
     }
+    // Issue #111.1: the server rejects an authenticated WS upgrade
+    // with close-code 1008 ("policy violation") when the token is
+    // expired/invalid. Pre-fix the bridge silently retried the
+    // handshake on every backoff tick — burning auth-rejected
+    // handshakes forever and leaving the user stuck on /chat with no
+    // path to re-login. Surface a typed `crew:auth_expired` window
+    // event so AuthProvider's subscriber can call `revalidate()`,
+    // which clears tokens and navigates to /login.
+    if (ev?.code === 1008) {
+      this.dispatchAuthExpired(ev.reason ?? "policy_violation");
+      // Stop reconnect attempts — the token is dead, retrying is
+      // wasted load on the server and noise on the client.
+      this.reconnectAbandoned = true;
+      this.setState("error");
+      this.rejectAllPending(new BridgeStoppedError("auth expired"));
+      return;
+    }
+    // Codex BLOCK A: the server today rejects an authenticated WS
+    // upgrade with HTTP 401 — the browser surfaces that as
+    // `onerror` followed by `onclose(1006, "")` with no `onopen`.
+    // Probe `/api/auth/me`: a 401 there closes the loop via api/client's
+    // 401 interceptor (which clears tokens and redirects to /login),
+    // and the probe also dispatches `crew:auth_expired` so AuthProvider's
+    // revalidate path takes effect even when the interceptor lets the
+    // 401 through. We only run this when the bridge has NEVER opened
+    // in this lifecycle — a mid-session 1006 close after the bridge
+    // was happily live is a transport blip, not an auth expiry.
+    // The parallel server PR will add the 1008 emit above, after which
+    // this fallback can stay as a defense for older servers.
+    if (!this.hasEverOpened) {
+      void this.probeAuthAndMaybeExpire();
+    }
     this.scheduleReconnect();
+  }
+
+  /** Dispatch the `crew:auth_expired` window event idempotently per
+   *  bridge lifecycle. AuthProvider subscribes and runs `revalidate()`,
+   *  which probes `/api/auth/me` and (on 401) clears tokens + redirects. */
+  private dispatchAuthExpired(reason: string): void {
+    if (this.authExpiredDispatched) return;
+    this.authExpiredDispatched = true;
+    if (typeof window === "undefined") return;
+    try {
+      window.dispatchEvent(
+        new CustomEvent("crew:auth_expired", { detail: { reason } }),
+      );
+    } catch {
+      // CustomEvent / dispatchEvent unavailable in the sandbox — best-effort.
+    }
+  }
+
+  /** Codex BLOCK A: probe `/api/auth/me` after a never-opened WS close.
+   *  Treat any 401 there as auth-expired. Best-effort — failures here
+   *  (network down, /api/auth/me 500s) don't dispatch the event so
+   *  legitimate transport blips before the first connect don't surface
+   *  a spurious re-login prompt. The actual 401 path is also driven by
+   *  api/client's existing 401 interceptor (clears tokens, redirects);
+   *  the explicit dispatch covers the gap when the probe runs ahead
+   *  of any other authenticated REST call. */
+  private async probeAuthAndMaybeExpire(): Promise<void> {
+    if (typeof fetch !== "function") return;
+    try {
+      const resp = await fetch("/api/auth/me", { credentials: "same-origin" });
+      if (resp.status === 401) {
+        this.dispatchAuthExpired("upgrade_401");
+        this.reconnectAbandoned = true;
+      }
+    } catch {
+      // Network probe failed — leave reconnect scheduling alone.
+    }
   }
 
   private scheduleReconnect(): void {
@@ -1494,6 +1688,15 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     return new Promise<T>((resolve, reject) => {
       const timer = this.cfg.setTimeout(() => {
         if (!this.pending.delete(id)) return;
+        // Issue #109.2: drop the matching queued frame so a late
+        // reconnect-flush does not re-send a request whose Promise we
+        // just rejected with `BridgeTimeoutError`. Pre-fix, the
+        // `pending[id]` entry was deleted but the raw frame in
+        // `sendQueue` survived — after reconnect, the frame fired,
+        // the server processed it, but the client had no pending
+        // resolver. Worst case: a duplicate `turn/start` materialised
+        // on the server seconds after the user's UI gave up.
+        this.dropQueuedRpc(id);
         reject(new BridgeTimeoutError(method, timeoutMs));
       }, timeoutMs);
       this.pending.set(id, {
@@ -1518,11 +1721,11 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
 
       if (this.state === "connected") {
         if (!this.rawSend(text)) {
-          this.enqueueFrame(text);
+          this.enqueueFrame({ text, rpcId: id });
         }
         return;
       }
-      this.enqueueFrame(text);
+      this.enqueueFrame({ text, rpcId: id });
     });
   }
 
@@ -1546,10 +1749,10 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     };
     const text = JSON.stringify(frame);
     if (this.state === "connected") {
-      if (!this.rawSend(text)) this.enqueueFrame(text);
+      if (!this.rawSend(text)) this.enqueueFrame({ text });
       return;
     }
-    this.enqueueFrame(text);
+    this.enqueueFrame({ text });
   }
 
   private rawSend(text: string): boolean {
@@ -1564,21 +1767,34 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     }
   }
 
-  private enqueueFrame(text: string): void {
+  private enqueueFrame(frame: QueuedFrame): void {
     if (this.sendQueue.length >= this.cfg.sendQueueLimit) {
       const dropped = this.sendQueue.shift();
       this.subWarning.emit({
         reason: "send_queue_overflow",
-        context: { dropped_bytes: dropped?.length ?? 0 },
+        context: { dropped_bytes: dropped?.text.length ?? 0 },
       });
     }
-    this.sendQueue.push(text);
+    this.sendQueue.push(frame);
+  }
+
+  /**
+   * Issue #109.2: drop a queued frame by its RPC id. Called when the
+   * RPC's timeout fires before the frame leaves the queue, so a
+   * later reconnect-flush does not re-send a request whose Promise
+   * we have already rejected.
+   */
+  private dropQueuedRpc(rpcId: string): void {
+    const idx = this.sendQueue.findIndex((f) => f.rpcId === rpcId);
+    if (idx >= 0) {
+      this.sendQueue.splice(idx, 1);
+    }
   }
 
   private flushSendQueue(): void {
     while (this.state === "connected" && this.sendQueue.length > 0) {
       const next = this.sendQueue[0];
-      if (!this.rawSend(next)) return;
+      if (!this.rawSend(next.text)) return;
       this.sendQueue.shift();
     }
   }

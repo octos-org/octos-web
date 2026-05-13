@@ -70,6 +70,17 @@ export async function startBridgeForSession(
   sessionId: string,
   topic?: string,
 ): Promise<UiProtocolBridge> {
+  // Issue #109.4: a same-scope bridge that has hit a terminal state
+  // (`closed`/`error`) is dead — returning it makes a "Retry" button a
+  // no-op because the consumer keeps holding the corpse. Stop the dead
+  // bridge first so the code below creates a fresh one.
+  if (
+    active &&
+    sameScope(active, sessionId, topic) &&
+    (active.connectionState === "closed" || active.connectionState === "error")
+  ) {
+    await stopActiveBridge();
+  }
   if (active && sameScope(active, sessionId, topic)) {
     return active.bridge;
   }
@@ -79,7 +90,11 @@ export async function startBridgeForSession(
   const myGeneration = ++generation;
   const bridge = createUiProtocolBridge();
   try {
-    await bridge.start({ sessionId });
+    // Codex BLOCK E: pass `topic` so the bridge can drop cross-topic
+    // envelopes client-side. The server-side replay/live scoping by
+    // topic is a separate PR; this is best-effort defense in the
+    // meantime.
+    await bridge.start({ sessionId, topic });
   } catch (err) {
     if (myGeneration === generation) {
       // No newer start raced us; surface the failure.
@@ -213,6 +228,26 @@ export function getAnyConnectedBridge(): UiProtocolBridge | null {
   if (!active) return null;
   if (active.connectionState !== "connected") return null;
   return active.bridge;
+}
+
+/**
+ * Force-restart a bridge for the given scope. Unlike
+ * `startBridgeForSession` (which returns the existing same-scope
+ * bridge regardless of state), this ALWAYS tears down any active
+ * bridge for the scope first, then starts a fresh one.
+ *
+ * Issue #109.4: the "Retry" affordance after a terminal bridge failure
+ * needs an explicit restart path — the silent same-scope reuse in
+ * `startBridgeForSession` would otherwise hand back the dead bridge.
+ */
+export async function restartBridgeForSession(
+  sessionId: string,
+  topic?: string,
+): Promise<UiProtocolBridge> {
+  if (active && sameScope(active, sessionId, topic)) {
+    await stopActiveBridge();
+  }
+  return startBridgeForSession(sessionId, topic);
 }
 
 /** Stop the currently-active bridge and detach the router. Idempotent.

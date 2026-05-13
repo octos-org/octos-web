@@ -1021,6 +1021,9 @@ class FakeBridge implements UiProtocolBridge {
   onConnectionStateChange(): () => void {
     return () => {};
   }
+  getConnectionState(): "connected" {
+    return "connected";
+  }
   onWarning(): () => void {
     return () => {};
   }

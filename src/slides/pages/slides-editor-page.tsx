@@ -20,8 +20,12 @@ function shouldHydrateProject(project: SlidesProject | undefined): boolean {
 }
 
 function SlidesEditorContent() {
-  const { project } = useSlides();
+  const { project, save } = useSlides();
   const [currentIndex, setCurrentIndex] = useState(0);
+  // Codex round-3 BLOCK D.b: bumped by the editor layout's retry
+  // affordance after a scaffold failure. SlidesChat watches this in
+  // its auto-scaffold effect deps, which re-runs the scaffold turn.
+  const [retryNonce, setRetryNonce] = useState(0);
   const navigate = useNavigate();
 
   // Clamp index when slides change
@@ -43,10 +47,16 @@ function SlidesEditorContent() {
     }
   }, [currentIndex, navigate, project]);
 
+  const handleRetryScaffold = useCallback(() => {
+    save({ scaffoldError: undefined });
+    setRetryNonce((value) => value + 1);
+  }, [save]);
+
   // Removed: Esc was navigating to gallery even when image viewer was open
 
   return (
     <SlidesEditorLayout
+      onRetryScaffold={handleRetryScaffold}
       previewPanel={
         <SlidePreview
           slides={project?.slides ?? []}
@@ -57,7 +67,11 @@ function SlidesEditorContent() {
           version={project?.manifestGeneratedAt}
         />
       }
-      chatPanel={project ? <SlidesChat sessionId={project.id} /> : undefined}
+      chatPanel={
+        project ? (
+          <SlidesChat sessionId={project.id} retryNonce={retryNonce} />
+        ) : undefined
+      }
     />
   );
 }

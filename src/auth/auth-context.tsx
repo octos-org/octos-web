@@ -75,6 +75,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         : null;
     if (typeof maybeProfileId === "string" && maybeProfileId.trim()) {
       setSelectedProfileId(maybeProfileId);
+    } else if (typeof window !== "undefined") {
+      // Issue #111.3: when `/me` returns no profile, clear any stale
+      // `selected_profile` from localStorage. Pre-fix the persisted
+      // value lingered across accounts/hosts and leaked into the
+      // header on subsequent requests, producing wrong-profile
+      // history reads and surprise 403s.
+      try {
+        window.localStorage.removeItem("selected_profile");
+      } catch {
+        // ignore — localStorage may be unavailable in some sandbox modes
+      }
     }
     return resp;
   }, []);
@@ -114,6 +125,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       failAuthAndRedirect();
     }
   }, [syncMe, failAuthAndRedirect]);
+
+  // Issue #111.1: subscribe to the WS bridge's `crew:auth_expired`
+  // signal so an auth-rejected handshake (server close-code 1008)
+  // immediately runs the revalidate path. Pre-fix the bridge silently
+  // retried forever and the user sat on a dead /chat with no signal
+  // to re-login. The bridge fires this event once per auth-rejected
+  // close; revalidate() probes `/api/auth/me` — if the token is
+  // genuinely dead, it clears tokens and navigates to /login.
+  useEffect(() => {
+    function onAuthExpired() {
+      void revalidate();
+    }
+    window.addEventListener("crew:auth_expired", onAuthExpired);
+    return () => {
+      window.removeEventListener("crew:auth_expired", onAuthExpired);
+    };
+  }, [revalidate]);
 
   const login = useCallback(async (email: string, code: string) => {
     const resp = await authApi.verify(email, code);

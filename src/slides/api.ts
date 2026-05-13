@@ -76,6 +76,29 @@ export async function listSlidesFiles(
   dirs: string | string[],
   options: ListSlidesFilesOptions = {},
 ): Promise<SlidesFileEntry[]> {
+  const { filtered, requestedDirs } = await fetchSlidesFiles(dirs, options);
+  return ensureCoreSlidesFiles(filtered, requestedDirs);
+}
+
+// Codex round-3 BLOCK D.a: artifact-presence checks (e.g. the
+// scaffold poller) must NOT route through `ensureCoreSlidesFiles`,
+// which synthesizes zero-byte placeholders for the core trio
+// (script.js / memory.md / changelog.md) whenever ANY file lives
+// under `slides/<slug>`. The synthesizer makes a "do all three exist"
+// check trivially true, masking real scaffold failures. The raw API
+// returns only what the server actually saw on disk.
+export async function listSlidesFilesRaw(
+  dirs: string | string[],
+  options: ListSlidesFilesOptions = {},
+): Promise<SlidesFileEntry[]> {
+  const { filtered } = await fetchSlidesFiles(dirs, options);
+  return filtered;
+}
+
+async function fetchSlidesFiles(
+  dirs: string | string[],
+  options: ListSlidesFilesOptions,
+): Promise<{ filtered: SlidesFileEntry[]; requestedDirs: string[] }> {
   const requestedDirs = (Array.isArray(dirs) ? dirs : [dirs]).map(
     normalizeSlidesDir,
   );
@@ -96,7 +119,7 @@ export async function listSlidesFiles(
   const filtered = files.filter((file) =>
     requestedDirs.some((dir) => fileMatchesSlidesDir(file, dir)),
   );
-  return ensureCoreSlidesFiles(filtered, requestedDirs);
+  return { filtered, requestedDirs };
 }
 
 export async function waitForSlidesScaffold({
@@ -106,16 +129,26 @@ export async function waitForSlidesScaffold({
   attempts = 12,
   delayMs = 500,
 }: WaitForSlidesScaffoldOptions): Promise<SlidesFileEntry[]> {
+  // Codex round-4 BLOCK: `file.path` is an opaque server-issued
+  // handle (`pf/<base64>/<basename>`), so matching it against
+  // `slides/<slug>/<name>` never succeeds and every scaffold would
+  // time out. The workspace-relative directory lives on `file.group`
+  // and the basename on `file.filename` — check those instead.
+  // Round-3 BLOCK D.a still stands: skip `ensureCoreSlidesFiles` so
+  // the synthesizer doesn't fake the trio on a partial scaffold.
+  const expectedGroup = normalizeSlidesDir(`slides/${slug}`);
+  const expectedFilenames = ["script.js", "memory.md", "changelog.md"];
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     throwIfAborted(signal);
     try {
-      const files = await listSlidesFiles(`slides/${slug}`, { sessionId });
-      const filenames = new Set(files.map((file) => file.filename));
-      if (
-        filenames.has("script.js") &&
-        filenames.has("memory.md") &&
-        filenames.has("changelog.md")
-      ) {
+      const files = await listSlidesFilesRaw(`slides/${slug}`, { sessionId });
+      const present = new Set(
+        files
+          .filter((file) => normalizeSlidesDir(file.group) === expectedGroup)
+          .map((file) => file.filename),
+      );
+      const haveAll = expectedFilenames.every((name) => present.has(name));
+      if (haveAll) {
         return files;
       }
     } catch (error) {
