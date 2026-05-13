@@ -1287,10 +1287,15 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
           skipOptimisticUserMessage: true,
           onSessionActive: (firstMsg) => markSessionActive(firstMsg),
           onComplete: () => {
-            releaseSending();
             refreshSessions();
           },
         });
+        // Release synchronously after the bridge has the request:
+        // `bridgeSend` is fire-and-forget and `ui-protocol-send.ts`
+        // already serializes via a per-session FIFO. Holding `sending`
+        // until `onComplete` (turn/completed) locked the composer for
+        // the whole turn — see issue #112.3 follow-up.
+        releaseSending();
       };
       mountGhost({
         clientMessageId: cmid,
@@ -1321,10 +1326,17 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
       skipOptimisticUserMessage: ghostMounted,
       onSessionActive: (firstMsg) => markSessionActive(firstMsg),
       onComplete: () => {
-        releaseSending();
         refreshSessions();
       },
     });
+    // Release synchronously after the bridge has the request. The
+    // per-session FIFO at `ui-protocol-send.ts:163-291` serializes
+    // turn/start RPCs, so the composer can accept a follow-up while
+    // the prior turn is still in flight — the bridge queues it. The
+    // ~10ms double-tap guard #112.3 intended remains via `sendingRef`
+    // being set before `bridgeSend`. Holding it past handoff was
+    // overscoped — see issue #112.3 follow-up.
+    releaseSending();
 
     setText("");
   }, [
