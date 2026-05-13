@@ -1217,6 +1217,84 @@ describe("regression A: tool/* events fan out into crew:tool_progress", () => {
     expect((dispatched[0] as CustomEvent).detail.tool).toBe("tc-unknown");
   });
 
+  it("codex round-2 P2: tool/* events also populate the bubble's ThreadStore tool card", () => {
+    // Pre-fix the synchronous tool lifecycle only fired the transient
+    // spinner; the finalised assistant bubble had no tool card. The
+    // fix mirrors `tool/started` → addToolCall, `tool/progress` →
+    // appendToolProgress, `tool/completed` → setToolCallStatus, the
+    // same pattern `handleTaskUpdated` uses for spawn_only tasks.
+    const cmid = "cmid-Atool-card";
+    seedThread(cmid, "ask");
+    handleToolStarted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: "tc-card",
+        tool_name: "shell",
+      },
+    );
+    let [thread] = ThreadStore.getThreads(SESSION);
+    let tc = thread.pendingAssistant?.toolCalls.find((t) => t.id === "tc-card");
+    expect(tc).toBeDefined();
+    expect(tc!.name).toBe("shell");
+    expect(tc!.status).toBe("running");
+
+    handleToolProgress(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: "tc-card",
+        message: "executing cargo test",
+      },
+    );
+    [thread] = ThreadStore.getThreads(SESSION);
+    tc = thread.pendingAssistant?.toolCalls.find((t) => t.id === "tc-card");
+    expect(tc!.progress.map((p) => p.message)).toContain("executing cargo test");
+
+    handleToolCompleted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: "tc-card",
+        tool_name: "shell",
+        success: true,
+      },
+    );
+    [thread] = ThreadStore.getThreads(SESSION);
+    tc = thread.pendingAssistant?.toolCalls.find((t) => t.id === "tc-card");
+    expect(tc!.status).toBe("complete");
+  });
+
+  it("codex round-2 P2: tool/completed with success=false flips the chip to error", () => {
+    const cmid = "cmid-Atool-err";
+    seedThread(cmid, "ask");
+    handleToolStarted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: "tc-err",
+        tool_name: "shell",
+      },
+    );
+    handleToolCompleted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: "tc-err",
+        tool_name: "shell",
+        success: false,
+      },
+    );
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const tc = thread.pendingAssistant?.toolCalls.find((t) => t.id === "tc-err");
+    expect(tc!.status).toBe("error");
+  });
+
   it("tool/completed dispatches crew:tool_progress with success status", () => {
     const dispatched: Event[] = [];
     handleToolCompleted(
@@ -1342,6 +1420,68 @@ describe("regression C: turn/completed stamps per-turn meta snapshot onto the fi
     // synchronous test execution it should be a tiny non-negative
     // number. Asserting `>= 0` keeps the test stable across hosts.
     expect(meta!.duration_s).toBeGreaterThanOrEqual(0);
+  });
+
+  it("codex round-2 P2: per-turn meta tokens are the DELTA, not session cumulative totals", () => {
+    // Wire ordering: turn-1 emits one cost frame; turn-2 emits another
+    // whose `input_tokens` / `output_tokens` reflect the
+    // session-cumulative growth. The finalised bubble for turn-2 must
+    // show DELTA tokens (turn-2 alone), not session totals.
+    seedThread("cmid-T1", "first ask");
+    ThreadStore.appendAssistantToken("cmid-T1", "first reply");
+    handleTurnStarted(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: "cmid-T1" },
+    );
+    handleProgressUpdated(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-T1",
+        metadata: {
+          kind: "token_cost_update",
+          label: "moonshot@autodl/kimi-k2.5",
+          token_cost: { input_tokens: 100, output_tokens: 20 },
+        },
+      },
+    );
+    handleTurnCompleted(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: "cmid-T1", reason: "stop" },
+    );
+    let [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses[0].meta?.tokens_in).toBe(100);
+    expect(thread.responses[0].meta?.tokens_out).toBe(20);
+
+    // Turn 2: cumulative is 250 / 60. Per-turn delta is 150 / 40.
+    seedThread("cmid-T2", "second ask");
+    ThreadStore.appendAssistantToken("cmid-T2", "second reply");
+    handleTurnStarted(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: "cmid-T2" },
+    );
+    handleProgressUpdated(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-T2",
+        metadata: {
+          kind: "token_cost_update",
+          label: "moonshot@autodl/kimi-k2.5",
+          token_cost: { input_tokens: 250, output_tokens: 60 },
+        },
+      },
+    );
+    handleTurnCompleted(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: "cmid-T2", reason: "stop" },
+    );
+    const threadsAfter = ThreadStore.getThreads(SESSION);
+    const t2Thread = threadsAfter.find((t) => t.id === "cmid-T2");
+    expect(t2Thread).toBeDefined();
+    const turn2 = t2Thread!.responses[0];
+    expect(turn2.meta?.tokens_in).toBe(150); // 250 - 100 baseline
+    expect(turn2.meta?.tokens_out).toBe(40); // 60 - 20 baseline
   });
 
   it("turn/completed without any cost snapshot still finalises the bubble (no meta)", () => {

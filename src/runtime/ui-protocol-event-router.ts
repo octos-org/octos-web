@@ -69,8 +69,28 @@ interface TurnMetaSnapshot {
    *  `crates/octos-cli/src/api/ui_protocol_progress.rs:363` and
    *  follow-up). Optional — some turns don't carry a model. */
   model?: string;
+  /** Per-turn delta of `input_tokens`. Codex round-2 P2 fix: the
+   *  `progress/updated{kind:"token_cost_update"}` frame carries SESSION
+   *  cumulative counters (server `emit_cost_update`'s
+   *  `total_usage.input_tokens` —
+   *  `crates/octos-agent/src/agent/streaming.rs:256`), so stamping the
+   *  raw counter onto `message.meta` would show session-total tokens on
+   *  every assistant bubble after the first turn. We derive the
+   *  per-turn delta by anchoring on `baselineInputTokens` (the
+   *  cumulative value at the first frame we see for this turn) and
+   *  subtracting it from every subsequent frame.
+   */
   tokensIn?: number;
   tokensOut?: number;
+  /** Baseline session-cumulative tokens at the start of the turn.
+   *  `tokensIn` / `tokensOut` are derived as `latest - baseline`. */
+  baselineInputTokens?: number;
+  baselineOutputTokens?: number;
+  /** Latest session-cumulative tokens seen on a `progress/updated`
+   *  frame for this turn. Used by `handleTurnCompleted` to roll the
+   *  session baseline forward for the next turn. */
+  latestCumulativeInputTokens?: number;
+  latestCumulativeOutputTokens?: number;
   /** Turn duration in seconds, rounded to one decimal place. Computed
    *  from the first `progress/updated{kind:"token_cost_update"}` arrival
    *  time relative to either `turn/started` or, lacking that, the first
@@ -83,6 +103,15 @@ interface TurnMetaSnapshot {
 
 const turnMetaByTurnId = new Map<string, TurnMetaSnapshot>();
 
+/** Session-cumulative token totals at the close of the most recent
+ *  turn. The next turn's baseline = this value, so its per-turn delta
+ *  comes out as `latest - lastTurnEndCumulative`. Keyed by `sessionId`
+ *  so cross-session leakage can't happen. Codex round-2 P2 fix. */
+const lastTurnEndCumulativeBySession = new Map<
+  string,
+  { inputTokens: number; outputTokens: number }
+>();
+
 /** `tool_call_id` → `tool_name` map, populated by `tool/started` so a
  *  subsequent `tool/progress` (which carries no `tool_name` on the wire)
  *  can still render the friendly tool label in the spinner row. Codex
@@ -93,12 +122,14 @@ const turnMetaByTurnId = new Map<string, TurnMetaSnapshot>();
  */
 const toolNameByCallId = new Map<string, string>();
 
-/** Reset the per-turn meta map + tool-name cache. Tests call this
- *  between cases; production code does not need it because both maps
- *  are bounded by the number of live turns + tool calls per session. */
+/** Reset the per-turn meta map + tool-name cache + cumulative
+ *  baseline. Tests call this between cases; production code does not
+ *  need it because all three maps are bounded by the number of live
+ *  turns + tool calls + sessions. */
 export function __resetTurnMetaForTest(): void {
   turnMetaByTurnId.clear();
   toolNameByCallId.clear();
+  lastTurnEndCumulativeBySession.clear();
 }
 
 function nowMs(): number {
@@ -501,6 +532,21 @@ export function handleTurnCompleted(
     const elapsedMs = Math.max(0, nowMs() - snap.firstSeenAtMs);
     snap.durationS = Math.round((elapsedMs / 1000) * 10) / 10;
   }
+  // Codex round-2 P2: roll the session-cumulative baseline forward so
+  // the next turn's per-turn delta is correct. We use the latest
+  // cumulative we saw on a cost frame this turn (which is the
+  // session-end total for this turn); if we never saw a cost frame,
+  // we preserve the existing baseline rather than zeroing it.
+  if (snap?.latestCumulativeInputTokens !== undefined || snap?.latestCumulativeOutputTokens !== undefined) {
+    const prior = lastTurnEndCumulativeBySession.get(cfg.sessionId) ?? {
+      inputTokens: 0,
+      outputTokens: 0,
+    };
+    lastTurnEndCumulativeBySession.set(cfg.sessionId, {
+      inputTokens: snap.latestCumulativeInputTokens ?? prior.inputTokens,
+      outputTokens: snap.latestCumulativeOutputTokens ?? prior.outputTokens,
+    });
+  }
   const meta = metaFromSnapshot(snap);
   // `finalizeAssistant` is the happy path — works when the pending slot
   // is still live. Codex P2: an earlier `message/persisted` already may
@@ -539,6 +585,16 @@ export function handleTurnError(
   if (snap && snap.firstSeenAtMs !== undefined) {
     const elapsedMs = Math.max(0, nowMs() - snap.firstSeenAtMs);
     snap.durationS = Math.round((elapsedMs / 1000) * 10) / 10;
+  }
+  if (snap?.latestCumulativeInputTokens !== undefined || snap?.latestCumulativeOutputTokens !== undefined) {
+    const prior = lastTurnEndCumulativeBySession.get(cfg.sessionId) ?? {
+      inputTokens: 0,
+      outputTokens: 0,
+    };
+    lastTurnEndCumulativeBySession.set(cfg.sessionId, {
+      inputTokens: snap.latestCumulativeInputTokens ?? prior.inputTokens,
+      outputTokens: snap.latestCumulativeOutputTokens ?? prior.outputTokens,
+    });
   }
   const meta = metaFromSnapshot(snap);
   ThreadStore.finalizeAssistant(event.turn_id, {
@@ -621,6 +677,13 @@ export function handleToolStarted(
   event: ToolStartedEvent,
 ): void {
   toolNameByCallId.set(event.tool_call_id, event.tool_name);
+  // Codex round-2 P2: mirror the synchronous tool-call lifecycle onto
+  // the ThreadStore so the finalised assistant bubble carries a tool
+  // card (`ToolCallBubble`), not just the transient spinner. Matches
+  // the pattern `handleTaskUpdated` uses for spawn_only / background
+  // tasks. `addToolCall` is idempotent on `(turn_id, tool_call_id)`,
+  // so a replayed `tool/started` is safe.
+  ThreadStore.addToolCall(event.turn_id, event.tool_call_id, event.tool_name);
   dispatchToolProgressEvent(cfg, event.turn_id, event.tool_name, "running");
 }
 
@@ -638,6 +701,16 @@ export function handleToolProgress(
   const toolLabel =
     toolNameByCallId.get(event.tool_call_id) ?? event.tool_call_id;
   const message = event.message ?? "running";
+  // Codex round-2 P2: feed progress chunks into the bubble's tool
+  // card timeline. `appendToolProgress` dedupes consecutive
+  // duplicates so resending the same chunk on reconnect is safe.
+  if (event.message) {
+    ThreadStore.appendToolProgress(
+      event.turn_id,
+      event.tool_call_id,
+      event.message,
+    );
+  }
   dispatchToolProgressEvent(cfg, event.turn_id, toolLabel, message);
 }
 
@@ -651,6 +724,15 @@ export function handleToolCompleted(
       : event.success === true
         ? "done"
         : "complete";
+  // Codex round-2 P2: persist the terminal tool-call status onto the
+  // bubble's tool card so the chip stops spinning. Failed calls
+  // surface as "error"; everything else as "complete" (matching the
+  // `handleTaskUpdated` `completed` / `failed` mapping).
+  ThreadStore.setToolCallStatus(
+    event.turn_id,
+    event.tool_call_id,
+    event.success === false ? "error" : "complete",
+  );
   dispatchToolProgressEvent(cfg, event.turn_id, event.tool_name, message);
   // Clear the cache entry so a long-lived session doesn't accumulate
   // dead tool_call_id mappings.
@@ -724,11 +806,46 @@ export function handleProgressUpdated(
   );
 
   // -- Update per-turn meta snapshot for regression #2 ---------------------
+  //
+  // Codex round-2 P2: `input_tokens` / `output_tokens` from the
+  // `progress/updated{kind:"token_cost_update"}` payload are SESSION
+  // cumulative counters (see `crates/octos-agent/src/agent/streaming.rs`
+  // `emit_cost_update` — they're sourced from `total_usage`). For the
+  // legacy `crew:cost` listener (header cost badge) that's exactly the
+  // right shape — it tracks session-wide totals. For
+  // `message.meta.{tokens_in, tokens_out}` (the per-bubble footer) we
+  // need PER-TURN deltas, otherwise after the 2nd turn the footer
+  // shows all tokens used in the session.
+  //
+  // The per-turn delta is `current_cumulative - baseline`, where
+  // `baseline` is the cumulative total at the end of the previous turn
+  // for THIS session. The first turn's baseline is 0 (no prior turns,
+  // so the cumulative IS the per-turn count). `handleTurnCompleted` /
+  // `handleTurnError` snapshot the session totals into
+  // `lastTurnEndCumulativeBySession` so the next turn's baseline is
+  // available.
+  //
+  // We also remember the latest cumulative counters on the snapshot
+  // itself (`latestCumulativeInputTokens` / `Output`) so
+  // `handleTurnCompleted` can roll the session baseline forward
+  // without depending on whether the last cost frame ran first.
   if (event.turn_id) {
     const snap = turnMetaByTurnId.get(event.turn_id) ?? {};
     if (modelLabel) snap.model = modelLabel;
-    if (typeof inputTokens === "number") snap.tokensIn = inputTokens;
-    if (typeof outputTokens === "number") snap.tokensOut = outputTokens;
+    const baseline = lastTurnEndCumulativeBySession.get(cfg.sessionId) ?? {
+      inputTokens: 0,
+      outputTokens: 0,
+    };
+    if (typeof inputTokens === "number") {
+      snap.baselineInputTokens = baseline.inputTokens;
+      snap.latestCumulativeInputTokens = inputTokens;
+      snap.tokensIn = Math.max(0, inputTokens - baseline.inputTokens);
+    }
+    if (typeof outputTokens === "number") {
+      snap.baselineOutputTokens = baseline.outputTokens;
+      snap.latestCumulativeOutputTokens = outputTokens;
+      snap.tokensOut = Math.max(0, outputTokens - baseline.outputTokens);
+    }
     if (snap.firstSeenAtMs === undefined) snap.firstSeenAtMs = nowMs();
     turnMetaByTurnId.set(event.turn_id, snap);
   }
