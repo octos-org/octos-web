@@ -93,6 +93,10 @@ function makeDeferredBridge(): DeferredBridge {
     onTaskOutputDelta: vi.fn(() => () => {}),
     onTurnLifecycle: vi.fn(() => () => {}),
     onApprovalRequested: vi.fn(() => () => {}),
+    onToolStarted: vi.fn(() => () => {}),
+    onToolProgress: vi.fn(() => () => {}),
+    onToolCompleted: vi.fn(() => () => {}),
+    onProgressUpdated: vi.fn(() => () => {}),
     onConnectionStateChange: vi.fn((h: (s: ConnectionState) => void) => {
       stateHandler = h;
       return () => {
@@ -101,6 +105,9 @@ function makeDeferredBridge(): DeferredBridge {
     }),
     getConnectionState: vi.fn(() => "connected" as ConnectionState),
     onWarning: vi.fn(() => () => {}),
+    onSessionTitleUpdated: vi.fn(() => () => {}),
+    hydrateSession: vi.fn(async () => null),
+    callMethod: vi.fn(async () => null),
   };
   return {
     bridge,

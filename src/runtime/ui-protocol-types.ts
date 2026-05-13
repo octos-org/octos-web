@@ -287,6 +287,146 @@ export interface TurnErrorEvent {
   error: { code: number; message: string; data?: unknown };
 }
 
+/**
+ * `tool/started` notification per UI Protocol v1 spec. Server emits this when
+ * the agent begins executing a synchronous (non-spawn) tool call. Wire shape
+ * mirrors `octos_core::ui_protocol::ToolStartedEvent` —
+ * `session_id`, `turn_id`, `tool_call_id`, `tool_name` are required;
+ * `arguments` is optional.
+ *
+ * The web client lifts this onto the legacy `crew:tool_progress` DOM event
+ * (the spinner under the streaming assistant bubble) so the
+ * `ToolProgressIndicator` component lights up the moment a tool starts —
+ * the SSE bridge predecessor of this surface was the sole dispatcher prior
+ * to PR #96, and the new event-router restores parity.
+ */
+export interface ToolStartedEvent {
+  session_id: string;
+  turn_id: string;
+  tool_call_id: string;
+  tool_name: string;
+  arguments?: unknown;
+}
+
+/**
+ * `tool/progress` notification — mid-execution status frames a tool emits
+ * while it runs. Mirrors `octos_core::ui_protocol::ToolProgressEvent`.
+ * `message` and `progress_pct` are both optional on the wire (server emits
+ * whichever is meaningful for the tool surface).
+ */
+export interface ToolProgressEvent {
+  session_id: string;
+  turn_id: string;
+  tool_call_id: string;
+  message?: string;
+  progress_pct?: number;
+}
+
+/**
+ * `tool/completed` notification — terminal status frame for a synchronous
+ * tool call. Mirrors `octos_core::ui_protocol::ToolCompletedEvent`.
+ * `success`, `output_preview`, and `duration_ms` are all optional on the
+ * wire (server emits whichever is meaningful for the tool surface).
+ */
+export interface ToolCompletedEvent {
+  session_id: string;
+  turn_id: string;
+  tool_call_id: string;
+  tool_name: string;
+  success?: boolean;
+  output_preview?: string;
+  duration_ms?: number;
+}
+
+/**
+ * Token / cost counters carried on `progress/updated` notifications whose
+ * `metadata.kind === "token_cost_update"`. Mirrors
+ * `octos_core::ui_protocol::UiTokenCostUpdate`. All fields are optional on
+ * the wire — the server populates whichever counters changed for the
+ * frame.
+ */
+export interface UiTokenCostUpdate {
+  input_tokens?: number;
+  output_tokens?: number;
+  reasoning_tokens?: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+  total_tokens?: number;
+  response_cost?: number;
+  session_cost?: number;
+  currency?: string;
+}
+
+/**
+ * Retry / backoff counters carried on `progress/updated` notifications
+ * whose `metadata.kind === "retry_backoff"`. Mirrors
+ * `octos_core::ui_protocol::UiRetryBackoff`. All fields are optional on
+ * the wire.
+ */
+export interface UiRetryBackoff {
+  attempt?: number;
+  max_attempts?: number;
+  backoff_ms?: number;
+  reason?: string;
+  provider?: string;
+  next_provider?: string;
+}
+
+/**
+ * File-mutation notice carried on `progress/updated` notifications whose
+ * `metadata.kind === "file_mutation"`. Mirrors
+ * `octos_core::ui_protocol::UiFileMutationNotice`. `path` and `operation`
+ * are required; the rest are optional.
+ */
+export interface UiFileMutationNotice {
+  path: string;
+  operation: string;
+  tool_call_id?: string;
+  bytes_written?: number;
+}
+
+/**
+ * Metadata envelope on `progress/updated` notifications. Mirrors
+ * `octos_core::ui_protocol::UiProgressMetadata`. The wire shape carries an
+ * open `kind` discriminator plus per-kind structured payloads; legacy
+ * `extra` fields are passed through via the `[key: string]: unknown`
+ * index signature so future server-side extensions don't trip the
+ * fail-closed reject path.
+ */
+export interface UiProgressMetadata {
+  kind: string;
+  label?: string;
+  message?: string;
+  detail?: string;
+  iteration?: number;
+  progress_pct?: number;
+  retry?: UiRetryBackoff;
+  file_mutation?: UiFileMutationNotice;
+  token_cost?: UiTokenCostUpdate;
+  [extra: string]: unknown;
+}
+
+/**
+ * `progress/updated` notification — the canonical UI Protocol v1 channel
+ * for non-message-stream progress signals (cost telemetry, status pings,
+ * retry/backoff frames, file-mutation notices, ...). Mirrors
+ * `octos_core::ui_protocol::UiProgressEvent` /
+ * `ProgressUpdatedEvent`. `session_id` is required; `turn_id` is optional
+ * because some progress kinds (e.g. session-scoped status) emit outside a
+ * turn context.
+ *
+ * The web client lifts this onto two legacy DOM events: `crew:cost`
+ * (header model + token / cost badge) and, when model + duration are
+ * available, `crew:message_meta` (assistant bubble footer model + tokens
+ * + duration). The SSE bridge predecessor of this surface was the sole
+ * dispatcher prior to PR #96.
+ */
+export interface ProgressUpdatedEvent {
+  session_id: string;
+  turn_id?: string;
+  metadata: UiProgressMetadata;
+}
+
 export interface ApprovalRenderHints {
   default_decision?: ApprovalDecision;
   primary_label?: string;

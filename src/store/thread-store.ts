@@ -1319,6 +1319,62 @@ export interface FinalizeAssistantOptions {
  * thread. Stamps `intra_thread_seq` from `committedSeq`, attaches optional
  * meta, and clears `pendingAssistant`.
  */
+/**
+ * Stamp `meta` (and optionally `status`) onto the most recent
+ * *assistant* response for `threadId`. Used by the UI Protocol event
+ * router (`handleTurnCompleted` / `handleTurnError`) when an earlier
+ * `message/persisted` already promoted the pending bubble — by the
+ * time `turn/completed` lands, `pendingAssistant` is null and
+ * `finalizeAssistant`'s pending-required guard would otherwise drop the
+ * accumulated per-turn cost snapshot on the floor. Codex P2 fix.
+ *
+ * Codex round-3 P2: we search BACKWARDS for the most recent `assistant`
+ * row rather than blindly patching the tail. A media-only companion
+ * row or a tool result appended AFTER the assistant promotion would
+ * otherwise capture the meta+status, leaving the visible answer
+ * blank. Tool rows (`role === "tool"`) aren't visible bubbles, and
+ * media-only companions render as part of the assistant they're
+ * attached to — but their `status` / `meta` are read by other parts
+ * of the renderer; we want the stamp to land on the actual text
+ * answer.
+ *
+ * No-ops when:
+ *   - no thread matches `threadId` in any session,
+ *   - the thread has no assistant responses yet (the snapshot is just
+ *     lost, same as before this helper existed; `handleTurnCompleted`
+ *     fall back to `finalizeAssistant` for the pending-present case).
+ */
+export function patchLastResponseMeta(
+  threadId: string,
+  opts: { meta?: MessageMeta; status?: ThreadMessage["status"] },
+): void {
+  for (const state of sessionsByKey.values()) {
+    const thread = state.byId.get(threadId);
+    if (!thread || thread.responses.length === 0) continue;
+    // Walk responses tail-to-head looking for the most recent assistant
+    // row. Tool rows + media-only companions are skipped — they're
+    // either folded into the preceding assistant bubble at render time
+    // or filtered out entirely (`isVisibleResponse` drops tool rows).
+    let idx = -1;
+    for (let i = thread.responses.length - 1; i >= 0; i--) {
+      if (thread.responses[i].role === "assistant") {
+        idx = i;
+        break;
+      }
+    }
+    if (idx === -1) continue;
+    const last = thread.responses[idx];
+    const next: ThreadMessage = {
+      ...last,
+      meta: opts.meta ?? last.meta,
+      status: opts.status ?? last.status,
+    };
+    thread.responses[idx] = next;
+    notify();
+    return;
+  }
+}
+
 export function finalizeAssistant(
   threadId: string,
   opts: FinalizeAssistantOptions = {},
