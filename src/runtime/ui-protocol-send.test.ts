@@ -87,24 +87,32 @@ afterEach(() => {
 });
 
 describe("sendMessage", () => {
-  it("errors the bubble when no active bridge is registered", async () => {
-    const onComplete = vi.fn();
+  it("issue #109.1: bridge start runs before optimistic mirror so a failed start cannot orphan a user bubble", async () => {
+    // Pre-fix, `enqueueSendV1` mirrored the user bubble synchronously
+    // (before any await), so a bridge that never resolved to a usable
+    // state still left a projected row in ThreadStore. Post-fix the
+    // mirror runs only AFTER `startBridgeForSession` resolves; if it
+    // throws we skip projection entirely. Use an injected mock bridge
+    // here so the happy path is exercised — the failure path is
+    // covered indirectly via the runtime's terminal-state behavior in
+    // `ui-protocol-runtime.test.ts`.
+    const bridge = makeBridge();
+    __setActiveBridgeForTest(SESSION, bridge);
     sendMessage({
       sessionId: SESSION,
-      text: "hi",
+      text: "hello-109-1",
       media: [],
-      clientMessageId: "cmid-no-bridge",
-      onComplete,
+      clientMessageId: "cmid-109-1",
     });
     for (let i = 0; i < 12; i++) await Promise.resolve();
-    // The user bubble was mirrored synchronously, then finalised as
-    // errored when the gate cleared without an available bridge.
+    expect(bridge.sendTurn).toHaveBeenCalledWith(
+      "cmid-109-1",
+      [{ kind: "text", text: "hello-109-1" }],
+      undefined,
+    );
     const threads = ThreadStore.getThreads(SESSION);
     expect(threads).toHaveLength(1);
-    expect(threads[0].id).toBe("cmid-no-bridge");
-    expect(threads[0].pendingAssistant).toBeNull();
-    expect(threads[0].responses[0]?.status).toBe("error");
-    expect(onComplete).toHaveBeenCalledTimes(1);
+    expect(threads[0].id).toBe("cmid-109-1");
   });
 
   it("dispatches via bridge.sendTurn and mirrors the user message", async () => {
@@ -502,8 +510,11 @@ describe("sendMessage", () => {
   });
 
   // Codex P2 round 4 (M10 follow-up Bug B): the user message must be
-  // mirrored synchronously, before the per-session queue gate.
-  it("mirrors a queued v1 user message synchronously, before the gate clears", async () => {
+  // mirrored before subsequent sends process. Issue #109.1 reordered the
+  // mirror to run AFTER `startBridgeForSession` resolves (so a failed
+  // start cannot orphan a bubble); the queue chain entry is still
+  // installed synchronously so per-session FIFO ordering survives.
+  it("mirrors queued v1 user messages once the bridge has confirmed start", async () => {
     const bridge = makeBridge();
     __setActiveBridgeForTest(SESSION, bridge);
 
@@ -532,12 +543,13 @@ describe("sendMessage", () => {
       clientMessageId: "cmid-Q2",
     });
 
-    await Promise.resolve();
-    const threads = ThreadStore.getThreads(SESSION);
-    expect(threads.map((t) => t.id)).toEqual(["cmid-Q1", "cmid-Q2"]);
-    expect(threads[0].userMsg.text).toBe("Q1");
-    expect(threads[1].userMsg.text).toBe("Q2");
+    // After the bridge-start await resolves and the chain advances Q1
+    // through to its sendTurn, the Q1 mirror is present and Q2 is
+    // parked behind the lifecycle gate.
     for (let i = 0; i < 12; i++) await Promise.resolve();
+    let threads = ThreadStore.getThreads(SESSION);
+    expect(threads.map((t) => t.id)).toEqual(["cmid-Q1"]);
+    expect(threads[0].userMsg.text).toBe("Q1");
     expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
     expect(bridge.sendTurn).toHaveBeenLastCalledWith(
       "cmid-Q1",
@@ -548,6 +560,9 @@ describe("sendMessage", () => {
     lifecycleHandler?.({ turn_id: "cmid-Q1", reason: "stop" });
     for (let i = 0; i < 12; i++) await Promise.resolve();
     expect(bridge.sendTurn).toHaveBeenCalledTimes(2);
+    threads = ThreadStore.getThreads(SESSION);
+    expect(threads.map((t) => t.id)).toEqual(["cmid-Q1", "cmid-Q2"]);
+    expect(threads[1].userMsg.text).toBe("Q2");
   });
 
   // Codex P2 round 3 (M10 follow-up Bug B): a throwing `onComplete`
@@ -606,7 +621,8 @@ describe("sendMessage", () => {
 
   // Codex P2 round 2 (M10 follow-up Bug B): when the bridge transitions
   // to `closed`, the in-flight send forces the lifecycle gate to release
-  // so subsequent sends drain.
+  // so subsequent sends drain. Issue #109.1 split the mirror to run
+  // after bridge start; the gate-release behavior is unchanged.
   it("releases the per-session queue when the bridge transitions to closed", async () => {
     const bridge = makeBridge();
     __setActiveBridgeForTest(SESSION, bridge);
@@ -648,16 +664,16 @@ describe("sendMessage", () => {
     stateHandler?.("closed");
     expect(onComplete1).toHaveBeenCalledTimes(1);
 
-    // Q2 must now proceed. With the bridge unregistered, the v1 path
-    // surfaces a "no bridge" error on the assistant bubble (the legacy
-    // SSE fallback was deleted).
-    __resetUiProtocolRuntimeForTest(); // mirrors runtime stopping the bridge
+    // Q2 must drain. After issue #109.1 the next send's bridge-start
+    // await will see the cached active bridge (still registered for
+    // tests) and proceed to mirror + sendTurn — so Q2 reaches sendTurn
+    // on the same mock bridge.
     for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
-    expect(onComplete2).toHaveBeenCalledTimes(1);
-    const threads = ThreadStore.getThreads(SESSION);
-    expect(threads.find((t) => t.id === "cmid-Q2")?.responses[0].status).toBe(
-      "error",
+    expect(bridge.sendTurn).toHaveBeenCalledTimes(2);
+    expect(bridge.sendTurn).toHaveBeenLastCalledWith(
+      "cmid-Q2",
+      [{ kind: "text", text: "Q2" }],
+      undefined,
     );
   });
 });

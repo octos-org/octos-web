@@ -353,7 +353,17 @@ interface JsonRpcNotification {
   params?: unknown;
 }
 
-type QueuedFrame = string;
+/**
+ * Queued WS frame. Issue #109.2: RPC frames are tagged with their
+ * request id so that an RPC timeout / cancellation can remove the
+ * matching frame from `sendQueue` instead of leaving it parked to
+ * re-fire after reconnect. Plain notifications (no `id`) flush
+ * normally.
+ */
+interface QueuedFrame {
+  text: string;
+  rpcId?: string;
+}
 
 interface PendingRpc {
   method: string;
@@ -1494,6 +1504,15 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     return new Promise<T>((resolve, reject) => {
       const timer = this.cfg.setTimeout(() => {
         if (!this.pending.delete(id)) return;
+        // Issue #109.2: drop the matching queued frame so a late
+        // reconnect-flush does not re-send a request whose Promise we
+        // just rejected with `BridgeTimeoutError`. Pre-fix, the
+        // `pending[id]` entry was deleted but the raw frame in
+        // `sendQueue` survived — after reconnect, the frame fired,
+        // the server processed it, but the client had no pending
+        // resolver. Worst case: a duplicate `turn/start` materialised
+        // on the server seconds after the user's UI gave up.
+        this.dropQueuedRpc(id);
         reject(new BridgeTimeoutError(method, timeoutMs));
       }, timeoutMs);
       this.pending.set(id, {
@@ -1518,11 +1537,11 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
 
       if (this.state === "connected") {
         if (!this.rawSend(text)) {
-          this.enqueueFrame(text);
+          this.enqueueFrame({ text, rpcId: id });
         }
         return;
       }
-      this.enqueueFrame(text);
+      this.enqueueFrame({ text, rpcId: id });
     });
   }
 
@@ -1546,10 +1565,10 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     };
     const text = JSON.stringify(frame);
     if (this.state === "connected") {
-      if (!this.rawSend(text)) this.enqueueFrame(text);
+      if (!this.rawSend(text)) this.enqueueFrame({ text });
       return;
     }
-    this.enqueueFrame(text);
+    this.enqueueFrame({ text });
   }
 
   private rawSend(text: string): boolean {
@@ -1564,21 +1583,34 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     }
   }
 
-  private enqueueFrame(text: string): void {
+  private enqueueFrame(frame: QueuedFrame): void {
     if (this.sendQueue.length >= this.cfg.sendQueueLimit) {
       const dropped = this.sendQueue.shift();
       this.subWarning.emit({
         reason: "send_queue_overflow",
-        context: { dropped_bytes: dropped?.length ?? 0 },
+        context: { dropped_bytes: dropped?.text.length ?? 0 },
       });
     }
-    this.sendQueue.push(text);
+    this.sendQueue.push(frame);
+  }
+
+  /**
+   * Issue #109.2: drop a queued frame by its RPC id. Called when the
+   * RPC's timeout fires before the frame leaves the queue, so a
+   * later reconnect-flush does not re-send a request whose Promise
+   * we have already rejected.
+   */
+  private dropQueuedRpc(rpcId: string): void {
+    const idx = this.sendQueue.findIndex((f) => f.rpcId === rpcId);
+    if (idx >= 0) {
+      this.sendQueue.splice(idx, 1);
+    }
   }
 
   private flushSendQueue(): void {
     while (this.state === "connected" && this.sendQueue.length > 0) {
       const next = this.sendQueue[0];
-      if (!this.rawSend(next)) return;
+      if (!this.rawSend(next.text)) return;
       this.sendQueue.shift();
     }
   }

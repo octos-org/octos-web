@@ -19,7 +19,8 @@
 
 import * as ThreadStore from "@/store/thread-store";
 import { displayFilenameFromPath } from "@/lib/utils";
-import { getActiveBridge } from "./ui-protocol-runtime";
+import { getActiveBridge, startBridgeForSession } from "./ui-protocol-runtime";
+import { BridgeStoppedError } from "./ui-protocol-bridge";
 import type { TurnStartExtras, TurnStartMediaRef } from "./ui-protocol-types";
 import { request } from "@/api/client";
 
@@ -187,38 +188,6 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
   const clientMessageId = opts.clientMessageId ?? crypto.randomUUID();
   const pinnedOpts: SendOptions = { ...opts, clientMessageId };
 
-  // Codex round 4-6 P2: mirror the user message into ThreadStore
-  // SYNCHRONOUSLY before the queue gate, so the bubble is visible the
-  // instant the user clicks Send — even when a prior turn has not yet
-  // emitted `turn/completed`. The mirror runs once per send; the WS
-  // path's own listener never re-mirrors.
-  const localFiles = pinnedOpts.media.map((path) => ({
-    filename: displayFilenameFromPath(path),
-    path,
-    caption: "",
-  }));
-  // M9-γ-4: Composer renders a `<GhostBubble>` overlay under
-  // projection_v1; it pre-registers the cmid so the first server-side
-  // envelope on this thread carries it (the projection captures it
-  // into `UserView.client_message_id` so the ghost can match-and-unmount).
-  // Skip the legacy reducer mutation so the ThreadStore stays free of an
-  // optimistic row.
-  if (!pinnedOpts.skipOptimisticUserMessage) {
-    ThreadStore.addUserMessage(pinnedOpts.sessionId, {
-      text: pinnedOpts.text,
-      clientMessageId,
-      files: localFiles,
-      topic: pinnedOpts.historyTopic,
-    });
-  } else {
-    ThreadStore.registerPendingClientMessageId(
-      pinnedOpts.sessionId,
-      clientMessageId,
-      pinnedOpts.historyTopic,
-    );
-  }
-  pinnedOpts.onSessionActive?.(pinnedOpts.text);
-
   // The signal we hand to `sendMessageV1`. The lifecycle handler resolves
   // it on `turn/completed` or `turn/error` (or on early failure inside
   // `sendMessageV1`). The next chained call awaits this signal before
@@ -228,12 +197,71 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
     release = resolve;
   });
   // Build the chain entry as a fresh promise we keep a stable reference to,
-  // so the cleanup compare-and-delete is correct.
+  // so the cleanup compare-and-delete is correct. Issue #109.1: the chain
+  // entry must be installed SYNCHRONOUSLY (before the bridge-start await)
+  // so that rapid back-to-back sendMessage() calls observe each other in
+  // `turnQueues.get(key)` and serialise correctly. Pre-fix, awaiting the
+  // bridge start before `turnQueues.set` let two rapid sends each read
+  // `Promise.resolve()` as their `prev`, defeating the per-session FIFO.
   const chained = prev.then(() => lifecycleDone);
   turnQueues.set(key, chained);
 
   try {
     await prev;
+    // Issue #109.1: ensure the bridge is usable BEFORE mutating
+    // ThreadStore / firing `onSessionActive`. Pre-fix, the optimistic
+    // row + session-active callback ran unconditionally, so a failed
+    // bridge start left an orphan user bubble + an "active" session
+    // row that never reached JSONL. `startBridgeForSession` is
+    // idempotent for same-scope already-started bridges so the happy
+    // path stays cheap.
+    try {
+      await startBridgeForSession(
+        pinnedOpts.sessionId,
+        pinnedOpts.historyTopic,
+      );
+    } catch {
+      if (typeof console !== "undefined" && console.warn) {
+        console.warn(
+          "ui-protocol-send: bridge start failed; aborting optimistic projection",
+        );
+      }
+      pinnedOpts.onComplete?.();
+      release();
+      return;
+    }
+
+    // Codex round 4-6 P2: mirror the user message into ThreadStore
+    // before issuing `sendTurn`, so the bubble is visible the instant
+    // the bridge is confirmed available. The mirror runs once per
+    // send; the WS path's own listener never re-mirrors.
+    const localFiles = pinnedOpts.media.map((path) => ({
+      filename: displayFilenameFromPath(path),
+      path,
+      caption: "",
+    }));
+    // M9-γ-4: Composer renders a `<GhostBubble>` overlay under
+    // projection_v1; it pre-registers the cmid so the first
+    // server-side envelope on this thread carries it (the projection
+    // captures it into `UserView.client_message_id` so the ghost can
+    // match-and-unmount). Skip the legacy reducer mutation so the
+    // ThreadStore stays free of an optimistic row.
+    if (!pinnedOpts.skipOptimisticUserMessage) {
+      ThreadStore.addUserMessage(pinnedOpts.sessionId, {
+        text: pinnedOpts.text,
+        clientMessageId,
+        files: localFiles,
+        topic: pinnedOpts.historyTopic,
+      });
+    } else {
+      ThreadStore.registerPendingClientMessageId(
+        pinnedOpts.sessionId,
+        clientMessageId,
+        pinnedOpts.historyTopic,
+      );
+    }
+    pinnedOpts.onSessionActive?.(pinnedOpts.text);
+
     // M9-β-1 (UPCR-2026-015 / server PR #860): the three previously
     // unsupported variants — media-bearing, /queue-rewrite, and
     // topic-scoped sends — are now first-class on the WS path.
@@ -416,14 +444,36 @@ async function sendMessageV1(
       off();
       fireComplete();
     }
-  } catch {
-    // Surface as an error message in the thread so the user isn't left
-    // with a silent dead pending bubble. The bridge already emits a
-    // `warning` for transport-level failures; this just guarantees the
-    // thread terminates rather than spinning forever.
-    ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
-    off();
-    fireComplete();
+  } catch (err) {
+    // Issue #109.3: a `BridgeStoppedError` raised mid-`turn/start`
+    // means the WS connection dropped abnormally before the ack
+    // arrived. The server may have already accepted the turn — its
+    // `turn/started` notification can replay through the bridge's
+    // lifecycle subscription once it reconnects. Wait a grace window
+    // before finalizing the bubble as error; if a lifecycle event
+    // arrives during the grace, the existing `onTurnLifecycle`
+    // handler fires `fireComplete` first and the late finalize
+    // becomes a no-op via the `completed` guard.
+    //
+    // For other error shapes (RPC error, fast `BridgeStoppedError`
+    // from a non-reconnectable terminal state) we finalize
+    // immediately — the bridge will not re-deliver the lifecycle.
+    const isTransportClose = err instanceof BridgeStoppedError;
+    const finalizeAsError = () => {
+      if (completed) return;
+      ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
+      off();
+      fireComplete();
+    };
+    if (isTransportClose) {
+      // Give the bridge's reconnect + lifecycle replay a chance to
+      // deliver `turn/started` / `turn/completed`. The bridge's
+      // reconnect backoff caps at 30s; we wait a bit longer so a
+      // single retry cycle has time to complete.
+      setTimeout(finalizeAsError, 45_000);
+    } else {
+      finalizeAsError();
+    }
     // Token may have been rejected at WS upgrade — probe `/api/auth/me`
     // to surface dead-token cases via api/client's 401 interceptor (which
     // hard-redirects to /login). If the token is still good, this is a
