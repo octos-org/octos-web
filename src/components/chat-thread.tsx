@@ -32,7 +32,6 @@ import {
 import { useSession } from "@/runtime/session-context";
 import {
   useThreads,
-  loadHistory as loadThreadHistory,
   type MessageFile,
   type MessageMeta,
   type Thread,
@@ -803,39 +802,14 @@ function ChatThreadV2({
   const hasThreads = threads.length > 0;
   const hasGhosts = ghosts.length > 0;
 
-  // M8.10 follow-up (#633): rehydrate thread store from server history on mount
-  // and on session/topic change. M9-γ-6: ThreadStore is now the single sink;
-  // `runtime-provider.tsx` calls `ThreadStore.loadHistory(...)` directly.
-  //
-  // The reload path is also racy with server persistence: the SSE `done`
-  // event fires before the JSONL is fully committed, so an immediate reload
-  // gets back only the user messages. Schedule a small number of forced
-  // re-fetches over the first ~12s so the assistant messages catch up once
-  // the server commits them. The retries no-op as soon as the loaded thread
-  // count stops growing, so the cost is at most 3 extra requests in the
-  // worst case.
-  useEffect(() => {
-    let cancelled = false;
-    void loadThreadHistory(currentSessionId, historyTopic);
-
-    const retryDelaysMs = [2_000, 5_000, 12_000];
-    const timers: number[] = [];
-    for (const delay of retryDelaysMs) {
-      timers.push(
-        window.setTimeout(() => {
-          if (cancelled) return;
-          void loadThreadHistory(currentSessionId, historyTopic, {
-            force: true,
-          });
-        }, delay),
-      );
-    }
-
-    return () => {
-      cancelled = true;
-      for (const t of timers) window.clearTimeout(t);
-    };
-  }, [currentSessionId, historyTopic]);
+  // Issue #110.2: history hydration is owned by `SessionProvider`
+  // (its restored-on-mount effect + switchSession). Pre-fix this
+  // effect fired its own `loadThreadHistory` plus 3 retry timers at
+  // 2s/5s/12s — multiplying every /chat mount into 4 /messages
+  // round-trips that competed with SessionProvider's load. The
+  // retries were originally added to recover from SSE-era persistence
+  // latency; the M9 WS transport persists synchronously before
+  // emitting `message/persisted`, so the retries are obsolete.
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-transparent">
@@ -1108,10 +1082,34 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
   }, []);
 
   const sendingRef = useRef(false);
+  const [sending, setSending] = useState(false);
   const isEmpty = text.trim().length === 0;
 
+  // Issue #112.3: pair the ref with the React state so the unlock
+  // path always clears both. Pre-fix several callers set
+  // `sendingRef.current = false` directly; mirroring into state lets
+  // the Send/Enter handler disable the button while a send is in
+  // flight.
+  const releaseSending = useCallback(() => {
+    sendingRef.current = false;
+    setSending(false);
+  }, []);
+
   const handleSend = useCallback(async () => {
-    if (isEmpty && pendingFiles.length === 0) return;
+    // Issue #112.3: bail immediately if a previous handleSend has not
+    // yet released `sendingRef`. Pre-fix the ref was SET in various
+    // success/failure branches but never CHECKED, so spamming Enter
+    // (or clicking Send twice within ~10ms) produced duplicate
+    // turn/start RPCs — and on the SSE-era code path two parallel
+    // `/api/chat` POSTs. Mirror into React state so the Send button
+    // can disable itself for the duration.
+    if (sendingRef.current) return;
+    sendingRef.current = true;
+    setSending(true);
+    if (isEmpty && pendingFiles.length === 0) {
+      releaseSending();
+      return;
+    }
     const trimmedInput = text.trim();
     const input = trimmedInput.startsWith("/") ? text.trimStart() : trimmedInput;
 
@@ -1158,7 +1156,7 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
         ? await beforeSend(slashPayload)
         : undefined;
       if (intercepted?.handled) {
-        sendingRef.current = false;
+        releaseSending();
         setText("");
         refreshSessions();
         return;
@@ -1168,7 +1166,7 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
         `Send failed: ${e instanceof Error ? e.message : "unknown error"}`,
       );
       setTimeout(() => setCmdFeedback(null), 4000);
-      sendingRef.current = false;
+      releaseSending();
       return;
     }
 
@@ -1178,10 +1176,9 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
         COMMANDS.map((c) => `${c.cmd} — ${c.desc}`).join("\n"),
       );
       setTimeout(() => setCmdFeedback(null), 10000);
+      releaseSending();
       return;
     }
-
-    sendingRef.current = true;
 
     // Upload files first
     if (pendingFiles.length > 0) {
@@ -1201,7 +1198,7 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
         setCmdFeedback(`Upload failed: ${e instanceof Error ? e.message : "unknown error"}`);
         setTimeout(() => setCmdFeedback(null), 4000);
         setUploading(false);
-        sendingRef.current = false;
+        releaseSending();
         return;
       }
       for (const pf of pendingFiles) {
@@ -1234,7 +1231,7 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
         ? await beforeSend(finalPayload)
         : undefined;
       if (intercepted?.handled) {
-        sendingRef.current = false;
+        releaseSending();
         setText("");
         refreshSessions();
         return;
@@ -1248,7 +1245,7 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
         `Send failed: ${e instanceof Error ? e.message : "unknown error"}`,
       );
       setTimeout(() => setCmdFeedback(null), 4000);
-      sendingRef.current = false;
+      releaseSending();
       return;
     }
 
@@ -1290,7 +1287,7 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
           skipOptimisticUserMessage: true,
           onSessionActive: (firstMsg) => markSessionActive(firstMsg),
           onComplete: () => {
-            sendingRef.current = false;
+            releaseSending();
             refreshSessions();
           },
         });
@@ -1324,7 +1321,7 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
       skipOptimisticUserMessage: ghostMounted,
       onSessionActive: (firstMsg) => markSessionActive(firstMsg),
       onComplete: () => {
-        sendingRef.current = false;
+        releaseSending();
         refreshSessions();
       },
     });
@@ -1341,6 +1338,7 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
     beforeSend,
     mountGhost,
     unmountGhost,
+    releaseSending,
   ]);
 
   const handleCancel = useCallback(() => {
@@ -1548,7 +1546,9 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
               data-testid="send-button"
               aria-label="Send message"
               onClick={handleSend}
-              disabled={isEmpty && pendingFiles.length === 0}
+              // Issue #112.3: also disable while a send is in flight
+              // so a quick second click cannot race the first.
+              disabled={(isEmpty && pendingFiles.length === 0) || sending}
               className={`flex shrink-0 items-center justify-center rounded-[10px] disabled:opacity-30 ${
                 pendingFiles.length > 0
                   ? "h-10 gap-1.5 px-4 bg-green-600 text-white hover:bg-green-700"

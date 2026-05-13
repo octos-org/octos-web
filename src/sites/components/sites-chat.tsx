@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 
-import { buildApiHeaders, ensureSelectedProfileId } from "@/api/client";
+import { ensureSelectedProfileId } from "@/api/client";
 import { ChatThread } from "@/components/chat-thread";
-import { API_BASE } from "@/lib/constants";
 import {
   SessionContext,
   useModeState,
   type SessionBeforeSendResult,
   type SessionSendRequest,
 } from "@/runtime/session-context";
+import { ScopedRuntimeBridge } from "@/runtime/runtime-provider";
+import { sendMessage as bridgeSend } from "@/runtime/ui-protocol-send";
 import * as ThreadStore from "@/store/thread-store";
 import { useThreads, type Thread } from "@/store/thread-store";
 
@@ -99,50 +100,13 @@ function flattenThreadsToMessages(threads: Thread[]): Message[] {
   return out;
 }
 
-import { buildSitePreviewUrl, hydrateSiteProjectFromSession } from "../api";
+import { hydrateSiteProjectFromSession } from "../api";
 import { useSites } from "../context/sites-context";
 import { extractMessageText, inferSitePreset } from "../intake";
 import { SITE_PRESETS } from "../types";
 
 interface Props {
   sessionId: string;
-}
-
-interface ChatStreamEvent {
-  type?: string;
-  text?: string;
-  content?: string;
-}
-
-function parseChatStream(body: string): ChatStreamEvent[] {
-  const events: ChatStreamEvent[] = [];
-  for (const line of body.split("\n")) {
-    if (!line.startsWith("data: ")) continue;
-    const payload = line.slice(6).trim();
-    if (!payload || payload === "[DONE]") continue;
-    try {
-      events.push(JSON.parse(payload) as ChatStreamEvent);
-    } catch {
-      // Ignore malformed stream fragments.
-    }
-  }
-  return events;
-}
-
-function extractScaffoldError(events: ChatStreamEvent[]): string | null {
-  for (const event of events) {
-    const text = (event.text || event.content || "").trim();
-    const match = text.match(/Site scaffold failed:\s*(.+)$/im);
-    if (match) return match[1].trim();
-  }
-  return null;
-}
-
-function hasScaffoldSuccess(events: ChatStreamEvent[]): boolean {
-  return events.some((event) => {
-    const text = (event.text || event.content || "").trim();
-    return /Site project .* created!/i.test(text);
-  });
 }
 
 function sleep(ms: number): Promise<void> {
@@ -230,26 +194,27 @@ export function SitesChat({ sessionId }: Props) {
           });
         }
 
-        const response = await fetch(`${API_BASE}/api/chat`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...buildApiHeaders({}, profileId),
-          },
-          body: JSON.stringify({
-            message: `/new site ${inferredPreset}`,
-            session_id: sessionId,
-          }),
+        // Issue #112.2: pre-fix this POSTed to `/api/chat`, the
+        // retired SSE chat transport. Route the scaffold prompt
+        // through the WS bridge via `bridgeSend` and wait for the
+        // turn lifecycle to complete; the project hydration below
+        // is the success signal (the server-side scaffold task
+        // persists the project before completing the turn).
+        //
+        // Codex BLOCK B: include `historyTopic: "site <preset>"` so
+        // the scaffold turn lands on the same topic the embedded
+        // chat listens on. Without it the turn errored into the
+        // root-scope thread store with no bubble visible to the user.
+        const scaffoldTopic = `site ${inferredPreset}`;
+        await new Promise<void>((resolve) => {
+          bridgeSend({
+            sessionId,
+            historyTopic: scaffoldTopic,
+            text: `/new site ${inferredPreset}`,
+            media: [],
+            onComplete: () => resolve(),
+          });
         });
-
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-        const body = await response.text();
-        const events = parseChatStream(body);
-        const scaffoldError = extractScaffoldError(events);
-        if (scaffoldError) {
-          throw new Error(scaffoldError);
-        }
 
         for (let attempt = 0; attempt < 12; attempt += 1) {
           const hydrated = await hydrateSiteProjectFromSession(sessionId, profileId);
@@ -265,19 +230,22 @@ export function SitesChat({ sessionId }: Props) {
           await sleep(300);
         }
 
-        if (!hasScaffoldSuccess(events)) {
-          throw new Error("Site scaffold did not complete");
-        }
-
+        // Codex BLOCK C: no hydrated slug means the scaffold turn
+        // never persisted a project — keep `scaffolded: false` and
+        // surface `scaffoldError` so the UI can prompt a retry.
+        // The fallback slug is preserved as draft metadata only
+        // (so subsequent reattempts share the inferred preset);
+        // pre-fix we toggled `scaffolded: true` here, which made a
+        // failed scaffold look like success.
         const fallbackSlug =
           current.slug || SITE_PRESETS[inferredPreset].slug;
         save({
-          scaffolded: true,
+          scaffolded: false,
           preset: inferredPreset,
           profileId,
           slug: fallbackSlug,
-          previewUrl: buildSitePreviewUrl(sessionId, fallbackSlug, profileId),
-          scaffoldError: undefined,
+          previewUrl: undefined,
+          scaffoldError: "Site scaffold did not complete; please retry.",
         });
       })()
         .catch((error) => {
@@ -341,19 +309,21 @@ export function SitesChat({ sessionId }: Props) {
 
   return (
     <SessionContext.Provider value={sessionValue}>
-      <div className="flex h-full flex-col">
-        <div className="border-b border-border px-3 py-2">
-          <p className="truncate text-xs text-muted">
-            {projectTitle || "Site Agent"}
-          </p>
-          <p className="mt-1 text-[11px] text-muted/70">
-            {project?.template || "site template"} scaffold runs automatically before edits.
-          </p>
+      <ScopedRuntimeBridge>
+        <div className="flex h-full flex-col">
+          <div className="border-b border-border px-3 py-2">
+            <p className="truncate text-xs text-muted">
+              {projectTitle || "Site Agent"}
+            </p>
+            <p className="mt-1 text-[11px] text-muted/70">
+              {project?.template || "site template"} scaffold runs automatically before edits.
+            </p>
+          </div>
+          <div className="min-h-0 flex-1 overflow-hidden">
+            <ChatThread />
+          </div>
         </div>
-        <div className="min-h-0 flex-1 overflow-hidden">
-          <ChatThread />
-        </div>
-      </div>
+      </ScopedRuntimeBridge>
     </SessionContext.Provider>
   );
 }

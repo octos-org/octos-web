@@ -95,7 +95,11 @@ function synthesizeTaskProgressLine(
   }
 }
 
-/** Tracks which sessions have been mounted so we can evict old ones. */
+/** Tracks which sessions have been mounted so we can evict old ones.
+ *  Exported as `ScopedRuntimeBridge` so embedded chat surfaces
+ *  (slides/sites) can wire the bridge into their own
+ *  `SessionContext.Provider` scope without nesting two SessionProviders.
+ *  Issue #112.2. */
 function RuntimeWithSession({ children }: { children: ReactNode }) {
   const { currentSessionId, historyTopic, setServerTaskActive } = useSession();
   const mountedRef = useRef(new Set<string>());
@@ -107,9 +111,15 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
     restoreWatchedSessions();
   }, []);
 
-  // Load message history into the store when a session is activated
+  // Load message history into the store when a session is activated.
+  // Issue #110.2: `ThreadStore.loadHistory` is now owned by
+  // `SessionProvider` (which fires it on mount + switchSession);
+  // RuntimeProvider only needs to drive the per-session FileStore
+  // and the eviction LRU here. Pre-fix this effect was a duplicate
+  // loadHistory call that competed with SessionProvider's load and
+  // chat-thread's retry timers, producing 3+ /messages requests on
+  // every mount.
   useEffect(() => {
-    void ThreadStore.loadHistory(currentSessionId, historyTopic);
     void FileStore.loadSessionFiles(currentSessionId);
     mountedRef.current.add(currentSessionId);
 
@@ -131,26 +141,39 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
   }, [currentSessionId, historyTopic]);
 
   // Mount the UI Protocol v1 `ui-protocol-bridge` over WS for every
-  // root-scope chat session. Topic-scoped sessions (sites/slides,
-  // `/new <topic>`) skip the bridge entirely until the WS protocol
-  // carries `topic`: `session/open` and `TurnStartInput` only carry
-  // `sessionId`, so a bridge mounted under an active topic would route
-  // root-session notifications into the topic's ThreadStore and render
-  // unrelated root messages there. (codex review M10.5 round 3 P2.)
-  // The bridge owns the streaming-turn slice; the router fans bridge
-  // events out to ThreadStore mutations. M9-α-5/α-6: the legacy SSE
-  // `/api/chat` POST has been deleted, so media / voice / topic-scoped
-  // sends temporarily error out until the WS protocol's
-  // `TurnStartInput` is extended (M9-β follow-up).
+  // chat session, INCLUDING topic-scoped ones (sites/slides,
+  // `/new <topic>`). Issue #112.1: pre-fix the effect short-circuited
+  // when `historyTopic` was non-empty, so topic-scoped sends saw
+  // `getActiveBridge(sessionId, topic) === null` and failed with
+  // "bridge unavailable". The router already passes `topic` through
+  // on every event so event-scoping is correct; the M9-β-1 wire
+  // shape carries `topic` on `turn/start` so the server processes
+  // topic-scoped turns natively.
   useEffect(() => {
-    const topicTrimmed = historyTopic?.trim() ?? "";
-    if (topicTrimmed.length > 0) return;
     let cancelled = false;
     let mineStarted = false;
+    let unsubscribeTitle: (() => void) | null = null;
     void (async () => {
       try {
-        await startBridgeForSession(currentSessionId, historyTopic);
+        const bridge = await startBridgeForSession(
+          currentSessionId,
+          historyTopic,
+        );
         mineStarted = true;
+        if (!cancelled) {
+          // Issue #113.2: forward server-emitted title updates onto a
+          // window event so SessionProvider (and any future cross-tab
+          // listener) can patch `titleCache` + `sessions[]` without
+          // owning the bridge directly.
+          unsubscribeTitle = bridge.onSessionTitleUpdated((e) => {
+            if (typeof window === "undefined") return;
+            window.dispatchEvent(
+              new CustomEvent("crew:session_title_updated", {
+                detail: e,
+              }),
+            );
+          });
+        }
       } catch {
         // Either a real start failure (surfaced via the bridge's own
         // `warning` events) OR a stale-generation throw (newer call
@@ -167,6 +190,10 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
     })();
     return () => {
       cancelled = true;
+      if (unsubscribeTitle) {
+        unsubscribeTitle();
+        unsubscribeTitle = null;
+      }
       if (mineStarted) {
         // Only tear down our own scope. A newer effect's bridge stays.
         void stopActiveBridgeIfScope(currentSessionId, historyTopic);
@@ -308,4 +335,13 @@ export function OctosRuntimeProvider({ children }: { children: ReactNode }) {
       <RuntimeWithSession>{children}</RuntimeWithSession>
     </SessionProvider>
   );
+}
+
+/** Issue #112.2: mount the runtime bridge / task-watcher / file-store
+ *  loaders against an EXISTING `SessionContext.Provider` (e.g. the
+ *  slim provider that slides-chat / sites-chat construct manually).
+ *  Use this when the caller already owns its session context value
+ *  and just needs the bridge wired up. */
+export function ScopedRuntimeBridge({ children }: { children: ReactNode }) {
+  return <RuntimeWithSession>{children}</RuntimeWithSession>;
 }

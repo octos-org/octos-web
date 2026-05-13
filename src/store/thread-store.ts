@@ -24,9 +24,9 @@ import { useSyncExternalStore } from "react";
 // `/api/sessions/:id/messages` endpoint under the
 // `auxiliary_rest_to_ws_v1` flag. The wrapper preserves the array
 // return shape that `replayHistory` consumes; pagination metadata
-// (`has_more` / `next_offset`) is available via `getMessagesPage`
-// for the future paged-history loader.
-import { getMessages as fetchMessages } from "@/api/sessions";
+// (`has_more` / `next_offset`) drives the paged loader below
+// (issue #110.3 — silent 500-msg truncation).
+import { getMessagesPage } from "@/api/sessions";
 import type { MessageInfo } from "@/api/types";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { recordRuntimeCounter } from "@/runtime/observability";
@@ -2520,6 +2520,11 @@ export interface LoadHistoryOptions {
   force?: boolean;
 }
 
+/** Max pages to walk. Mirrors the server-side offset cap (10_000) /
+ *  per-page limit (500) so a runaway page-loop cannot pin the tab. */
+const HISTORY_PAGE_LIMIT = 500;
+const HISTORY_MAX_PAGES = 20;
+
 export function loadHistory(
   sessionId: string,
   topic?: string,
@@ -2533,8 +2538,35 @@ export function loadHistory(
 
   const promise = (async () => {
     try {
-      const apiMessages = await fetchMessages(sessionId, 500, 0, undefined, topic);
-      replayHistory(sessionId, apiMessages, topic);
+      // Issue #110.3: page through `getMessagesPage` so a session
+      // with >500 persisted messages renders ALL of them. Pre-fix
+      // every caller hard-coded `getMessages(..., 500, 0, ...)` and
+      // dropped everything past row 500 with no signal to the user.
+      // The first page is replayed immediately so the UI is
+      // populated quickly; subsequent pages accumulate and re-replay
+      // (replayHistory carries pending assistants across rebuilds).
+      const accumulated: MessageInfo[] = [];
+      let offset = 0;
+      for (let i = 0; i < HISTORY_MAX_PAGES; i += 1) {
+        const page = await getMessagesPage(
+          sessionId,
+          HISTORY_PAGE_LIMIT,
+          offset,
+          undefined,
+          topic,
+        );
+        accumulated.push(...page.messages);
+        replayHistory(sessionId, accumulated.slice(), topic);
+        if (!page.has_more) break;
+        // Defensive: server's `next_offset` should always advance,
+        // but if the field is missing or stuck, increment manually.
+        const nextOffset =
+          typeof page.next_offset === "number" && page.next_offset > offset
+            ? page.next_offset
+            : offset + page.messages.length;
+        if (nextOffset === offset) break;
+        offset = nextOffset;
+      }
       loadedSessions.add(key);
     } catch {
       loadedSessions.delete(key);

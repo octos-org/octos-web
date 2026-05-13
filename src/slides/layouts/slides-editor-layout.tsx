@@ -22,9 +22,15 @@ import { useTheme } from "@/hooks/use-theme";
 export function SlidesEditorLayout({
   previewPanel,
   chatPanel,
+  onRetryScaffold,
 }: {
   previewPanel: React.ReactNode;
   chatPanel?: React.ReactNode;
+  /** Codex round-3 BLOCK D.b: fired by the files-panel retry button
+   *  when a scaffold attempt has failed. The page owner clears
+   *  `project.scaffoldError` and bumps the SlidesChat retryNonce so
+   *  the auto-scaffold effect re-fires. */
+  onRetryScaffold?: () => void;
 }) {
   const [showChat, setShowChat] = useState(true);
   const [showFiles, setShowFiles] = useState(true);
@@ -78,6 +84,32 @@ export function SlidesEditorLayout({
 
   const filesPanel = useMemo(() => {
     if (!showFiles) return null;
+    // Codex round-3 BLOCK D.b: render scaffoldError + retry button
+    // (Sites-symmetric) when the scaffold attempt failed. Pre-fix
+    // the user saw only the generic "appear after scaffolded"
+    // placeholder, with no way to tell the attempt had actually
+    // failed and no way to retry.
+    if (project?.scaffoldError) {
+      return (
+        <div className="flex h-full flex-col items-center justify-center gap-3 px-4 text-center">
+          <div className="text-sm font-medium text-text">
+            Slides scaffold failed
+          </div>
+          <div className="text-xs leading-6 text-muted">
+            {project.scaffoldError}
+          </div>
+          {onRetryScaffold && (
+            <button
+              type="button"
+              onClick={onRetryScaffold}
+              className="glass-pill rounded-[10px] px-3 py-1.5 text-xs text-accent transition hover:text-text"
+            >
+              Retry scaffold
+            </button>
+          )}
+        </div>
+      );
+    }
     if (!project?.slug || !project.scaffolded) {
       return (
         <div className="flex h-full items-center justify-center px-4 text-center text-xs text-muted">
@@ -95,7 +127,17 @@ export function SlidesEditorLayout({
         onRename={(t) => save({ title: t })}
       />
     );
-  }, [openProjectFile, project?.id, project?.scaffolded, project?.slug, project?.title, save, showFiles]);
+  }, [
+    onRetryScaffold,
+    openProjectFile,
+    project?.id,
+    project?.scaffoldError,
+    project?.scaffolded,
+    project?.slug,
+    project?.title,
+    save,
+    showFiles,
+  ]);
 
   return (
     <div className="chat-shell flex h-screen flex-col gap-3 p-3">
