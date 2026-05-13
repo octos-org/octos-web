@@ -320,11 +320,24 @@ export function mergeSessionLists(
     title: titles[s.id],
   }));
   const apiIds = new Set(fromApi.map((s) => s.id));
-  // Preserve locally-tracked sessions that aren't in the API yet (still
-  // mid-flight) AND any session we've previously rendered that the API
-  // momentarily dropped (defensive against a transient empty/short list).
+  // Issue #113.1: carry over ALL non-deleted previously-rendered web
+  // sessions (not just `_local` rows). Pre-fix the carryover was
+  // restricted to `s._local === true`, so a transient `listSessions`
+  // blip (empty/short payload during reconnect) silently wiped every
+  // server-known session from the sidebar until the next 15s refresh
+  // landed. The comment above the original filter even said "any
+  // session we've previously rendered" — only the `_local` clause was
+  // actually applied. The wider net here is safe because:
+  //   - tombstoned (`deletedIds`) sessions are still excluded;
+  //   - non-web ids and zero-message-count ids never enter `prev`
+  //     (refreshSessions filters them upstream);
+  //   - the next non-blip refresh re-derives the list from the API
+  //     and naturally evicts anything truly gone.
   const carryover = prev.filter(
-    (s) => !apiIds.has(s.id) && !deletedIds.has(s.id) && s._local,
+    (s) =>
+      !apiIds.has(s.id) &&
+      !deletedIds.has(s.id) &&
+      s.id.startsWith("web-"),
   );
   return [...carryover, ...fromApi];
 }
@@ -576,6 +589,37 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       window.removeEventListener("storage", onStorage);
     };
   }, [currentSessionId, forgetSessionLocalState, refreshSessions]);
+
+  // Issue #113.2: subscribe to bridge-forwarded `session/title-updated`
+  // notifications so server-side or cross-tab title updates patch the
+  // sidebar idempotently. The bridge fires the typed event for every
+  // such notification; RuntimeProvider lifts it onto a window event so
+  // SessionProvider stays decoupled from the bridge instance.
+  useEffect(() => {
+    function onTitleUpdated(e: Event) {
+      const detail = (e as CustomEvent).detail as
+        | { session_id: string; title: string }
+        | undefined;
+      if (!detail || !detail.session_id) return;
+      const sessionId = detail.session_id;
+      const title = detail.title;
+      if (titleCache.current[sessionId] === title) return;
+      titleCache.current[sessionId] = title;
+      persistStoredTitles(titleCache.current);
+      setSessions((prev) =>
+        prev.map((row) =>
+          row.id === sessionId ? { ...row, title } : row,
+        ),
+      );
+    }
+    window.addEventListener("crew:session_title_updated", onTitleUpdated);
+    return () => {
+      window.removeEventListener(
+        "crew:session_title_updated",
+        onTitleUpdated,
+      );
+    };
+  }, []);
 
   useEffect(() => {
     function handleCost(e: Event) {

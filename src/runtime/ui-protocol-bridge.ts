@@ -297,6 +297,12 @@ export interface UiProtocolBridge {
   onApprovalRequested(handler: (e: ApprovalRequestedEvent) => void): () => void;
   onConnectionStateChange(handler: (state: ConnectionState) => void): () => void;
   onWarning(handler: (e: WarningEvent) => void): () => void;
+  /** Issue #113.2: server-emitted title update for cross-tab and
+   *  auto-title flows. SessionProvider subscribes to keep its
+   *  `titleCache` and `sessions[]` in sync. */
+  onSessionTitleUpdated(
+    handler: (e: { session_id: string; title: string }) => void,
+  ): () => void;
 }
 
 export interface BridgeConfig {
@@ -879,6 +885,10 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private readonly subApprovalRequested = new Subscribers<ApprovalRequestedEvent>();
   private readonly subWarning = new Subscribers<WarningEvent>();
   private readonly subState = new Subscribers<ConnectionState>();
+  private readonly subSessionTitleUpdated = new Subscribers<{
+    session_id: string;
+    title: string;
+  }>();
 
   private readonly notificationTable: Record<
     string,
@@ -927,23 +937,19 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       guard: guardWarning,
       emit: (v) => this.subWarning.emit(v as WarningEvent),
     },
-    // M12 Phase D-3 (octos-web #106 review follow-up). The server emits
-    // `session/title-updated` after a successful `session/title.set`. We
-    // register the table entry so the bridge does not warn-and-drop the
-    // notification as "unknown method"; the no-op guard + emit means we
-    // still throw away the payload until SessionProvider wires a
-    // subscriber path to patch `titleCache` + `sessions[]`.
-    //
-    // TODO: expose `onSessionTitleUpdated(handler)` on the bridge and
-    // hook it from SessionProvider so the cache stays in sync across
-    // tabs and with server-side auto-title flows. The optimistic update
-    // and the notification are idempotent (both write the same title),
-    // so re-wiring this is safe vs the local rename path.
+    // Issue #113.2 (was M12 Phase D-3 TODO): the server emits
+    // `session/title-updated` after a successful `session/title.set`,
+    // so cross-tab and server-side auto-title flows can refresh the
+    // sidebar without polling the REST list. SessionProvider subscribes
+    // via `onSessionTitleUpdated`; the optimistic update and the
+    // notification are idempotent (both write the same title), so the
+    // dispatch is safe vs the local rename path.
     [METHODS.SESSION_TITLE_UPDATED]: {
       guard: guardSessionTitleUpdated,
-      emit: () => {
-        // no-op until subscriber wiring lands
-      },
+      emit: (v) =>
+        this.subSessionTitleUpdated.emit(
+          v as { session_id: string; title: string },
+        ),
     },
   };
 
@@ -1020,6 +1026,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.subApprovalRequested.clear();
     this.subWarning.clear();
     this.subState.clear();
+    this.subSessionTitleUpdated.clear();
   }
 
   sendTurn(
@@ -1162,6 +1169,11 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   }
   onWarning(handler: Listener<WarningEvent>): () => void {
     return this.subWarning.add(handler);
+  }
+  onSessionTitleUpdated(
+    handler: Listener<{ session_id: string; title: string }>,
+  ): () => void {
+    return this.subSessionTitleUpdated.add(handler);
   }
 
   // ----- internals ---------------------------------------------------------

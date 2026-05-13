@@ -152,10 +152,28 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     let mineStarted = false;
+    let unsubscribeTitle: (() => void) | null = null;
     void (async () => {
       try {
-        await startBridgeForSession(currentSessionId, historyTopic);
+        const bridge = await startBridgeForSession(
+          currentSessionId,
+          historyTopic,
+        );
         mineStarted = true;
+        if (!cancelled) {
+          // Issue #113.2: forward server-emitted title updates onto a
+          // window event so SessionProvider (and any future cross-tab
+          // listener) can patch `titleCache` + `sessions[]` without
+          // owning the bridge directly.
+          unsubscribeTitle = bridge.onSessionTitleUpdated((e) => {
+            if (typeof window === "undefined") return;
+            window.dispatchEvent(
+              new CustomEvent("crew:session_title_updated", {
+                detail: e,
+              }),
+            );
+          });
+        }
       } catch {
         // Either a real start failure (surfaced via the bridge's own
         // `warning` events) OR a stale-generation throw (newer call
@@ -172,6 +190,10 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
     })();
     return () => {
       cancelled = true;
+      if (unsubscribeTitle) {
+        unsubscribeTitle();
+        unsubscribeTitle = null;
+      }
       if (mineStarted) {
         // Only tear down our own scope. A newer effect's bridge stays.
         void stopActiveBridgeIfScope(currentSessionId, historyTopic);
