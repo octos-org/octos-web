@@ -134,6 +134,23 @@ export async function startBridgeForSession(
     } else {
       connectionState = s;
     }
+    // Wake any consumer that gated on `getAnyConnectedBridge()` returning
+    // non-null: the auxiliary REST→WS wrappers (`listSessions`,
+    // `system/status.get`, `content/list`) check that before falling back
+    // to legacy REST. Without this event, the first `refreshSessions()`
+    // call on `/chat` mount races the bridge transition to "connected"
+    // — when it loses, it falls through to `/api/sessions` (a route
+    // retired in M12 Phase D-5 → 404) and the sidebar stays empty until
+    // the 15 s polling interval fires. SessionProvider listens for
+    // `crew:bridge_connected` and re-runs `refreshSessions()` so the
+    // sidebar paints as soon as the bridge handshake completes.
+    if (s === "connected" && typeof window !== "undefined") {
+      try {
+        window.dispatchEvent(new CustomEvent("crew:bridge_connected"));
+      } catch {
+        // best-effort
+      }
+    }
   });
   active = {
     sessionId,

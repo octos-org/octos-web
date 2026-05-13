@@ -613,6 +613,24 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     refreshSessions();
   }, [refreshSessions]);
 
+  // The first `refreshSessions()` on mount races the bridge transition
+  // to "connected". When it loses, `getAnyConnectedBridge()` returns
+  // null, so `listSessions()` (and the other aux REST→WS wrappers)
+  // falls back to legacy REST `/api/sessions` — a route retired in
+  // M12 Phase D-5 that now returns 404. The sidebar then stays empty
+  // until the 15 s polling interval below ticks. Re-fire as soon as
+  // `ui-protocol-runtime` reports the bridge is ready so the sidebar
+  // paints within ~1 s of `session/open`, not 15.
+  useEffect(() => {
+    const onBridgeReady = () => {
+      void refreshSessions();
+    };
+    window.addEventListener("crew:bridge_connected", onBridgeReady);
+    return () => {
+      window.removeEventListener("crew:bridge_connected", onBridgeReady);
+    };
+  }, [refreshSessions]);
+
   useEffect(() => {
     const refreshIfVisible = () => {
       if (document.visibilityState === "visible") {
