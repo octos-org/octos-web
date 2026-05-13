@@ -6,7 +6,7 @@ import { ScopedRuntimeBridge } from "@/runtime/runtime-provider";
 import { sendMessage as bridgeSend } from "@/runtime/ui-protocol-send";
 import * as ThreadStore from "@/store/thread-store";
 
-import { buildSlidesSlug } from "../api";
+import { buildSlidesSlug, waitForSlidesScaffold } from "../api";
 import { useSlides } from "../context/slides-context";
 import { SlidesTaskStatusIndicator } from "./slides-task-status-indicator";
 
@@ -41,56 +41,62 @@ export function SlidesChat({ sessionId }: Props) {
     const slug = projectSlug || buildSlidesSlug(projectTitle, projectId);
     scaffoldStartedRef.current = true;
 
+    // Codex round-2 BLOCK D: persist `slug` BEFORE issuing the
+    // scaffold turn. The embedded `ChatThread` reads
+    // `useThreads(sessionId, historyTopic)` and `historyTopic` is
+    // computed from `project.slug` — without the pre-save the
+    // rendered context stays root-topic while the scaffold turn (and
+    // any `turn/error` bubble) lands on `slides <slug>`, invisible
+    // to the user. Pre-saving the slug also lines up the storage
+    // with the topic the embedded chat already listens to once it
+    // re-renders for the slug change, so a failed scaffold's error
+    // bubble appears next to the retry affordance.
+    // We also clear any stale `scaffoldError` so retries don't
+    // surface the previous failure once the new turn is in flight.
+    save({ slug, scaffoldError: undefined });
+
     // Issue #112.2: pre-fix this POSTed to `/api/chat`, the retired
     // SSE chat transport. Route the scaffold prompt through the WS
     // bridge via `bridgeSend` — same path the user composer uses, so
     // the slides scope's bridge handles the turn lifecycle natively.
     //
-    // Codex BLOCK D: previous version (a) omitted `historyTopic`, so
-    // the scaffold turn missed the slides-scoped topic the embedded
-    // chat listens on, and (b) flipped `scaffolded: true` inside
-    // onComplete unconditionally — onComplete also fires for
-    // `turn/error`, which made every error look like success. Now we
-    // pass the slug-scoped topic, finalize success only on a
-    // SUCCESS lifecycle signal (`turn/completed` without an attached
-    // error), and reset the started ref + surface `scaffoldError` on
-    // failure so the user can retry.
-    // The WS bridge fires `bridgeSend.onComplete` for BOTH
-    // `turn/completed` AND `turn/error`, so we cannot use onComplete
-    // alone as a success signal. The event router separately
-    // dispatches `crew:turn_error` for the error case (see
-    // `ui-protocol-event-router.ts::handleTurnError`); track whether
-    // one arrived for this session+turn and gate the `scaffolded`
-    // flip on its absence.
-    let sawTurnError = false;
+    // Codex round-2 BLOCK D: `bridgeSend.onComplete` fires on
+    //   - `turn/completed` (genuine success),
+    //   - `turn/error` (server rejected the turn),
+    //   - bridge-start failure / RPC failure / connection drop
+    //     (transport-level failures that NEVER dispatched
+    //     `crew:turn_error`).
+    // Absence of `crew:turn_error` is therefore NOT a success
+    // signal. Switch to a positive on-disk artifact check:
+    // `waitForSlidesScaffold` polls `slides/<slug>/{script.js,
+    // memory.md, changelog.md}` — the files the server-side scaffold
+    // task always persists on success. If the artifact never lands,
+    // surface `scaffoldError` so SlidesChat / the editor gate can
+    // prompt a retry, and reset `scaffoldStartedRef` so the next
+    // effect run re-issues the scaffold.
     const scaffoldTopic = `slides ${slug}`;
-    const handleTurnError = (event: Event) => {
-      const detail = (event as CustomEvent<{ sessionId?: string }>).detail;
-      if (detail?.sessionId && detail.sessionId !== sessionId) return;
-      sawTurnError = true;
-    };
-    if (typeof window !== "undefined") {
-      window.addEventListener("crew:turn_error", handleTurnError);
-    }
     bridgeSend({
       sessionId,
       historyTopic: scaffoldTopic,
       text: `/new slides ${slug}`,
       media: [],
       onComplete: () => {
-        if (typeof window !== "undefined") {
-          window.removeEventListener("crew:turn_error", handleTurnError);
-        }
-        if (sawTurnError) {
-          // Failure path: reset the started ref so a retry is
-          // possible and DO NOT flip `scaffolded: true`. The error
-          // bubble in the embedded chat already surfaces the
-          // failure to the user; we just keep the editor gate
-          // closed until retry succeeds.
-          scaffoldStartedRef.current = false;
-          return;
-        }
-        save({ scaffolded: true, slug });
+        void (async () => {
+          try {
+            await waitForSlidesScaffold({ sessionId, slug });
+            save({ scaffolded: true, slug, scaffoldError: undefined });
+          } catch (err) {
+            scaffoldStartedRef.current = false;
+            save({
+              scaffolded: false,
+              slug,
+              scaffoldError:
+                err instanceof Error
+                  ? err.message
+                  : "Slides scaffold did not complete; please retry.",
+            });
+          }
+        })();
       },
     });
   }, [

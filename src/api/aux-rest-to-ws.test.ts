@@ -93,6 +93,7 @@ function makeMockBridge(): MockBridge {
     onTurnLifecycle: () => () => {},
     onApprovalRequested: () => () => {},
     onConnectionStateChange: () => () => {},
+    getConnectionState: () => "connected" as const,
     onWarning: () => () => {},
   };
 

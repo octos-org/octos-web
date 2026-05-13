@@ -94,6 +94,7 @@ function makeBridge(): UiProtocolBridge & {
     onTurnLifecycle: vi.fn(() => () => {}),
     onApprovalRequested: vi.fn(() => () => {}),
     onConnectionStateChange: vi.fn(() => () => {}),
+    getConnectionState: vi.fn(() => "connected"),
     onWarning: vi.fn(() => () => {}),
   } as unknown as UiProtocolBridge & {
     sendTurn: ReturnType<typeof vi.fn>;
@@ -149,6 +150,7 @@ describe("sendMessage", () => {
       onTurnLifecycle: vi.fn(() => () => {}),
       onApprovalRequested: vi.fn(() => () => {}),
       onConnectionStateChange: vi.fn(() => () => {}),
+      getConnectionState: vi.fn(() => "connected"),
       onWarning: vi.fn(() => () => {}),
       onSessionTitleUpdated: vi.fn(() => () => {}),
     });
@@ -770,6 +772,7 @@ describe("sendMessage", () => {
       onTurnLifecycle: vi.fn(() => () => {}),
       onApprovalRequested: vi.fn(() => () => {}),
       onConnectionStateChange: vi.fn(() => () => {}),
+      getConnectionState: vi.fn(() => "connected"),
       onWarning: vi.fn(() => () => {}),
       onSessionTitleUpdated: vi.fn(() => () => {}),
     });

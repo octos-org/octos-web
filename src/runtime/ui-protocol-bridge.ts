@@ -314,6 +314,14 @@ export interface UiProtocolBridge {
   ): () => void;
   onApprovalRequested(handler: (e: ApprovalRequestedEvent) => void): () => void;
   onConnectionStateChange(handler: (state: ConnectionState) => void): () => void;
+  /** Codex BLOCK F: synchronous read of the bridge's current
+   *  connection state. The `onConnectionStateChange` listener fires on
+   *  TRANSITIONS, so a subscriber installed AFTER the bridge is
+   *  already terminal never sees the entry-state. Send-path callers
+   *  read this at send-start so a `BridgeStoppedError` raised before
+   *  the listener fires can be classified as terminal-fast-reject
+   *  (skip the 45s grace) vs reconnectable. */
+  getConnectionState(): ConnectionState;
   onWarning(handler: (e: WarningEvent) => void): () => void;
   /** Issue #113.2: server-emitted title update for cross-tab and
    *  auto-title flows. SessionProvider subscribes to keep its
@@ -1216,6 +1224,9 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   }
   onConnectionStateChange(handler: Listener<ConnectionState>): () => void {
     return this.subState.add(handler);
+  }
+  getConnectionState(): ConnectionState {
+    return this.state;
   }
   onWarning(handler: Listener<WarningEvent>): () => void {
     return this.subWarning.add(handler);

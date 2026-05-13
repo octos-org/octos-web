@@ -99,6 +99,7 @@ function makeDeferredBridge(): DeferredBridge {
         if (stateHandler === h) stateHandler = null;
       };
     }),
+    getConnectionState: vi.fn(() => "connected" as ConnectionState),
     onWarning: vi.fn(() => () => {}),
   };
   return {

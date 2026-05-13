@@ -363,10 +363,15 @@ async function sendMessageV1(
   // distinguish terminal `closed`/`error` (finalize immediately) from
   // mid-flight `reconnecting` (apply the grace window so an
   // accepted-but-not-acked turn can complete via the lifecycle
-  // channel after reconnect). Initialized to `connected` because we
-  // already gate this whole code path on `getActiveBridge` returning
-  // a bridge — the bridge is connected at this point.
-  let lastConnState: string = "connected";
+  // channel after reconnect). Codex round-2 BLOCK F: seed from the
+  // bridge synchronously. `onConnectionStateChange` only fires on
+  // TRANSITIONS, so seeding `"connected"` masks the case where the
+  // bridge is ALREADY terminal at send-start — a sync
+  // `BridgeStoppedError` would then take the 45s grace path instead
+  // of fast-rejecting. `getActiveBridge` no longer gates on
+  // `connectionState === "connected"` (runtime change for M10.5
+  // Wave A round-3), so this can happen in practice.
+  let lastConnState: string = bridge.getConnectionState();
   const fireComplete = () => {
     if (completed) return;
     completed = true;
