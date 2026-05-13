@@ -129,34 +129,25 @@ export async function waitForSlidesScaffold({
   attempts = 12,
   delayMs = 500,
 }: WaitForSlidesScaffoldOptions): Promise<SlidesFileEntry[]> {
-  // Codex round-3 BLOCK D.a: poll the RAW server response (no
-  // `ensureCoreSlidesFiles` synthesis) and verify each of the three
-  // canonical scaffold artifacts shows up at its exact expected path
-  // under `slides/<slug>/`. Pre-fix this called `listSlidesFiles`
-  // which silently synthesized the trio whenever any unrelated file
-  // landed under the dir, so the poller would declare success on
-  // "scaffold partially failed" or even "wrong file appeared" runs.
-  const expectedPaths = [
-    `slides/${slug}/script.js`,
-    `slides/${slug}/memory.md`,
-    `slides/${slug}/changelog.md`,
-  ];
+  // Codex round-4 BLOCK: `file.path` is an opaque server-issued
+  // handle (`pf/<base64>/<basename>`), so matching it against
+  // `slides/<slug>/<name>` never succeeds and every scaffold would
+  // time out. The workspace-relative directory lives on `file.group`
+  // and the basename on `file.filename` — check those instead.
+  // Round-3 BLOCK D.a still stands: skip `ensureCoreSlidesFiles` so
+  // the synthesizer doesn't fake the trio on a partial scaffold.
+  const expectedGroup = normalizeSlidesDir(`slides/${slug}`);
+  const expectedFilenames = ["script.js", "memory.md", "changelog.md"];
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     throwIfAborted(signal);
     try {
       const files = await listSlidesFilesRaw(`slides/${slug}`, { sessionId });
-      const paths = new Set(
-        files.map((file) => normalizeSlidesDir(file.path)),
+      const present = new Set(
+        files
+          .filter((file) => normalizeSlidesDir(file.group) === expectedGroup)
+          .map((file) => file.filename),
       );
-      const haveAll = expectedPaths.every((expected) => {
-        const normalized = normalizeSlidesDir(expected);
-        for (const path of paths) {
-          if (path === normalized || path.endsWith(`/${normalized}`)) {
-            return true;
-          }
-        }
-        return false;
-      });
+      const haveAll = expectedFilenames.every((name) => present.has(name));
       if (haveAll) {
         return files;
       }

@@ -22,6 +22,12 @@ interface Props {
 export function SlidesChat({ sessionId, retryNonce = 0 }: Props) {
   const { project, save } = useSlides();
   const scaffoldStartedRef = useRef(false);
+  // Codex round-4 NIT: holds the bridge-side error message captured
+  // by the `crew:turn_error` listener for the active scaffold turn.
+  // The `waitForSlidesScaffold` catch path preserves it instead of
+  // overwriting with the generic poll-timeout message, so the user
+  // sees the real server failure rather than "did not appear".
+  const bridgeScaffoldErrorRef = useRef<string | null>(null);
   const projectId = project?.id;
   const projectTitle = project?.title;
   const projectSlug = project?.slug;
@@ -36,6 +42,9 @@ export function SlidesChat({ sessionId, retryNonce = 0 }: Props) {
   useEffect(() => {
     if (retryNonce > 0) {
       scaffoldStartedRef.current = false;
+      // Stale bridge error must not leak into the next attempt's
+      // poll-timeout fallback (Codex round-4 NIT).
+      bridgeScaffoldErrorRef.current = null;
     }
   }, [retryNonce]);
 
@@ -63,6 +72,8 @@ export function SlidesChat({ sessionId, retryNonce = 0 }: Props) {
 
     const slug = projectSlug || buildSlidesSlug(projectTitle, projectId);
     scaffoldStartedRef.current = true;
+    // New attempt: drop any error captured during the previous turn.
+    bridgeScaffoldErrorRef.current = null;
 
     // Codex round-2 BLOCK D: persist `slug` BEFORE issuing the
     // scaffold turn. The embedded `ChatThread` reads
@@ -77,6 +88,32 @@ export function SlidesChat({ sessionId, retryNonce = 0 }: Props) {
     // We also clear any stale `scaffoldError` so retries don't
     // surface the previous failure once the new turn is in flight.
     save({ slug, scaffoldError: undefined });
+
+    // Codex round-4 NIT: the bridge dispatches `crew:turn_error` for
+    // this scaffold turn with the real server error. `onComplete`
+    // fires immediately after, so we capture the message into a ref
+    // and prefer it over the generic poll-timeout text in the catch
+    // path below.
+    const scaffoldTopic = `slides ${slug}`;
+    function handleTurnError(event: Event) {
+      if (!(event instanceof CustomEvent)) return;
+      const detail = event.detail as
+        | {
+            sessionId?: unknown;
+            topic?: unknown;
+            error?: { message?: unknown };
+          }
+        | undefined;
+      if (!detail || detail.sessionId !== sessionId) return;
+      if (typeof detail.topic === "string" && detail.topic !== scaffoldTopic) {
+        return;
+      }
+      const message = detail.error?.message;
+      if (typeof message === "string" && message.length > 0) {
+        bridgeScaffoldErrorRef.current = message;
+      }
+    }
+    window.addEventListener("crew:turn_error", handleTurnError);
 
     // Issue #112.2: pre-fix this POSTed to `/api/chat`, the retired
     // SSE chat transport. Route the scaffold prompt through the WS
@@ -97,7 +134,6 @@ export function SlidesChat({ sessionId, retryNonce = 0 }: Props) {
     // surface `scaffoldError` so SlidesChat / the editor gate can
     // prompt a retry, and reset `scaffoldStartedRef` so the next
     // effect run re-issues the scaffold.
-    const scaffoldTopic = `slides ${slug}`;
     bridgeSend({
       sessionId,
       historyTopic: scaffoldTopic,
@@ -110,18 +146,30 @@ export function SlidesChat({ sessionId, retryNonce = 0 }: Props) {
             save({ scaffolded: true, slug, scaffoldError: undefined });
           } catch (err) {
             scaffoldStartedRef.current = false;
+            const bridgeError = bridgeScaffoldErrorRef.current;
             save({
               scaffolded: false,
               slug,
+              // Prefer the bridge-side server error (real cause) over
+              // the poll-timeout fallback when both fire.
               scaffoldError:
-                err instanceof Error
+                bridgeError ??
+                (err instanceof Error
                   ? err.message
-                  : "Slides scaffold did not complete; please retry.",
+                  : "Slides scaffold did not complete; please retry."),
             });
+          } finally {
+            window.removeEventListener("crew:turn_error", handleTurnError);
           }
         })();
       },
     });
+
+    return () => {
+      // Unmount before onComplete: drop the listener so it doesn't
+      // outlive the effect closure.
+      window.removeEventListener("crew:turn_error", handleTurnError);
+    };
   }, [
     projectId,
     projectScaffolded,
