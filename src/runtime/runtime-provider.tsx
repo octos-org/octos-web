@@ -11,11 +11,10 @@ import { SessionProvider, useSession } from "./session-context";
 import * as FileStore from "@/store/file-store";
 import * as TaskStore from "@/store/task-store";
 import * as ThreadStore from "@/store/thread-store";
-// M12 Phase D-3: the per-session status indicator (active turn,
-// deferred files, background tasks) routes through the Phase D-2
-// `getSessionStatus` wrapper, which flips between WS
-// `session/status.get` and REST `/api/sessions/:id/status` under the
-// `auxiliary_rest_to_ws_v1` flag. Single transport boundary.
+// The per-session status indicator (active turn, deferred files,
+// background tasks) routes through the `getSessionStatus` wrapper,
+// which calls the WS `session/status.get` method. The legacy REST
+// fallback was retired in M12 Phase D-5 (octos PR #914).
 import { getSessionStatus } from "@/api/sessions";
 import type { BackgroundTaskInfo } from "@/api/types";
 import { restoreWatchedSessions, unwatchSession, watchSession } from "./task-watcher";

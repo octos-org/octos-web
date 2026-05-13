@@ -284,11 +284,11 @@ export const SESSION_LIST_RENDER_CAP = 500;
 
 /** Pure merge step extracted from `refreshSessions` so it can be unit-tested.
  *
- *  Filters the raw `list` from `/api/sessions` to web-prefixed sessions with
- *  at least one persisted message that aren't tombstoned, sorts newest-first,
- *  caps to {@link SESSION_LIST_RENDER_CAP}, and overlays any
- *  locally-tracked sessions that haven't yet been observed by the server
- *  (e.g. a brand-new chat whose first turn is still mid-flight).
+ *  Filters the raw `list` from the `session/list` WS method to web-prefixed
+ *  sessions with at least one persisted message that aren't tombstoned,
+ *  sorts newest-first, caps to {@link SESSION_LIST_RENDER_CAP}, and overlays
+ *  any locally-tracked sessions that haven't yet been observed by the
+ *  server (e.g. a brand-new chat whose first turn is still mid-flight).
  *
  *  Bug A (M10 follow-up): the original implementation hard-sliced to 20
  *  sessions before merging. Users with 20+ historical chats saw the newest
@@ -769,15 +769,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     titleCache.current[sessionId] = trimmed;
     persistStoredTitles(titleCache.current);
     setSessions((prev) => applyOptimisticRename(prev, sessionId, trimmed));
-    // M12 Phase D-3: persist the rename server-side via the Phase D-2
-    // `setSessionTitle` wrapper. The wrapper routes through the WS
-    // `session/title.set` method when `auxiliary_rest_to_ws_v1` is ON
-    // (and a connected bridge exists), and falls back to the legacy
-    // REST PATCH `/api/sessions/:id/title` otherwise. On rejection we
-    // roll the optimistic cache + sessions write back so the UI does
-    // not end up with a stale title that `refreshSessions()` would
-    // never overwrite (it skips title fetches while
-    // `titleCache.current[id]` is populated).
+    // Persist the rename server-side via the `setSessionTitle` wrapper,
+    // which calls the WS `session/title.set` method. The legacy REST
+    // PATCH `/api/sessions/:id/title` fallback was retired in M12
+    // Phase D-5. On rejection we roll the optimistic cache + sessions
+    // write back so the UI does not end up with a stale title that
+    // `refreshSessions()` would never overwrite (it skips title
+    // fetches while `titleCache.current[id]` is populated).
     void apiSetSessionTitle(sessionId, trimmed).catch((err: unknown) => {
       // Roll back cache. Restore the previous value if one existed,
       // otherwise drop the entry entirely so the next refresh can
