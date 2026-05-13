@@ -1,16 +1,12 @@
 import { buildApiHeaders } from "@/api/client";
 import type { ContentEntry } from "@/api/content";
 import { buildFileUrl } from "@/api/files";
-// M12 Phase D-3: the slides workspace-contract view (slug presence,
-// ready/dirty flags, turn-end + completion checks, artifact globs)
-// routes through the Phase D-2 wrappers in src/api/sessions.ts.
-// `getSessionWorkspaceContract` flips between WS
-// `session/workspace.get` and REST
-// `/api/sessions/:id/workspace-contract`; `getSessionFiles` and
-// `listSessions` ride the same WS-or-REST routing. The wrappers
-// return `SessionWorkspaceContractInfo[]` / `SessionFileInfo[]` /
-// `SessionInfo[]` arrays unchanged, so the slides scaffold poller
-// and project list builders stay identical across transports.
+// The slides workspace-contract view (slug presence, ready/dirty
+// flags, turn-end + completion checks, artifact globs) routes
+// through the wrappers in `src/api/sessions.ts`.
+// `getSessionWorkspaceContract` calls the WS `session/workspace.get`
+// method; `getSessionFiles` and `listSessions` ride the same WS
+// transport. The legacy REST fallbacks were retired in M12 Phase D-5.
 import {
   getSessionFiles,
   getSessionWorkspaceContract,

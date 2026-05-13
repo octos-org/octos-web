@@ -284,21 +284,18 @@ export interface UiProtocolBridge {
   /**
    * Generic JSON-RPC request escape hatch.
    *
-   * M12 Phase D-2 (octos-web #103): used by the auxiliary REST-to-WS
-   * wrappers in `src/api/sessions.ts` and `src/api/content.ts` for the
-   * 13 methods that share the same WS connection as the chat bridge.
-   * The dedicated typed methods above (`sendTurn`, `interruptTurn`, ...)
-   * remain the only entry points for the chat lifecycle; this escape
-   * hatch is intentionally untyped so each wrapper can own its own
-   * request/response DTOs without bloating the bridge surface.
+   * Used by the auxiliary wrappers in `src/api/sessions.ts` and
+   * `src/api/content.ts` for the methods that share the same WS
+   * connection as the chat bridge. The dedicated typed methods above
+   * (`sendTurn`, `interruptTurn`, ...) remain the only entry points
+   * for the chat lifecycle; this escape hatch is intentionally
+   * untyped so each wrapper can own its own request/response DTOs
+   * without bloating the bridge surface.
    *
    * Rejects with `BridgeRpcError` when the server returns a JSON-RPC
    * error envelope, with `BridgeTimeoutError` if the response exceeds
    * the bridge's per-RPC timeout, and with `BridgeStoppedError` when
    * the connection is closed or the bridge has given up reconnecting.
-   * Callers MUST translate those into their existing REST error shape
-   * so the flag-on / flag-off code paths surface the same error
-   * envelope to the rest of the UI.
    */
   callMethod<T = unknown>(method: string, params?: unknown): Promise<T>;
 

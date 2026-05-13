@@ -1,12 +1,11 @@
 /**
  * Global task watcher — session/topic-scoped background monitor.
  *
- * M12 Phase D-3: traffic goes through the Phase D-2 `getSessionTasks`
- * and `getMessages` wrappers in src/api/sessions.ts. Both flip between
- * the WS UI Protocol v1 methods (`session/tasks.list`,
- * `session/messages_page`) and the legacy REST endpoints
- * (`GET /api/sessions/:id/tasks`, `GET /api/sessions/:id/messages`)
- * under the `auxiliary_rest_to_ws_v1` flag.
+ * Traffic goes through the `getSessionTasks` and `getMessages`
+ * wrappers in `src/api/sessions.ts`, which call the WS UI Protocol v1
+ * methods `session/tasks.list` and `session/messages_page`. The
+ * legacy REST endpoints these wrappers used to fall back to were
+ * retired in M12 Phase D-5 (octos PR #914).
  *
  * M9-α-5/α-6 (ADR PR #830 / audit issue #845) deleted the SSE
  * `/api/sessions/{id}/events/stream` stream that previously served as

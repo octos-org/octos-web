@@ -1,26 +1,5 @@
 import { buildApiHeaders } from "./client";
 import { API_BASE } from "@/lib/constants";
-import type { ChatResponse } from "./types";
-import { request } from "./client";
-
-export async function sendMessage(
-  message: string,
-  sessionId?: string,
-  topic?: string,
-  clientMessageId?: string,
-  signal?: AbortSignal,
-): Promise<ChatResponse> {
-  return request("/api/chat", {
-    method: "POST",
-    body: JSON.stringify({
-      message,
-      session_id: sessionId,
-      topic,
-      client_message_id: clientMessageId,
-    }),
-    signal,
-  });
-}
 
 /** Upload files to the server. Returns array of server-side file paths. */
 export async function uploadFiles(
