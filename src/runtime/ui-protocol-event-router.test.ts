@@ -1408,6 +1408,65 @@ describe("regression B: progress/updated fans out into crew:cost (+ crew:message
     );
     expect(dispatched).toHaveLength(0);
   });
+
+  it("token_cost_update prefers metadata.token_cost.model over metadata.label", () => {
+    // Server PR `feat/cost-update-carry-model` adds an authoritative
+    // `metadata.token_cost.model` field, populated from
+    // `LlmProvider::provider_metadata_for_index(...).model` so failover
+    // / routed responses surface the model that actually answered. The
+    // router must prefer the new field and fall back to the legacy
+    // `metadata.label` carrier only when the new field is absent.
+    const dispatched: Event[] = [];
+    handleProgressUpdated(
+      { sessionId: SESSION, dispatchEvent: (e) => dispatched.push(e) },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-B4-prefers-token-cost-model",
+        metadata: {
+          kind: "token_cost_update",
+          label: "stale-label-from-older-bridge",
+          token_cost: {
+            input_tokens: 120,
+            output_tokens: 45,
+            model: "deepseek-v4-pro",
+          },
+        },
+      },
+    );
+    const meta = dispatched.find((e) => e.type === "crew:message_meta") as
+      | CustomEvent
+      | undefined;
+    expect(meta).toBeDefined();
+    expect(meta!.detail.model).toBe("deepseek-v4-pro");
+  });
+
+  it("token_cost_update falls back to metadata.label when token_cost.model is absent", () => {
+    // Back-compat: older daemons that don't populate
+    // `token_cost.model` yet still flow through the legacy
+    // `metadata.label` carrier. The router must not regress those
+    // flows before the fleet is upgraded.
+    const dispatched: Event[] = [];
+    handleProgressUpdated(
+      { sessionId: SESSION, dispatchEvent: (e) => dispatched.push(e) },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-B5-falls-back-to-label",
+        metadata: {
+          kind: "token_cost_update",
+          label: "moonshot@autodl/kimi-k2.5",
+          token_cost: {
+            input_tokens: 12,
+            output_tokens: 7,
+          },
+        },
+      },
+    );
+    const meta = dispatched.find((e) => e.type === "crew:message_meta") as
+      | CustomEvent
+      | undefined;
+    expect(meta).toBeDefined();
+    expect(meta!.detail.model).toBe("moonshot@autodl/kimi-k2.5");
+  });
 });
 
 describe("regression C: turn/completed stamps per-turn meta snapshot onto the finalised bubble", () => {

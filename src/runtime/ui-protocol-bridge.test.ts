@@ -664,6 +664,55 @@ describe("type guards (fail-closed)", () => {
     expect(ok?.metadata.token_cost?.session_cost).toBe(0.01);
   });
 
+  // Server PR `feat/cost-update-carry-model` adds an authoritative
+  // `metadata.token_cost.model` field, populated from
+  // `LlmProvider::provider_metadata_for_index(...).model`. Codex caught
+  // that the fail-closed guard was silently dropping the new field
+  // before it reached the router — so the chat bubble footer would
+  // continue to fall back to the legacy `metadata.label` carrier in
+  // production even though the wire carried the right value. This test
+  // pins the guard's handling of the new field.
+  it("preserves token_cost.model through the guard", () => {
+    const ok = guards.guardProgressUpdated({
+      session_id: "s",
+      turn_id: "t",
+      metadata: {
+        kind: "token_cost_update",
+        token_cost: {
+          input_tokens: 120,
+          output_tokens: 45,
+          model: "deepseek-v4-pro",
+        },
+      },
+    });
+    expect(ok?.metadata.token_cost?.model).toBe("deepseek-v4-pro");
+  });
+
+  // Defensive: a malformed `model` field (non-string / empty string)
+  // must not synthesise a `model` value on the snapshot — empty would
+  // confuse the bubble footer renderer downstream.
+  it("drops empty / non-string token_cost.model", () => {
+    const emptyString = guards.guardProgressUpdated({
+      session_id: "s",
+      turn_id: "t",
+      metadata: {
+        kind: "token_cost_update",
+        token_cost: { input_tokens: 1, output_tokens: 2, model: "" },
+      },
+    });
+    expect(emptyString?.metadata.token_cost?.model).toBeUndefined();
+
+    const wrongType = guards.guardProgressUpdated({
+      session_id: "s",
+      turn_id: "t",
+      metadata: {
+        kind: "token_cost_update",
+        token_cost: { input_tokens: 1, output_tokens: 2, model: 42 },
+      },
+    });
+    expect(wrongType?.metadata.token_cost?.model).toBeUndefined();
+  });
+
   it("rejects progress/updated missing metadata.kind", () => {
     expect(
       guards.guardProgressUpdated({
