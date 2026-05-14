@@ -47,6 +47,7 @@ import { ThinkingIndicator } from "./thinking-indicator";
 import { ToolProgressIndicator } from "./tool-progress-indicator";
 import { GhostBubble } from "./GhostBubble";
 import { UserBubbleShell } from "./user-bubble-shell";
+import { CopyMarkdownButton } from "./copy-markdown-button";
 import { buildAuthenticatedFileUrl, buildFileUrl } from "@/api/files";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { nextTopicForCommand } from "@/lib/slash-commands";
@@ -524,7 +525,7 @@ function ToolCallBubble({
   );
 }
 
-const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
+export const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
   message,
   isStreaming,
   showLiveIndicators,
@@ -539,12 +540,20 @@ const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
   // message's own backref so a finalized assistant whose origin tid
   // got rewritten still tags its DOM with the canonical thread bucket.
   const tid = threadId || message.responseToClientMessageId || "";
+  // Only finalized assistant messages get the "copy as markdown"
+  // affordance — streaming/error bubbles would copy partial content.
+  // `showLiveIndicators` covers the in-flight pending case where
+  // `status` may briefly be `"complete"` while a follow-on pending is
+  // about to spawn; gating on both keeps the icon off the in-flight
+  // bubble until the turn truly settles.
+  const showCopyButton =
+    message.status === "complete" && !showLiveIndicators && !!message.text;
   return (
     <div className="flex px-4 py-3">
       <div
         data-testid="assistant-message"
         data-thread-id={tid}
-        className="message-card message-card-assistant animate-shell-rise max-w-[88%] rounded-[14px] rounded-bl-[4px] px-4 py-3 text-sm leading-relaxed text-text"
+        className="group/assistant message-card message-card-assistant animate-shell-rise max-w-[88%] rounded-[14px] rounded-bl-[4px] px-4 py-3 text-sm leading-relaxed text-text"
       >
         {message.text ? (
           <MarkdownContent
@@ -588,8 +597,15 @@ const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
           </>
         )}
 
-        {/* Message meta */}
-        <ThreadMessageMeta message={message} />
+        {/* Message footer: meta on the left, copy button on the right */}
+        <div className="mt-1.5 flex items-center justify-between gap-2">
+          <ThreadMessageMeta message={message} />
+          {showCopyButton ? (
+            <CopyMarkdownButton content={message.text} />
+          ) : (
+            <span aria-hidden="true" />
+          )}
+        </div>
       </div>
     </div>
   );
@@ -609,7 +625,7 @@ function ThreadMessageMeta({ message }: { message: ThreadMessage }) {
 
   if (meta && (meta.model || meta.tokens_in || meta.tokens_out)) {
     return (
-      <div className="mt-1.5 flex items-center gap-1.5 text-[10px] text-muted/60 select-none">
+      <div className="flex items-center gap-1.5 text-[10px] text-muted/60 select-none">
         <span className="inline-block h-1.5 w-1.5 rounded-full bg-accent/40" />
         {parts.join(" · ")}
       </div>
@@ -617,7 +633,7 @@ function ThreadMessageMeta({ message }: { message: ThreadMessage }) {
   }
 
   return (
-    <div className="mt-1.5 text-[10px] text-muted/60 select-none">
+    <div className="text-[10px] text-muted/60 select-none">
       {formatTimestamp(message.timestamp)}
     </div>
   );
