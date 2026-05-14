@@ -996,6 +996,16 @@ function guardUiTokenCost(p: unknown): UiTokenCostUpdate | undefined {
   if (typeof p.response_cost === "number") out.response_cost = p.response_cost;
   if (typeof p.session_cost === "number") out.session_cost = p.session_cost;
   if (typeof p.currency === "string") out.currency = p.currency;
+  // Server PR `feat/cost-update-carry-model` adds `model: Option<String>`
+  // to `UiTokenCostUpdate`, populated from
+  // `LlmProvider::provider_metadata_for_index(...).model` so the chat
+  // bubble footer (`model · tokens_in / tokens_out · duration`) can
+  // render even for failover / routed responses. Codex flagged the
+  // omission here — without this branch the field is silently dropped
+  // by the fail-closed guard before reaching
+  // `handleProgressUpdated`, so the router's `cost.model` lookup
+  // always resolves `undefined`.
+  if (typeof p.model === "string" && p.model.length > 0) out.model = p.model;
   return out;
 }
 
