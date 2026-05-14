@@ -67,10 +67,14 @@ import type { MessageInfo } from "@/api/types";
 // following turn.
 
 interface TurnMetaSnapshot {
-  /** Last model string we saw. Populated from `metadata.label` (the
-   *  server's display-name carrier; see
-   *  `crates/octos-cli/src/api/ui_protocol_progress.rs:363` and
-   *  follow-up). Optional — some turns don't carry a model. */
+  /** Last model string we saw. Primary source is
+   *  `metadata.token_cost.model` (added server-side in PR
+   *  `feat/cost-update-carry-model` —
+   *  `crates/octos-cli/src/api/ui_protocol_progress.rs::map_cost_update`
+   *  threads the field from `LlmProvider::provider_metadata_for_index`).
+   *  Falls back to the legacy `metadata.label` carrier for daemons that
+   *  haven't been upgraded yet. Optional — some turns don't carry a
+   *  model. */
   model?: string;
   /** Per-turn delta of `input_tokens`. Codex round-2 P2 fix: the
    *  `progress/updated{kind:"token_cost_update"}` frame carries SESSION
@@ -870,14 +874,21 @@ export function handleProgressUpdated(
   const inputTokens = cost?.input_tokens;
   const outputTokens = cost?.output_tokens;
   const sessionCost = cost?.session_cost;
-  // `metadata.label` is the server's display-name carrier (set by the
-  // agent when emitting cost frames; nullable for very early frames in
-  // the turn). We pass it through verbatim so the legacy listener can
-  // read `detail.model`.
-  const modelLabel =
+  // Server PR `feat/cost-update-carry-model` adds an authoritative
+  // `metadata.token_cost.model` field, populated from
+  // `LlmProvider::provider_metadata_for_index(...).model` so failover /
+  // routed responses surface the model that actually answered. Prefer
+  // that field; fall back to the legacy `metadata.label` carrier so
+  // older daemons (the field is opt-in additive) continue to work.
+  const costModel =
+    typeof cost?.model === "string" && cost.model.length > 0
+      ? cost.model
+      : undefined;
+  const labelModel =
     typeof event.metadata.label === "string" && event.metadata.label.length > 0
       ? event.metadata.label
       : undefined;
+  const modelLabel = costModel ?? labelModel;
 
   // -- (a) crew:cost -------------------------------------------------------
   dispatch(

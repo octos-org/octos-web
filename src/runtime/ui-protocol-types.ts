@@ -355,6 +355,15 @@ export interface UiTokenCostUpdate {
   response_cost?: number;
   session_cost?: number;
   currency?: string;
+  /**
+   * Model identifier that produced this response. Populated by the server's
+   * agent emit layer from `LlmProvider::model_id()` so chat clients can
+   * render the assistant bubble footer
+   * (`model · tokens_in / tokens_out · duration`) without scraping the
+   * legacy `metadata.label` field. Older servers omit this field; the
+   * router falls back to `metadata.label` for back-compat.
+   */
+  model?: string;
 }
 
 /**
