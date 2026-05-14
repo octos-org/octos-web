@@ -1338,6 +1338,55 @@ describe("regression A: tool/* events fan out into crew:tool_progress", () => {
     expect(dispatched).toHaveLength(1);
     expect((dispatched[0] as CustomEvent).detail.tool).toBe("shell");
   });
+
+  it("tool/completed marks the crew:tool_progress event terminal (spawn_only spinner clear signal)", () => {
+    // The lifted `ToolProgressIndicator` (chat-layout level) cannot
+    // rely on `crew:thinking false` for spawn_only flows — that event
+    // already fired at `turn/completed` BEFORE the background task
+    // started emitting `tool/progress`. The terminal flag is the
+    // dedicated clear signal the indicator listens for.
+    const dispatched: Event[] = [];
+    handleToolCompleted(
+      { sessionId: SESSION, dispatchEvent: (e) => dispatched.push(e) },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-A4",
+        tool_call_id: "tc-4",
+        tool_name: "podcast_generate",
+        success: true,
+      },
+    );
+    expect(dispatched).toHaveLength(1);
+    expect((dispatched[0] as CustomEvent).detail.terminal).toBe(true);
+    expect((dispatched[0] as CustomEvent).detail.tool).toBe("podcast_generate");
+  });
+
+  it("tool/started and tool/progress do NOT carry the terminal flag", () => {
+    // Sanity: only `tool/completed` is terminal — `tool/started` and
+    // `tool/progress` keep the spinner alive.
+    const dispatched: Event[] = [];
+    handleToolStarted(
+      { sessionId: SESSION, dispatchEvent: (e) => dispatched.push(e) },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-A5",
+        tool_call_id: "tc-5",
+        tool_name: "fm_tts",
+      },
+    );
+    handleToolProgress(
+      { sessionId: SESSION, dispatchEvent: (e) => dispatched.push(e) },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-A5",
+        tool_call_id: "tc-5",
+        message: "synthesising 1/3",
+      },
+    );
+    expect(dispatched).toHaveLength(2);
+    expect((dispatched[0] as CustomEvent).detail.terminal).toBeUndefined();
+    expect((dispatched[1] as CustomEvent).detail.terminal).toBeUndefined();
+  });
 });
 
 describe("regression B: progress/updated fans out into crew:cost (+ crew:message_meta)", () => {

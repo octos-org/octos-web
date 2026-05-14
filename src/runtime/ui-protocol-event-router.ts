@@ -663,6 +663,14 @@ function dispatchToolProgressEvent(
   turnId: string,
   toolName: string,
   message: string,
+  /** When true, the `ToolProgressIndicator` clears the spinner row.
+   *  Set on `tool/completed` (sync and spawn_only paths) because for
+   *  spawn_only tools the LLM `crew:thinking false` has already fired
+   *  at `turn/completed` BEFORE the background task starts emitting,
+   *  so it can no longer be relied upon to clear the row. Without an
+   *  explicit terminal signal the spinner would display the
+   *  "done"/"error"/"complete" message indefinitely. */
+  terminal: boolean = false,
 ): void {
   dispatch(
     cfg,
@@ -673,6 +681,7 @@ function dispatchToolProgressEvent(
         sessionId: cfg.sessionId,
         topic: cfg.topic,
         turnId,
+        ...(terminal ? { terminal: true } : {}),
       },
     }),
   );
@@ -739,7 +748,19 @@ export function handleToolCompleted(
     event.tool_call_id,
     event.success === false ? "error" : "complete",
   );
-  dispatchToolProgressEvent(cfg, event.turn_id, event.tool_name, message);
+  // Mark terminal so the lifted `ToolProgressIndicator` clears the
+  // spinner row. The bubble's `ToolCallBubble` reads the final
+  // status from `ThreadStore.setToolCallStatus` above and keeps the
+  // history-pill state intact — only the transient spinner row goes
+  // away. Critical for spawn_only flows where `crew:thinking false`
+  // already fired at `turn/completed` and cannot clean up.
+  dispatchToolProgressEvent(
+    cfg,
+    event.turn_id,
+    event.tool_name,
+    message,
+    /* terminal */ true,
+  );
   // Clear the cache entry so a long-lived session doesn't accumulate
   // dead tool_call_id mappings.
   toolNameByCallId.delete(event.tool_call_id);
