@@ -51,13 +51,27 @@ export function ToolProgressIndicator() {
     function onProgress(e: Event) {
       const detail = (e as CustomEvent).detail;
       if (!eventMatchesScope(detail, currentSessionId, historyTopic)) return;
-      // `tool/completed` -> router dispatches with `terminal: true`. The
-      // spinner clears immediately rather than displaying the
-      // "done"/"error"/"complete" message indefinitely (spawn_only
+      // `tool/completed` (and spawn_only `task/updated` completed/
+      // failed/errored) -> router dispatches with `terminal: true`.
+      // The spinner clears immediately rather than displaying the
+      // "done"/"error" message indefinitely (spawn_only
       // `crew:thinking false` has already fired and can no longer
       // clean up).
+      //
+      // Terminal frames are scoped by `turnId`: a completion for an
+      // UNRELATED concurrent tool call in the same session must not
+      // blow away the spinner of the still-running call we're
+      // currently displaying. Falls back to "any terminal clears"
+      // when either side lacks a turnId (legacy server-frame
+      // compatibility).
       if (detail.terminal === true) {
-        setProgress(null);
+        setProgress((prev) => {
+          if (!prev) return prev;
+          if (prev.turnId && detail.turnId && prev.turnId !== detail.turnId) {
+            return prev;
+          }
+          return null;
+        });
         return;
       }
       setProgress({

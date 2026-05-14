@@ -460,6 +460,20 @@ export function handleTaskUpdated(
   if (previous === event.state) return;
   lastTaskStateById.set(event.task_id, event.state);
 
+  // For spawn_only background tools (podcast_generate / fm_tts /
+  // deep_search / mofa_slides etc.) the running-state updates arrive
+  // exclusively via `task/updated`, NOT `tool/progress` — the parent
+  // LLM turn already settled at `turn/completed` before the
+  // background work started. The lifted `ToolProgressIndicator`
+  // therefore needs the spinner-progress fan-out here as well, with
+  // the terminal flag set on the completion legs so the row clears.
+  //
+  // The `tool_name` lookup falls back to the task_id when no preceding
+  // `tool/started` cached a name (e.g. a server-side flow that skips
+  // `tool/started` entirely and only emits `task/updated`); same shape
+  // `handleToolProgress` uses on the synchronous path.
+  const toolLabel = toolNameByCallId.get(event.task_id) ?? event.task_id;
+
   switch (event.state) {
     case "spawned":
     case "running": {
@@ -474,15 +488,35 @@ export function handleTaskUpdated(
           detail: { sessionId: cfg.sessionId, topic: cfg.topic },
         }),
       );
+      // Light / refresh the spinner with the latest task state label.
+      dispatchToolProgressEvent(cfg, event.turn_id, toolLabel, label);
       break;
     }
     case "completed": {
       ThreadStore.setToolCallStatus(event.turn_id, event.task_id, "complete");
+      dispatchToolProgressEvent(
+        cfg,
+        event.turn_id,
+        toolLabel,
+        "done",
+        /* terminal */ true,
+      );
+      // Drop the cache entry — the task is done, no further frames
+      // should land on this id (mirrors `handleToolCompleted`).
+      toolNameByCallId.delete(event.task_id);
       break;
     }
     case "failed":
     case "errored": {
       ThreadStore.setToolCallStatus(event.turn_id, event.task_id, "error");
+      dispatchToolProgressEvent(
+        cfg,
+        event.turn_id,
+        toolLabel,
+        "error",
+        /* terminal */ true,
+      );
+      toolNameByCallId.delete(event.task_id);
       break;
     }
     default:

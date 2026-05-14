@@ -250,6 +250,78 @@ describe("router event mapping", () => {
     expect(tcs.find((tc) => tc.id === "task-7")?.progress.map((p) => p.message))
       .toEqual(["deep_research"]);
     expect(dispatched.some((e) => e.type === "crew:bg_tasks")).toBe(true);
+    // Codex round-2: spawn_only running state also fans out into the
+    // spinner indicator. The dispatch is NOT terminal (still running).
+    const progressEvt = dispatched.find(
+      (e) => e.type === "crew:tool_progress",
+    ) as CustomEvent | undefined;
+    expect(progressEvt).toBeDefined();
+    expect(progressEvt!.detail.tool).toBe("task-7"); // no tool name cached
+    expect(progressEvt!.detail.message).toBe("deep_research");
+    expect(progressEvt!.detail.turnId).toBe("cmid-3");
+    expect(progressEvt!.detail.terminal).toBeUndefined();
+  });
+
+  it("task/updated completed fans out a terminal crew:tool_progress (spawn_only spinner clear)", () => {
+    // Spawn_only tools (podcast_generate, fm_tts, deep_search,
+    // mofa_slides) emit their lifecycle exclusively through
+    // `task/updated`. The lifted `ToolProgressIndicator` needs an
+    // explicit terminal signal because the LLM `crew:thinking false`
+    // already fired at the enclosing `turn/completed` long before the
+    // background task finished.
+    seedThread("cmid-spawnonly");
+    const dispatched: Event[] = [];
+    const cfg = {
+      sessionId: SESSION,
+      dispatchEvent: (e: Event) => dispatched.push(e),
+    };
+    handleTaskUpdated(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-spawnonly",
+      task_id: "task-podcast",
+      state: "running",
+      title: "synthesising 1/3",
+    });
+    handleTaskUpdated(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-spawnonly",
+      task_id: "task-podcast",
+      state: "completed",
+    });
+    const terminalEvt = dispatched
+      .filter((e) => e.type === "crew:tool_progress")
+      .map((e) => e as CustomEvent)
+      .find((e) => e.detail.terminal === true);
+    expect(terminalEvt).toBeDefined();
+    expect(terminalEvt!.detail.turnId).toBe("cmid-spawnonly");
+    expect(terminalEvt!.detail.message).toBe("done");
+  });
+
+  it("task/updated failed fans out a terminal crew:tool_progress with error message", () => {
+    seedThread("cmid-spawnerr");
+    const dispatched: Event[] = [];
+    const cfg = {
+      sessionId: SESSION,
+      dispatchEvent: (e: Event) => dispatched.push(e),
+    };
+    handleTaskUpdated(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-spawnerr",
+      task_id: "task-fail",
+      state: "running",
+    });
+    handleTaskUpdated(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-spawnerr",
+      task_id: "task-fail",
+      state: "failed",
+    });
+    const terminalEvt = dispatched
+      .filter((e) => e.type === "crew:tool_progress")
+      .map((e) => e as CustomEvent)
+      .find((e) => e.detail.terminal === true);
+    expect(terminalEvt).toBeDefined();
+    expect(terminalEvt!.detail.message).toBe("error");
   });
 
   it("task/updated dedupes consecutive identical state for the same task", () => {

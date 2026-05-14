@@ -184,6 +184,71 @@ describe("ToolProgressIndicator", () => {
   //      must not bleed across to session B.
   // ---------------------------------------------------------------------
 
+  it("does NOT clear on a terminal crew:tool_progress event from a DIFFERENT turn (parallel-tool guard)", () => {
+    // Concurrent tool calls in the same session: turn T1 is running a
+    // spawn_only podcast_generate; an unrelated synchronous tool call
+    // in turn T2 (same session) finishes. T2's terminal frame must
+    // not clear T1's still-running background spinner.
+    const ctx = makeSessionCtx();
+    const harness = mount(
+      <SessionContext.Provider value={ctx}>
+        <ToolProgressIndicator />
+      </SessionContext.Provider>,
+    );
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent("crew:tool_progress", {
+          detail: {
+            tool: "podcast_generate",
+            message: "synthesizing",
+            sessionId: SESSION,
+            turnId: "turn-T1",
+          },
+        }),
+      );
+    });
+    expect(
+      harness.container.querySelector("[data-testid='tool-progress']"),
+    ).not.toBeNull();
+
+    // Unrelated T2 tool finishes — must NOT clear T1's spinner.
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent("crew:tool_progress", {
+          detail: {
+            tool: "shell",
+            message: "done",
+            sessionId: SESSION,
+            turnId: "turn-T2",
+            terminal: true,
+          },
+        }),
+      );
+    });
+    expect(
+      harness.container.querySelector("[data-testid='tool-progress']"),
+    ).not.toBeNull();
+
+    // BUT a terminal frame for T1 itself clears it.
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent("crew:tool_progress", {
+          detail: {
+            tool: "podcast_generate",
+            message: "done",
+            sessionId: SESSION,
+            turnId: "turn-T1",
+            terminal: true,
+          },
+        }),
+      );
+    });
+    expect(
+      harness.container.querySelector("[data-testid='tool-progress']"),
+    ).toBeNull();
+    harness.unmount();
+  });
+
   it("clears on a terminal crew:tool_progress event (tool/completed)", () => {
     const ctx = makeSessionCtx();
     const harness = mount(
