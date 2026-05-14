@@ -185,20 +185,25 @@ function queueKey(sessionId: string): string {
 // the toolbar without consulting the runtime internals (which are
 // module-scope and not React-reactive).
 //
-// `queueDepthBySession` carries the SHALLOW pending count — turns parked
-// behind the in-flight lifecycle gate. The in-flight turn itself is NOT
-// counted; pendingCount === 0 with the queue idle = nothing queued,
-// pendingCount === 0 mid-turn = the in-flight turn is the only thing
-// flowing. The pill in `chat-thread.tsx:1630` only renders when the
-// count is non-zero so the queue is visible only when there's true
-// backpressure.
+// `queueTotalBySession` carries the TOTAL number of entries on the chain
+// (in-flight + parked-behind). The dispatched `pendingCount` is
+// `max(0, total - 1)` — the in-flight turn does NOT count toward queue
+// backpressure (codex Wave4-A P2 review fix: a lone send used to render
+// "1 queued" even when nothing was waiting). The pill in
+// `chat-thread.tsx:1630` only renders when `pendingCount > 0` so the
+// indicator is visible only when there's true backpressure.
 
-const queueDepthBySession = new Map<string, number>();
+const queueTotalBySession = new Map<string, number>();
 const queueHeadBySession = new Map<string, string | null>();
+
+function pendingBacklog(sessionId: string): number {
+  const total = queueTotalBySession.get(sessionId) ?? 0;
+  return total > 0 ? total - 1 : 0;
+}
 
 function dispatchQueueState(sessionId: string): void {
   if (typeof window === "undefined") return;
-  const pendingCount = queueDepthBySession.get(sessionId) ?? 0;
+  const pendingCount = pendingBacklog(sessionId);
   const head = queueHeadBySession.get(sessionId) ?? null;
   try {
     window.dispatchEvent(
@@ -215,9 +220,9 @@ function dispatchQueueState(sessionId: string): void {
   }
 }
 
-function incrementQueueDepth(sessionId: string, head: string): void {
-  const prev = queueDepthBySession.get(sessionId) ?? 0;
-  queueDepthBySession.set(sessionId, prev + 1);
+function incrementQueueTotal(sessionId: string, head: string): void {
+  const prev = queueTotalBySession.get(sessionId) ?? 0;
+  queueTotalBySession.set(sessionId, prev + 1);
   // Head is the cmid of the IN-FLIGHT turn — the first entry to land on
   // a fresh queue is treated as in-flight and recorded so a future
   // consumer (e.g. a "cancel queued" button) can identify it. Subsequent
@@ -228,14 +233,14 @@ function incrementQueueDepth(sessionId: string, head: string): void {
   dispatchQueueState(sessionId);
 }
 
-function decrementQueueDepth(sessionId: string): void {
-  const prev = queueDepthBySession.get(sessionId) ?? 0;
+function decrementQueueTotal(sessionId: string): void {
+  const prev = queueTotalBySession.get(sessionId) ?? 0;
   const next = Math.max(0, prev - 1);
   if (next === 0) {
-    queueDepthBySession.delete(sessionId);
+    queueTotalBySession.delete(sessionId);
     queueHeadBySession.delete(sessionId);
   } else {
-    queueDepthBySession.set(sessionId, next);
+    queueTotalBySession.set(sessionId, next);
   }
   dispatchQueueState(sessionId);
 }
@@ -273,8 +278,8 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
   turnQueues.set(key, chained);
   // Wave4-A: surface the push BEFORE awaiting the prior turn so the
   // toolbar pill updates synchronously with the user's submit. The
-  // matching `decrementQueueDepth` runs in the `finally` block below.
-  incrementQueueDepth(key, clientMessageId);
+  // matching `decrementQueueTotal` runs in the `finally` block below.
+  incrementQueueTotal(key, clientMessageId);
 
   try {
     await prev;
@@ -361,7 +366,7 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
     // (happy path, transport drop, queue-wedge safety release).
     // Symmetric with the push above so the pill ticks down to 0 when
     // the in-flight turn lands.
-    decrementQueueDepth(key);
+    decrementQueueTotal(key);
   }
 }
 
@@ -369,7 +374,7 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
 /** Test-only reset for the per-session queue map. */
 export function __resetSendQueueForTest(): void {
   turnQueues.clear();
-  queueDepthBySession.clear();
+  queueTotalBySession.clear();
   queueHeadBySession.clear();
 }
 

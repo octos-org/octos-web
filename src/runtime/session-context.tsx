@@ -129,20 +129,46 @@ export interface SessionBeforeSendResult extends Partial<SessionSendRequest> {
 export type QueueMode = "followup" | "collect" | "steer" | "interrupt" | "speculative" | null;
 export type AdaptiveMode = "off" | "hedge" | "lane" | null;
 
-/** Shared hook that listens for crew:mode_update events and returns reactive mode state. */
-export function useModeState() {
+/** Shared hook that listens for crew:mode_update events and returns
+ *  reactive mode state. Scoped to `sessionId` — only events whose
+ *  detail.sessionId matches the current session are accepted, and
+ *  switching to a different session resets the mode state so stale
+ *  events from the previous session can't bleed through (codex
+ *  Wave4-A P1 review fix). When called without an argument (legacy
+ *  call shape — pre-router unscoped queue mode), accept every event
+ *  so back-compat tests keep working. */
+export function useModeState(sessionId?: string) {
   const [queueMode, setQueueMode] = useState<QueueMode>(null);
   const [adaptiveMode, setAdaptiveMode] = useState<AdaptiveMode>(null);
 
   useEffect(() => {
+    // Reset on session change so a stale mode from the prior session
+    // doesn't persist into the active pill / switcher highlight.
+    setQueueMode(null);
+    setAdaptiveMode(null);
+  }, [sessionId]);
+
+  useEffect(() => {
     function onMode(e: Event) {
       const detail = (e as CustomEvent).detail;
+      // Codex Wave4-A P1: events carry `detail.sessionId` since the
+      // event-router was wired. Drop events for other sessions so a
+      // late RouterStatus push from a previous session doesn't
+      // overwrite the active one. Legacy callers (sessionId undefined)
+      // accept every event.
+      if (
+        sessionId !== undefined &&
+        typeof detail?.sessionId === "string" &&
+        detail.sessionId !== sessionId
+      ) {
+        return;
+      }
       if (detail.queueMode !== undefined) setQueueMode(detail.queueMode);
       if (detail.adaptiveMode !== undefined) setAdaptiveMode(detail.adaptiveMode);
     }
     window.addEventListener("crew:mode_update", onMode);
     return () => window.removeEventListener("crew:mode_update", onMode);
-  }, []);
+  }, [sessionId]);
 
   return { queueMode, adaptiveMode };
 }
@@ -416,7 +442,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [serverTaskActiveBySession, setServerTaskActiveBySession] = useState<
     Record<string, boolean>
   >({});
-  const { queueMode, adaptiveMode } = useModeState();
+  const { queueMode, adaptiveMode } = useModeState(currentSessionId);
   const previousSessionIdRef = useRef<string | null>(null);
   const titleCache = useRef<Record<string, string>>(loadStoredTitles());
   // Codex NIT G: track per-session title-fetch state to prevent the

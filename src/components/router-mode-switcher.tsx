@@ -43,6 +43,14 @@ const MODE_LABELS: Record<SwitcherMode, string> = {
 };
 const MODES: SwitcherMode[] = ["off", "lane", "hedge"];
 
+/** Normalize a server-emitted mode string (`"off"` / `"hedge"` /
+ *  `"lane"`) into the local `SwitcherMode` shape. Unknown values map
+ *  back to `null` so we never highlight a button that doesn't exist. */
+function normalizeAdaptiveMode(mode: string): SwitcherMode | null {
+  if (mode === "off" || mode === "hedge" || mode === "lane") return mode;
+  return null;
+}
+
 /** Treat any RPC error whose `data.kind` equals `runtime_unavailable`
  *  as the "no adaptive router attached" signal — the server returns it
  *  from both `handle_router_set_mode` and `handle_router_get_metrics`
@@ -74,10 +82,12 @@ export function RouterModeSwitcher({
   const activeSessionId = sessionId ?? session.currentSessionId;
   const adaptiveMode = session.adaptiveMode;
 
-  // Local optimistic mode — set on click, cleared when the next
-  // `router/status` notification (via session-context's `adaptiveMode`)
-  // matches it. Renders as the active highlight even before the server
-  // reconciliation arrives.
+  // Local optimistic mode — set on click, cleared the moment EITHER
+  // the `router/set_mode` RPC echoes a mode back OR the next
+  // `router/status` notification arrives (codex Wave4-A P1 review fix:
+  // the old "wait for `adaptiveMode === optimisticMode`" gate could
+  // never clear when the server reports a different mode than the
+  // user's optimistic click).
   const [optimisticMode, setOptimisticMode] = useState<SwitcherMode | null>(
     null,
   );
@@ -87,6 +97,35 @@ export function RouterModeSwitcher({
   const [available, setAvailable] = useState<boolean | null>(null);
   // True while a `router/set_mode` RPC is in flight; locks every button.
   const [busy, setBusy] = useState(false);
+
+  // Codex Wave4-A P2 review fix: reset local switcher state on session
+  // change so a previous session's `runtime_unavailable` flag,
+  // optimistic mode, or busy lock doesn't carry over to a freshly
+  // switched session. The probe useEffect below re-runs (its dep
+  // array includes `activeSessionId`) and re-probes the new scope.
+  useEffect(() => {
+    setOptimisticMode(null);
+    setAvailable(null);
+    setBusy(false);
+  }, [activeSessionId]);
+
+  // Reconcile the optimistic state against the live `adaptiveMode` from
+  // session context (fed by `crew:mode_update` → `useModeState()`).
+  // Any authoritative same-session status drop clears the optimistic
+  // highlight — even when the reported mode disagrees with the
+  // optimistic value (e.g. server rejected the mode silently). This
+  // also runs when the optimistic mode is cleared by the RPC echo
+  // path, in which case it's a cheap no-op.
+  useEffect(() => {
+    if (
+      optimisticMode &&
+      (adaptiveMode === "off" ||
+        adaptiveMode === "lane" ||
+        adaptiveMode === "hedge")
+    ) {
+      setOptimisticMode(null);
+    }
+  }, [adaptiveMode, optimisticMode]);
 
   const resolveBridge = useCallback(() => {
     if (getBridge) return getBridge();
@@ -135,29 +174,44 @@ export function RouterModeSwitcher({
     };
   }, [activeSessionId, resolveBridge]);
 
-  // Reconcile the optimistic state once the server-side mode arrives via
-  // `router/status` (fed through `useModeState()` → `adaptiveMode`).
-  useEffect(() => {
-    if (optimisticMode && adaptiveMode === optimisticMode) {
-      setOptimisticMode(null);
-    }
-  }, [adaptiveMode, optimisticMode]);
-
   const handleClick = useCallback(
     async (mode: SwitcherMode) => {
       if (busy) return;
       const bridge = resolveBridge();
       if (!bridge) return;
+      // Pin the session this click is for. Codex Wave4-A P2: if the
+      // user switches sessions while `router/set_mode` is in flight,
+      // we drop the result instead of letting it leak into the new
+      // session's local state.
+      const issuedFor = activeSessionId;
       setOptimisticMode(mode);
       setBusy(true);
       try {
-        await bridge.callMethod<RouterSetModeResult>(
+        const result = await bridge.callMethod<RouterSetModeResult>(
           METHODS.ROUTER_SET_MODE,
-          { session_id: activeSessionId, mode },
+          { session_id: issuedFor, mode },
         );
-        // Success: hold the optimistic mode until `router/status`
-        // confirms. The reconcile effect above clears it then.
+        if (issuedFor !== activeSessionId) return;
+        // Codex Wave4-A P1: trust the server's echo. If the server
+        // committed a different mode (e.g. silently coerced an unknown
+        // value back to `off`), reflect that. We hold the resolved
+        // mode locally until `router/status` (via `adaptiveMode`)
+        // catches up — the reconcile useEffect above clears it the
+        // moment ANY authoritative mode arrives, so we never freeze
+        // on a stale optimistic value even when the server reports a
+        // different mode than the user's click.
+        const echoed = normalizeAdaptiveMode(result?.mode ?? "");
+        if (echoed && echoed !== mode) {
+          setOptimisticMode(echoed);
+        }
+        // If echoed === mode (typical happy path), leave the
+        // optimistic value as-is — the next `router/status` push
+        // clears it. If echoed is null (unparsed), also leave the
+        // optimistic value visible so the click stays responsive;
+        // the reconcile effect will replace it when adaptiveMode
+        // catches up.
       } catch (err) {
+        if (issuedFor !== activeSessionId) return;
         // Roll the optimistic state back. If the failure is
         // `runtime_unavailable`, flip the disabled flag so the user
         // doesn't keep retrying.
@@ -166,7 +220,7 @@ export function RouterModeSwitcher({
           setAvailable(false);
         }
       } finally {
-        setBusy(false);
+        if (issuedFor === activeSessionId) setBusy(false);
       }
     },
     [activeSessionId, busy, resolveBridge],

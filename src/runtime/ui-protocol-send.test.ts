@@ -809,7 +809,10 @@ describe("sendMessage", () => {
 // `incrementQueueDepth` / `decrementQueueDepth` in `ui-protocol-send.ts`.
 
 describe("Wave4-A: client-side queue/state DOM dispatch", () => {
-  it("a single send dispatches push (pendingCount=1) then drain (pendingCount=0)", async () => {
+  it("a single in-flight send dispatches pendingCount=0 (no backlog) then 0 on drain", async () => {
+    // Codex Wave4-A P2 review fix: a lone send must NOT render as "1
+    // queued". `pendingCount` is the backlog behind the in-flight
+    // turn — the in-flight turn itself isn't counted.
     const bridge = makeBridge();
     __setActiveBridgeForTest(SESSION, bridge);
 
@@ -839,20 +842,75 @@ describe("Wave4-A: client-side queue/state DOM dispatch", () => {
         media: [],
         clientMessageId: "cmid-Q1",
       });
-      // Synchronous push fires before any await — the first observation
-      // already shows pendingCount=1.
+      // Synchronous push fires before any await. `pendingCount` is 0
+      // (the in-flight turn isn't counted) but `head` carries its cmid.
       expect(events).toHaveLength(1);
-      expect(events[0].pendingCount).toBe(1);
+      expect(events[0].pendingCount).toBe(0);
       expect(events[0].head).toBe("cmid-Q1");
 
       for (let i = 0; i < 12; i++) await Promise.resolve();
       lifecycleHandler?.({ turn_id: "cmid-Q1", reason: "stop" });
       for (let i = 0; i < 12; i++) await Promise.resolve();
 
-      // Drain dispatch follows the lifecycle release; pendingCount=0.
+      // Drain dispatch follows the lifecycle release; pendingCount=0, head=null.
       const last = events[events.length - 1];
       expect(last.pendingCount).toBe(0);
       expect(last.head).toBeNull();
+    } finally {
+      window.removeEventListener("crew:queue_state", onEvent);
+    }
+  });
+
+  it("a second send while the first is mid-turn dispatches pendingCount=1", async () => {
+    const bridge = makeBridge();
+    __setActiveBridgeForTest(SESSION, bridge);
+
+    let lifecycleHandler:
+      | ((e: { turn_id: string; reason?: string; error?: unknown }) => void)
+      | undefined;
+    (bridge.onTurnLifecycle as ReturnType<typeof vi.fn>).mockImplementation(
+      (h: (e: { turn_id: string; reason?: string; error?: unknown }) => void) => {
+        lifecycleHandler = h;
+        return () => {
+          lifecycleHandler = undefined;
+        };
+      },
+    );
+
+    const events: Array<{ pendingCount: number; head: string | null }> = [];
+    function onEvent(e: Event) {
+      const detail = (e as CustomEvent).detail;
+      if (detail.sessionId !== SESSION) return;
+      events.push({ pendingCount: detail.pendingCount, head: detail.head });
+    }
+    window.addEventListener("crew:queue_state", onEvent);
+    try {
+      sendMessage({
+        sessionId: SESSION,
+        text: "first",
+        media: [],
+        clientMessageId: "cmid-A",
+      });
+      sendMessage({
+        sessionId: SESSION,
+        text: "second",
+        media: [],
+        clientMessageId: "cmid-B",
+      });
+      // Both pushes have fired synchronously. The latest dispatch
+      // shows pendingCount=1 (one entry parked behind the in-flight).
+      const afterPush = events[events.length - 1];
+      expect(afterPush.pendingCount).toBe(1);
+      expect(afterPush.head).toBe("cmid-A");
+
+      // Resolve the first turn → second turn becomes in-flight,
+      // backlog drops to 0.
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+      lifecycleHandler?.({ turn_id: "cmid-A", reason: "stop" });
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+
+      const last = events[events.length - 1];
+      expect(last.pendingCount).toBe(0);
     } finally {
       window.removeEventListener("crew:queue_state", onEvent);
     }

@@ -8,12 +8,19 @@
  * sequence (subsequent ones replace the visible one and reset the
  * timer).
  *
+ * Scope: filters by the active session id passed via `sessionId`
+ * prop (or `useSession()`'s `currentSessionId` when absent). Late
+ * events from a previously-active bridge are dropped so a banner
+ * for a non-visible session doesn't pop up during a rapid session
+ * switch (codex Wave4-A P2 review fix).
+ *
  * Shape mirrors the existing inline file toast in `chat-layout.tsx`
  * — no shared toast infrastructure exists, so this component owns
  * its own state.
  */
 
 import { useEffect, useState } from "react";
+import { useSession } from "@/runtime/session-context";
 
 interface FailoverDetail {
   sessionId: string;
@@ -34,12 +41,23 @@ interface VisibleFailover extends FailoverDetail {
 export interface RouterFailoverBannerProps {
   /** Test-injection: override the auto-dismiss interval. */
   dismissAfterMs?: number;
+  /** Test-injection: bypass `useSession()` for component-level tests. */
+  sessionId?: string;
 }
 
 export function RouterFailoverBanner({
   dismissAfterMs = 4000,
+  sessionId,
 }: RouterFailoverBannerProps = {}) {
+  const session = useSession();
+  const activeSessionId = sessionId ?? session.currentSessionId;
   const [visible, setVisible] = useState<VisibleFailover | null>(null);
+
+  // Codex Wave4-A P2 review fix: drop any in-flight banner on session
+  // change so a non-current session's failover doesn't keep showing.
+  useEffect(() => {
+    setVisible(null);
+  }, [activeSessionId]);
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -47,6 +65,14 @@ export function RouterFailoverBanner({
     function handle(e: Event) {
       const detail = (e as CustomEvent).detail as FailoverDetail | undefined;
       if (!detail) return;
+      // Codex Wave4-A P2: scope by the active session so a routed
+      // failover for a previous bridge doesn't render globally.
+      if (
+        typeof detail.sessionId === "string" &&
+        detail.sessionId !== activeSessionId
+      ) {
+        return;
+      }
       keySeq += 1;
       setVisible({ ...detail, key: keySeq });
       if (timer) clearTimeout(timer);
@@ -60,7 +86,7 @@ export function RouterFailoverBanner({
       window.removeEventListener("crew:router_failover", handle);
       if (timer) clearTimeout(timer);
     };
-  }, [dismissAfterMs]);
+  }, [dismissAfterMs, activeSessionId]);
 
   if (!visible) return null;
   return (

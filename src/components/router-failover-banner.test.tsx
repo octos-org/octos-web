@@ -11,6 +11,33 @@ import { createRoot, type Root } from "react-dom/client";
   true;
 
 import { RouterFailoverBanner } from "./router-failover-banner";
+import { SessionContext } from "@/runtime/session-context";
+import type { SessionContextValue } from "@/runtime/session-context";
+
+const SESSION = "sess-failover-banner";
+
+function makeSessionCtx(sessionId = SESSION): SessionContextValue {
+  return {
+    sessions: [],
+    currentSessionId: sessionId,
+    historyTopic: undefined,
+    currentSessionTitle: "",
+    currentSessionStats: null,
+    initialMessages: [],
+    activeTaskOnServer: false,
+    queueMode: null,
+    adaptiveMode: null,
+    setServerTaskActive: () => {},
+    renameSession: () => {},
+    updateSessionStats: () => {},
+    switchSession: () => {},
+    goBack: async () => false,
+    createSession: () => sessionId,
+    removeSession: async () => {},
+    refreshSessions: async () => {},
+    markSessionActive: () => {},
+  };
+}
 
 interface MountedHarness {
   container: HTMLDivElement;
@@ -23,7 +50,11 @@ function mount(node: React.ReactElement): MountedHarness {
   document.body.appendChild(container);
   const root = createRoot(container);
   act(() => {
-    root.render(node);
+    root.render(
+      <SessionContext.Provider value={makeSessionCtx()}>
+        {node}
+      </SessionContext.Provider>,
+    );
   });
   return {
     container,
@@ -65,7 +96,7 @@ describe("RouterFailoverBanner", () => {
         window.dispatchEvent(
           new CustomEvent("crew:router_failover", {
             detail: {
-              sessionId: "s",
+              sessionId: SESSION,
               from: "openrouter/openai/gpt-5",
               to: "openrouter/anthropic/claude-opus-4-7",
               reason: "circuit_breaker_open",
@@ -88,6 +119,32 @@ describe("RouterFailoverBanner", () => {
     }
   });
 
+  it("drops events for other sessions (codex Wave4-A P2 scope guard)", () => {
+    const harness = mount(<RouterFailoverBanner />);
+    try {
+      act(() => {
+        window.dispatchEvent(
+          new CustomEvent("crew:router_failover", {
+            detail: {
+              sessionId: "different-session",
+              from: "a/m1",
+              to: "b/m2",
+              reason: "r",
+              elapsedMs: 100,
+            },
+          }),
+        );
+      });
+      expect(
+        harness.container.querySelector(
+          "[data-testid='router-failover-banner']",
+        ),
+      ).toBeNull();
+    } finally {
+      harness.unmount();
+    }
+  });
+
   it("auto-dismisses after 4 seconds", () => {
     const harness = mount(<RouterFailoverBanner />);
     try {
@@ -95,7 +152,7 @@ describe("RouterFailoverBanner", () => {
         window.dispatchEvent(
           new CustomEvent("crew:router_failover", {
             detail: {
-              sessionId: "s",
+              sessionId: SESSION,
               from: "a/m1",
               to: "b/m2",
               reason: "r",
