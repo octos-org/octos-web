@@ -240,7 +240,7 @@ export function RouterModeSwitcher({
         // the reconcile effect will replace it when adaptiveMode
         // transitions away from the pre-click value.
       } catch (err) {
-        if (issuedFor !== activeSessionIdRef.current) return;
+        if (!scopeStillCurrent()) return;
         // Roll the optimistic state back. If the failure is
         // `runtime_unavailable`, flip the disabled flag so the user
         // doesn't keep retrying.
@@ -250,7 +250,7 @@ export function RouterModeSwitcher({
           setAvailable(false);
         }
       } finally {
-        if (issuedFor === activeSessionIdRef.current) setBusy(false);
+        if (scopeStillCurrent()) setBusy(false);
       }
     },
     [activeSessionId, adaptiveMode, busy, resolveBridge],
