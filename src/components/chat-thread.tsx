@@ -589,13 +589,14 @@ export const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
           </div>
         )}
 
-        {/* Thinking + tool progress (only for the in-flight pending assistant) */}
-        {showLiveIndicators && (
-          <>
-            <ThinkingIndicator />
-            <ToolProgressIndicator />
-          </>
-        )}
+        {/* Thinking indicator (only for the in-flight pending assistant).
+            `ToolProgressIndicator` is lifted to `ChatThreadV2` so the
+            spinner survives `turn/completed` for spawn_only background
+            tasks (podcast_generate / fm_tts / deep_search / mofa_slides)
+            whose `tool/progress` envelopes arrive AFTER the LLM turn
+            has settled and the pending assistant bubble has been
+            unmounted. */}
+        {showLiveIndicators && <ThinkingIndicator />}
 
         {/* Message footer: meta on the left, copy button on the right */}
         <div className="mt-1.5 flex items-center justify-between gap-2">
@@ -851,7 +852,17 @@ function ChatThreadV2({
           </div>
         </div>
       )}
+      {/* Tool-progress spinner, lifted out of the per-bubble render so
+          it survives `turn/completed` for spawn_only background tasks.
+          The indicator self-scopes to `(currentSessionId, historyTopic)`
+          via `eventMatchesScope`, so one mount is sufficient — it
+          renders only when a `crew:tool_progress` event for THIS
+          session arrives, and clears on `crew:thinking { thinking:
+          false }`. Positioned above the composer to mirror the visual
+          slot the spinner occupied when it lived inside the streaming
+          bubble's bottom. */}
       <div className="shrink-0">
+        <ToolProgressIndicator />
         <Composer mountGhost={mountGhost} unmountGhost={unmountGhost} />
       </div>
     </div>
