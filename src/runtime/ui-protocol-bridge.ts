@@ -29,6 +29,9 @@ import type {
   MessageDeltaEvent,
   MessagePersistedEvent,
   ProgressUpdatedEvent,
+  QueueStateEvent,
+  RouterFailoverEvent,
+  RouterStatusEvent,
   RpcErrorPayload,
   SessionHydrateResult,
   SessionOpenResult,
@@ -64,6 +67,9 @@ export type {
   PersistedMessage,
   PersistedMessageFile,
   ProgressUpdatedEvent,
+  QueueStateEvent,
+  RouterFailoverEvent,
+  RouterStatusEvent,
   SessionHydrateResult,
   SessionOpenResult,
   SessionOpenedResult,
@@ -155,6 +161,22 @@ export const METHODS = {
   // cross-tab / auto-title flows can refresh their cache without polling
   // the REST list. See the M12 Phase D ADR.
   SESSION_TITLE_UPDATED: "session/title-updated",
+  // Wave4-A (server PR #946) adaptive router surface. Server pushes
+  // `router/status` adjacent to `turn/started` and `turn/completed` so
+  // the SPA can render the routing pill / lane debug view without
+  // polling; `router/failover` fires once when the adaptive router
+  // crosses lanes mid-turn.  `queue/state` is the client-emitted
+  // counterpart for the per-session FIFO that lives in
+  // `ui-protocol-send.ts`; the variant exists on the wire so other
+  // clients can observe queue depth uniformly. Client-issued RPCs:
+  // `router/set_mode` toggles the active adaptive mode at runtime and
+  // `router/get_metrics` snapshots the same payload `router/status`
+  // pushes for on-demand reads.
+  ROUTER_STATUS: "router/status",
+  ROUTER_FAILOVER: "router/failover",
+  QUEUE_STATE: "queue/state",
+  ROUTER_SET_MODE: "router/set_mode",
+  ROUTER_GET_METRICS: "router/get_metrics",
 } as const;
 
 /**
@@ -355,6 +377,20 @@ export interface UiProtocolBridge {
    *  DOM events so the header cost badge and assistant-bubble footer
    *  keep firing post-PR-#96 SSE-bridge deletion. */
   onProgressUpdated(handler: (e: ProgressUpdatedEvent) => void): () => void;
+  /** Wave4-A `router/status` subscriber. The event-router fans this
+   *  out into the `crew:mode_update` DOM event so `useModeState()` in
+   *  `session-context.tsx:127` lights the toolbar pill. */
+  onRouterStatus(handler: (e: RouterStatusEvent) => void): () => void;
+  /** Wave4-A `router/failover` subscriber. The event-router dispatches
+   *  a `crew:router_failover` DOM event so the chat-layout can surface
+   *  a transient banner. */
+  onRouterFailover(handler: (e: RouterFailoverEvent) => void): () => void;
+  /** Wave4-A `queue/state` subscriber. Symmetric with the other
+   *  notification surfaces — `ui-protocol-send.ts` self-dispatches
+   *  these through a window CustomEvent (the queue is client-side
+   *  today), but the bridge still routes server-emitted variants for
+   *  forward compatibility. */
+  onQueueState(handler: (e: QueueStateEvent) => void): () => void;
   onConnectionStateChange(handler: (state: ConnectionState) => void): () => void;
   /** Codex BLOCK F: synchronous read of the bridge's current
    *  connection state. The `onConnectionStateChange` listener fires on
@@ -1036,6 +1072,93 @@ function guardProgressUpdated(p: unknown): ProgressUpdatedEvent | null {
   };
 }
 
+/**
+ * Guard for `router/status` (Wave4-A server PR #946). All fields are
+ * required on the wire. `lane_scores` / `circuit_breakers` are wire
+ * objects (Rust `BTreeMap<String, _>`); we accept any plain object and
+ * filter out entries whose value is not the expected primitive type so
+ * a future server-side schema extension can't trip the fail-closed
+ * reject path.
+ */
+function guardRouterStatus(p: unknown): RouterStatusEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.session_id)) return null;
+  if (!isString(p.provider_name)) return null;
+  if (!isString(p.mode)) return null;
+  if (typeof p.qos_ranking !== "boolean") return null;
+  if (!isPlainObject(p.lane_scores)) return null;
+  if (!isPlainObject(p.circuit_breakers)) return null;
+  const laneScores: Record<string, number> = {};
+  for (const [k, v] of Object.entries(p.lane_scores)) {
+    if (typeof v === "number" && Number.isFinite(v)) laneScores[k] = v;
+  }
+  const breakers: Record<string, string> = {};
+  for (const [k, v] of Object.entries(p.circuit_breakers)) {
+    if (typeof v === "string") breakers[k] = v;
+  }
+  return {
+    session_id: p.session_id,
+    provider_name: p.provider_name,
+    mode: p.mode,
+    qos_ranking: p.qos_ranking,
+    lane_scores: laneScores,
+    circuit_breakers: breakers,
+  };
+}
+
+/**
+ * Guard for `router/failover` (Wave4-A server PR #946). All fields are
+ * required on the wire. `elapsed_ms` is a `u64` on the wire so we reject
+ * negative / non-finite values.
+ */
+function guardRouterFailover(p: unknown): RouterFailoverEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.session_id)) return null;
+  if (!isString(p.from_provider) || !isString(p.to_provider)) return null;
+  if (typeof p.reason !== "string") return null;
+  if (
+    typeof p.elapsed_ms !== "number" ||
+    !Number.isFinite(p.elapsed_ms) ||
+    p.elapsed_ms < 0
+  ) {
+    return null;
+  }
+  return {
+    session_id: p.session_id,
+    from_provider: p.from_provider,
+    to_provider: p.to_provider,
+    reason: p.reason,
+    elapsed_ms: p.elapsed_ms,
+  };
+}
+
+/**
+ * Guard for `queue/state` (Wave4-A). Client-emitted today (the queue
+ * lives in `ui-protocol-send.ts` per-session FIFO); the guard is in
+ * place so the bridge round-trips the variant uniformly if the server
+ * ever starts emitting it.
+ */
+function guardQueueState(p: unknown): QueueStateEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.session_id)) return null;
+  if (
+    typeof p.pending_count !== "number" ||
+    !Number.isFinite(p.pending_count) ||
+    p.pending_count < 0
+  ) {
+    return null;
+  }
+  let head: string | null = null;
+  if (typeof p.head_client_message_id === "string" && p.head_client_message_id.length > 0) {
+    head = p.head_client_message_id;
+  }
+  return {
+    session_id: p.session_id,
+    pending_count: p.pending_count,
+    head_client_message_id: head,
+  };
+}
+
 /** Minimal guard for `session/title-updated`.
  *
  *  The server's ADR-defined payload is
@@ -1133,6 +1256,9 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private readonly subToolProgress = new Subscribers<ToolProgressEvent>();
   private readonly subToolCompleted = new Subscribers<ToolCompletedEvent>();
   private readonly subProgressUpdated = new Subscribers<ProgressUpdatedEvent>();
+  private readonly subRouterStatus = new Subscribers<RouterStatusEvent>();
+  private readonly subRouterFailover = new Subscribers<RouterFailoverEvent>();
+  private readonly subQueueState = new Subscribers<QueueStateEvent>();
   private readonly subWarning = new Subscribers<WarningEvent>();
   private readonly subState = new Subscribers<ConnectionState>();
   private readonly subSessionTitleUpdated = new Subscribers<{
@@ -1198,6 +1324,18 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     [METHODS.PROGRESS_UPDATED]: {
       guard: guardProgressUpdated,
       emit: (v) => this.subProgressUpdated.emit(v as ProgressUpdatedEvent),
+    },
+    [METHODS.ROUTER_STATUS]: {
+      guard: guardRouterStatus,
+      emit: (v) => this.subRouterStatus.emit(v as RouterStatusEvent),
+    },
+    [METHODS.ROUTER_FAILOVER]: {
+      guard: guardRouterFailover,
+      emit: (v) => this.subRouterFailover.emit(v as RouterFailoverEvent),
+    },
+    [METHODS.QUEUE_STATE]: {
+      guard: guardQueueState,
+      emit: (v) => this.subQueueState.emit(v as QueueStateEvent),
     },
     [METHODS.WARNING]: {
       guard: guardWarning,
@@ -1304,6 +1442,9 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.subToolProgress.clear();
     this.subToolCompleted.clear();
     this.subProgressUpdated.clear();
+    this.subRouterStatus.clear();
+    this.subRouterFailover.clear();
+    this.subQueueState.clear();
     this.subWarning.clear();
     this.subState.clear();
     this.subSessionTitleUpdated.clear();
@@ -1455,6 +1596,15 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   }
   onProgressUpdated(handler: Listener<ProgressUpdatedEvent>): () => void {
     return this.subProgressUpdated.add(handler);
+  }
+  onRouterStatus(handler: Listener<RouterStatusEvent>): () => void {
+    return this.subRouterStatus.add(handler);
+  }
+  onRouterFailover(handler: Listener<RouterFailoverEvent>): () => void {
+    return this.subRouterFailover.add(handler);
+  }
+  onQueueState(handler: Listener<QueueStateEvent>): () => void {
+    return this.subQueueState.add(handler);
   }
   onConnectionStateChange(handler: Listener<ConnectionState>): () => void {
     return this.subState.add(handler);
@@ -2061,5 +2211,8 @@ export const __INTERNAL_GUARDS_FOR_TEST__ = {
   guardToolProgress,
   guardToolCompleted,
   guardProgressUpdated,
+  guardRouterStatus,
+  guardRouterFailover,
+  guardQueueState,
   guardWarning,
 };

@@ -881,8 +881,15 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
     beforeSend,
     queueMode,
     adaptiveMode,
+    currentSessionStats,
   } =
     useSession();
+  // Wave4-A: surface the live client-side queue depth in the toolbar pill.
+  // `currentSessionStats.queue_depth` is updated by the `crew:queue_state`
+  // subscription in `session-context.tsx`. Falls back to `null` so the
+  // existing `queueMode` literal label still renders for sessions that
+  // never push anything onto the queue.
+  const queueDepth = currentSessionStats?.queue_depth ?? 0;
   // M10.5: ThreadStore is the single source of truth — read `isRunning`
   // from the active session's threads.
   const threadsForRunning = useThreads(currentSessionId, historyTopic);
@@ -1654,17 +1661,26 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
             >
               <Camera size={16} />
             </button>
-            {/* Mode indicator badges */}
-            {(queueMode || adaptiveMode) && (
+            {/* Mode indicator badges. Wave4-A: `queueDepth` is the live
+                count of turns parked behind the in-flight gate (see
+                `ui-protocol-send.ts`); we render it whenever a queued
+                turn exists OR a legacy `queueMode` label is set, so
+                "N queued" appears regardless of whether the session
+                also has a `queueMode` label. */}
+            {(queueMode || adaptiveMode || queueDepth > 0) && (
               <div className="ml-auto flex items-center gap-1.5">
-                {queueMode && (
+                {(queueMode || queueDepth > 0) && (
                   <span
                     data-testid="queue-mode-badge"
                     className="mode-badge flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium"
-                    title={`Queue mode: ${queueMode}`}
+                    title={
+                      queueDepth > 0
+                        ? `${queueDepth} queued${queueMode ? ` (${queueMode})` : ""}`
+                        : `Queue mode: ${queueMode}`
+                    }
                   >
                     <Layers size={10} />
-                    {queueMode}
+                    {queueDepth > 0 ? `${queueDepth} queued` : queueMode}
                   </span>
                 )}
                 {adaptiveMode && (

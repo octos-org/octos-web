@@ -460,6 +460,97 @@ export interface WarningEvent {
 }
 
 /**
+ * Wave4-A `router/status` notification — adaptive routing snapshot
+ * pushed alongside `turn/started` and `turn/completed` so clients can
+ * render the routing pill / lane debug view without polling. Mirrors
+ * `octos_core::ui_protocol::RouterStatusEvent` (server PR #946).
+ *
+ * `lane_scores` keys are `"<provider_name>/<model_id>"`. `circuit_breakers`
+ * carries the same keys mapped to a string-rendered breaker state
+ * (`"closed"`, `"open"`, `"half_open"`). Both wire as deterministic
+ * `BTreeMap`s on the server side so re-renders stay diff-stable.
+ */
+export interface RouterStatusEvent {
+  session_id: string;
+  /** Currently selected provider, in `"<provider_name>/<model_id>"` form. */
+  provider_name: string;
+  /** Active adaptive mode (`"off"` | `"hedge"` | `"lane"`). */
+  mode: string;
+  /** QoS quality-ranking toggle (orthogonal to mode). */
+  qos_ranking: boolean;
+  /** Per-lane scores, keyed by `"<provider_name>/<model_id>"`. */
+  lane_scores: Record<string, number>;
+  /** Per-lane breaker state — `"closed"` / `"open"` / `"half_open"`. */
+  circuit_breakers: Record<string, string>;
+}
+
+/**
+ * Wave4-A `router/failover` notification — emitted when the adaptive
+ * router crosses lanes. Mirrors `octos_core::ui_protocol::RouterFailoverEvent`.
+ *
+ * `from_provider` / `to_provider` use the same `"<provider_name>/<model_id>"`
+ * key shape as `RouterStatusEvent.lane_scores`. `reason` is free-text
+ * (e.g. `"circuit_breaker_open"`, `"score_drop"`). `elapsed_ms` is the
+ * wall time from initial provider attempt to failover decision.
+ */
+export interface RouterFailoverEvent {
+  session_id: string;
+  from_provider: string;
+  to_provider: string;
+  reason: string;
+  elapsed_ms: number;
+}
+
+/**
+ * Wave4-A `queue/state` notification — pending-queue snapshot.
+ * Client-emitted today (the queue lives in
+ * `src/runtime/ui-protocol-send.ts`'s per-session FIFO). The server
+ * never emits this variant — the web bridge manufactures it locally so
+ * other clients can observe queue depth uniformly. Mirrors
+ * `octos_core::ui_protocol::QueueStateEvent`.
+ */
+export interface QueueStateEvent {
+  session_id: string;
+  pending_count: number;
+  /** Identifies the in-flight turn whose completion will release the
+   *  next queued frame. `null` when the queue is empty. */
+  head_client_message_id: string | null;
+}
+
+/**
+ * Wave4-A `router/set_mode` params + result. Mirrors
+ * `octos_core::ui_protocol::RouterSetModeParams` /
+ * `RouterSetModeResult`. `mode` is the lowercase string rendering of
+ * `octos_llm::AdaptiveMode` — `"off"`, `"hedge"`, or `"lane"`.
+ */
+export interface RouterSetModeParams {
+  session_id: string;
+  mode: string;
+}
+
+export interface RouterSetModeResult {
+  /** New mode actually committed by the router. Echo of `params.mode`
+   *  when the call succeeded. */
+  mode: string;
+}
+
+/**
+ * Wave4-A `router/get_metrics` result. Identical wire shape to
+ * `RouterStatusEvent` minus the `session_id` echo. When no adaptive
+ * router is attached to the session (single-provider profile), the
+ * server returns an `invalid_params` RPC error whose
+ * `data.kind === "runtime_unavailable"` — clients use that signal to
+ * grey out the router-mode switcher.
+ */
+export interface RouterGetMetricsResult {
+  provider_name: string;
+  mode: string;
+  qos_ranking: boolean;
+  lane_scores: Record<string, number>;
+  circuit_breakers: Record<string, string>;
+}
+
+/**
  * UPCR-2026-016 (M9-β-2) `session/closed` notification.
  *
  * Server emits this after a successful `session/delete` clears at

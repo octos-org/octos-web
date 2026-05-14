@@ -4,6 +4,8 @@ import { useOctosStatus } from "@/hooks/use-octos-status";
 import { useTheme } from "@/hooks/use-theme";
 import { useResizablePanel } from "@/hooks/use-resizable-panel";
 import { CostBar } from "@/components/cost-bar";
+import { RouterModeSwitcher } from "@/components/router-mode-switcher";
+import { RouterFailoverBanner } from "@/components/router-failover-banner";
 import { SessionList } from "@/components/session-list";
 import { ContentBrowser } from "@/components/content-browser";
 import { SessionTaskIndicator } from "@/components/session-task-dock";
@@ -181,13 +183,19 @@ export function ChatLayout({ children }: { children: ReactNode }) {
                   )}
                 </button>
               </div>
-              <div className="mt-3 min-w-0">
+              <div className="mt-3 min-w-0 flex flex-wrap items-center gap-3">
                 <CostBar model={status?.model} provider={status?.provider} />
+                {/* Wave4-A router mode switcher. Anchored next to the
+                    cost-bar so the live model + cost + routing mode
+                    surface as a single block. */}
+                <RouterModeSwitcher />
               </div>
             </div>
           </div>
           <div className="relative flex-1 min-h-0 overflow-hidden px-2 pb-2">
             {children}
+            {/* Wave4-A router failover banner — auto-dismisses after 4 s. */}
+            <RouterFailoverBanner />
             {/* Inline toast notification */}
             {toast && (
               <button

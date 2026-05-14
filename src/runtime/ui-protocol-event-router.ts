@@ -27,6 +27,9 @@ import type {
   MessageDeltaEvent,
   MessagePersistedEvent,
   ProgressUpdatedEvent,
+  QueueStateEvent,
+  RouterFailoverEvent,
+  RouterStatusEvent,
   TaskOutputDeltaEvent,
   TaskUpdatedEvent,
   ToolCompletedEvent,
@@ -915,6 +918,107 @@ export function handleApprovalRequested(
 }
 
 // ---------------------------------------------------------------------------
+// Wave4-A: router/status, router/failover, queue/state
+// ---------------------------------------------------------------------------
+//
+// Server PR #946 added three new notifications so the SPA can render the
+// adaptive routing pill / failover banner / queue-depth indicator without
+// polling. We fan each out into a `crew:*` DOM event so existing listeners
+// (the dormant `crew:mode_update` subscriber in `useModeState()` plus the
+// dead `queueMode` pill at `chat-thread.tsx:1642`) finally light up.
+//
+//   - `router/status`   → `crew:mode_update`  ({ adaptiveMode, providerName,
+//                          qosRanking, laneScores, circuitBreakers })
+//   - `router/failover` → `crew:router_failover` ({ from, to, reason,
+//                          elapsedMs }) — chat-layout pops a 4 s banner.
+//   - `queue/state`     → `crew:queue_state` ({ pendingCount, head })
+//                          — also dispatched by the client-side FIFO in
+//                          `ui-protocol-send.ts`, this branch covers a
+//                          future server emission.
+
+/**
+ * Normalize the `router/status` adaptive mode wire value (`"off"` |
+ * `"hedge"` | `"lane"`) into the `AdaptiveMode` shape `useModeState()`
+ * expects. Unknown values map back to `null` so a server-side schema
+ * extension doesn't render a stale pill.
+ */
+function normalizeAdaptiveMode(mode: string): "off" | "hedge" | "lane" | null {
+  if (mode === "off" || mode === "hedge" || mode === "lane") return mode;
+  return null;
+}
+
+export function handleRouterStatus(
+  cfg: RouterConfig,
+  event: RouterStatusEvent,
+): void {
+  // `crew:mode_update` shape was historically `{ queueMode?, adaptiveMode? }`
+  // — the listener in `useModeState()` switches on each independently
+  // (see `session-context.tsx:131-138`). The router-status path drives
+  // the adaptive leg; queue depth flows via `crew:queue_state` below.
+  // We additionally surface provider / score / breaker context so the
+  // future routing-pill detail view can render a tooltip without an
+  // extra round-trip.
+  dispatch(
+    cfg,
+    new CustomEvent("crew:mode_update", {
+      detail: {
+        sessionId: cfg.sessionId,
+        topic: cfg.topic,
+        adaptiveMode: normalizeAdaptiveMode(event.mode),
+        providerName: event.provider_name,
+        qosRanking: event.qos_ranking,
+        laneScores: event.lane_scores,
+        circuitBreakers: event.circuit_breakers,
+      },
+    }),
+  );
+}
+
+export function handleRouterFailover(
+  cfg: RouterConfig,
+  event: RouterFailoverEvent,
+): void {
+  // Pop a transient banner. The chat-layout listens for this event and
+  // renders a 4 s auto-dismiss notice describing the lane change. Field
+  // names follow the existing camelCase DOM-event convention used by
+  // `crew:tool_progress`, `crew:cost`, etc.
+  dispatch(
+    cfg,
+    new CustomEvent("crew:router_failover", {
+      detail: {
+        sessionId: cfg.sessionId,
+        topic: cfg.topic,
+        from: event.from_provider,
+        to: event.to_provider,
+        reason: event.reason,
+        elapsedMs: event.elapsed_ms,
+      },
+    }),
+  );
+}
+
+export function handleQueueState(
+  cfg: RouterConfig,
+  event: QueueStateEvent,
+): void {
+  // `ui-protocol-send.ts` dispatches the same shape directly because the
+  // queue is client-side today (server PR #946 leaves the variant
+  // unemitted). The bridge-routed branch covers a future server-side
+  // emission and keeps the schema unified.
+  dispatch(
+    cfg,
+    new CustomEvent("crew:queue_state", {
+      detail: {
+        sessionId: cfg.sessionId,
+        topic: cfg.topic,
+        pendingCount: event.pending_count,
+        head: event.head_client_message_id,
+      },
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Wiring
 // ---------------------------------------------------------------------------
 
@@ -974,6 +1078,17 @@ export function attachRouter(
   const offProgressUpdated = bridge.onProgressUpdated((e) =>
     handleProgressUpdated(cfg, e),
   );
+  // Wave4-A: adaptive router + queue depth surfaces. Three independent
+  // subscriptions so each one's detach is local; the chat-layout's
+  // banner listener and `useModeState()`'s pill listener consume the
+  // dispatched DOM events directly.
+  const offRouterStatus = bridge.onRouterStatus((e) =>
+    handleRouterStatus(cfg, e),
+  );
+  const offRouterFailover = bridge.onRouterFailover((e) =>
+    handleRouterFailover(cfg, e),
+  );
+  const offQueueState = bridge.onQueueState((e) => handleQueueState(cfg, e));
 
   let detached = false;
   return {
@@ -991,6 +1106,9 @@ export function attachRouter(
       offToolProgress();
       offToolCompleted();
       offProgressUpdated();
+      offRouterStatus();
+      offRouterFailover();
+      offQueueState();
     },
   };
 }
