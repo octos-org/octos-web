@@ -168,10 +168,18 @@ function metaFromSnapshot(snap: TurnMetaSnapshot | undefined): MessageMeta | und
 // Per-task state-transition de-dupe
 // ---------------------------------------------------------------------------
 
-/** Last-seen task state per `task_id`. Mirrors the SSE-side
+/** Last-seen task state + label per `task_id`. Mirrors the SSE-side
  *  `lastTaskStatusById` map in `runtime-provider.tsx` so a `task/updated`
- *  replay (e.g. on reconnect) doesn't inflate the in-bubble timeline. */
-const lastTaskStateById = new Map<string, string>();
+ *  replay (e.g. on reconnect) doesn't inflate the in-bubble timeline.
+ *  Tracking the rendered label too (codex round-3) lets a stream of
+ *  `running` updates with refreshed `title`/`runtime_detail` through —
+ *  pre-fix the state-only dedupe stuck spawn_only spinners on the
+ *  very first label they emitted. */
+interface LastTaskState {
+  state: string;
+  label?: string;
+}
+const lastTaskStateById = new Map<string, LastTaskState>();
 
 /** Reset the per-task state map. Tests call this between cases; production
  *  code does not need it because the map is bounded by the number of live
@@ -457,8 +465,21 @@ export function handleTaskUpdated(
   event: TaskUpdatedEvent,
 ): void {
   const previous = lastTaskStateById.get(event.task_id);
-  if (previous === event.state) return;
-  lastTaskStateById.set(event.task_id, event.state);
+  // Dedupe ONLY when both state AND label are unchanged. The legacy
+  // by-state-only dedupe meant a stream of `running` updates with
+  // refreshed titles (e.g. "synthesising 1/3" → "synthesising 2/3")
+  // was dropped — spawn_only progress would stay frozen on the
+  // first label on the lifted spinner. Compare the rendered label
+  // for running/spawned; terminal states don't carry one so the
+  // state alone is enough.
+  const stateUnchanged = previous?.state === event.state;
+  const labelUnchanged =
+    previous?.label === (event.title ?? event.runtime_detail);
+  if (stateUnchanged && labelUnchanged) return;
+  lastTaskStateById.set(event.task_id, {
+    state: event.state,
+    label: event.title ?? event.runtime_detail,
+  });
 
   // For spawn_only background tools (podcast_generate / fm_tts /
   // deep_search / mofa_slides etc.) the running-state updates arrive
@@ -525,7 +546,7 @@ export function handleTaskUpdated(
 }
 
 export function handleTaskOutputDelta(
-  _cfg: RouterConfig,
+  cfg: RouterConfig,
   event: TaskOutputDeltaEvent,
 ): void {
   if (!event.chunk) return;
@@ -533,6 +554,13 @@ export function handleTaskOutputDelta(
   // logic lives in ThreadStore.appendToolProgress (consecutive duplicates
   // are dropped) so resending the same chunk on reconnect is safe.
   ThreadStore.appendToolProgress(event.turn_id, event.task_id, event.chunk);
+  // Codex round-3: also fan out to the lifted spinner. Some spawn_only
+  // flows emit their real progress as output chunks, not `task/updated`
+  // running labels; without this dispatch the spinner text goes stale
+  // mid-task. Non-terminal — completion is signalled by `task/updated`
+  // completed/failed/errored.
+  const toolLabel = toolNameByCallId.get(event.task_id) ?? event.task_id;
+  dispatchToolProgressEvent(cfg, event.turn_id, toolLabel, event.chunk);
 }
 
 export function handleTurnStarted(

@@ -297,6 +297,73 @@ describe("router event mapping", () => {
     expect(terminalEvt!.detail.message).toBe("done");
   });
 
+  it("task/updated running passes through new labels (state-only dedupe would suppress spinner refresh)", () => {
+    // Codex round-3: a stream of `running` updates with refreshed
+    // `title`/`runtime_detail` values must reach the lifted spinner.
+    // Pre-fix the by-state-only dedupe dropped them after the first,
+    // so spawn_only progress was stuck on the very first label.
+    seedThread("cmid-relabel");
+    const dispatched: Event[] = [];
+    const cfg = {
+      sessionId: SESSION,
+      dispatchEvent: (e: Event) => dispatched.push(e),
+    };
+    handleTaskUpdated(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-relabel",
+      task_id: "task-relabel",
+      state: "running",
+      title: "synthesising 1/3",
+    });
+    handleTaskUpdated(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-relabel",
+      task_id: "task-relabel",
+      state: "running",
+      title: "synthesising 2/3",
+    });
+    handleTaskUpdated(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-relabel",
+      task_id: "task-relabel",
+      state: "running",
+      title: "synthesising 3/3",
+    });
+    const progressFrames = dispatched
+      .filter((e) => e.type === "crew:tool_progress")
+      .map((e) => (e as CustomEvent).detail.message);
+    expect(progressFrames).toEqual([
+      "synthesising 1/3",
+      "synthesising 2/3",
+      "synthesising 3/3",
+    ]);
+  });
+
+  it("task/output/delta fans out into crew:tool_progress (live spawn_only stdout)", () => {
+    // Codex round-3: spawn_only tools that emit progress as stdout
+    // chunks (rather than `task/updated` titles) must also light the
+    // spinner. Non-terminal — completion is signalled by
+    // `task/updated` completed/failed/errored.
+    seedThread("cmid-stdout");
+    const dispatched: Event[] = [];
+    const cfg = {
+      sessionId: SESSION,
+      dispatchEvent: (e: Event) => dispatched.push(e),
+    };
+    handleTaskOutputDelta(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-stdout",
+      task_id: "task-stdout",
+      chunk: "processing chunk 5/10",
+    });
+    const progressEvt = dispatched.find(
+      (e) => e.type === "crew:tool_progress",
+    ) as CustomEvent | undefined;
+    expect(progressEvt).toBeDefined();
+    expect(progressEvt!.detail.message).toBe("processing chunk 5/10");
+    expect(progressEvt!.detail.terminal).toBeUndefined();
+  });
+
   it("task/updated failed fans out a terminal crew:tool_progress with error message", () => {
     seedThread("cmid-spawnerr");
     const dispatched: Event[] = [];
