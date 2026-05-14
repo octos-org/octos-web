@@ -148,12 +148,18 @@ export function CopyMarkdownButton({
       aria-label={ariaLabel}
       title={title}
       className={
+        // Visible-by-default with low opacity so touch-only devices
+        // (where `group-hover/assistant:opacity-100` is gated under
+        // `@media (hover:hover)` in Tailwind v4 and never fires) can
+        // still discover + tap the affordance. On hover-capable devices
+        // the bubble's `group/assistant` hover and the button's own
+        // hover/focus state bump it to full opacity.
         "inline-flex items-center justify-center rounded-md p-1 text-muted/60 " +
-        "opacity-0 transition-opacity duration-150 " +
-        "group-hover/assistant:opacity-100 focus:opacity-100 focus:outline-none " +
+        "opacity-40 transition-opacity duration-150 " +
+        "group-hover/assistant:opacity-100 hover:opacity-100 focus:opacity-100 focus:outline-none " +
         "hover:bg-white/10 hover:text-text " +
-        (state === "copied" ? "text-accent " : "") +
-        (state === "error" ? "text-red-400 " : "") +
+        (state === "copied" ? "text-accent opacity-100 " : "") +
+        (state === "error" ? "text-red-400 opacity-100 " : "") +
         className
       }
     >
