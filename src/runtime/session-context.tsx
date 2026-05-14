@@ -16,6 +16,7 @@ import {
 } from "@/api/sessions";
 import type { BackgroundTaskInfo, SessionInfo, MessageInfo } from "@/api/types";
 import { nextTopicForCommand } from "@/lib/slash-commands";
+import { eventMatchesScope } from "@/runtime/event-scope";
 import * as ThreadStore from "@/store/thread-store";
 import * as TaskStore from "@/store/task-store";
 import * as FileStore from "@/store/file-store";
@@ -130,37 +131,33 @@ export type QueueMode = "followup" | "collect" | "steer" | "interrupt" | "specul
 export type AdaptiveMode = "off" | "hedge" | "lane" | null;
 
 /** Shared hook that listens for crew:mode_update events and returns
- *  reactive mode state. Scoped to `sessionId` — only events whose
- *  detail.sessionId matches the current session are accepted, and
- *  switching to a different session resets the mode state so stale
- *  events from the previous session can't bleed through (codex
- *  Wave4-A P1 review fix). When called without an argument (legacy
- *  call shape — pre-router unscoped queue mode), accept every event
- *  so back-compat tests keep working. */
-export function useModeState(sessionId?: string) {
+ *  reactive mode state. Scoped to `sessionId` + `topic` via the shared
+ *  `eventMatchesScope` helper — events for a different scope are
+ *  dropped, and switching to a different scope resets the mode state
+ *  so stale RouterStatus pushes from the previous scope can't bleed
+ *  through (codex Wave4-A P1 + round-3 P2 review fixes). When called
+ *  without arguments (legacy call shape — pre-router unscoped queue
+ *  mode), accept every event so back-compat tests keep working. */
+export function useModeState(sessionId?: string, topic?: string) {
   const [queueMode, setQueueMode] = useState<QueueMode>(null);
   const [adaptiveMode, setAdaptiveMode] = useState<AdaptiveMode>(null);
 
   useEffect(() => {
-    // Reset on session change so a stale mode from the prior session
+    // Reset on scope change so a stale mode from the prior session/topic
     // doesn't persist into the active pill / switcher highlight.
     setQueueMode(null);
     setAdaptiveMode(null);
-  }, [sessionId]);
+  }, [sessionId, topic]);
 
   useEffect(() => {
     function onMode(e: Event) {
       const detail = (e as CustomEvent).detail;
-      // Codex Wave4-A P1: events carry `detail.sessionId` since the
-      // event-router was wired. Drop events for other sessions so a
-      // late RouterStatus push from a previous session doesn't
-      // overwrite the active one. Legacy callers (sessionId undefined)
-      // accept every event.
-      if (
-        sessionId !== undefined &&
-        typeof detail?.sessionId === "string" &&
-        detail.sessionId !== sessionId
-      ) {
+      // Codex Wave4-A P1 + round-3 P2: drop events whose `sessionId` /
+      // `topic` don't match. `eventMatchesScope` parses
+      // `detail.{sessionId, topic}` (the camelCase shape the
+      // event-router dispatches) and tolerates absent topic on both
+      // sides. Legacy callers (sessionId undefined) accept every event.
+      if (sessionId !== undefined && !eventMatchesScope(detail, sessionId, topic)) {
         return;
       }
       if (detail.queueMode !== undefined) setQueueMode(detail.queueMode);
@@ -168,7 +165,7 @@ export function useModeState(sessionId?: string) {
     }
     window.addEventListener("crew:mode_update", onMode);
     return () => window.removeEventListener("crew:mode_update", onMode);
-  }, [sessionId]);
+  }, [sessionId, topic]);
 
   return { queueMode, adaptiveMode };
 }
@@ -245,7 +242,23 @@ function loadStoredStats(): Record<string, SessionRunStats> {
 
 function persistStoredStats(stats: Record<string, SessionRunStats>) {
   if (typeof window === "undefined") return;
-  localStorage.setItem(SESSION_STATS_STORAGE_KEY, JSON.stringify(stats));
+  // Wave4-A codex round-2 review fix: strip transient `queue_depth`
+  // before persisting. The depth is owned by `ui-protocol-send.ts`'s
+  // in-memory FIFO and is meaningless after a page reload — leaving
+  // it on disk would resurrect a stale "N queued" badge for a queue
+  // that no longer exists. Other stats (model / token counters /
+  // cost) survive the reload because they reflect server-side state.
+  const sanitized: Record<string, SessionRunStats> = {};
+  for (const [id, s] of Object.entries(stats)) {
+    sanitized[id] = {
+      model: s.model,
+      inputTokens: s.inputTokens,
+      outputTokens: s.outputTokens,
+      cost: s.cost,
+      // intentionally NOT copying `queue_depth`
+    };
+  }
+  localStorage.setItem(SESSION_STATS_STORAGE_KEY, JSON.stringify(sanitized));
 }
 
 function loadStoredTopics(): Record<string, string> {
@@ -442,7 +455,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [serverTaskActiveBySession, setServerTaskActiveBySession] = useState<
     Record<string, boolean>
   >({});
-  const { queueMode, adaptiveMode } = useModeState(currentSessionId);
+  const { queueMode, adaptiveMode } = useModeState(
+    currentSessionId,
+    activeHistoryTopic,
+  );
   const previousSessionIdRef = useRef<string | null>(null);
   const titleCache = useRef<Record<string, string>>(loadStoredTitles());
   // Codex NIT G: track per-session title-fetch state to prevent the

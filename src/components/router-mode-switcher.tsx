@@ -25,7 +25,7 @@
  *     value to render the active highlight.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSession } from "@/runtime/session-context";
 import type { AdaptiveMode } from "@/runtime/session-context";
 import { getActiveBridge } from "@/runtime/ui-protocol-runtime";
@@ -80,17 +80,21 @@ export function RouterModeSwitcher({
 }: RouterModeSwitcherProps = {}) {
   const session = useSession();
   const activeSessionId = sessionId ?? session.currentSessionId;
+  const activeTopic = session.historyTopic;
   const adaptiveMode = session.adaptiveMode;
 
-  // Local optimistic mode — set on click, cleared the moment EITHER
-  // the `router/set_mode` RPC echoes a mode back OR the next
-  // `router/status` notification arrives (codex Wave4-A P1 review fix:
-  // the old "wait for `adaptiveMode === optimisticMode`" gate could
-  // never clear when the server reports a different mode than the
-  // user's optimistic click).
+  // Local optimistic mode — set on click. Cleared when an
+  // authoritative `adaptiveMode` value DIFFERENT FROM THE ONE AT
+  // CLICK TIME arrives via `router/status` (the codex round 2 P2 fix:
+  // the prior reconcile cleared on any `off|lane|hedge` push, which
+  // for a session whose current mode is "off" caused the optimistic
+  // click to "hedge" to flicker back to "off" before the server
+  // reflected the new mode). `adaptiveModeAtClickRef` pins the
+  // pre-click reference so we can detect "new mode observed".
   const [optimisticMode, setOptimisticMode] = useState<SwitcherMode | null>(
     null,
   );
+  const adaptiveModeAtClickRef = useRef<AdaptiveMode>(null);
   // `null` = not yet probed; `true` = adaptive router available;
   // `false` = `runtime_unavailable` (single-provider profile). The
   // switcher renders disabled when `false`.
@@ -98,33 +102,52 @@ export function RouterModeSwitcher({
   // True while a `router/set_mode` RPC is in flight; locks every button.
   const [busy, setBusy] = useState(false);
 
-  // Codex Wave4-A P2 review fix: reset local switcher state on session
-  // change so a previous session's `runtime_unavailable` flag,
-  // optimistic mode, or busy lock doesn't carry over to a freshly
-  // switched session. The probe useEffect below re-runs (its dep
-  // array includes `activeSessionId`) and re-probes the new scope.
+  // Codex Wave4-A P2 review fix: mirror the full SCOPE (session +
+  // topic) into refs so async RPC callbacks can compare against the
+  // LATEST value (not the closure snapshot from the render when the
+  // RPC was issued). Without this, `issuedFor !== activeSessionId`
+  // compared two captures from the same render and never detected a
+  // mid-flight scope switch.
+  const activeSessionIdRef = useRef(activeSessionId);
+  const activeTopicRef = useRef(activeTopic);
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+    activeTopicRef.current = activeTopic;
+  }, [activeSessionId, activeTopic]);
+
+  // Codex Wave4-A P2 (rounds 2+3) review fix: reset local switcher
+  // state on scope (session/topic) change so a previous scope's
+  // `runtime_unavailable` flag, optimistic mode, or busy lock doesn't
+  // carry over. The probe useEffect below re-runs (its dep array
+  // includes `activeSessionId`) and re-probes the new scope.
   useEffect(() => {
     setOptimisticMode(null);
+    adaptiveModeAtClickRef.current = null;
     setAvailable(null);
     setBusy(false);
-  }, [activeSessionId]);
+  }, [activeSessionId, activeTopic]);
 
-  // Reconcile the optimistic state against the live `adaptiveMode` from
-  // session context (fed by `crew:mode_update` → `useModeState()`).
-  // Any authoritative same-session status drop clears the optimistic
-  // highlight — even when the reported mode disagrees with the
-  // optimistic value (e.g. server rejected the mode silently). This
-  // also runs when the optimistic mode is cleared by the RPC echo
-  // path, in which case it's a cheap no-op.
+  // Reconcile the optimistic state ONLY when an authoritative
+  // `adaptiveMode` value DIFFERENT from the one we observed at click
+  // time arrives. This handles both branches:
+  //   - server commits the user's optimistic click → adaptiveMode
+  //     transitions to that value → reconcile fires → optimistic
+  //     cleared (and `renderedMode` falls back to the freshly-pushed
+  //     `adaptiveMode`, which equals the optimistic mode anyway).
+  //   - server rejects / coerces → adaptiveMode transitions to a
+  //     different value → reconcile fires → optimistic cleared and
+  //     the rendered state reflects the server-committed mode.
+  //
+  // If `adaptiveMode` is still the pre-click value, we hold the
+  // optimistic highlight (no flicker). When `adaptiveMode` was null
+  // pre-click (fresh session, never reconciled), any subsequent
+  // authoritative push clears the optimistic value.
   useEffect(() => {
-    if (
-      optimisticMode &&
-      (adaptiveMode === "off" ||
-        adaptiveMode === "lane" ||
-        adaptiveMode === "hedge")
-    ) {
-      setOptimisticMode(null);
-    }
+    if (!optimisticMode) return;
+    if (adaptiveMode === null) return;
+    if (adaptiveMode === adaptiveModeAtClickRef.current) return;
+    setOptimisticMode(null);
+    adaptiveModeAtClickRef.current = null;
   }, [adaptiveMode, optimisticMode]);
 
   const resolveBridge = useCallback(() => {
@@ -179,27 +202,33 @@ export function RouterModeSwitcher({
       if (busy) return;
       const bridge = resolveBridge();
       if (!bridge) return;
-      // Pin the session this click is for. Codex Wave4-A P2: if the
-      // user switches sessions while `router/set_mode` is in flight,
-      // we drop the result instead of letting it leak into the new
-      // session's local state.
-      const issuedFor = activeSessionId;
+      // Pin the SCOPE this click is for via refs (codex Wave4-A P2
+      // rounds 2-3): both session id AND topic must match at RPC
+      // resolve time. Closure-captured comparisons against
+      // `activeSessionId` / `activeTopic` are tautologies because they
+      // come from the same render; refs carry the latest scope.
+      const issuedForSession = activeSessionId;
+      const issuedForTopic = activeTopic;
+      const scopeStillCurrent = () =>
+        issuedForSession === activeSessionIdRef.current &&
+        issuedForTopic === activeTopicRef.current;
+      adaptiveModeAtClickRef.current = adaptiveMode;
       setOptimisticMode(mode);
       setBusy(true);
       try {
         const result = await bridge.callMethod<RouterSetModeResult>(
           METHODS.ROUTER_SET_MODE,
-          { session_id: issuedFor, mode },
+          { session_id: issuedForSession, mode },
         );
-        if (issuedFor !== activeSessionId) return;
+        if (!scopeStillCurrent()) return;
         // Codex Wave4-A P1: trust the server's echo. If the server
         // committed a different mode (e.g. silently coerced an unknown
         // value back to `off`), reflect that. We hold the resolved
         // mode locally until `router/status` (via `adaptiveMode`)
         // catches up — the reconcile useEffect above clears it the
-        // moment ANY authoritative mode arrives, so we never freeze
-        // on a stale optimistic value even when the server reports a
-        // different mode than the user's click.
+        // moment any DIFFERENT authoritative mode arrives, so we
+        // never freeze on a stale optimistic value even when the
+        // server reports a different mode than the user's click.
         const echoed = normalizeAdaptiveMode(result?.mode ?? "");
         if (echoed && echoed !== mode) {
           setOptimisticMode(echoed);
@@ -209,21 +238,22 @@ export function RouterModeSwitcher({
         // clears it. If echoed is null (unparsed), also leave the
         // optimistic value visible so the click stays responsive;
         // the reconcile effect will replace it when adaptiveMode
-        // catches up.
+        // transitions away from the pre-click value.
       } catch (err) {
-        if (issuedFor !== activeSessionId) return;
+        if (issuedFor !== activeSessionIdRef.current) return;
         // Roll the optimistic state back. If the failure is
         // `runtime_unavailable`, flip the disabled flag so the user
         // doesn't keep retrying.
         setOptimisticMode(null);
+        adaptiveModeAtClickRef.current = null;
         if (isRuntimeUnavailable(err)) {
           setAvailable(false);
         }
       } finally {
-        if (issuedFor === activeSessionId) setBusy(false);
+        if (issuedFor === activeSessionIdRef.current) setBusy(false);
       }
     },
-    [activeSessionId, busy, resolveBridge],
+    [activeSessionId, adaptiveMode, busy, resolveBridge],
   );
 
   // Effective rendered mode: optimistic wins (so click → instant feedback);

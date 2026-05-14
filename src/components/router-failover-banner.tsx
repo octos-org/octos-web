@@ -21,6 +21,7 @@
 
 import { useEffect, useState } from "react";
 import { useSession } from "@/runtime/session-context";
+import { eventMatchesScope } from "@/runtime/event-scope";
 
 interface FailoverDetail {
   sessionId: string;
@@ -51,13 +52,14 @@ export function RouterFailoverBanner({
 }: RouterFailoverBannerProps = {}) {
   const session = useSession();
   const activeSessionId = sessionId ?? session.currentSessionId;
+  const activeTopic = session.historyTopic;
   const [visible, setVisible] = useState<VisibleFailover | null>(null);
 
   // Codex Wave4-A P2 review fix: drop any in-flight banner on session
-  // change so a non-current session's failover doesn't keep showing.
+  // / topic change so a non-current view's failover doesn't keep showing.
   useEffect(() => {
     setVisible(null);
-  }, [activeSessionId]);
+  }, [activeSessionId, activeTopic]);
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -65,12 +67,13 @@ export function RouterFailoverBanner({
     function handle(e: Event) {
       const detail = (e as CustomEvent).detail as FailoverDetail | undefined;
       if (!detail) return;
-      // Codex Wave4-A P2: scope by the active session so a routed
-      // failover for a previous bridge doesn't render globally.
-      if (
-        typeof detail.sessionId === "string" &&
-        detail.sessionId !== activeSessionId
-      ) {
+      // Codex Wave4-A P2 (round 2): scope by sessionId AND topic via
+      // the shared `eventMatchesScope` helper the rest of the UI uses.
+      // The event-router dispatches both fields, so a same-session
+      // /different-topic failover (slides/sites subview while the
+      // user is on the default view, or vice versa) is now suppressed
+      // until the user navigates to that scope.
+      if (!eventMatchesScope(detail, activeSessionId, activeTopic)) {
         return;
       }
       keySeq += 1;
@@ -86,7 +89,7 @@ export function RouterFailoverBanner({
       window.removeEventListener("crew:router_failover", handle);
       if (timer) clearTimeout(timer);
     };
-  }, [dismissAfterMs, activeSessionId]);
+  }, [dismissAfterMs, activeSessionId, activeTopic]);
 
   if (!visible) return null;
   return (
