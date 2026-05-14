@@ -168,10 +168,18 @@ function metaFromSnapshot(snap: TurnMetaSnapshot | undefined): MessageMeta | und
 // Per-task state-transition de-dupe
 // ---------------------------------------------------------------------------
 
-/** Last-seen task state per `task_id`. Mirrors the SSE-side
+/** Last-seen task state + label per `task_id`. Mirrors the SSE-side
  *  `lastTaskStatusById` map in `runtime-provider.tsx` so a `task/updated`
- *  replay (e.g. on reconnect) doesn't inflate the in-bubble timeline. */
-const lastTaskStateById = new Map<string, string>();
+ *  replay (e.g. on reconnect) doesn't inflate the in-bubble timeline.
+ *  Tracking the rendered label too (codex round-3) lets a stream of
+ *  `running` updates with refreshed `title`/`runtime_detail` through —
+ *  pre-fix the state-only dedupe stuck spawn_only spinners on the
+ *  very first label they emitted. */
+interface LastTaskState {
+  state: string;
+  label?: string;
+}
+const lastTaskStateById = new Map<string, LastTaskState>();
 
 /** Reset the per-task state map. Tests call this between cases; production
  *  code does not need it because the map is bounded by the number of live
@@ -457,8 +465,35 @@ export function handleTaskUpdated(
   event: TaskUpdatedEvent,
 ): void {
   const previous = lastTaskStateById.get(event.task_id);
-  if (previous === event.state) return;
-  lastTaskStateById.set(event.task_id, event.state);
+  // Dedupe ONLY when both state AND label are unchanged. The legacy
+  // by-state-only dedupe meant a stream of `running` updates with
+  // refreshed titles (e.g. "synthesising 1/3" → "synthesising 2/3")
+  // was dropped — spawn_only progress would stay frozen on the
+  // first label on the lifted spinner. Compare the rendered label
+  // for running/spawned; terminal states don't carry one so the
+  // state alone is enough.
+  const stateUnchanged = previous?.state === event.state;
+  const labelUnchanged =
+    previous?.label === (event.title ?? event.runtime_detail);
+  if (stateUnchanged && labelUnchanged) return;
+  lastTaskStateById.set(event.task_id, {
+    state: event.state,
+    label: event.title ?? event.runtime_detail,
+  });
+
+  // For spawn_only background tools (podcast_generate / fm_tts /
+  // deep_search / mofa_slides etc.) the running-state updates arrive
+  // exclusively via `task/updated`, NOT `tool/progress` — the parent
+  // LLM turn already settled at `turn/completed` before the
+  // background work started. The lifted `ToolProgressIndicator`
+  // therefore needs the spinner-progress fan-out here as well, with
+  // the terminal flag set on the completion legs so the row clears.
+  //
+  // The `tool_name` lookup falls back to the task_id when no preceding
+  // `tool/started` cached a name (e.g. a server-side flow that skips
+  // `tool/started` entirely and only emits `task/updated`); same shape
+  // `handleToolProgress` uses on the synchronous path.
+  const toolLabel = toolNameByCallId.get(event.task_id) ?? event.task_id;
 
   switch (event.state) {
     case "spawned":
@@ -474,15 +509,35 @@ export function handleTaskUpdated(
           detail: { sessionId: cfg.sessionId, topic: cfg.topic },
         }),
       );
+      // Light / refresh the spinner with the latest task state label.
+      dispatchToolProgressEvent(cfg, event.turn_id, toolLabel, label);
       break;
     }
     case "completed": {
       ThreadStore.setToolCallStatus(event.turn_id, event.task_id, "complete");
+      dispatchToolProgressEvent(
+        cfg,
+        event.turn_id,
+        toolLabel,
+        "done",
+        /* terminal */ true,
+      );
+      // Drop the cache entry — the task is done, no further frames
+      // should land on this id (mirrors `handleToolCompleted`).
+      toolNameByCallId.delete(event.task_id);
       break;
     }
     case "failed":
     case "errored": {
       ThreadStore.setToolCallStatus(event.turn_id, event.task_id, "error");
+      dispatchToolProgressEvent(
+        cfg,
+        event.turn_id,
+        toolLabel,
+        "error",
+        /* terminal */ true,
+      );
+      toolNameByCallId.delete(event.task_id);
       break;
     }
     default:
@@ -491,7 +546,7 @@ export function handleTaskUpdated(
 }
 
 export function handleTaskOutputDelta(
-  _cfg: RouterConfig,
+  cfg: RouterConfig,
   event: TaskOutputDeltaEvent,
 ): void {
   if (!event.chunk) return;
@@ -499,6 +554,13 @@ export function handleTaskOutputDelta(
   // logic lives in ThreadStore.appendToolProgress (consecutive duplicates
   // are dropped) so resending the same chunk on reconnect is safe.
   ThreadStore.appendToolProgress(event.turn_id, event.task_id, event.chunk);
+  // Codex round-3: also fan out to the lifted spinner. Some spawn_only
+  // flows emit their real progress as output chunks, not `task/updated`
+  // running labels; without this dispatch the spinner text goes stale
+  // mid-task. Non-terminal — completion is signalled by `task/updated`
+  // completed/failed/errored.
+  const toolLabel = toolNameByCallId.get(event.task_id) ?? event.task_id;
+  dispatchToolProgressEvent(cfg, event.turn_id, toolLabel, event.chunk);
 }
 
 export function handleTurnStarted(
@@ -663,6 +725,14 @@ function dispatchToolProgressEvent(
   turnId: string,
   toolName: string,
   message: string,
+  /** When true, the `ToolProgressIndicator` clears the spinner row.
+   *  Set on `tool/completed` (sync and spawn_only paths) because for
+   *  spawn_only tools the LLM `crew:thinking false` has already fired
+   *  at `turn/completed` BEFORE the background task starts emitting,
+   *  so it can no longer be relied upon to clear the row. Without an
+   *  explicit terminal signal the spinner would display the
+   *  "done"/"error"/"complete" message indefinitely. */
+  terminal: boolean = false,
 ): void {
   dispatch(
     cfg,
@@ -673,6 +743,7 @@ function dispatchToolProgressEvent(
         sessionId: cfg.sessionId,
         topic: cfg.topic,
         turnId,
+        ...(terminal ? { terminal: true } : {}),
       },
     }),
   );
@@ -739,7 +810,19 @@ export function handleToolCompleted(
     event.tool_call_id,
     event.success === false ? "error" : "complete",
   );
-  dispatchToolProgressEvent(cfg, event.turn_id, event.tool_name, message);
+  // Mark terminal so the lifted `ToolProgressIndicator` clears the
+  // spinner row. The bubble's `ToolCallBubble` reads the final
+  // status from `ThreadStore.setToolCallStatus` above and keeps the
+  // history-pill state intact — only the transient spinner row goes
+  // away. Critical for spawn_only flows where `crew:thinking false`
+  // already fired at `turn/completed` and cannot clean up.
+  dispatchToolProgressEvent(
+    cfg,
+    event.turn_id,
+    event.tool_name,
+    message,
+    /* terminal */ true,
+  );
   // Clear the cache entry so a long-lived session doesn't accumulate
   // dead tool_call_id mappings.
   toolNameByCallId.delete(event.tool_call_id);
