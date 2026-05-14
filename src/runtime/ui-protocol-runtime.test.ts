@@ -97,6 +97,9 @@ function makeDeferredBridge(): DeferredBridge {
     onToolProgress: vi.fn(() => () => {}),
     onToolCompleted: vi.fn(() => () => {}),
     onProgressUpdated: vi.fn(() => () => {}),
+    onRouterStatus: vi.fn(() => () => {}),
+    onRouterFailover: vi.fn(() => () => {}),
+    onQueueState: vi.fn(() => () => {}),
     onConnectionStateChange: vi.fn((h: (s: ConnectionState) => void) => {
       stateHandler = h;
       return () => {

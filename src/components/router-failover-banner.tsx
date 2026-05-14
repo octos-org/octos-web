@@ -1,0 +1,82 @@
+/**
+ * Wave4-A `crew:router_failover` transient banner.
+ *
+ * Listens for the DOM event the event-router dispatches when the
+ * adaptive router crosses lanes and surfaces a 4 s auto-dismiss
+ * notice. The chat-layout mounts a single instance under the main
+ * scroll area; the banner stacks if multiple failovers fire in
+ * sequence (subsequent ones replace the visible one and reset the
+ * timer).
+ *
+ * Shape mirrors the existing inline file toast in `chat-layout.tsx`
+ * — no shared toast infrastructure exists, so this component owns
+ * its own state.
+ */
+
+import { useEffect, useState } from "react";
+
+interface FailoverDetail {
+  sessionId: string;
+  topic?: string;
+  from: string;
+  to: string;
+  reason: string;
+  elapsedMs: number;
+}
+
+interface VisibleFailover extends FailoverDetail {
+  /** Monotonic id so React keys the latest banner uniquely. Without
+   *  this, two failovers with the same `from`/`to` pair would render
+   *  with the same key and React would not remount the timer. */
+  key: number;
+}
+
+export interface RouterFailoverBannerProps {
+  /** Test-injection: override the auto-dismiss interval. */
+  dismissAfterMs?: number;
+}
+
+export function RouterFailoverBanner({
+  dismissAfterMs = 4000,
+}: RouterFailoverBannerProps = {}) {
+  const [visible, setVisible] = useState<VisibleFailover | null>(null);
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let keySeq = 0;
+    function handle(e: Event) {
+      const detail = (e as CustomEvent).detail as FailoverDetail | undefined;
+      if (!detail) return;
+      keySeq += 1;
+      setVisible({ ...detail, key: keySeq });
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        setVisible(null);
+        timer = null;
+      }, dismissAfterMs);
+    }
+    window.addEventListener("crew:router_failover", handle);
+    return () => {
+      window.removeEventListener("crew:router_failover", handle);
+      if (timer) clearTimeout(timer);
+    };
+  }, [dismissAfterMs]);
+
+  if (!visible) return null;
+  return (
+    <div
+      data-testid="router-failover-banner"
+      role="status"
+      aria-live="polite"
+      className="glass-pill pointer-events-none absolute left-1/2 top-3 z-30 -translate-x-1/2 rounded-[12px] px-4 py-2 text-xs text-text shadow-lg"
+    >
+      <span className="font-semibold">Router switched</span>
+      <span className="ml-1.5 text-muted/85">
+        {visible.from} → {visible.to}
+      </span>
+      <span className="ml-2 text-muted/70">
+        ({visible.reason}, {visible.elapsedMs}ms)
+      </span>
+    </div>
+  );
+}

@@ -672,6 +672,88 @@ describe("type guards (fail-closed)", () => {
       }),
     ).toBeNull();
   });
+
+  // Wave4-A guards
+  it("accepts a well-formed router/status event", () => {
+    const ok = guards.guardRouterStatus({
+      session_id: "s",
+      provider_name: "openrouter/anthropic/claude-opus-4-7",
+      mode: "lane",
+      qos_ranking: true,
+      lane_scores: {
+        "openrouter/anthropic/claude-opus-4-7": 0.92,
+        "openrouter/openai/gpt-5": 0.78,
+      },
+      circuit_breakers: {
+        "openrouter/openai/gpt-5": "open",
+      },
+    });
+    expect(ok?.provider_name).toBe(
+      "openrouter/anthropic/claude-opus-4-7",
+    );
+    expect(ok?.mode).toBe("lane");
+    expect(ok?.qos_ranking).toBe(true);
+    expect(ok?.lane_scores["openrouter/anthropic/claude-opus-4-7"]).toBe(
+      0.92,
+    );
+    expect(ok?.circuit_breakers["openrouter/openai/gpt-5"]).toBe("open");
+  });
+
+  it("rejects router/status missing qos_ranking flag", () => {
+    expect(
+      guards.guardRouterStatus({
+        session_id: "s",
+        provider_name: "p",
+        mode: "lane",
+        lane_scores: {},
+        circuit_breakers: {},
+      }),
+    ).toBeNull();
+  });
+
+  it("accepts a well-formed router/failover event", () => {
+    const ok = guards.guardRouterFailover({
+      session_id: "s",
+      from_provider: "a",
+      to_provider: "b",
+      reason: "circuit_breaker_open",
+      elapsed_ms: 1500,
+    });
+    expect(ok?.from_provider).toBe("a");
+    expect(ok?.to_provider).toBe("b");
+    expect(ok?.elapsed_ms).toBe(1500);
+  });
+
+  it("rejects router/failover with negative elapsed_ms", () => {
+    expect(
+      guards.guardRouterFailover({
+        session_id: "s",
+        from_provider: "a",
+        to_provider: "b",
+        reason: "r",
+        elapsed_ms: -1,
+      }),
+    ).toBeNull();
+  });
+
+  it("accepts a well-formed queue/state event", () => {
+    const ok = guards.guardQueueState({
+      session_id: "s",
+      pending_count: 2,
+      head_client_message_id: "cmid-head",
+    });
+    expect(ok?.pending_count).toBe(2);
+    expect(ok?.head_client_message_id).toBe("cmid-head");
+  });
+
+  it("queue/state head is null when absent", () => {
+    const ok = guards.guardQueueState({
+      session_id: "s",
+      pending_count: 0,
+    });
+    expect(ok?.pending_count).toBe(0);
+    expect(ok?.head_client_message_id).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1328,6 +1410,51 @@ describe("notification dispatch", () => {
     expect(progressed).toHaveLength(1);
     expect(completed).toHaveLength(1);
     expect(updates).toHaveLength(1);
+  });
+
+  it("Wave4-A: routes router/status, router/failover, queue/state through the new subscribers", async () => {
+    const { bridge, ws } = await freshConnected();
+    const statuses: unknown[] = [];
+    const failovers: unknown[] = [];
+    const queues: unknown[] = [];
+    bridge.onRouterStatus((e) => statuses.push(e));
+    bridge.onRouterFailover((e) => failovers.push(e));
+    bridge.onQueueState((e) => queues.push(e));
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.ROUTER_STATUS,
+      params: {
+        session_id: "sess-1",
+        provider_name: "openrouter/anthropic/claude-opus-4-7",
+        mode: "hedge",
+        qos_ranking: true,
+        lane_scores: { "openrouter/anthropic/claude-opus-4-7": 0.9 },
+        circuit_breakers: {},
+      },
+    });
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.ROUTER_FAILOVER,
+      params: {
+        session_id: "sess-1",
+        from_provider: "a/m1",
+        to_provider: "b/m2",
+        reason: "score_drop",
+        elapsed_ms: 250,
+      },
+    });
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.QUEUE_STATE,
+      params: {
+        session_id: "sess-1",
+        pending_count: 1,
+        head_client_message_id: "cmid-Q1",
+      },
+    });
+    expect(statuses).toHaveLength(1);
+    expect(failovers).toHaveLength(1);
+    expect(queues).toHaveLength(1);
   });
 
   it("routes turn lifecycle and approval/requested", async () => {

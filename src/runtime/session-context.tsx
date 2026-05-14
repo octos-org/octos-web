@@ -106,6 +106,12 @@ export interface SessionRunStats {
   inputTokens: number;
   outputTokens: number;
   cost: number | null;
+  /** Wave4-A — current send-queue depth as observed by the client-side
+   *  FIFO in `ui-protocol-send.ts`. Zero / absent means nothing queued
+   *  behind the in-flight turn. Surfaced into the toolbar pill at
+   *  `chat-thread.tsx:1642` so the "N queued" indicator is finally
+   *  driven by something live. */
+  queue_depth?: number;
 }
 
 export interface SessionSendRequest {
@@ -740,6 +746,37 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return () => {
       window.removeEventListener("crew:cost", handleCost);
       window.removeEventListener("crew:message_meta", handleMeta);
+    };
+  }, [storeSessionStats]);
+
+  // Wave4-A — listen for the per-session client-side queue depth
+  // dispatched by `ui-protocol-send.ts` and stamp it onto
+  // `currentSessionStats.queue_depth` so the toolbar pill renders the
+  // live count. The send-path dispatches on every push (synchronous
+  // with the user submit) and every drain (turn lifecycle completed
+  // OR transport drop).
+  useEffect(() => {
+    function handleQueue(e: Event) {
+      const detail = (e as CustomEvent).detail;
+      const sessionId = detail?.sessionId;
+      if (!sessionId) return;
+      const pendingCount =
+        typeof detail.pendingCount === "number"
+          ? detail.pendingCount
+          : 0;
+      const current = statsCache.current[sessionId] ?? {
+        inputTokens: 0,
+        outputTokens: 0,
+        cost: null,
+      };
+      storeSessionStats(sessionId, {
+        ...current,
+        queue_depth: pendingCount,
+      });
+    }
+    window.addEventListener("crew:queue_state", handleQueue);
+    return () => {
+      window.removeEventListener("crew:queue_state", handleQueue);
     };
   }, [storeSessionStats]);
 

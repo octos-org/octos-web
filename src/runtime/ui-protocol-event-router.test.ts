@@ -21,6 +21,9 @@ import {
   handleMessageDelta,
   handleMessagePersisted,
   handleProgressUpdated,
+  handleQueueState,
+  handleRouterFailover,
+  handleRouterStatus,
   handleSpawnComplete,
   handleTaskOutputDelta,
   handleTaskUpdated,
@@ -36,6 +39,9 @@ import type {
   MessageDeltaEvent,
   MessagePersistedEvent,
   ProgressUpdatedEvent,
+  QueueStateEvent,
+  RouterFailoverEvent,
+  RouterStatusEvent,
   TaskOutputDeltaEvent,
   TaskUpdatedEvent,
   ToolCompletedEvent,
@@ -977,6 +983,9 @@ class FakeBridge implements UiProtocolBridge {
   emitToolProgress?: (e: ToolProgressEvent) => void;
   emitToolCompleted?: (e: ToolCompletedEvent) => void;
   emitProgressUpdated?: (e: ProgressUpdatedEvent) => void;
+  emitRouterStatus?: (e: RouterStatusEvent) => void;
+  emitRouterFailover?: (e: RouterFailoverEvent) => void;
+  emitQueueState?: (e: QueueStateEvent) => void;
 
   start = vi.fn(async () => {});
   stop = vi.fn(async () => {});
@@ -1056,6 +1065,24 @@ class FakeBridge implements UiProtocolBridge {
     this.emitProgressUpdated = h;
     return () => {
       this.emitProgressUpdated = undefined;
+    };
+  }
+  onRouterStatus(h: (e: RouterStatusEvent) => void) {
+    this.emitRouterStatus = h;
+    return () => {
+      this.emitRouterStatus = undefined;
+    };
+  }
+  onRouterFailover(h: (e: RouterFailoverEvent) => void) {
+    this.emitRouterFailover = h;
+    return () => {
+      this.emitRouterFailover = undefined;
+    };
+  }
+  onQueueState(h: (e: QueueStateEvent) => void) {
+    this.emitQueueState = h;
+    return () => {
+      this.emitQueueState = undefined;
     };
   }
   onConnectionStateChange(): () => void {
@@ -1809,5 +1836,109 @@ describe("regression C: turn/completed stamps per-turn meta snapshot onto the fi
     const [thread] = ThreadStore.getThreads(SESSION);
     expect(thread.responses[0].status).toBe("error");
     expect(thread.responses[0].meta?.model).toBe("anthropic/claude");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wave4-A: router/status, router/failover, queue/state DOM fan-out
+// ---------------------------------------------------------------------------
+
+describe("Wave4-A: router/status fans out into crew:mode_update", () => {
+  it("dispatches crew:mode_update with normalized adaptiveMode + provider/breaker context", () => {
+    const dispatched: Event[] = [];
+    handleRouterStatus(
+      {
+        sessionId: SESSION,
+        dispatchEvent: (e) => dispatched.push(e),
+      },
+      {
+        session_id: SESSION,
+        provider_name: "openrouter/anthropic/claude-opus-4-7",
+        mode: "lane",
+        qos_ranking: true,
+        lane_scores: {
+          "openrouter/anthropic/claude-opus-4-7": 0.92,
+        },
+        circuit_breakers: {},
+      },
+    );
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0].type).toBe("crew:mode_update");
+    const detail = (dispatched[0] as CustomEvent).detail;
+    expect(detail.adaptiveMode).toBe("lane");
+    expect(detail.providerName).toBe(
+      "openrouter/anthropic/claude-opus-4-7",
+    );
+    expect(detail.qosRanking).toBe(true);
+    expect(detail.laneScores["openrouter/anthropic/claude-opus-4-7"]).toBe(
+      0.92,
+    );
+  });
+
+  it("normalises unknown mode strings to null so the pill doesn't render stale state", () => {
+    const dispatched: Event[] = [];
+    handleRouterStatus(
+      {
+        sessionId: SESSION,
+        dispatchEvent: (e) => dispatched.push(e),
+      },
+      {
+        session_id: SESSION,
+        provider_name: "p",
+        mode: "speculative", // not one of off|lane|hedge today
+        qos_ranking: false,
+        lane_scores: {},
+        circuit_breakers: {},
+      },
+    );
+    expect((dispatched[0] as CustomEvent).detail.adaptiveMode).toBeNull();
+  });
+});
+
+describe("Wave4-A: router/failover fans out into crew:router_failover", () => {
+  it("dispatches crew:router_failover with from/to/reason/elapsedMs", () => {
+    const dispatched: Event[] = [];
+    handleRouterFailover(
+      {
+        sessionId: SESSION,
+        dispatchEvent: (e) => dispatched.push(e),
+      },
+      {
+        session_id: SESSION,
+        from_provider: "openrouter/openai/gpt-5",
+        to_provider: "openrouter/anthropic/claude-opus-4-7",
+        reason: "circuit_breaker_open",
+        elapsed_ms: 1200,
+      },
+    );
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0].type).toBe("crew:router_failover");
+    const detail = (dispatched[0] as CustomEvent).detail;
+    expect(detail.from).toBe("openrouter/openai/gpt-5");
+    expect(detail.to).toBe("openrouter/anthropic/claude-opus-4-7");
+    expect(detail.reason).toBe("circuit_breaker_open");
+    expect(detail.elapsedMs).toBe(1200);
+  });
+});
+
+describe("Wave4-A: queue/state fans out into crew:queue_state", () => {
+  it("dispatches crew:queue_state with pendingCount + head", () => {
+    const dispatched: Event[] = [];
+    handleQueueState(
+      {
+        sessionId: SESSION,
+        dispatchEvent: (e) => dispatched.push(e),
+      },
+      {
+        session_id: SESSION,
+        pending_count: 3,
+        head_client_message_id: "cmid-head",
+      },
+    );
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0].type).toBe("crew:queue_state");
+    const detail = (dispatched[0] as CustomEvent).detail;
+    expect(detail.pendingCount).toBe(3);
+    expect(detail.head).toBe("cmid-head");
   });
 });

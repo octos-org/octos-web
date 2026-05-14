@@ -174,6 +174,72 @@ function queueKey(sessionId: string): string {
   return sessionId;
 }
 
+// ---------------------------------------------------------------------------
+// Wave4-A: client-side `crew:queue_state` emission
+// ---------------------------------------------------------------------------
+//
+// The server PR #946 protocol added a `queue/state` notification variant
+// but explicitly does NOT emit it server-side — the per-session FIFO
+// lives here on the client. We mirror push / drain transitions onto a
+// window CustomEvent so `session-context.tsx` can surface queue depth in
+// the toolbar without consulting the runtime internals (which are
+// module-scope and not React-reactive).
+//
+// `queueDepthBySession` carries the SHALLOW pending count — turns parked
+// behind the in-flight lifecycle gate. The in-flight turn itself is NOT
+// counted; pendingCount === 0 with the queue idle = nothing queued,
+// pendingCount === 0 mid-turn = the in-flight turn is the only thing
+// flowing. The pill in `chat-thread.tsx:1630` only renders when the
+// count is non-zero so the queue is visible only when there's true
+// backpressure.
+
+const queueDepthBySession = new Map<string, number>();
+const queueHeadBySession = new Map<string, string | null>();
+
+function dispatchQueueState(sessionId: string): void {
+  if (typeof window === "undefined") return;
+  const pendingCount = queueDepthBySession.get(sessionId) ?? 0;
+  const head = queueHeadBySession.get(sessionId) ?? null;
+  try {
+    window.dispatchEvent(
+      new CustomEvent("crew:queue_state", {
+        detail: {
+          sessionId,
+          pendingCount,
+          head,
+        },
+      }),
+    );
+  } catch {
+    // best-effort — some sandbox modes block CustomEvent.
+  }
+}
+
+function incrementQueueDepth(sessionId: string, head: string): void {
+  const prev = queueDepthBySession.get(sessionId) ?? 0;
+  queueDepthBySession.set(sessionId, prev + 1);
+  // Head is the cmid of the IN-FLIGHT turn — the first entry to land on
+  // a fresh queue is treated as in-flight and recorded so a future
+  // consumer (e.g. a "cancel queued" button) can identify it. Subsequent
+  // pushes leave the head pinned until release.
+  if (!queueHeadBySession.has(sessionId)) {
+    queueHeadBySession.set(sessionId, head);
+  }
+  dispatchQueueState(sessionId);
+}
+
+function decrementQueueDepth(sessionId: string): void {
+  const prev = queueDepthBySession.get(sessionId) ?? 0;
+  const next = Math.max(0, prev - 1);
+  if (next === 0) {
+    queueDepthBySession.delete(sessionId);
+    queueHeadBySession.delete(sessionId);
+  } else {
+    queueDepthBySession.set(sessionId, next);
+  }
+  dispatchQueueState(sessionId);
+}
+
 async function enqueueSendV1(opts: SendOptions): Promise<void> {
   const key = queueKey(opts.sessionId);
   const prev = turnQueues.get(key) ?? Promise.resolve();
@@ -205,6 +271,10 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
   // `Promise.resolve()` as their `prev`, defeating the per-session FIFO.
   const chained = prev.then(() => lifecycleDone);
   turnQueues.set(key, chained);
+  // Wave4-A: surface the push BEFORE awaiting the prior turn so the
+  // toolbar pill updates synchronously with the user's submit. The
+  // matching `decrementQueueDepth` runs in the `finally` block below.
+  incrementQueueDepth(key, clientMessageId);
 
   try {
     await prev;
@@ -287,6 +357,11 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
     if (turnQueues.get(key) === chained) {
       turnQueues.delete(key);
     }
+    // Wave4-A: drain signal — fires on every send-path termination
+    // (happy path, transport drop, queue-wedge safety release).
+    // Symmetric with the push above so the pill ticks down to 0 when
+    // the in-flight turn lands.
+    decrementQueueDepth(key);
   }
 }
 
@@ -294,6 +369,8 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
 /** Test-only reset for the per-session queue map. */
 export function __resetSendQueueForTest(): void {
   turnQueues.clear();
+  queueDepthBySession.clear();
+  queueHeadBySession.clear();
 }
 
 async function sendMessageV1(
