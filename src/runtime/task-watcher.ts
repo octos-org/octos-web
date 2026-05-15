@@ -286,6 +286,19 @@ async function pollAll(): Promise<void> {
   await Promise.all(entries.map(([, entry]) => pollSession(entry)));
 }
 
+/**
+ * Test-only: drive a single `pollSession` cycle and await it.
+ * Production code reaches `pollSession` via the interval timer.
+ */
+export async function __pollSessionForTest(
+  sessionId: string,
+  topic?: string,
+): Promise<void> {
+  const entry = watchedSessions.get(watchKey(sessionId, topic));
+  if (!entry) return;
+  await pollSession(entry);
+}
+
 async function pollSession(entry: WatchedSession): Promise<void> {
   try {
     const key = watchKey(entry.sessionId, entry.topic);
@@ -303,7 +316,21 @@ async function pollSession(entry: WatchedSession): Promise<void> {
       ),
     ]);
 
-    TaskStore.replaceTasks(entry.sessionId, tasks, entry.topic);
+    // 2026-05-15: server-side `snapshot_excluding` (UI protocol per-turn
+    // registry) clears `session_key`, making `session/tasks.list` return
+    // [] for live spawn_only tasks even while they're running. Don't let
+    // an empty poll response clobber rows that the live `task/updated`
+    // envelope hydrated via `mergeLiveTask`. The live envelope is
+    // authoritative for status transitions; the watcher poll only
+    // supplements with output-files and post-mortem terminal state we
+    // may have missed.
+    if (tasks.length > 0) {
+      TaskStore.replaceTasks(entry.sessionId, tasks, entry.topic);
+    } else {
+      // Keep existing TaskStore entries untouched. The live wire path
+      // (task/updated + turn/spawn_complete -> mergeLiveTask) flips
+      // terminal status when the work actually finishes.
+    }
     for (const task of tasks) {
       dispatchTaskStatusEvent(entry.sessionId, entry.topic, task);
     }
