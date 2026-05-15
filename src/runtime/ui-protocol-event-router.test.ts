@@ -646,7 +646,18 @@ describe("router event mapping", () => {
     // present in `sessionsByKey`, an envelope for an unknown thread_id
     // could be hosted in the stale session by `pickHostSessionForOrphan`.
     // The fix passes `cfg.sessionId` into `appendCompletionBubble` so
-    // the orphan creates inside the router's active session.
+    // the routing lands inside the router's active session.
+    //
+    // Bug 2026-05-14 follow-up: when the active session has an existing
+    // user-rooted thread, the completion is attributed to that thread
+    // instead of minting a brand-new orphan with an empty user
+    // placeholder. The placement-into-active-session invariant the
+    // codex P2 fix protects is still upheld here: the completion's
+    // body MUST appear in the active session's threads (and MUST NOT
+    // appear in the stale session's threads). What changes is the
+    // host thread identity — we attribute to the existing
+    // `cmid-active` thread rather than a freshly-minted
+    // `cmid-unknown-bg` orphan with an empty user bubble.
     const STALE = "sess-stale-A";
     const ACTIVE = "sess-active-B";
     // Seed both sessions so `sessionsByKey` is non-empty for both.
@@ -674,12 +685,23 @@ describe("router event mapping", () => {
 
     const activeThreads = ThreadStore.getThreads(ACTIVE);
     const staleThreads = ThreadStore.getThreads(STALE);
+    // The completion's content must be visible in the ACTIVE session
+    // (the codex P2 invariant) — attributed to the existing
+    // `cmid-active` thread rather than a brand-new orphan.
+    const activeHost = activeThreads.find((t) => t.id === "cmid-active");
+    expect(activeHost).toBeDefined();
     expect(
-      activeThreads.find((t) => t.id === "cmid-unknown-bg"),
-    ).toBeDefined();
-    expect(
-      staleThreads.find((t) => t.id === "cmid-unknown-bg"),
-    ).toBeUndefined();
+      activeHost!.responses.some((r) =>
+        r.text.includes("Late background result"),
+      ),
+    ).toBe(true);
+    // The completion's content must NOT have leaked into the stale
+    // session.
+    for (const t of staleThreads) {
+      expect(
+        t.responses.some((r) => r.text.includes("Late background result")),
+      ).toBe(false);
+    }
 
     // Cleanup the extra session we created so the global afterEach
     // reset still leaves a clean slate.

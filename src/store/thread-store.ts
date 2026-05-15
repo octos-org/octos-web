@@ -244,6 +244,25 @@ function pickHostSessionForOrphan(): SessionState | null {
   return best?.state ?? null;
 }
 
+/** Pick the most-recent thread whose user message is non-empty (i.e. a
+ *  real user-typed prompt, not a synthesised placeholder). Used by
+ *  `appendCompletionBubble` when the envelope's `thread_id` doesn't
+ *  match any stored thread — rather than mint a brand-new orphan with
+ *  an empty user placeholder (which visually disconnects the failure /
+ *  completion bubble from the user prompt that triggered it), we
+ *  attribute the bubble to the most-recent user prompt in the session.
+ *
+ *  Returns `null` when no user-rooted thread is present (e.g. the SPA
+ *  reloaded mid-stream and the user message hasn't been re-hydrated
+ *  yet) — the caller then falls back to the orphan-placeholder branch. */
+function pickMostRecentNonEmptyUserThread(state: SessionState): Thread | null {
+  for (let i = state.threads.length - 1; i >= 0; i -= 1) {
+    const t = state.threads[i];
+    if (t.userMsg.text.length > 0 || t.userMsg.files.length > 0) return t;
+  }
+  return null;
+}
+
 /** Create an orphan thread bucket for a late event whose user message
  *  was never added to the store (e.g. mid-stream page reload, late
  *  background tool_progress that arrives after history hydration). The
@@ -1096,30 +1115,76 @@ export function appendCompletionBubble(
   // session-switch / reload scenarios don't silently route the bubble
   // into a stale session bucket.
   let host = findThreadById(threadId);
+  if (!host && opts.sourceClientMessageId) {
+    // Phase 4 plumbing: the envelope's `response_to_client_message_id`
+    // carries the originating user prompt's cmid. If `thread_id` missed
+    // (cross-release wire-shape regression, e.g. a stringified UUID
+    // shape mismatch between the server's `bg_thread_id = turn_id` and
+    // the SPA's `addUserMessage`'s pinned cmid), the cmid stamped on
+    // the user-prompt row is the authoritative anchor. Try it before
+    // falling through to the orphan branch — without this, a healthy
+    // user prompt thread sits in the chat scroll with NO assistant
+    // response, while the failure / completion bubble lands inside a
+    // freshly-minted orphan thread bundle whose empty user-placeholder
+    // makes the prompt look "vanished" next to the failure text.
+    host = findThreadById(opts.sourceClientMessageId);
+  }
   if (!host) {
     if (opts.sessionId) {
-      const state = ensureSession(storeKey(opts.sessionId, opts.topic));
-      const placeholderUser: ThreadMessage = {
-        id: nextId(),
-        role: "user",
-        text: "",
-        files: [],
-        toolCalls: [],
-        status: "complete",
-        timestamp: Date.now(),
-        clientMessageId: threadId,
-      };
-      const orphan: Thread = {
-        id: threadId,
-        userMsg: placeholderUser,
-        responses: [],
-        pendingAssistant: null,
-      };
-      insertThreadInTimestampOrder(state, orphan);
-      recordRuntimeCounter("octos_thread_orphan_created_total", {
-        surface: "thread_store_completion",
-      });
-      host = { state, thread: orphan };
+      const key = storeKey(opts.sessionId, opts.topic);
+      const state = ensureSession(key);
+      // Bug 2026-05-14 (mini5): when no exact-id host exists, prefer
+      // attributing the completion to the most recent thread in the
+      // active session whose user message is non-empty. This covers
+      // the production-flow case where a spawn_only failure event
+      // round-tripped a thread_id that diverged from the SPA's cmid
+      // (UUID-stringification asymmetry across releases) — the user's
+      // real prompt sits in this active session's threads, and a
+      // brand-new orphan with `placeholderUser.text = ""` would
+      // visually disconnect the failure bubble from the prompt that
+      // triggered it.
+      //
+      // Attribution target: the most recent user-rooted thread in the
+      // active session, picked by `pickMostRecentNonEmptyUserThread`.
+      // For sessions with a single user prompt (the failure scenario
+      // mini5 surfaced) this is unambiguously correct. For sessions
+      // with multiple prompts the heuristic prefers the most recent
+      // one — a spawn_only failure landing minutes after the
+      // foreground turn finalized is most likely owned by the prompt
+      // that initiated the background work, which is also the
+      // most-recently-typed prompt unless the user has moved on. If
+      // we ever observe the wrong attribution in practice, we can
+      // tighten the heuristic to require a `pendingAssistant` or
+      // `responses.length === 0` (i.e. "no completed reply yet").
+      const candidate = pickMostRecentNonEmptyUserThread(state);
+      if (candidate) {
+        host = { state, thread: candidate };
+        recordRuntimeCounter("octos_thread_completion_attributed_total", {
+          surface: "thread_store_completion",
+        });
+      } else {
+        const placeholderUser: ThreadMessage = {
+          id: nextId(),
+          role: "user",
+          text: "",
+          files: [],
+          toolCalls: [],
+          status: "complete",
+          timestamp: Date.now(),
+          clientMessageId: threadId,
+        };
+        const orphan: Thread = {
+          id: threadId,
+          userMsg: placeholderUser,
+          responses: [],
+          pendingAssistant: null,
+        };
+        insertThreadInTimestampOrder(state, orphan);
+        recordRuntimeCounter("octos_thread_orphan_created_total", {
+          surface: "thread_store_completion",
+        });
+        host = { state, thread: orphan };
+      }
     } else {
       // No router scope provided — fall back to legacy orphan placement
       // (covers test paths that don't supply sessionId; production
