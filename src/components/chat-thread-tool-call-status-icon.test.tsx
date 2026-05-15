@@ -1,0 +1,519 @@
+/**
+ * Per-tool status icon inside `ToolCallBubble` (2026-05-14 follow-up).
+ *
+ * Sibling fix to `586ce04` which gated `ToolProgressIndicator`'s leading
+ * icon by the owning tool call's `status`. That fix only covered the
+ * indicator rendered just above the message footer ("[icon] tool: msg")
+ * — the per-tool card rendered inside the assistant bubble
+ * (`ToolCallBubble`) had NO leading status icon at all, and the only
+ * visual signal for "in-flight" was the wrapper's `animate-pulse`
+ * (Tailwind opacity pulse) which the user perceived as a stuck
+ * spinner: for a `fm_tts` spawn_only call, the bubble surfaced the
+ * literal progress message `fm_tts: completed` while the wrapper kept
+ * pulsing because nothing tied the leading affordance to
+ * `toolCall.status`.
+ *
+ * What this file pins:
+ *
+ *   1. `status === "running"`  → animated `Loader2` is mounted next to
+ *      the tool name (`data-testid='tool-call-status-spinner'`), AND
+ *      the Check / X icons are absent.
+ *
+ *   2. `status === "complete"` → static `Check`
+ *      (`data-testid='tool-call-status-complete-icon'`); spinner gone.
+ *
+ *   3. `status === "error"`    → static `X`
+ *      (`data-testid='tool-call-status-error-icon'`); spinner gone.
+ *
+ *   4. Spawn_only end-to-end (`fm_tts`): a `tool/completed` event
+ *      (the foreground leg of a spawn_only tool) flips the bubble's
+ *      status to `complete` and the leading icon transitions from
+ *      `Loader2` → static `Check` even while later background
+ *      heartbeats keep landing on the same call's `progress[]`.
+ *
+ * The store mutations (`setToolCallStatus`, `finalizeAssistant`,
+ * `appendToolProgress`) are EXISTING and out of scope for this fix —
+ * only the bubble's render of `toolCall.status` is touched.
+ */
+
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import * as React from "react";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+
+(
+  globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
+
+import { ChatThread } from "./chat-thread";
+import { SessionContext } from "@/runtime/session-context";
+import type { SessionContextValue } from "@/runtime/session-context";
+import * as ThreadStore from "@/store/thread-store";
+import {
+  __resetRouterStateForTest,
+  __resetTurnMetaForTest,
+  handleToolCompleted,
+  handleToolProgress,
+  handleToolStarted,
+  handleTurnCompleted,
+  handleTurnStarted,
+} from "@/runtime/ui-protocol-event-router";
+
+const SESSION = "sess-tool-call-status-icon";
+
+interface MountedHarness {
+  container: HTMLDivElement;
+  root: Root;
+  unmount: () => void;
+}
+
+function makeSessionCtx(): SessionContextValue {
+  return {
+    sessions: [],
+    currentSessionId: SESSION,
+    historyTopic: undefined,
+    currentSessionTitle: "",
+    currentSessionStats: null,
+    initialMessages: [],
+    activeTaskOnServer: false,
+    queueMode: null,
+    adaptiveMode: null,
+    setServerTaskActive: () => {},
+    renameSession: () => {},
+    updateSessionStats: () => {},
+    switchSession: () => {},
+    goBack: async () => false,
+    createSession: () => SESSION,
+    removeSession: async () => {},
+    refreshSessions: async () => {},
+    markSessionActive: () => {},
+  };
+}
+
+function mount(node: React.ReactElement): MountedHarness {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  act(() => {
+    root.render(node);
+  });
+  return {
+    container,
+    root,
+    unmount: () => {
+      act(() => root.unmount());
+      container.remove();
+    },
+  };
+}
+
+beforeEach(() => {
+  localStorage.clear();
+  if (!("randomUUID" in crypto)) {
+    (
+      crypto as unknown as { randomUUID: () => string }
+    ).randomUUID = () => "00000000-0000-0000-0000-000000000000";
+  }
+});
+
+afterEach(() => {
+  for (const node of [...document.body.children]) node.remove();
+  ThreadStore.__resetForTests();
+  __resetRouterStateForTest();
+  __resetTurnMetaForTest();
+});
+
+describe("ToolCallBubble leading status icon", () => {
+  it("renders the animated Loader2 spinner when toolCall.status is 'running'", () => {
+    const cmid = "turn-running";
+    const toolCallId = "tc-running";
+    act(() => {
+      ThreadStore.addUserMessage(SESSION, {
+        text: "kick off",
+        clientMessageId: cmid,
+      });
+    });
+
+    const harness = mount(
+      <SessionContext.Provider value={makeSessionCtx()}>
+        <ChatThread />
+      </SessionContext.Provider>,
+    );
+
+    act(() => {
+      handleTurnStarted(
+        { sessionId: SESSION },
+        { session_id: SESSION, turn_id: cmid },
+      );
+      handleToolStarted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: toolCallId,
+          tool_name: "fm_tts",
+        },
+      );
+      handleToolProgress(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: toolCallId,
+          message: "starting",
+        },
+      );
+    });
+
+    const bubble = harness.container.querySelector(
+      "[data-testid='tool-call-bubble']",
+    );
+    expect(bubble).not.toBeNull();
+    expect(bubble!.getAttribute("data-tool-status")).toBe("running");
+
+    // Running ⇒ animated Loader2 visible; Check + X absent.
+    expect(
+      bubble!.querySelector("[data-testid='tool-call-status-spinner']"),
+    ).not.toBeNull();
+    expect(
+      bubble!.querySelector("[data-testid='tool-call-status-complete-icon']"),
+    ).toBeNull();
+    expect(
+      bubble!.querySelector("[data-testid='tool-call-status-error-icon']"),
+    ).toBeNull();
+
+    harness.unmount();
+  });
+
+  it("renders the static Check when toolCall.status is 'complete'", () => {
+    // Drive a synthetic complete state by calling `setToolCallStatus`
+    // directly — mirrors the wire path where `handleToolCompleted`
+    // flips status to `"complete"`.
+    const cmid = "turn-complete";
+    const toolCallId = "tc-complete";
+    act(() => {
+      ThreadStore.addUserMessage(SESSION, {
+        text: "complete",
+        clientMessageId: cmid,
+      });
+    });
+
+    const harness = mount(
+      <SessionContext.Provider value={makeSessionCtx()}>
+        <ChatThread />
+      </SessionContext.Provider>,
+    );
+
+    act(() => {
+      handleTurnStarted(
+        { sessionId: SESSION },
+        { session_id: SESSION, turn_id: cmid },
+      );
+      handleToolStarted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: toolCallId,
+          tool_name: "fm_tts",
+        },
+      );
+      handleToolProgress(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: toolCallId,
+          message: "completed",
+        },
+      );
+      handleToolCompleted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: toolCallId,
+          tool_name: "fm_tts",
+          success: true,
+        },
+      );
+    });
+
+    const bubble = harness.container.querySelector(
+      "[data-testid='tool-call-bubble']",
+    );
+    expect(bubble).not.toBeNull();
+    expect(bubble!.getAttribute("data-tool-status")).toBe("complete");
+
+    // Complete ⇒ static Check; spinner + error icons absent.
+    expect(
+      bubble!.querySelector("[data-testid='tool-call-status-spinner']"),
+    ).toBeNull();
+    expect(
+      bubble!.querySelector("[data-testid='tool-call-status-complete-icon']"),
+    ).not.toBeNull();
+    expect(
+      bubble!.querySelector("[data-testid='tool-call-status-error-icon']"),
+    ).toBeNull();
+
+    harness.unmount();
+  });
+
+  it("renders the static X when toolCall.status is 'error'", () => {
+    const cmid = "turn-error";
+    const toolCallId = "tc-error";
+    act(() => {
+      ThreadStore.addUserMessage(SESSION, {
+        text: "error",
+        clientMessageId: cmid,
+      });
+    });
+
+    const harness = mount(
+      <SessionContext.Provider value={makeSessionCtx()}>
+        <ChatThread />
+      </SessionContext.Provider>,
+    );
+
+    act(() => {
+      handleTurnStarted(
+        { sessionId: SESSION },
+        { session_id: SESSION, turn_id: cmid },
+      );
+      handleToolStarted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: toolCallId,
+          tool_name: "fm_tts",
+        },
+      );
+      handleToolCompleted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: toolCallId,
+          tool_name: "fm_tts",
+          success: false,
+        },
+      );
+    });
+
+    const bubble = harness.container.querySelector(
+      "[data-testid='tool-call-bubble']",
+    );
+    expect(bubble).not.toBeNull();
+    expect(bubble!.getAttribute("data-tool-status")).toBe("error");
+
+    // Error ⇒ static X; spinner + Check absent.
+    expect(
+      bubble!.querySelector("[data-testid='tool-call-status-spinner']"),
+    ).toBeNull();
+    expect(
+      bubble!.querySelector("[data-testid='tool-call-status-complete-icon']"),
+    ).toBeNull();
+    expect(
+      bubble!.querySelector("[data-testid='tool-call-status-error-icon']"),
+    ).not.toBeNull();
+
+    harness.unmount();
+  });
+
+  it("clears the per-tool spinner on a spawn_only fm_tts terminal transition", () => {
+    // End-to-end check for the bug observed on mini5: a spawn_only
+    // `fm_tts` call ran, the BG task emitted a progress message
+    // containing the literal text "completed", and the bubble's
+    // wrapper kept pulsing because nothing tied the per-tool
+    // affordance to `toolCall.status`. This test fires the same
+    // sequence and asserts the leading icon flips from animated
+    // Loader2 → static Check the moment `handleToolCompleted` runs.
+    const cmid = "turn-fm-tts-spawnonly";
+    const toolCallId = "tc-fm-tts";
+    act(() => {
+      ThreadStore.addUserMessage(SESSION, {
+        text: "synthesise voice over",
+        clientMessageId: cmid,
+      });
+    });
+
+    const harness = mount(
+      <SessionContext.Provider value={makeSessionCtx()}>
+        <ChatThread />
+      </SessionContext.Provider>,
+    );
+
+    act(() => {
+      handleTurnStarted(
+        { sessionId: SESSION },
+        { session_id: SESSION, turn_id: cmid },
+      );
+      handleToolStarted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: toolCallId,
+          tool_name: "fm_tts",
+        },
+      );
+      handleToolProgress(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: toolCallId,
+          message: "synthesising",
+        },
+      );
+    });
+
+    // Pre-completion: the bubble pulses + spinner is mounted.
+    let bubble = harness.container.querySelector(
+      "[data-testid='tool-call-bubble']",
+    );
+    expect(bubble).not.toBeNull();
+    expect(bubble!.getAttribute("data-tool-status")).toBe("running");
+    expect(
+      bubble!.querySelector("[data-testid='tool-call-status-spinner']"),
+    ).not.toBeNull();
+
+    // Foreground `tool/completed` arrives (spawn_only's synchronous
+    // leg). Status flips to `complete`.
+    act(() => {
+      handleToolCompleted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: toolCallId,
+          tool_name: "fm_tts",
+          success: true,
+        },
+      );
+    });
+
+    bubble = harness.container.querySelector(
+      "[data-testid='tool-call-bubble']",
+    );
+    expect(bubble).not.toBeNull();
+    expect(bubble!.getAttribute("data-tool-status")).toBe("complete");
+    // The animated Loader2 is gone; the static Check has replaced it.
+    expect(
+      bubble!.querySelector("[data-testid='tool-call-status-spinner']"),
+    ).toBeNull();
+    expect(
+      bubble!.querySelector("[data-testid='tool-call-status-complete-icon']"),
+    ).not.toBeNull();
+
+    // Even a LATE background heartbeat (typical for spawn_only) must
+    // NOT resurrect the spinner — the call's status remains
+    // `complete` and the leading icon stays a static Check.
+    act(() => {
+      handleToolProgress(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: toolCallId,
+          message: "background flush, 30s elapsed",
+        },
+      );
+    });
+
+    bubble = harness.container.querySelector(
+      "[data-testid='tool-call-bubble']",
+    );
+    expect(bubble).not.toBeNull();
+    expect(bubble!.getAttribute("data-tool-status")).toBe("complete");
+    expect(
+      bubble!.querySelector("[data-testid='tool-call-status-spinner']"),
+    ).toBeNull();
+    expect(
+      bubble!.querySelector("[data-testid='tool-call-status-complete-icon']"),
+    ).not.toBeNull();
+
+    harness.unmount();
+  });
+
+  it("clears the per-tool spinner on the turn/completed sweep (run_pipeline)", () => {
+    // Companion case to fm_tts: run_pipeline relies on the
+    // `finalizeAssistant` sweep at `turn/completed` to flip
+    // `running` → `complete`. The leading icon must follow.
+    const cmid = "turn-run-pipeline";
+    const toolCallId = "tc-run-pipeline";
+    act(() => {
+      ThreadStore.addUserMessage(SESSION, {
+        text: "run pipeline",
+        clientMessageId: cmid,
+      });
+    });
+
+    const harness = mount(
+      <SessionContext.Provider value={makeSessionCtx()}>
+        <ChatThread />
+      </SessionContext.Provider>,
+    );
+
+    act(() => {
+      handleTurnStarted(
+        { sessionId: SESSION },
+        { session_id: SESSION, turn_id: cmid },
+      );
+      handleToolStarted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: toolCallId,
+          tool_name: "run_pipeline",
+        },
+      );
+      handleToolProgress(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: toolCallId,
+          message: "Pipeline 'cerebras_research' running: plan_and_search",
+        },
+      );
+    });
+
+    let bubble = harness.container.querySelector(
+      "[data-testid='tool-call-bubble']",
+    );
+    expect(bubble!.getAttribute("data-tool-status")).toBe("running");
+    expect(
+      bubble!.querySelector("[data-testid='tool-call-status-spinner']"),
+    ).not.toBeNull();
+
+    // turn/completed sweeps the in-flight tool call to "complete".
+    act(() => {
+      handleTurnCompleted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          message_id: "msg-x",
+          persisted_at: new Date().toISOString(),
+        },
+      );
+    });
+
+    bubble = harness.container.querySelector(
+      "[data-testid='tool-call-bubble']",
+    );
+    expect(bubble).not.toBeNull();
+    expect(bubble!.getAttribute("data-tool-status")).toBe("complete");
+    expect(
+      bubble!.querySelector("[data-testid='tool-call-status-spinner']"),
+    ).toBeNull();
+    expect(
+      bubble!.querySelector("[data-testid='tool-call-status-complete-icon']"),
+    ).not.toBeNull();
+
+    harness.unmount();
+  });
+});
