@@ -641,36 +641,33 @@ export const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
   // bubble until the turn truly settles.
   const showCopyButton =
     message.status === "complete" && !showLiveIndicators && !!message.text;
-  // 2026-05-14 spawn_only spinner placement fix: keep the tool-progress
-  // spinner ANCHORED INSIDE the assistant bubble (not at chat-layout
-  // level above the composer) but broaden its gate so it stays visible
-  // for the duration of a long-running spawn_only tool. Reasoning:
+  // 2026-05-14 spawn_only spinner placement fix:
   //
-  //   - The previous lift (commit 86fb70e) put the spinner near the
-  //     input prompt so it would survive `turn/completed` for spawn_only
-  //     flows whose `tool/progress` arrives AFTER the bubble finalised.
-  //     That introduced a recurring user-reported bug: for
-  //     `run_pipeline` the "running" badge stuck above the input for
-  //     ~25 min of the background run, detached from the bubble it
-  //     describes.
-  //   - The `1a20b7a` immutable tool-call updates fix means the bubble
-  //     now re-renders on every heartbeat after `turn/completed`. So we
-  //     can host the spinner inside the bubble again and it will
-  //     still light up for spawn_only — as long as we drop the
-  //     "streaming-only" gate.
+  // Previously the tool-progress spinner was lifted to chat-layout
+  // level (above the composer) by commit 86fb70e so it would survive
+  // `turn/completed` for spawn_only flows whose `tool/progress`
+  // heartbeats arrive AFTER the bubble finalises. That introduced a
+  // recurring user-reported UX bug: for `run_pipeline` the
+  // "run_pipeline: running ..." badge sat above the input prompt for
+  // the entire ~25-min background run, visually detached from the
+  // bubble it describes.
   //
-  // New gate: render the spinner whenever this bubble has at least one
-  // tool call still in `running` status, OR the bubble is itself still
-  // streaming. The bubble's `ToolCallBubble` already shows the progress
-  // chips and a pulsed border; the spinner row is a one-line "latest
-  // message" affordance that complements (does not duplicate) the
-  // chip list. The per-bubble `turnId` prop scopes the indicator's
-  // event listener so concurrent in-flight tools on different bubbles
-  // don't bleed into each other.
-  const hasRunningToolCall = message.toolCalls.some(
-    (tc) => tc.status === "running",
+  // After commit `1a20b7a` (immutable tool-call updates) the bubble
+  // re-renders on every heartbeat — so we can host the spinner row
+  // inside the bubble again, anchored to the bubble whose tool calls
+  // it reports. The indicator is gated on the bubble having at least
+  // one tool call with progress entries (i.e., the tool has actually
+  // reported something) so finalised bubbles without tool activity
+  // don't render a spinner. For spawn_only flows (run_pipeline /
+  // podcast_generate / fm_tts / deep_search / mofa_slides) the
+  // foreground `tool/completed` fires immediately (chip status →
+  // `complete`) but the BG task keeps adding heartbeat progress
+  // entries to the same tool call's `progress[]` — so the indicator
+  // stays anchored to the bubble and continues to show the latest
+  // heartbeat for the full background duration.
+  const showToolProgress = message.toolCalls.some(
+    (tc) => tc.progress.length > 0,
   );
-  const showToolProgress = showLiveIndicators || hasRunningToolCall;
   return (
     <div className="flex px-4 py-3">
       <div
@@ -716,22 +713,25 @@ export const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
         {showLiveIndicators && <ThinkingIndicator />}
 
         {/* Tool-progress spinner — anchored INSIDE the bubble whose tools
-            it reports. For spawn_only tools (run_pipeline,
-            podcast_generate, fm_tts, deep_search, mofa_slides) the LLM
-            `turn/completed` fires before the background work finishes,
-            so the bubble has already been promoted from
-            `pendingAssistant` to `responses[]` (showLiveIndicators ==
-            false) while the tool keeps emitting `tool/progress` and 5s
-            heartbeats. We surface the spinner while the bubble has any
-            `running` tool call so the user has an "alive" signal
-            local to the bubble that owns the work. `turnId` scopes the
-            indicator's event listener so a concurrent tool call on a
-            DIFFERENT bubble's turn doesn't bleed in. The previous fix
-            (commit 86fb70e) lifted this to chat-layout level above
-            the composer; that caused a recurring UX bug where
-            `run_pipeline: running` sat above the input prompt for the
-            entire ~25 min background run, detached from its bubble. */}
-        {showToolProgress && <ToolProgressIndicator turnId={tid} />}
+            it reports. The indicator derives its display directly from
+            `message.toolCalls[*].progress`, NOT a window event stream:
+            with `1a20b7a`'s immutable tool-call updates the bubble
+            re-renders on every heartbeat, and reading from the store
+            avoids the listener-attach race the event-driven design
+            suffered from (the indicator was gated on
+            `toolCalls.length > 0` so it didn't exist when the first
+            `tool/started` event fired). For spawn_only tools
+            (run_pipeline, podcast_generate, fm_tts, deep_search,
+            mofa_slides) the foreground `tool/completed` flips the
+            chip's `status` to `complete` immediately, but heartbeats
+            keep appending progress entries; those land here and
+            refresh the row text without needing a separate inflight
+            flag. The previous fix (commit 86fb70e) lifted this to
+            chat-layout level above the composer; that caused a
+            recurring UX bug where `run_pipeline: running` sat above
+            the input prompt for the entire ~25 min background run,
+            detached from its bubble. */}
+        {showToolProgress && <ToolProgressIndicator message={message} />}
 
         {/* Message footer: meta on the left, copy button on the right */}
         <div className="mt-1.5 flex items-center justify-between gap-2">

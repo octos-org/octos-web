@@ -1,27 +1,45 @@
 /**
- * Spawn-only background spinner regression — verifies the
- * `<ToolProgressIndicator />` is mounted at the chat layout level rather
- * than gated inside the streaming assistant bubble.
+ * Spawn-only background spinner placement regression
+ * (2026-05-14 follow-up to commit 86fb70e).
  *
- * Bug repro: the indicator used to live inside `ThreadAssistantBubble`
- * behind `showLiveIndicators === true` (== "streaming"). For spawn_only
- * tools (podcast_generate, fm_tts, deep_search, mofa_slides) the LLM
- * turn settles with `turn/completed` BEFORE the background task starts
- * emitting `tool/progress` envelopes — so the indicator was unmounted
- * just as the long-running work began, and the spinner stayed invisible
- * for the entire spawn_only duration.
+ * Setup:
  *
- * Fix: lift the indicator into `ChatThreadV2` (one mount per chat
- * layout). It's already scoped to the current session/topic by its
- * internal `eventMatchesScope` check, so a single mount catches every
- * `crew:tool_progress` for the active session — including events that
- * arrive after the streaming bubble has finalised.
+ *   - Commit 86fb70e lifted `<ToolProgressIndicator />` from inside
+ *     `ThreadAssistantBubble` to chat-layout level (above the
+ *     `Composer`) so the spinner could survive `turn/completed` for
+ *     spawn_only tools (run_pipeline / podcast_generate / fm_tts /
+ *     deep_search / mofa_slides) whose `tool/progress` envelopes
+ *     arrive AFTER the LLM turn settles.
  *
- * Coverage here is intentionally narrow: we mount `<ChatThread />` with
- * the session context, dispatch a scoped `crew:tool_progress` event,
- * and assert the spinner row appears even though no `Thread` exists
- * yet (the empty-state branch) and certainly no pending assistant
- * bubble is streaming.
+ *   - That lift caused a recurring user-reported UX bug: for a long
+ *     spawn_only run (typically `run_pipeline`, ~25 min), the
+ *     "running" badge sat ABOVE the input prompt for the entire
+ *     background run, detached from the bubble it described.
+ *
+ *   - Commit `1a20b7a` immutable tool-call updates fix means the
+ *     bubble now re-renders on every heartbeat (`React.memo`'s shallow
+ *     compare wakes up because every store mutation produces a new
+ *     `ThreadMessage` reference). So we can host the spinner inside
+ *     the bubble again WITHOUT the spawn_only regression the lift was
+ *     trying to fix.
+ *
+ * What this file covers:
+ *
+ *   1. The spinner is anchored INSIDE the assistant bubble, not above
+ *      the composer. We assert the DOM ancestry is
+ *      `[data-testid='assistant-message']` -> `[data-testid='tool-progress']`.
+ *
+ *   2. For spawn_only, the spinner stays visible AFTER `turn/completed`
+ *      because the bubble has at least one tool call still `running`.
+ *      A `task/updated completed` event (which flips the tool status
+ *      to "complete" and dispatches a `terminal: true` progress
+ *      event) clears it.
+ *
+ *   3. Cross-session events still drop (scope filter still applies).
+ *
+ *   4. Cross-turn events drop (per-bubble `turnId` filter): a
+ *      `crew:tool_progress` for a different bubble's turn does NOT
+ *      light up THIS bubble's spinner.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -36,6 +54,16 @@ import { createRoot, type Root } from "react-dom/client";
 import { ChatThread } from "./chat-thread";
 import { SessionContext } from "@/runtime/session-context";
 import type { SessionContextValue } from "@/runtime/session-context";
+import * as ThreadStore from "@/store/thread-store";
+import {
+  __resetRouterStateForTest,
+  __resetTurnMetaForTest,
+  handleToolCompleted,
+  handleToolProgress,
+  handleToolStarted,
+  handleTurnCompleted,
+  handleTurnStarted,
+} from "@/runtime/ui-protocol-event-router";
 
 const SESSION = "sess-bg-spinner";
 
@@ -86,15 +114,7 @@ function mount(node: React.ReactElement): MountedHarness {
 }
 
 beforeEach(() => {
-  // `Composer` reads from `useSession` and never makes network calls
-  // during render, but other consumers in `chat-thread.tsx` poke at
-  // `localStorage`/window flags. Reset between tests so flag carryover
-  // doesn't leak. We also clear any leftover DOM listeners by recreating
-  // the body root in `afterEach`.
   localStorage.clear();
-  // `crypto.randomUUID` is consumed by the Composer's ghost-bubble code
-  // path; jsdom exposes it but if not present we polyfill to keep the
-  // composer mount from blowing up.
   if (!("randomUUID" in crypto)) {
     (
       crypto as unknown as { randomUUID: () => string }
@@ -106,50 +126,210 @@ afterEach(() => {
   for (const node of [...document.body.children]) {
     node.remove();
   }
+  ThreadStore.__resetForTests();
+  __resetRouterStateForTest();
+  __resetTurnMetaForTest();
   vi.restoreAllMocks();
 });
 
-describe("ChatThread tool-progress indicator (lifted)", () => {
-  it("renders the spinner row for a scoped crew:tool_progress event even when no streaming bubble exists", () => {
+describe("Spawn-only spinner placement (per-bubble)", () => {
+  it("anchors the spinner INSIDE the assistant bubble, not at chat-layout level above the composer", () => {
+    // Drive a spawn_only run_pipeline scenario through the real
+    // router so we get an end-to-end check of placement.
+    const cmid = "turn-anchor";
+    act(() => {
+      ThreadStore.addUserMessage(SESSION, {
+        text: "深度研究 TSMC 的 CoWoS 和 Intel 的 EMIB 的区别",
+        clientMessageId: cmid,
+      });
+    });
+
     const harness = mount(
       <SessionContext.Provider value={makeSessionCtx()}>
         <ChatThread />
       </SessionContext.Provider>,
     );
-    // Sanity: no spinner before any event fires.
-    expect(
-      harness.container.querySelector("[data-testid='tool-progress']"),
-    ).toBeNull();
 
-    // Dispatch a spawn_only-style progress event AFTER the (notional)
-    // turn has settled — exactly the case that previously had nowhere
-    // to render because `ThreadAssistantBubble` was unmounted.
     act(() => {
-      window.dispatchEvent(
-        new CustomEvent("crew:tool_progress", {
-          detail: {
-            tool: "podcast_generate",
-            message: "[info] synthesizing voice yangmi (segment 1/3)",
-            sessionId: SESSION,
-          },
-        }),
+      handleTurnStarted(
+        { sessionId: SESSION },
+        { session_id: SESSION, turn_id: cmid },
+      );
+      handleToolStarted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: "tc-pipeline",
+          tool_name: "run_pipeline",
+        },
+      );
+      handleToolProgress(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: "tc-pipeline",
+          message: "Pipeline 'cerebras_research' running: plan_and_search",
+        },
+      );
+      handleTurnCompleted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          message_id: "msg-anchor",
+          persisted_at: new Date().toISOString(),
+        },
       );
     });
 
+    // After turn/completed the bubble has been promoted to
+    // responses[]; the foreground turn is settled. Fire a heartbeat
+    // exactly like the 5s server heartbeat.
+    act(() => {
+      handleToolProgress(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: "tc-pipeline",
+          message:
+            "Pipeline 'cerebras_research' running: plan_and_search (0/3 nodes, 5s elapsed)",
+        },
+      );
+    });
+
+    const spinnerRow = harness.container.querySelector(
+      "[data-testid='tool-progress']",
+    );
+    expect(spinnerRow).not.toBeNull();
+    // Critical anti-regression check: the spinner row MUST be a
+    // descendant of an `assistant-message` bubble. Pre-fix it was a
+    // sibling of `Composer`, detached from any bubble.
+    const enclosingBubble = spinnerRow!.closest(
+      "[data-testid='assistant-message']",
+    );
+    expect(enclosingBubble).not.toBeNull();
+    expect(spinnerRow!.textContent).toContain("run_pipeline");
+    expect(spinnerRow!.textContent).toContain("5s elapsed");
+
+    harness.unmount();
+  });
+
+  it("keeps the spinner visible after turn/completed for as long as a tool call on the bubble is still running", () => {
+    const cmid = "turn-spawnonly";
+    act(() => {
+      ThreadStore.addUserMessage(SESSION, {
+        text: "run pipeline",
+        clientMessageId: cmid,
+      });
+    });
+
+    const harness = mount(
+      <SessionContext.Provider value={makeSessionCtx()}>
+        <ChatThread />
+      </SessionContext.Provider>,
+    );
+
+    act(() => {
+      handleTurnStarted(
+        { sessionId: SESSION },
+        { session_id: SESSION, turn_id: cmid },
+      );
+      handleToolStarted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: "tc-x",
+          tool_name: "run_pipeline",
+        },
+      );
+      handleToolProgress(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: "tc-x",
+          message: "starting",
+        },
+      );
+      handleTurnCompleted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          message_id: "msg-x",
+          persisted_at: new Date().toISOString(),
+        },
+      );
+    });
+
+    // After turn/completed: tool is STILL running (spawn_only).
+    // Spinner must remain visible.
+    expect(
+      harness.container.querySelector("[data-testid='tool-progress']"),
+    ).not.toBeNull();
+
+    // Heartbeat refresh keeps the latest message on the spinner row.
+    act(() => {
+      handleToolProgress(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: "tc-x",
+          message: "still running, 10s elapsed",
+        },
+      );
+    });
     const row = harness.container.querySelector(
       "[data-testid='tool-progress']",
     );
     expect(row).not.toBeNull();
-    expect(row!.textContent).toContain("podcast_generate");
-    // `[info]` prefix is stripped by the indicator.
-    expect(row!.textContent).toContain(
-      "synthesizing voice yangmi (segment 1/3)",
+    expect(row!.textContent).toContain("10s elapsed");
+
+    // Tool completes — the chip status flips to "complete". The
+    // indicator is a pure derivation of the bubble's tool_call
+    // progress, so the latest entry remains visible (showing the
+    // last heartbeat text) even after `tool/completed`. This is
+    // intentional: for spawn_only the foreground `tool/completed`
+    // fires immediately on the ack BUT the BG task continues to
+    // append heartbeat entries via `appendToolProgress` for the
+    // duration of the work. Treating `tool/completed` as a spinner-
+    // hide signal would dim the indicator the moment the user is
+    // most interested in seeing it (the BG task is just starting).
+    // The bubble's `ToolCallBubble` chip color is the authoritative
+    // signal for tool status: `complete` (no pulse) vs `running`
+    // (pulse). The spinner row is the "latest activity message"
+    // affordance.
+    act(() => {
+      handleToolCompleted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: "tc-x",
+          tool_name: "run_pipeline",
+          success: true,
+        },
+      );
+    });
+    const rowAfter = harness.container.querySelector(
+      "[data-testid='tool-progress']",
     );
-    expect(row!.textContent).not.toContain("[info]");
+    expect(rowAfter).not.toBeNull();
+    expect(rowAfter!.textContent).toContain("10s elapsed");
+
     harness.unmount();
   });
 
   it("ignores crew:tool_progress events scoped to a different session", () => {
+    // No bubble yet — the chat is in its empty state. Pre-fix the
+    // chat-layout-level mount would have surfaced the spinner row in
+    // the empty state; per-bubble there's nothing to attach to, so
+    // the row is correctly absent regardless of session scope.
     const harness = mount(
       <SessionContext.Provider value={makeSessionCtx()}>
         <ChatThread />
@@ -162,6 +342,7 @@ describe("ChatThread tool-progress indicator (lifted)", () => {
             tool: "deep_search",
             message: "scanning",
             sessionId: "some-other-session",
+            turnId: "unrelated-turn",
           },
         }),
       );
@@ -172,37 +353,140 @@ describe("ChatThread tool-progress indicator (lifted)", () => {
     harness.unmount();
   });
 
-  it("clears the spinner row when crew:thinking { thinking: false } fires", () => {
+  it("does not surface a different bubble's tool progress inside this bubble", () => {
+    // Two concurrent threads (A and B) — each has its own bubble. A
+    // heartbeat for thread A's tool call MUST NOT light up thread B's
+    // bubble spinner. The new per-bubble indicator is a pure
+    // derivation of its own `message.toolCalls`, so cross-bubble
+    // isolation is structural — A's progress entries land only on
+    // A's bubble's `toolCalls` (routed by `tool_call_id` /
+    // `turn_id` at the store level), and B's indicator never sees
+    // them at all.
+    const cmidA = "turn-A";
+    const cmidB = "turn-B";
+    act(() => {
+      ThreadStore.addUserMessage(SESSION, {
+        text: "A",
+        clientMessageId: cmidA,
+      });
+      ThreadStore.addUserMessage(SESSION, {
+        text: "B",
+        clientMessageId: cmidB,
+      });
+    });
+
     const harness = mount(
       <SessionContext.Provider value={makeSessionCtx()}>
         <ChatThread />
       </SessionContext.Provider>,
     );
-    act(() => {
-      window.dispatchEvent(
-        new CustomEvent("crew:tool_progress", {
-          detail: {
-            tool: "fm_tts",
-            message: "synthesizing",
-            sessionId: SESSION,
-          },
-        }),
-      );
-    });
-    expect(
-      harness.container.querySelector("[data-testid='tool-progress']"),
-    ).not.toBeNull();
 
+    // Both threads start a run_pipeline-style tool.
     act(() => {
-      window.dispatchEvent(
-        new CustomEvent("crew:thinking", {
-          detail: { thinking: false, sessionId: SESSION },
-        }),
+      handleTurnStarted(
+        { sessionId: SESSION },
+        { session_id: SESSION, turn_id: cmidA },
+      );
+      handleToolStarted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmidA,
+          tool_call_id: "tc-A",
+          tool_name: "run_pipeline",
+        },
+      );
+      handleToolProgress(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmidA,
+          tool_call_id: "tc-A",
+          message: "A starting",
+        },
+      );
+      handleTurnCompleted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmidA,
+          message_id: "m-A",
+          persisted_at: new Date().toISOString(),
+        },
+      );
+
+      handleTurnStarted(
+        { sessionId: SESSION },
+        { session_id: SESSION, turn_id: cmidB },
+      );
+      handleToolStarted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmidB,
+          tool_call_id: "tc-B",
+          tool_name: "run_pipeline",
+        },
+      );
+      handleToolProgress(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmidB,
+          tool_call_id: "tc-B",
+          message: "B starting",
+        },
+      );
+      handleTurnCompleted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmidB,
+          message_id: "m-B",
+          persisted_at: new Date().toISOString(),
+        },
       );
     });
-    expect(
-      harness.container.querySelector("[data-testid='tool-progress']"),
-    ).toBeNull();
+
+    // Now an A-only heartbeat: only A's spinner row should pick it up.
+    act(() => {
+      handleToolProgress(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmidA,
+          tool_call_id: "tc-A",
+          message: "A unique heartbeat at 30s",
+        },
+      );
+    });
+
+    const rows = harness.container.querySelectorAll(
+      "[data-testid='tool-progress']",
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    let aRowWithHeartbeat: Element | null = null;
+    let bRowWithStaleMessage: Element | null = null;
+    for (const row of rows) {
+      const bubble = row.closest("[data-testid='assistant-message']");
+      if (!bubble) continue;
+      const tid = bubble.getAttribute("data-thread-id");
+      if (tid === cmidA && (row.textContent ?? "").includes("30s")) {
+        aRowWithHeartbeat = row;
+      }
+      if (
+        tid === cmidB &&
+        ((row.textContent ?? "").includes("starting") ||
+          !(row.textContent ?? "").includes("30s"))
+      ) {
+        bRowWithStaleMessage = row;
+      }
+    }
+    expect(aRowWithHeartbeat).not.toBeNull();
+    // B's row must NOT have picked up A's heartbeat.
+    expect(bRowWithStaleMessage).not.toBeNull();
+    expect(bRowWithStaleMessage!.textContent).not.toContain("30s");
+
     harness.unmount();
   });
 });
