@@ -674,6 +674,13 @@ function guardSpawnComplete(p: unknown): TurnSpawnCompleteEvent | null {
         ? p.thread_id
         : undefined,
     task_id: p.task_id,
+    // Parallel server PR adds `tool_call_id` so the originating LLM
+    // tool call can be flipped to "complete" without the TaskStore
+    // race. Optional for forward compatibility with legacy daemons.
+    tool_call_id:
+      typeof p.tool_call_id === "string" && p.tool_call_id.length > 0
+        ? p.tool_call_id
+        : undefined,
     response_to_client_message_id:
       typeof p.response_to_client_message_id === "string" &&
       p.response_to_client_message_id.length > 0
@@ -806,14 +813,25 @@ export function guardSessionHydrate(p: unknown): SessionHydrateResult | null {
 
 function guardTaskUpdated(p: unknown): TaskUpdatedEvent | null {
   if (!isPlainObject(p)) return null;
-  if (!isString(p.session_id) || !isString(p.turn_id) || !isString(p.task_id)) {
+  // The server's `TaskUpdatedEvent` struct does NOT include `turn_id`
+  // (supervisor publishes by `task_id` directly). Pre-fix this guard
+  // required `turn_id`, which silently dropped EVERY production
+  // `task/updated` envelope — TaskStore stayed empty, the
+  // task_id→tool_call_id mapping never landed, and `resolveToolCallIdForTask`
+  // always fell back to the raw supervisor UUID. The chip then never
+  // flipped. Drop the `turn_id` requirement; pick it up if present for
+  // forward compatibility. Pick up the new `tool_call_id` field which
+  // the parallel server PR adds so the chip status can flip directly
+  // from the wire.
+  if (!isString(p.session_id) || !isString(p.task_id)) {
     return null;
   }
   if (typeof p.state !== "string") return null;
   return {
     session_id: p.session_id,
-    turn_id: p.turn_id,
+    turn_id: isString(p.turn_id) ? p.turn_id : undefined,
     task_id: p.task_id,
+    tool_call_id: isString(p.tool_call_id) ? p.tool_call_id : undefined,
     state: p.state,
     title: typeof p.title === "string" ? p.title : undefined,
     runtime_detail:
@@ -825,7 +843,11 @@ function guardTaskUpdated(p: unknown): TaskUpdatedEvent | null {
 
 function guardTaskOutputDelta(p: unknown): TaskOutputDeltaEvent | null {
   if (!isPlainObject(p)) return null;
-  if (!isString(p.session_id) || !isString(p.turn_id) || !isString(p.task_id)) {
+  // Same relaxation as `guardTaskUpdated`: server-side struct has no
+  // `turn_id` field for output deltas either, so this guard previously
+  // dropped every production envelope. Keep the field optional and pick
+  // up the new wire-borne `tool_call_id`.
+  if (!isString(p.session_id) || !isString(p.task_id)) {
     return null;
   }
   if (typeof p.chunk !== "string") return null;
@@ -835,8 +857,9 @@ function guardTaskOutputDelta(p: unknown): TaskOutputDeltaEvent | null {
   }
   return {
     session_id: p.session_id,
-    turn_id: p.turn_id,
+    turn_id: isString(p.turn_id) ? p.turn_id : undefined,
     task_id: p.task_id,
+    tool_call_id: isString(p.tool_call_id) ? p.tool_call_id : undefined,
     chunk: p.chunk,
     cursor,
   };

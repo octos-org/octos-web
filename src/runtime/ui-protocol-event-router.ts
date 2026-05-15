@@ -500,11 +500,19 @@ export function handleSpawnComplete(
   // `setToolCallStatus` would mint an empty-user orphan thread via
   // `ensureOrphanThread` and steal attribution from the user's real
   // prompt.
-  const resolvedToolCallId = resolveToolCallIdForTask(
-    cfg.sessionId,
-    cfg.topic,
-    event.task_id,
-  );
+  //
+  // Bug 2026-05-15 (codex round 2): the TaskStore lookup that
+  // `resolveToolCallIdForTask` relies on races against the task watcher's
+  // poll loop. In production the watcher only runs when the bridge's
+  // `task/updated` envelope first dispatches `crew:bg_tasks` — but the
+  // pre-fix bridge guard dropped EVERY `task/updated` (server emits no
+  // `turn_id`), so the store stayed empty and the resolver fell back to
+  // the raw supervisor UUID. The chip then never flipped. Prefer the
+  // wire-borne `tool_call_id` (parallel server PR adds it) and use the
+  // TaskStore lookup only as a fallback for legacy daemons.
+  const resolvedToolCallId =
+    event.tool_call_id ??
+    resolveToolCallIdForTask(cfg.sessionId, cfg.topic, event.task_id);
   const statusHostThreadId = ThreadStore.findThreadIdForToolCall(
     cfg.sessionId,
     cfg.topic,
@@ -574,18 +582,36 @@ export function handleTaskUpdated(
   // therefore needs the spinner-progress fan-out here as well, with
   // the terminal flag set on the completion legs so the row clears.
   //
-  // Bug 2026-05-15 (codex final-3 bonus check): the wire's
-  // `event.task_id` is the supervisor's `TaskId::new()` UUID, NOT
-  // the LLM `tool_call_id` that `tool/started` registered on the
-  // ThreadStore. Translate via `TaskStore` so the
-  // `appendToolProgress` / `setToolCallStatus` calls land on the
-  // correct chip. Falls back to `event.task_id` (legacy daemons that
-  // emit them equal, or pre-watcher boot).
-  const resolvedToolCallId = resolveToolCallIdForTask(
-    cfg.sessionId,
-    cfg.topic,
-    event.task_id,
-  );
+  // Bug 2026-05-15 (codex round 2): prefer the wire-borne
+  // `event.tool_call_id` (parallel server PR adds it). Falls back to
+  // the TaskStore `task_id → tool_call_id` lookup for legacy daemons,
+  // which itself falls back to the raw `task_id` when the watcher
+  // hasn't populated the store yet. The fallback chain handles all
+  // three wire generations (modern carries tool_call_id, mid-tier has
+  // separate task_id+tool_call_id with a watcher poll bridging them,
+  // legacy emits them equal).
+  const resolvedToolCallId =
+    event.tool_call_id ??
+    resolveToolCallIdForTask(cfg.sessionId, cfg.topic, event.task_id);
+
+  // Bug 2026-05-15 (codex round 2): server-side `TaskUpdatedEvent`
+  // carries NO `turn_id` — pre-fix bridge guard dropped every such
+  // envelope. With the guard relaxed, `event.turn_id` is now
+  // `undefined` in production. Route via `findThreadIdForToolCall`
+  // (which scans every thread's pending + finalized assistant slots
+  // for a tool call matching `resolvedToolCallId`) instead of trusting
+  // `event.turn_id`. Falls back to a (likely-undefined) `event.turn_id`
+  // only if no thread is found — `setToolCallStatus`/`appendToolProgress`
+  // then no-op cleanly via the `ensureOrphanThread(undefined)` path
+  // (`findThreadById(undefined)` returns null, and pickHostSessionForOrphan
+  // would mint a placeholder thread but with no matching tool call it
+  // exits without mutation).
+  const hostThreadId =
+    ThreadStore.findThreadIdForToolCall(
+      cfg.sessionId,
+      cfg.topic,
+      resolvedToolCallId,
+    ) ?? event.turn_id;
 
   // The `tool_name` lookup falls back to the task_id when no preceding
   // `tool/started` cached a name (e.g. a server-side flow that skips
@@ -602,7 +628,9 @@ export function handleTaskUpdated(
     case "spawned":
     case "running": {
       const label = event.title ?? event.runtime_detail ?? event.state;
-      ThreadStore.appendToolProgress(event.turn_id, resolvedToolCallId, label);
+      if (hostThreadId) {
+        ThreadStore.appendToolProgress(hostThreadId, resolvedToolCallId, label);
+      }
       // Mirror the legacy SSE bridge's `crew:bg_tasks` dispatch so any
       // listener that gates a session-level "background work" indicator
       // off the same event keeps firing.
@@ -613,18 +641,20 @@ export function handleTaskUpdated(
         }),
       );
       // Light / refresh the spinner with the latest task state label.
-      dispatchToolProgressEvent(cfg, event.turn_id, toolLabel, label);
+      dispatchToolProgressEvent(cfg, hostThreadId, toolLabel, label);
       break;
     }
     case "completed": {
-      ThreadStore.setToolCallStatus(
-        event.turn_id,
-        resolvedToolCallId,
-        "complete",
-      );
+      if (hostThreadId) {
+        ThreadStore.setToolCallStatus(
+          hostThreadId,
+          resolvedToolCallId,
+          "complete",
+        );
+      }
       dispatchToolProgressEvent(
         cfg,
-        event.turn_id,
+        hostThreadId,
         toolLabel,
         "done",
         /* terminal */ true,
@@ -640,10 +670,16 @@ export function handleTaskUpdated(
     }
     case "failed":
     case "errored": {
-      ThreadStore.setToolCallStatus(event.turn_id, resolvedToolCallId, "error");
+      if (hostThreadId) {
+        ThreadStore.setToolCallStatus(
+          hostThreadId,
+          resolvedToolCallId,
+          "error",
+        );
+      }
       dispatchToolProgressEvent(
         cfg,
-        event.turn_id,
+        hostThreadId,
         toolLabel,
         "error",
         /* terminal */ true,
@@ -697,17 +733,39 @@ export function handleTaskOutputDelta(
   event: TaskOutputDeltaEvent,
 ): void {
   if (!event.chunk) return;
+  // Codex round 2 wire alignment: prefer wire-borne `tool_call_id`,
+  // fall back to TaskStore mapping for legacy daemons. Route via
+  // `findThreadIdForToolCall` since `event.turn_id` is now optional
+  // (server-side struct doesn't carry it).
+  const resolvedToolCallId =
+    event.tool_call_id ??
+    resolveToolCallIdForTask(cfg.sessionId, cfg.topic, event.task_id);
+  const hostThreadId =
+    ThreadStore.findThreadIdForToolCall(
+      cfg.sessionId,
+      cfg.topic,
+      resolvedToolCallId,
+    ) ?? event.turn_id;
   // Surface live tool stdout into the bubble's progress timeline. Dedupe
   // logic lives in ThreadStore.appendToolProgress (consecutive duplicates
   // are dropped) so resending the same chunk on reconnect is safe.
-  ThreadStore.appendToolProgress(event.turn_id, event.task_id, event.chunk);
+  if (hostThreadId) {
+    ThreadStore.appendToolProgress(
+      hostThreadId,
+      resolvedToolCallId,
+      event.chunk,
+    );
+  }
   // Codex round-3: also fan out to the lifted spinner. Some spawn_only
   // flows emit their real progress as output chunks, not `task/updated`
   // running labels; without this dispatch the spinner text goes stale
   // mid-task. Non-terminal — completion is signalled by `task/updated`
   // completed/failed/errored.
-  const toolLabel = toolNameByCallId.get(event.task_id) ?? event.task_id;
-  dispatchToolProgressEvent(cfg, event.turn_id, toolLabel, event.chunk);
+  const toolLabel =
+    toolNameByCallId.get(resolvedToolCallId) ??
+    toolNameByCallId.get(event.task_id) ??
+    event.task_id;
+  dispatchToolProgressEvent(cfg, hostThreadId, toolLabel, event.chunk);
 }
 
 export function handleTurnStarted(
@@ -867,7 +925,7 @@ export function handleTurnError(
 
 function dispatchToolProgressEvent(
   cfg: RouterConfig,
-  turnId: string,
+  turnId: string | undefined,
   toolName: string,
   message: string,
   /** When true, the `ToolProgressIndicator` clears the spinner row.
