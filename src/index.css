@@ -573,3 +573,169 @@ button, a, input, textarea {
   background: var(--color-accent-container);
   color: var(--color-text-strong);
 }
+
+/* ── Reader view ─────────────────────────────────────── */
+/* Reader view: a fullscreen "article reader" overlay for long
+   markdown deliverables. We deliberately use a tone DIFFERENT from
+   the chat surface — a near-white in light mode, a deep ink in dark
+   mode — so the experience feels like opening a document rather than
+   zooming the chat bubble. Variables flip with `data-theme`. */
+:root {
+  --reader-bg: #0d1a32;
+  --reader-text: #e5ecf6;
+  --reader-text-strong: #f7faff;
+  --reader-muted: #9fb2cf;
+  --reader-heading: #a3d4ff;
+  --reader-heading-accent: #ffd76a;
+  --reader-rule: rgba(255, 255, 255, 0.10);
+  --reader-link: #7fc4ff;
+  --reader-code-inline-bg: rgba(255, 140, 86, 0.16);
+  --reader-code-inline-fg: #ffb38c;
+  --reader-code-block-bg: #061533;
+  --reader-blockquote: rgba(232, 91, 38, 0.10);
+}
+
+[data-theme="light"] {
+  --reader-bg: #fbfaf6;
+  --reader-text: #1f2a3a;
+  --reader-text-strong: #0a1424;
+  --reader-muted: #586a82;
+  --reader-heading: #134a82;
+  --reader-heading-accent: #8a6312;
+  --reader-rule: rgba(0, 0, 0, 0.10);
+  --reader-link: #1565c0;
+  --reader-code-inline-bg: rgba(232, 91, 38, 0.10);
+  --reader-code-inline-fg: #b54a18;
+  --reader-code-block-bg: #f0eee6;
+  --reader-blockquote: rgba(232, 91, 38, 0.08);
+}
+
+.reader-view-panel {
+  background: var(--reader-bg);
+  color: var(--reader-text);
+  /* Tablet+ keeps a soft outer margin; mobile is full-bleed. */
+  min-height: 100%;
+}
+
+/* Reader-flavored prose. We do NOT depend on Tailwind's `prose` plugin
+   here so the styling is independent of bubble prose tweaks. */
+.reader-prose {
+  font-size: 1.0625rem;       /* ~17px — comfortable reading */
+  line-height: 1.75;
+  letter-spacing: 0.005em;
+  color: var(--reader-text);
+}
+.reader-prose p {
+  margin: 0 0 1.1em;
+  line-height: 1.75;
+}
+.reader-prose h1 {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--reader-heading-accent);
+  border-bottom: 2px solid var(--reader-rule);
+  margin: 1.5em 0 0.75em;
+  padding-bottom: 0.35em;
+  line-height: 1.25;
+}
+.reader-prose h2 {
+  font-size: 1.55rem;
+  font-weight: 700;
+  color: var(--reader-heading);
+  margin: 1.8em 0 0.6em;
+  line-height: 1.3;
+}
+.reader-prose h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--reader-heading);
+  margin: 1.5em 0 0.5em;
+  line-height: 1.35;
+}
+.reader-prose h4 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--reader-text-strong);
+  margin: 1.3em 0 0.4em;
+}
+.reader-prose ul, .reader-prose ol {
+  margin: 0 0 1.1em;
+  padding-left: 1.6em;
+}
+.reader-prose li {
+  margin: 0.4em 0;
+  line-height: 1.7;
+}
+.reader-prose li::marker {
+  color: var(--reader-muted);
+}
+.reader-prose blockquote {
+  border-left: 3px solid var(--reader-heading-accent);
+  background: var(--reader-blockquote);
+  margin: 1.2em 0;
+  padding: 0.85em 1.15em;
+  border-radius: 0 10px 10px 0;
+  color: var(--reader-muted);
+  font-style: italic;
+}
+.reader-prose hr {
+  border: 0;
+  border-top: 1px solid var(--reader-rule);
+  margin: 2em 0;
+}
+.reader-prose a {
+  color: var(--reader-link);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--reader-link) 35%, transparent);
+  text-underline-offset: 2px;
+}
+.reader-prose a:hover {
+  text-decoration-color: var(--reader-link);
+}
+.reader-prose strong {
+  color: var(--reader-text-strong);
+  font-weight: 600;
+}
+.reader-prose code:not(pre code) {
+  background: var(--reader-code-inline-bg);
+  color: var(--reader-code-inline-fg);
+  padding: 0.15em 0.4em;
+  border-radius: 6px;
+  font-size: 0.92em;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+.reader-prose pre {
+  background: var(--reader-code-block-bg) !important;
+  border-radius: 12px;
+  padding: 1em 1.15em;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  overflow-x: auto;
+  margin: 1.2em 0;
+}
+.reader-prose table {
+  width: 100%;
+  margin: 1.3em 0;
+  border-collapse: separate;
+  border-spacing: 0;
+  border-radius: 12px;
+  overflow: hidden;
+  font-size: 0.95em;
+}
+.reader-prose th,
+.reader-prose td {
+  border-bottom: 1px solid var(--reader-rule);
+  padding: 0.65em 0.85em;
+  text-align: left;
+}
+.reader-prose th {
+  font-weight: 600;
+  color: var(--reader-text-strong);
+  background: color-mix(in srgb, var(--reader-text) 6%, transparent);
+}
+.reader-prose img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 10px;
+  margin: 1.2em 0;
+}
