@@ -1142,6 +1142,132 @@ describe("router event mapping", () => {
     },
   );
 
+  // -------------------------------------------------------------------------
+  // Codex round 2 bug 2026-05-15: wire-borne `tool_call_id` is the
+  // authoritative source.
+  // -------------------------------------------------------------------------
+  //
+  // Pre-fix flow with PR #132 only:
+  //   1. server emits `task/updated` with NO `turn_id`
+  //   2. bridge guard rejects every such envelope → TaskStore stays empty
+  //   3. `handleSpawnComplete` calls `resolveToolCallIdForTask` → empty
+  //      lookup → returns raw supervisor `task_id`
+  //   4. `findThreadIdForToolCall(supervisor_task_id)` misses (ThreadStore
+  //      registered the LLM tool_call_id) → status flip no-ops
+  //   5. spinner spins forever
+  //
+  // Post-fix: server adds `tool_call_id` directly on the wire (parallel
+  // server PR). Bridge passes it through; handler uses it as the
+  // authoritative source, bypassing the TaskStore race entirely. This
+  // test asserts the happy path WITH the new field AND an empty TaskStore
+  // (production scenario after both PRs land).
+  it(
+    "handleSpawnComplete uses wire-borne tool_call_id when TaskStore is empty (production scenario, codex round 2)",
+    () => {
+      const cmid = "cmid-wire-tcid-spawn";
+      // Realistic shapes: supervisor UUID vs LLM tool call id (distinct).
+      const supervisorTaskId = "task_01J_SUPERVISOR_PODCAST";
+      const llmToolCallId = "call_llm_podcast_wire";
+      seedThread(cmid, "Generate a podcast about Rust async");
+      ThreadStore.appendAssistantToken(cmid, "Background work started.");
+      ThreadStore.finalizeAssistant(cmid, { committedSeq: 4 });
+
+      // tool/started registers the LLM tool_call_id (the chip's id).
+      handleToolStarted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: llmToolCallId,
+          tool_name: "podcast_generate",
+        },
+      );
+
+      // CRITICAL: do NOT seed TaskStore. This is what the bridge guard
+      // bug created in production — the watcher never polled because
+      // `crew:bg_tasks` was never dispatched (every `task/updated` was
+      // dropped at the guard). The fallback `resolveToolCallIdForTask`
+      // lookup misses → returns the supervisor UUID → ThreadStore
+      // lookup misses → spinner stuck. The wire-borne `tool_call_id`
+      // is the only escape hatch in this scenario.
+
+      handleSpawnComplete(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          thread_id: cmid,
+          task_id: supervisorTaskId,
+          // The parallel server PR adds this field — the LLM tool_call_id.
+          tool_call_id: llmToolCallId,
+          response_to_client_message_id: cmid,
+          seq: 12,
+          message_id: "msg-wire-tcid",
+          source: "background",
+          cursor: { stream: SESSION, seq: 12 },
+          persisted_at: "2026-05-15T00:00:05Z",
+          content: "Podcast generated.",
+        },
+      );
+
+      // Post-fix: chip flips to complete via the wire-borne id, even
+      // though TaskStore is empty (which is the production reality).
+      const [thread] = ThreadStore.getThreads(SESSION);
+      const tc = thread.responses[0].toolCalls.find(
+        (c) => c.id === llmToolCallId,
+      );
+      expect(tc?.status).toBe("complete");
+    },
+  );
+
+  it(
+    "handleTaskUpdated state=failed uses wire-borne tool_call_id with no prior turn_id (codex round 2)",
+    () => {
+      // Server-side `TaskUpdatedEvent` carries NO `turn_id`. With the
+      // bridge guard relaxed, the envelope is now ACCEPTED but
+      // `event.turn_id` is `undefined`. Routing must go via
+      // `findThreadIdForToolCall(wire.tool_call_id)` instead of trusting
+      // `event.turn_id`. Pre-fix the chip stayed running because the
+      // ThreadStore call hit a raw supervisor UUID that didn't match
+      // any registered tool call.
+      const cmid = "cmid-wire-tcid-failed";
+      const supervisorTaskId = "task_01J_SUPERVISOR_FAIL";
+      const llmToolCallId = "call_llm_failed_wire";
+      seedThread(cmid, "deep_search");
+      ThreadStore.appendAssistantToken(cmid, "Started.");
+      ThreadStore.finalizeAssistant(cmid, { committedSeq: 2 });
+
+      handleToolStarted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: llmToolCallId,
+          tool_name: "deep_search",
+        },
+      );
+
+      // No TaskStore seeding (production reality, codex round 2 root
+      // cause). No turn_id on the wire envelope.
+      handleTaskUpdated(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          // turn_id intentionally OMITTED (server doesn't emit it).
+          task_id: supervisorTaskId,
+          tool_call_id: llmToolCallId,
+          state: "failed",
+        },
+      );
+
+      const [thread] = ThreadStore.getThreads(SESSION);
+      const tc = thread.responses[0].toolCalls.find(
+        (c) => c.id === llmToolCallId,
+      );
+      expect(tc?.status).toBe("error");
+    },
+  );
+
   // ---- M10 Phase 2 regression-pin: lock the architecture ------------------
   //
   // This test fixes the failure mode that motivated M10. The legacy splice

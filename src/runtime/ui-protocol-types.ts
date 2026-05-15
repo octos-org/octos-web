@@ -224,6 +224,14 @@ export interface TurnSpawnCompleteEvent {
   /** Always populated. Identifies the originating `spawn_only` task —
    *  used by Phase 4's `read_task_output` flow. */
   task_id: string;
+  /** Optional. The LLM-emitted `tool_call_id` of the originating
+   *  `spawn_only` tool call. Added in the parallel server PR so the
+   *  client can flip the right chip without the supervisor-UUID-to-LLM-id
+   *  TaskStore round-trip (which races against the task watcher's poll
+   *  and silently mis-resolves when the store is empty). Falls back to
+   *  the existing `resolveToolCallIdForTask(task_id)` helper on legacy
+   *  daemons that don't carry the field yet. */
+  tool_call_id?: string;
   /** Optional in Phase 1 (server emits a thread-id-flavoured value); used
    *  as advisory placement only. Phase 4 will populate this with the real
    *  user-prompt cmid. */
@@ -254,8 +262,19 @@ export interface TurnSpawnCompleteEvent {
 
 export interface TaskUpdatedEvent {
   session_id: string;
-  turn_id: string;
+  /** Optional. Server's `TaskUpdatedEvent` struct does NOT carry
+   *  `turn_id` (the supervisor publishes by `task_id` directly), so the
+   *  field is `undefined` on the wire today. Kept optional rather than
+   *  removed for forward compatibility with a future server PR that
+   *  threads it through. */
+  turn_id?: string;
   task_id: string;
+  /** Optional. The LLM-emitted `tool_call_id` of the originating
+   *  `spawn_only` tool call. Added in the parallel server PR so the
+   *  client can flip the right chip directly from the wire instead of
+   *  via the TaskStore poll lookup. Falls back to
+   *  `resolveToolCallIdForTask(task_id)` for legacy daemons. */
+  tool_call_id?: string;
   state: string;
   title?: string;
   runtime_detail?: string;
@@ -264,8 +283,13 @@ export interface TaskUpdatedEvent {
 
 export interface TaskOutputDeltaEvent {
   session_id: string;
-  turn_id: string;
+  /** Optional. Same rationale as `TaskUpdatedEvent.turn_id` — server's
+   *  output-delta envelope has no `turn_id`; the field is preserved for
+   *  forward compatibility. */
+  turn_id?: string;
   task_id: string;
+  /** Optional. Same rationale as `TaskUpdatedEvent.tool_call_id`. */
+  tool_call_id?: string;
   chunk: string;
   cursor?: { offset: number };
 }

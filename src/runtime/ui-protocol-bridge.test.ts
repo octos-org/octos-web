@@ -551,6 +551,52 @@ describe("type guards (fail-closed)", () => {
     ).toBeNull();
   });
 
+  // Codex round 2 bug 2026-05-15: pre-fix this guard required
+  // `isString(p.turn_id)`. The server's `TaskUpdatedEvent` struct does
+  // NOT carry `turn_id` (supervisor publishes by `task_id` directly),
+  // so EVERY production envelope was silently dropped at the guard
+  // layer → TaskStore never populated → `resolveToolCallIdForTask`
+  // always fell back to the raw supervisor UUID → spinner stuck.
+  // Post-fix: guard accepts the envelope WITHOUT `turn_id`, picks up
+  // the new `tool_call_id` directly from the wire so the handler can
+  // flip the chip without the TaskStore race.
+  it(
+    "accepts task/updated WITHOUT turn_id BUT WITH tool_call_id (codex round 2 regression test)",
+    () => {
+      const ev = guards.guardTaskUpdated({
+        session_id: "s",
+        // turn_id intentionally OMITTED — matches server wire shape.
+        task_id: "task_supervisor_uuid",
+        tool_call_id: "call_llm_emitted_id",
+        state: "failed",
+      });
+      // Pre-fix: `expected envelope to be accepted, was null` — guard
+      // dropped the envelope on the `turn_id` requirement.
+      expect(ev).not.toBeNull();
+      expect(ev?.turn_id).toBeUndefined();
+      expect(ev?.tool_call_id).toBe("call_llm_emitted_id");
+      expect(ev?.task_id).toBe("task_supervisor_uuid");
+      expect(ev?.state).toBe("failed");
+    },
+  );
+
+  it(
+    "accepts task/output/delta WITHOUT turn_id BUT WITH tool_call_id (codex round 2 regression test)",
+    () => {
+      const ev = guards.guardTaskOutputDelta({
+        session_id: "s",
+        // turn_id intentionally OMITTED — matches server wire shape.
+        task_id: "task_supervisor_uuid",
+        tool_call_id: "call_llm_emitted_id",
+        chunk: "stdout line",
+      });
+      expect(ev).not.toBeNull();
+      expect(ev?.turn_id).toBeUndefined();
+      expect(ev?.tool_call_id).toBe("call_llm_emitted_id");
+      expect(ev?.chunk).toBe("stdout line");
+    },
+  );
+
   it("rejects task/output/delta without chunk", () => {
     expect(
       guards.guardTaskOutputDelta({
