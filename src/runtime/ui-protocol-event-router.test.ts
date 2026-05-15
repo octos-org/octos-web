@@ -855,6 +855,293 @@ describe("router event mapping", () => {
     },
   );
 
+  // -------------------------------------------------------------------------
+  // Codex final-3 gap 1: addToolCall must NOT revert terminal status to
+  // "running" when a `tool/started` event replays for a settled tool call.
+  // -------------------------------------------------------------------------
+  //
+  // Pre-fix sequence (mini5 with bundle index-CnOGu3kL.js, PR #131 only):
+  //   1. tool/started → addToolCall(..., status: "running")
+  //   2. background completes
+  //   3. turn/spawn_complete → setToolCallStatus(..., "complete") ✓
+  //   4. **replayed tool/started for same tool_call_id** → addToolCall
+  //      force-set status BACK to "running"
+  //   5. all in-bubble spinner gates re-activate → "tool bubble still has
+  //      spinning even task is done"
+  //
+  // Post-fix: addToolCall preserves terminal status. Idempotent re-registration
+  // is fine; reopening a settled tool call is the bug.
+  it(
+    "handleToolStarted replayed after handleSpawnComplete does NOT revert complete → running (codex final-3 gap 1)",
+    () => {
+      const cmid = "cmid-replay-revert";
+      const taskId = "task_replay_revert";
+      seedThread(cmid, "Generate a podcast");
+      ThreadStore.appendAssistantToken(cmid, "Background work started.");
+      ThreadStore.finalizeAssistant(cmid, { committedSeq: 3 });
+
+      // 1. tool/started → status="running"
+      handleToolStarted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: taskId,
+          tool_name: "podcast_generate",
+        },
+      );
+      expect(
+        ThreadStore.getThreads(SESSION)[0].responses[0].toolCalls.find(
+          (c) => c.id === taskId,
+        )?.status,
+      ).toBe("running");
+
+      // 2./3. turn/spawn_complete → status="complete"
+      handleSpawnComplete(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          thread_id: cmid,
+          task_id: taskId,
+          response_to_client_message_id: cmid,
+          seq: 9,
+          message_id: "msg-replay-revert",
+          source: "background",
+          cursor: { stream: SESSION, seq: 9 },
+          persisted_at: "2026-05-15T00:00:00Z",
+          content: "Podcast generated.",
+        },
+      );
+      expect(
+        ThreadStore.getThreads(SESSION)[0].responses[0].toolCalls.find(
+          (c) => c.id === taskId,
+        )?.status,
+      ).toBe("complete");
+
+      // 4. **Replayed `tool/started` for same id.** Pre-fix this reset
+      //    status to "running"; post-fix it preserves "complete".
+      handleToolStarted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: taskId,
+          tool_name: "podcast_generate",
+        },
+      );
+
+      // CRITICAL: the spinner gate must clear and stay cleared.
+      const [thread] = ThreadStore.getThreads(SESSION);
+      const tc = thread.responses[0].toolCalls.find((c) => c.id === taskId);
+      expect(tc?.status).toBe("complete");
+    },
+  );
+
+  it(
+    "handleToolStarted replayed after error status does NOT revert error → running (codex final-3 gap 1)",
+    () => {
+      // Symmetric: terminal `error` (from task/updated failed/errored) also
+      // must be preserved against a replayed tool/started.
+      const cmid = "cmid-replay-error";
+      const taskId = "task_replay_error";
+      seedThread(cmid, "Generate a podcast");
+      ThreadStore.appendAssistantToken(cmid, "Started.");
+      ThreadStore.finalizeAssistant(cmid, { committedSeq: 2 });
+
+      handleToolStarted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: taskId,
+          tool_name: "deep_search",
+        },
+      );
+      // Drive an error terminal status via setToolCallStatus directly.
+      ThreadStore.setToolCallStatus(cmid, taskId, "error");
+      expect(
+        ThreadStore.getThreads(SESSION)[0].responses[0].toolCalls.find(
+          (c) => c.id === taskId,
+        )?.status,
+      ).toBe("error");
+
+      // Replay tool/started → must preserve "error".
+      handleToolStarted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: taskId,
+          tool_name: "deep_search",
+        },
+      );
+      const [thread] = ThreadStore.getThreads(SESSION);
+      const tc = thread.responses[0].toolCalls.find((c) => c.id === taskId);
+      expect(tc?.status).toBe("error");
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // Codex final-3 gap 2: setToolCallStatus full-thread fallback when
+  // `pickAssistantSlot` misses.
+  // -------------------------------------------------------------------------
+  //
+  // Real-world sequence (mini5 reproduction): tool/started lands the tool
+  // card on responses[0] (the spawn-ack bubble). turn/spawn_complete
+  // appends a NEW bubble at responses[1]. Now responses[1] is the most
+  // recent assistant slot — `pickAssistantSlot` returns it, the tool-call
+  // lookup misses, and `setToolCallStatus` no-ops. Without the
+  // full-thread fallback, terminal status flips (from a replayed
+  // task/updated `completed`, or a redrive of turn/spawn_complete) all
+  // silently no-op, and the chip stays running forever.
+  it(
+    "setToolCallStatus falls back to a full-thread scan when pickAssistantSlot returns the wrong bubble (codex final-3 gap 2)",
+    () => {
+      const cmid = "cmid-slot-fallback";
+      const toolCallId = "tc_slot_fallback";
+      seedThread(cmid, "Generate a podcast");
+      ThreadStore.appendAssistantToken(cmid, "Background work started.");
+      ThreadStore.finalizeAssistant(cmid, { committedSeq: 3 });
+
+      // tool/started lands the chip on responses[0].
+      handleToolStarted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: toolCallId,
+          tool_name: "podcast_generate",
+        },
+      );
+      // Append a NEW completion bubble at responses[1]. Now responses[1]
+      // is the most recent slot (the one pickAssistantSlot returns) but
+      // does NOT carry the tool card.
+      ThreadStore.appendCompletionBubble(cmid, {
+        text: "Another response.",
+        media: [],
+        spawnComplete: true,
+        sourceClientMessageId: cmid,
+        historySeq: 12,
+        messageId: "msg-extra",
+        persistedAt: "2026-05-15T00:00:01Z",
+        sessionId: SESSION,
+      });
+
+      // Sanity check: 2 bubbles exist, tool call is on responses[0],
+      // responses[1] has no tool cards.
+      const [before] = ThreadStore.getThreads(SESSION);
+      expect(before.responses).toHaveLength(2);
+      expect(
+        before.responses[0].toolCalls.find((c) => c.id === toolCallId)
+          ?.status,
+      ).toBe("running");
+      expect(before.responses[1].toolCalls).toHaveLength(0);
+
+      // Now flip the tool status. With the old `pickAssistantSlot`-only
+      // logic this would no-op because the picker returns responses[1]
+      // (no tool call there). The full-thread fallback walks every
+      // assistant slot and finds the tool card on responses[0].
+      const applied = ThreadStore.setToolCallStatus(
+        cmid,
+        toolCallId,
+        "complete",
+      );
+      expect(applied).toBe(true);
+
+      const [after] = ThreadStore.getThreads(SESSION);
+      const tc = after.responses[0].toolCalls.find((c) => c.id === toolCallId);
+      expect(tc?.status).toBe("complete");
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // Codex final-3 bonus check: server's `task_id` and `tool_call_id` are
+  // DIFFERENT identifiers on the wire.
+  // -------------------------------------------------------------------------
+  //
+  // `TaskId::new()` mints a fresh UUID in `register_full` (see
+  // `crates/octos-agent/src/task_supervisor.rs:1180`) — distinct from the
+  // LLM's `tool_call_id` which is stored as a separate field on the
+  // `BackgroundTask` struct. `TurnSpawnCompleteEvent.task_id` and
+  // `TaskUpdatedEvent.task_id` carry the supervisor UUID; only
+  // `ToolStartedEvent.tool_call_id` carries the LLM id. The PR #131 tests
+  // used identical values for both fields, hiding the divergence — in
+  // production they always differ.
+  //
+  // Fix: translate `event.task_id → task.tool_call_id` via
+  // `TaskStore.getTasks(...)` (populated by the task-watcher poll's
+  // `crew:task_status` event), then look up + flip status via the
+  // resolved id.
+  it(
+    "handleSpawnComplete resolves task_id → tool_call_id via TaskStore (codex final-3 bonus check)",
+    async () => {
+      const cmid = "cmid-task-bonus";
+      // Realistic shapes: supervisor UUID vs LLM tool call id.
+      const supervisorTaskId = "task_01J9PODCAST_SUPERVISOR";
+      const llmToolCallId = "call_abc_llm_emitted";
+      seedThread(cmid, "Generate a podcast");
+      ThreadStore.appendAssistantToken(cmid, "Started.");
+      ThreadStore.finalizeAssistant(cmid, { committedSeq: 3 });
+
+      // tool/started registers the LLM's tool_call_id (NOT the
+      // supervisor id) — this is how production wires arrive.
+      handleToolStarted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: llmToolCallId,
+          tool_name: "podcast_generate",
+        },
+      );
+
+      // Seed the TaskStore mapping (production: the task watcher's
+      // poll loop dispatches `crew:task_status` with a
+      // `BackgroundTaskInfo` carrying both ids).
+      const TaskStore = await import("@/store/task-store");
+      TaskStore.mergeTask(SESSION, {
+        id: supervisorTaskId,
+        tool_name: "podcast_generate",
+        tool_call_id: llmToolCallId,
+        status: "running",
+        started_at: "2026-05-15T00:00:00Z",
+        error: null,
+      });
+
+      // turn/spawn_complete carries the SUPERVISOR task_id, not the
+      // LLM tool_call_id.
+      handleSpawnComplete(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          thread_id: cmid,
+          task_id: supervisorTaskId,
+          response_to_client_message_id: cmid,
+          seq: 11,
+          message_id: "msg-bonus",
+          source: "background",
+          cursor: { stream: SESSION, seq: 11 },
+          persisted_at: "2026-05-15T00:00:05Z",
+          content: "Podcast generated.",
+        },
+      );
+
+      // Post-fix: handleSpawnComplete translated through TaskStore and
+      // flipped the right tool call. Pre-fix it would have looked up by
+      // `supervisorTaskId`, missed, and left the chip running.
+      const [thread] = ThreadStore.getThreads(SESSION);
+      const tc = thread.responses[0].toolCalls.find(
+        (c) => c.id === llmToolCallId,
+      );
+      expect(tc?.status).toBe("complete");
+      // Reset the TaskStore between tests (no afterEach helper exposed,
+      // but each test seeds its own).
+      TaskStore.clearTasks(SESSION);
+    },
+  );
+
   // ---- M10 Phase 2 regression-pin: lock the architecture ------------------
   //
   // This test fixes the failure mode that motivated M10. The legacy splice

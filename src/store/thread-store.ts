@@ -791,6 +791,13 @@ export function addToolCall(
   //
   // Bug 2026-05-15: see `replaceAssistantSlot` for the React.memo
   // freeze that motivates the immutable updates below.
+  //
+  // Bug 2026-05-15 (codex final-3 gap 1): when an existing tool call is
+  // already in a terminal state (`"complete"` or `"error"`), preserve
+  // that status — DO NOT force it back to `"running"`. Pre-fix, a
+  // replayed `tool/started` for a settled task reverted the chip to
+  // running, re-activating every in-bubble spinner gate. Idempotent
+  // re-registration is fine; reopening a settled tool call is the bug.
   if (toolCallId) {
     for (const candidate of [
       found.thread.pendingAssistant,
@@ -799,8 +806,15 @@ export function addToolCall(
       if (!candidate) continue;
       const idx = candidate.toolCalls.findIndex((tc) => tc.id === toolCallId);
       if (idx !== -1) {
+        const existing = candidate.toolCalls[idx];
+        // Preserve terminal status — only flip to "running" when the
+        // tool call has not yet settled.
+        const preservedStatus =
+          existing.status === "complete" || existing.status === "error"
+            ? existing.status
+            : ("running" as const);
         const newTcs = candidate.toolCalls.map((tc, i) =>
-          i === idx ? { ...tc, status: "running" as const } : tc,
+          i === idx ? { ...tc, status: preservedStatus } : tc,
         );
         replaceAssistantSlot(found.thread, candidate, {
           ...candidate,
@@ -823,8 +837,15 @@ export function addToolCall(
   if (toolCallId) {
     const byId = tcs.findIndex((tc) => tc.id === toolCallId);
     if (byId !== -1) {
+      const existing = tcs[byId];
+      // Bug 2026-05-15 (codex final-3 gap 1): preserve terminal status —
+      // see the cross-slot branch above for the same logic.
+      const preservedStatus =
+        existing.status === "complete" || existing.status === "error"
+          ? existing.status
+          : ("running" as const);
       const newTcs = tcs.map((tc, i) =>
-        i === byId ? { ...tc, status: "running" as const } : tc,
+        i === byId ? { ...tc, status: preservedStatus } : tc,
       );
       replaceAssistantSlot(found.thread, slot, {
         ...slot,
@@ -1012,32 +1033,74 @@ export function setToolCallStatus(
   toolCallId: string,
   status: ThreadToolCall["status"],
   toolName?: string,
-): void {
+): boolean {
   const found = ensureOrphanThread(threadId);
-  if (!found) return;
+  if (!found) return false;
   const slot = pickAssistantSlot(found.thread);
-  if (!slot) return;
-  const tcs = slot.toolCalls;
+
+  // Resolve the slot that actually contains the tool call. The
+  // `pickAssistantSlot` heuristic returns the in-flight pending OR the
+  // MOST RECENT finalized response — that's correct for the live path
+  // but misses when an EARLIER ack bubble holds the tool card and a
+  // later completion bubble has since been appended. Without this
+  // fallback the lookup misses and `setToolCallStatus` silently
+  // no-ops, leaving the chip's spinner spinning forever (codex
+  // final-3 gap 2). When the slot picker misses, fall back to a
+  // full-thread scan: find the assistant message in this thread that
+  // actually contains a `toolCalls[i].id === toolCallId`.
+  let containingSlot: ThreadMessage | null = null;
   let idx = -1;
-  if (toolCallId) {
-    idx = tcs.findIndex((tc) => tc.id === toolCallId);
-  } else if (toolName) {
-    // Legacy daemon path — route by tool name to the most recent match.
-    for (let i = tcs.length - 1; i >= 0; i -= 1) {
-      if (tcs[i].name === toolName) {
-        idx = i;
+  if (slot) {
+    let tentativeIdx = -1;
+    if (toolCallId) {
+      tentativeIdx = slot.toolCalls.findIndex((tc) => tc.id === toolCallId);
+    } else if (toolName) {
+      // Legacy daemon path — route by tool name to the most recent match.
+      for (let i = slot.toolCalls.length - 1; i >= 0; i -= 1) {
+        if (slot.toolCalls[i].name === toolName) {
+          tentativeIdx = i;
+          break;
+        }
+      }
+    }
+    if (tentativeIdx !== -1) {
+      containingSlot = slot;
+      idx = tentativeIdx;
+    }
+  }
+  // Slot picker missed → scan every assistant slot in the thread.
+  // Cheap; only fires when the happy path missed. Walks
+  // pendingAssistant + responses (most-recent-first) so the chosen
+  // slot is the same one a future `pickAssistantSlot` would prefer.
+  if (idx === -1 && toolCallId) {
+    const candidates: ThreadMessage[] = [];
+    if (found.thread.pendingAssistant) {
+      candidates.push(found.thread.pendingAssistant);
+    }
+    for (let i = found.thread.responses.length - 1; i >= 0; i -= 1) {
+      const candidate = found.thread.responses[i];
+      if (candidate.role === "assistant") candidates.push(candidate);
+    }
+    for (const candidate of candidates) {
+      const tentativeIdx = candidate.toolCalls.findIndex(
+        (tc) => tc.id === toolCallId,
+      );
+      if (tentativeIdx !== -1) {
+        containingSlot = candidate;
+        idx = tentativeIdx;
         break;
       }
     }
   }
-  if (idx === -1) return;
+  if (!containingSlot || idx === -1) return false;
   // Bug 2026-05-15: see `replaceAssistantSlot` for the React.memo
   // freeze — assigning into `tcs[idx]` keeps the surrounding
   // `ThreadMessage` reference identical and the bubble's terminal
   // status chip never repainted.
+  const tcs = containingSlot.toolCalls;
   const newTcs = tcs.map((tc, i) => (i === idx ? { ...tc, status } : tc));
-  replaceAssistantSlot(found.thread, slot, {
-    ...slot,
+  replaceAssistantSlot(found.thread, containingSlot, {
+    ...containingSlot,
     toolCalls: newTcs,
   });
   notify();
@@ -1058,6 +1121,7 @@ export function setToolCallStatus(
       }
     }
   }
+  return true;
 }
 
 /**
