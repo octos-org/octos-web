@@ -738,7 +738,24 @@ export const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
             text={message.text}
             className="prose prose-invert prose-sm max-w-none min-w-0 break-words"
           />
-        ) : isStreaming ? (
+        ) : isStreaming && message.toolCalls.length === 0 ? (
+          // Streaming-text placeholder dots. Sibling fix to commits
+          // 586ce04 / f8717fc, both of which gated their respective
+          // leading icons by `toolCall.status` so a settled call
+          // stopped animating. Those gates covered the LOADER icons
+          // but missed THIS placeholder: when `tool/completed` lands
+          // BEFORE `turn/completed` the assistant is still
+          // `isStreaming`, `message.text` is still empty (LLM has
+          // not yet emitted post-tool text, may never), and the
+          // three `animate-pulse` dots render right above a
+          // `ToolCallBubble` whose status is already `complete`.
+          // From the user's seat the bubble reads
+          // "podcast_generate: completed" with a spinner pulsing
+          // inside it (mini5 2026-05-15). The tool call's own
+          // running / complete / error icon is the unambiguous
+          // liveness affordance — gate the dots on
+          // `toolCalls.length === 0` so they only surface for plain
+          // text turns where they're the only thing on the bubble.
           <span className="inline-flex items-center gap-1">
             <span className="h-2 w-2 rounded-full bg-accent/60 animate-pulse" />
             <span className="h-2 w-2 rounded-full bg-accent/60 animate-pulse [animation-delay:150ms]" />
