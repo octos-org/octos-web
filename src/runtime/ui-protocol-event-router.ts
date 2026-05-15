@@ -446,6 +446,55 @@ export function handleSpawnComplete(
     return;
   }
 
+  // Bug 2026-05-15 (codex): flip the originating tool call's status to
+  // `complete` BEFORE appending the new completion bubble. Pre-fix
+  // `handleSpawnComplete` appended the bubble and dropped the
+  // toolNameByCallId cache but never updated ThreadStore's tool-call
+  // `status` field — so `addToolCall(..., status:"running")` left the
+  // chip stuck at "running" forever after the background work finished.
+  // Every spinner/icon gated on `toolCall.status === "running"`
+  // (`ToolProgressIndicator`, `ToolCallBubble` per-tool icon,
+  // streaming-dots placeholder) kept spinning.
+  //
+  // The `turn/spawn_complete` envelope is only emitted on SUCCESS (see
+  // `TurnSpawnCompleteEvent` in `crates/octos-core/src/ui_protocol.rs`
+  // — no `success` field); failures travel through `task/updated
+  // state="failed"|"errored"` which `handleTaskUpdated` already maps
+  // to `setToolCallStatus(..., "error")`. So this site is
+  // unconditionally `"complete"`.
+  //
+  // Ordering matters: `setToolCallStatus` walks the host thread's
+  // assistant slots via `pickAssistantSlot`, which returns the MOST
+  // RECENT assistant response. If we appended the new completion
+  // bubble first, that bubble would become the "most recent" slot —
+  // and the tool call lives on the EARLIER ack bubble, so the lookup
+  // would miss and the status flip would no-op. Run the status flip
+  // first, while the ack bubble is still the topmost finalized slot.
+  //
+  // Locator strategy: resolve by `task_id`. The envelope's `turn_id` /
+  // `thread_id` may be a foreign id (codex orphan-thread defence
+  // scenario in `chat-thread-tool-failure-preserves-user-prompt.test`)
+  // that does NOT contain the tool call — passing such an id to
+  // `setToolCallStatus` would mint an empty-user orphan thread via
+  // `ensureOrphanThread` and steal attribution from the user's real
+  // prompt. Use the side-effect-free `findThreadIdForToolCall` lookup
+  // instead — it searches all threads in the active session for a
+  // tool call with this id and returns the host thread_id (or null).
+  // No-op when the lookup misses (the originating `tool/started` may
+  // not have landed yet, or fired into a different session).
+  const statusHostThreadId = ThreadStore.findThreadIdForToolCall(
+    cfg.sessionId,
+    cfg.topic,
+    event.task_id,
+  );
+  if (statusHostThreadId) {
+    ThreadStore.setToolCallStatus(
+      statusHostThreadId,
+      event.task_id,
+      "complete",
+    );
+  }
+
   ThreadStore.appendCompletionBubble(placementKey, {
     text: event.content,
     media: event.media ?? [],

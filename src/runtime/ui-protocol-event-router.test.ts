@@ -735,6 +735,126 @@ describe("router event mapping", () => {
     expect(completions).toHaveLength(1);
   });
 
+  // -------------------------------------------------------------------------
+  // Stuck-spinner-after-spawn_only-completion bug — codex independent diagnosis
+  // -------------------------------------------------------------------------
+  //
+  // Pre-fix gap: `handleSpawnComplete` (the terminal `turn/spawn_complete`
+  // signal for spawn_only background completion) appended the completion
+  // bubble and dropped the `toolNameByCallId` cache, but it NEVER called
+  // `ThreadStore.setToolCallStatus(toolCallId, "complete")`. So the
+  // originating `addToolCall(...)` left the tool card stuck at
+  // `status: "running"` after the work finished, and every spinner / icon
+  // gated on `toolCall.status === "running"` (`ToolProgressIndicator`,
+  // `ToolCallBubble` per-tool icon, streaming-dots placeholder) kept
+  // spinning. The four cosmetic commits (586ce04, f8717fc2, 27420f1) all
+  // correctly gate on `status` — this test fixes WHO updates status.
+  //
+  // The `turn/spawn_complete` envelope has NO `success` field (see the
+  // `TurnSpawnCompleteEvent` wire struct in
+  // `crates/octos-core/src/ui_protocol.rs`). The envelope is emitted ONLY
+  // on successful completion; failures arrive via `task/updated`
+  // `state="failed"|"errored"` which `handleTaskUpdated` already maps to
+  // `setToolCallStatus(..., "error")` (test on line 436).
+  it(
+    "turn/spawn_complete flips the originating tool call status to complete (stuck-spinner fix)",
+    () => {
+      const cmid = "cmid-spawn-status";
+      const taskId = "task_podcast_1";
+      seedThread(cmid, "Generate a podcast about Rust async");
+
+      // Real spawn_only flow: `turn/completed` lands FIRST (server-side
+      // ack), THEN `tool/started` arrives for the long-running tool that
+      // runs in the background. So we finalize before adding the tool.
+      ThreadStore.appendAssistantToken(cmid, "Background work started.");
+      ThreadStore.finalizeAssistant(cmid, { committedSeq: 5 });
+
+      // `tool/started` lands the tool card on the finalized response
+      // (via `pickAssistantSlot` fallback). Status: "running".
+      handleToolStarted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: taskId,
+          tool_name: "podcast_generate",
+        },
+      );
+
+      // Sanity check: tool card was placed and is running.
+      const beforeEvt = ThreadStore.getThreads(SESSION)[0];
+      const beforeTc = beforeEvt.responses[0].toolCalls.find(
+        (c) => c.id === taskId,
+      );
+      expect(beforeTc?.status).toBe("running");
+
+      // Fire the terminal `turn/spawn_complete` envelope.
+      const evt: TurnSpawnCompleteEvent = {
+        session_id: SESSION,
+        turn_id: cmid,
+        thread_id: cmid,
+        task_id: taskId,
+        response_to_client_message_id: cmid,
+        seq: 17,
+        message_id: "msg-spawn-status",
+        source: "background",
+        cursor: { stream: SESSION, seq: 17 },
+        persisted_at: "2026-05-04T00:00:00Z",
+        content: "✓ podcast generated (output.mp3)",
+        media: ["output.mp3"],
+      };
+      handleSpawnComplete({ sessionId: SESSION }, evt);
+
+      // Post-fix: the originating tool call flips to `complete`, so every
+      // spinner / icon gated on `toolCall.status === "running"` clears.
+      const [thread] = ThreadStore.getThreads(SESSION);
+      const tc = thread.responses[0].toolCalls.find((c) => c.id === taskId);
+      expect(tc?.status).toBe("complete");
+    },
+  );
+
+  it(
+    "turn/spawn_complete flips status when only response_to_client_message_id resolves the thread",
+    () => {
+      // Same bug, narrower placement path: when `event.turn_id` is absent
+      // (older daemons) the placement key falls back to
+      // `response_to_client_message_id`. The status-update path must use
+      // the same fallback so the tool call still locates its host thread.
+      const cmid = "cmid-spawn-status-fallback";
+      const taskId = "task_deep_search_fallback";
+      seedThread(cmid, "ask");
+      ThreadStore.appendAssistantToken(cmid, "Started.");
+      ThreadStore.finalizeAssistant(cmid, { committedSeq: 2 });
+      handleToolStarted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: taskId,
+          tool_name: "deep_search",
+        },
+      );
+
+      const evt: TurnSpawnCompleteEvent = {
+        session_id: SESSION,
+        // turn_id intentionally omitted
+        task_id: taskId,
+        response_to_client_message_id: cmid,
+        seq: 9,
+        message_id: "msg-spawn-fb",
+        source: "background",
+        cursor: { stream: SESSION, seq: 9 },
+        persisted_at: "2026-05-04T00:00:00Z",
+        content: "Done via fallback.",
+      };
+      handleSpawnComplete({ sessionId: SESSION }, evt);
+
+      const [thread] = ThreadStore.getThreads(SESSION);
+      const tc = thread.responses[0].toolCalls.find((c) => c.id === taskId);
+      expect(tc?.status).toBe("complete");
+    },
+  );
+
   // ---- M10 Phase 2 regression-pin: lock the architecture ------------------
   //
   // This test fixes the failure mode that motivated M10. The legacy splice
