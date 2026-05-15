@@ -14,6 +14,7 @@ import {
   useEffect,
   useMemo,
   memo,
+  type ReactNode,
 } from "react";
 import {
   SendHorizontal,
@@ -30,6 +31,8 @@ import {
   Route,
   ChevronDown,
   ChevronRight,
+  Loader2,
+  Check,
 } from "lucide-react";
 import { useSession } from "@/runtime/session-context";
 import {
@@ -524,6 +527,56 @@ function ToolCallBubble({
   // line as the expanded view, so we skip the chrome.
   const showToggle = progressCount > 1;
 
+  // 2026-05-14 per-tool status icon (sibling to commit `586ce04` which
+  // fixed `ToolProgressIndicator`'s leading icon). The bubble's
+  // wrapper carries an `animate-pulse` while the call is running, but
+  // the user-facing "tool finished" signal was implicit (pulse stops)
+  // and easy to miss when a progress message contained the literal
+  // word "completed" — a `fm_tts` spawn_only on mini5 surfaced
+  // "fm_tts: completed" inside the chip while the bubble kept
+  // pulsing, reading visually as a stuck spinner. Mirroring
+  // `586ce04`'s gate makes the per-tool affordance explicit:
+  //
+  //   - `running`  → animated `Loader2` (data-testid='tool-call-status-spinner')
+  //   - `complete` → static `Check`    (data-testid='tool-call-status-complete-icon')
+  //   - `error`    → static `X`        (data-testid='tool-call-status-error-icon')
+  //
+  // Status is sourced from `toolCall.status`, which `setToolCallStatus`
+  // (handleToolCompleted / handleTaskUpdated path) and
+  // `finalizeAssistant` (turn/completed sweep, running → complete)
+  // already maintain. The wrapper's `animate-pulse` stays for
+  // continuity with prior UX; the icon adds an unambiguous glyph.
+  let statusIcon: ReactNode;
+  if (toolCall.status === "running") {
+    statusIcon = (
+      <Loader2
+        size={10}
+        className="animate-spin text-accent"
+        data-testid="tool-call-status-spinner"
+        aria-label="running"
+      />
+    );
+  } else if (toolCall.status === "complete") {
+    statusIcon = (
+      <Check
+        size={10}
+        className="text-emerald-400"
+        data-testid="tool-call-status-complete-icon"
+        aria-label="complete"
+      />
+    );
+  } else {
+    // status === "error"
+    statusIcon = (
+      <X
+        size={10}
+        className="text-red-400"
+        data-testid="tool-call-status-error-icon"
+        aria-label="error"
+      />
+    );
+  }
+
   return (
     <div
       data-testid="tool-call-bubble"
@@ -534,6 +587,7 @@ function ToolCallBubble({
       // /api/sessions/:id/tasks[i].tool_call_id).
       data-tool-call-id={toolCall.id || undefined}
       data-tool-call-retry-count={toolCall.retryCount}
+      data-tool-status={toolCall.status}
       data-progress-expanded={expanded ? "true" : "false"}
       data-progress-count={progressCount}
       className={`flex flex-col gap-1 rounded-[10px] px-2.5 py-1 text-[10px] font-mono ${
@@ -544,9 +598,12 @@ function ToolCallBubble({
             : "text-muted"
       } glass-pill`}
     >
-      <span>
-        {toolCall.name || "tool"}
-        {retryBadge}
+      <span className="flex items-center gap-1.5">
+        {statusIcon}
+        <span>
+          {toolCall.name || "tool"}
+          {retryBadge}
+        </span>
       </span>
       {progressCount > 0 && (
         <>
