@@ -461,6 +461,119 @@ describe("router event mapping", () => {
     expect(tc?.status).toBe("error");
   });
 
+  // -------------------------------------------------------------------------
+  // Sidebar spinner — live `task/updated` must hydrate TaskStore directly
+  // -------------------------------------------------------------------------
+  //
+  // The sidebar session-row spinner (`useAllTasksBySession()` in
+  // `chat-thread.tsx`) gates on TaskStore having at least one
+  // `spawned`/`running` row for the session. Pre-fix the router's
+  // `handleTaskUpdated` only mutated ThreadStore + dispatched
+  // `crew:bg_tasks` (which arms the 2.5 s task-watcher poll) — it never
+  // mutated TaskStore. The poll itself is currently broken upstream by a
+  // session_key filter mismatch on the server's `/api/sessions/.../tasks`
+  // path (see `task_supervisor.rs:1753-1758`: the WS-side `snapshot_excluding`
+  // path clears the supervisor's `session_key`, so the endpoint returns
+  // `[]` for the very tasks the running session has). So the sidebar
+  // spinner stayed cold for spawn_only tasks even though the wire path
+  // was working.
+  //
+  // Fix: hydrate TaskStore directly from the live `task/updated` envelope
+  // (and from the terminal `turn/spawn_complete` belt-and-braces) so the
+  // sidebar spinner fires regardless of poll state.
+  it("handleTaskUpdated state=\"running\" hydrates TaskStore for the sidebar spinner", async () => {
+    const TaskStore = await import("@/store/task-store");
+    TaskStore.clearTasks(SESSION);
+    seedThread("cmid-sidebar-run");
+    handleTaskUpdated(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-sidebar-run",
+        task_id: "task-sidebar-running",
+        tool_call_id: "tc-sidebar-running",
+        state: "running",
+        title: "deep_search",
+      },
+    );
+    const tasks = TaskStore.getTasks(SESSION);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].id).toBe("task-sidebar-running");
+    expect(tasks[0].status).toBe("running");
+    expect(tasks[0].tool_call_id).toBe("tc-sidebar-running");
+    expect(tasks[0].tool_name).toBe("deep_search");
+    TaskStore.clearTasks(SESSION);
+  });
+
+  it("handleTaskUpdated state=\"completed\" flips the TaskStore row to completed", async () => {
+    const TaskStore = await import("@/store/task-store");
+    TaskStore.clearTasks(SESSION);
+    seedThread("cmid-sidebar-done");
+    handleTaskUpdated(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-sidebar-done",
+        task_id: "task-sidebar-done",
+        tool_call_id: "tc-sidebar-done",
+        state: "running",
+        title: "podcast_generate",
+      },
+    );
+    expect(TaskStore.getTasks(SESSION)[0]?.status).toBe("running");
+    handleTaskUpdated(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-sidebar-done",
+        task_id: "task-sidebar-done",
+        tool_call_id: "tc-sidebar-done",
+        state: "completed",
+      },
+    );
+    const tasks = TaskStore.getTasks(SESSION);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].status).toBe("completed");
+    expect(tasks[0].completed_at).toBeTruthy();
+    TaskStore.clearTasks(SESSION);
+  });
+
+  it("handleSpawnComplete merges a completed TaskStore row even when TaskStore is empty (defence-in-depth)", async () => {
+    // Regression check: the helper must run unconditionally — gating on
+    // a pre-existing row would leave the sidebar stuck if the
+    // `task/updated state="running"` envelope was missed or arrived
+    // after `turn/spawn_complete` due to reorder/replay.
+    const TaskStore = await import("@/store/task-store");
+    TaskStore.clearTasks(SESSION);
+    const cmid = "cmid-sidebar-spawn-only";
+    seedThread(cmid, "Generate a podcast");
+    ThreadStore.appendAssistantToken(cmid, "Background work started.");
+    ThreadStore.finalizeAssistant(cmid, { committedSeq: 5 });
+    handleSpawnComplete(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        thread_id: cmid,
+        task_id: "task-sidebar-spawn-only",
+        tool_call_id: "tc-sidebar-spawn-only",
+        response_to_client_message_id: cmid,
+        seq: 17,
+        message_id: "msg-sidebar-spawn-only",
+        source: "background",
+        cursor: { stream: SESSION, seq: 17 },
+        persisted_at: "2026-05-15T00:00:00Z",
+        content: "Podcast generated.",
+      },
+    );
+    const tasks = TaskStore.getTasks(SESSION);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].id).toBe("task-sidebar-spawn-only");
+    expect(tasks[0].status).toBe("completed");
+    expect(tasks[0].tool_call_id).toBe("tc-sidebar-spawn-only");
+    TaskStore.clearTasks(SESSION);
+  });
+
   it("task/output/delta appends a chunk into the matching tool call timeline", () => {
     seedThread("cmid-6");
     handleTaskUpdated(

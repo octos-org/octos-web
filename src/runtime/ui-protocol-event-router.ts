@@ -526,6 +526,20 @@ export function handleSpawnComplete(
     );
   }
 
+  // Belt-and-braces: clear the sidebar spinner at completion even if
+  // the terminal `task/updated state="completed"` envelope is missed
+  // (it already happens in practice — `turn/spawn_complete` is the
+  // durable completion signal). Run unconditionally so the helper
+  // works for tasks the running-state envelope was never delivered
+  // for (e.g. reorder / replay where completion lands first).
+  mergeLiveTask(
+    cfg.sessionId,
+    cfg.topic,
+    event.task_id,
+    resolvedToolCallId,
+    "completed",
+  );
+
   ThreadStore.appendCompletionBubble(placementKey, {
     text: event.content,
     media: event.media ?? [],
@@ -623,6 +637,25 @@ export function handleTaskUpdated(
     toolNameByCallId.get(resolvedToolCallId) ??
     toolNameByCallId.get(event.task_id) ??
     event.task_id;
+
+  // Hydrate TaskStore directly from the live envelope so the sidebar
+  // session-row spinner (`useAllTasksBySession()` in `chat-thread.tsx`)
+  // lights within ms instead of waiting on the 2.5 s task-watcher poll
+  // — which is currently broken upstream by a server-side session_key
+  // filter mismatch (see `task_supervisor.rs:1753-1758`: the WS-side
+  // `snapshot_excluding` path clears the supervisor's session_key, so
+  // `/api/sessions/.../tasks` returns `[]` for the very tasks the
+  // running session has). The poll path remains intact as redundant
+  // safety net once the server bug is fixed.
+  mergeLiveTask(
+    cfg.sessionId,
+    cfg.topic,
+    event.task_id,
+    resolvedToolCallId,
+    event.state,
+    event.title,
+    event.runtime_detail,
+  );
 
   switch (event.state) {
     case "spawned":
@@ -726,6 +759,67 @@ function resolveToolCallIdForTask(
     }
   }
   return taskId;
+}
+
+/** Hydrate TaskStore from a live `task/updated` (or terminal
+ *  `turn/spawn_complete`) envelope so the sidebar session-row spinner
+ *  (gated on `useAllTasksBySession()` reporting at least one
+ *  `spawned`/`running` task) fires immediately — no dependency on the
+ *  2.5 s task-watcher poll, which is currently broken upstream by a
+ *  server-side `session_key` filter mismatch in `task_supervisor.rs`
+ *  (the WS-side `snapshot_excluding` path clears the supervisor's
+ *  session_key, so `/api/sessions/.../tasks` returns `[]` for the very
+ *  tasks the running session has).
+ *
+ *  The watcher poll path is left intact upstream as a redundant safety
+ *  net once the server bug is fixed; this hydration is the primary
+ *  source of truth for the sidebar today.
+ *
+ *  Unknown / un-mappable states are ignored (no row written), so a
+ *  forward-compat server adding a new state cannot pollute the store
+ *  with `unknown`-status rows. */
+function mergeLiveTask(
+  sessionId: string,
+  topic: string | undefined,
+  taskId: string,
+  toolCallId: string,
+  state: string | undefined,
+  title?: string,
+  runtimeDetail?: string,
+): void {
+  const status =
+    state === "spawned" || state === "pending"
+      ? "spawned"
+      : state === "running"
+        ? "running"
+        : state === "completed"
+          ? "completed"
+          : state === "failed" || state === "errored"
+            ? "failed"
+            : null;
+  if (!status) return;
+
+  const existing = TaskStore.getTasks(sessionId, topic).find(
+    (t) => t.id === taskId,
+  );
+  const nowIso = new Date().toISOString();
+
+  TaskStore.mergeTask(
+    sessionId,
+    {
+      id: taskId,
+      tool_name: title ?? existing?.tool_name ?? "Background task",
+      tool_call_id: toolCallId || existing?.tool_call_id,
+      status,
+      started_at: existing?.started_at ?? nowIso,
+      completed_at:
+        status === "completed" || status === "failed" ? nowIso : null,
+      output_files: existing?.output_files ?? [],
+      error: status === "failed" ? (runtimeDetail ?? null) : null,
+      session_key: sessionId,
+    },
+    topic,
+  );
 }
 
 export function handleTaskOutputDelta(
