@@ -149,4 +149,186 @@ describe("applyTaskStatusToThreadStore", () => {
     applyTaskStatusToThreadStore(SESSION, undefined, task);
     expect(ThreadStore.getThreads(SESSION)).toHaveLength(0);
   });
+
+  // -------------------------------------------------------------------------
+  // Codex final-3 gap 3: dedupe entry must be recorded AFTER the lookup +
+  // status flip actually applied — never before.
+  // -------------------------------------------------------------------------
+  //
+  // Pre-fix sequence:
+  //   1. task-watcher polls /tasks, gets `completed`. Dispatches
+  //      `crew:task_status` → applyTaskStatusToThreadStore.
+  //   2. `synthesizeTaskProgressLine` writes
+  //      `lastTaskStatusById.set(task.id, "completed")` BEFORE the
+  //      `findThreadIdForToolCall` lookup.
+  //   3. lookup MISSES (tool/started hasn't landed yet). Function
+  //      returns without flipping status.
+  //   4. tool/started arrives a tick later. Chip is in `running`.
+  //   5. task-watcher polls AGAIN, sees same `completed` row. Dispatches
+  //      `crew:task_status` again → `previous === task.status === "completed"`,
+  //      synthesizeTaskProgressLine returns null → ENTIRE applier
+  //      no-ops. Chip stays running forever.
+  //
+  // Post-fix: dedupe entry is only recorded after `setToolCallStatus`
+  // confirms it applied. The retry at step 5 gets to try again, finds
+  // the chip, and flips status to "complete".
+  it(
+    "completed task BEFORE tool/started is retried AFTER tool/started arrives (codex final-3 gap 3)",
+    () => {
+      const cmid = "cmid-retry-after-arrival";
+      const taskId = "task_retry_after_arrival";
+
+      // Step 1: user prompt seeded, but tool/started has NOT landed.
+      ThreadStore.addUserMessage(SESSION, {
+        text: "ask",
+        clientMessageId: cmid,
+      });
+      ThreadStore.appendAssistantToken(cmid, "Started.");
+      ThreadStore.finalizeAssistant(cmid, { committedSeq: 1 });
+
+      // Step 2: task-watcher poll #1 arrives BEFORE tool/started.
+      const completedTask: BackgroundTaskInfo = {
+        id: taskId,
+        tool_name: "podcast_generate",
+        tool_call_id: taskId,
+        status: "completed",
+        started_at: "2026-05-15T00:00:00Z",
+        completed_at: "2026-05-15T00:00:05Z",
+        error: null,
+      };
+      applyTaskStatusToThreadStore(SESSION, undefined, completedTask);
+
+      // Step 3: tool/started lands. Chip is in "running".
+      handleToolStarted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: taskId,
+          tool_name: "podcast_generate",
+        },
+      );
+      expect(
+        ThreadStore.getThreads(SESSION)[0].responses[0].toolCalls.find(
+          (c) => c.id === taskId,
+        )?.status,
+      ).toBe("running");
+
+      // Step 4: task-watcher poll #2 fires (same row, same status).
+      // Pre-fix: dedupe map already says "completed", so synthesize
+      // returns null and applier no-ops → chip stuck on "running".
+      // Post-fix: dedupe was NOT recorded because the lookup missed
+      // last time → this retry actually flips the chip to "complete".
+      applyTaskStatusToThreadStore(SESSION, undefined, completedTask);
+
+      const [thread] = ThreadStore.getThreads(SESSION);
+      const tc = thread.responses[0].toolCalls.find((c) => c.id === taskId);
+      expect(tc?.status).toBe("complete");
+    },
+  );
+
+  it(
+    "failed task BEFORE tool/started is retried AFTER tool/started arrives (codex final-3 gap 3)",
+    () => {
+      // Symmetric: same gap for the `failed` terminal state.
+      const cmid = "cmid-retry-failed";
+      const taskId = "task_retry_failed";
+      ThreadStore.addUserMessage(SESSION, {
+        text: "ask",
+        clientMessageId: cmid,
+      });
+      ThreadStore.appendAssistantToken(cmid, "Started.");
+      ThreadStore.finalizeAssistant(cmid, { committedSeq: 1 });
+
+      const failedTask: BackgroundTaskInfo = {
+        id: taskId,
+        tool_name: "deep_search",
+        tool_call_id: taskId,
+        status: "failed",
+        started_at: "2026-05-15T00:00:00Z",
+        error: "upstream 500",
+      };
+      // Poll #1: tool not yet in store → lookup misses → no dedupe record.
+      applyTaskStatusToThreadStore(SESSION, undefined, failedTask);
+
+      handleToolStarted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: taskId,
+          tool_name: "deep_search",
+        },
+      );
+
+      // Poll #2: tool exists now → flip status to "error".
+      applyTaskStatusToThreadStore(SESSION, undefined, failedTask);
+
+      const [thread] = ThreadStore.getThreads(SESSION);
+      const tc = thread.responses[0].toolCalls.find((c) => c.id === taskId);
+      expect(tc?.status).toBe("error");
+    },
+  );
+
+  it(
+    "completed task AFTER successful flip suppresses identical replays (dedupe still works)",
+    () => {
+      // Defensive: confirm the dedupe still suppresses pathological
+      // bursts of identical `completed` rows on the same row after the
+      // first flip applied. The fix only delays the dedupe — it must
+      // still kick in once the status has been written.
+      const cmid = "cmid-dedupe-after-flip";
+      const taskId = "task_dedupe_after_flip";
+      ThreadStore.addUserMessage(SESSION, {
+        text: "ask",
+        clientMessageId: cmid,
+      });
+      ThreadStore.appendAssistantToken(cmid, "Started.");
+      ThreadStore.finalizeAssistant(cmid, { committedSeq: 1 });
+      handleToolStarted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: taskId,
+          tool_name: "fm_tts",
+        },
+      );
+
+      const completedTask: BackgroundTaskInfo = {
+        id: taskId,
+        tool_name: "fm_tts",
+        tool_call_id: taskId,
+        status: "completed",
+        started_at: "2026-05-15T00:00:00Z",
+        completed_at: "2026-05-15T00:00:05Z",
+        error: null,
+      };
+      applyTaskStatusToThreadStore(SESSION, undefined, completedTask);
+      // First flip applied.
+      expect(
+        ThreadStore.getThreads(SESSION)[0].responses[0].toolCalls.find(
+          (c) => c.id === taskId,
+        )?.status,
+      ).toBe("complete");
+
+      // Count progress entries before the replay.
+      const beforeProgressCount =
+        ThreadStore.getThreads(SESSION)[0].responses[0].toolCalls.find(
+          (c) => c.id === taskId,
+        )?.progress?.length ?? 0;
+
+      // Replay 1: should be deduped (no extra progress line, no extra
+      // status churn).
+      applyTaskStatusToThreadStore(SESSION, undefined, completedTask);
+      // Replay 2: still deduped.
+      applyTaskStatusToThreadStore(SESSION, undefined, completedTask);
+
+      const afterProgressCount =
+        ThreadStore.getThreads(SESSION)[0].responses[0].toolCalls.find(
+          (c) => c.id === taskId,
+        )?.progress?.length ?? 0;
+      expect(afterProgressCount).toBe(beforeProgressCount);
+    },
+  );
 });

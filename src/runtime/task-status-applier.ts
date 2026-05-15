@@ -51,17 +51,19 @@ function displayTaskName(tool: string): string {
  *  Returns null when the status carries no useful narration (e.g. the
  *  daemon emitted an unknown status string), or when this exact status
  *  was already seen for this task and a duplicate line should be
- *  suppressed at the source. */
+ *  suppressed at the source.
+ *
+ *  Bug 2026-05-15 (codex final-3 gap 3): does NOT record the dedupe
+ *  entry here — the caller MUST record only AFTER the lookup +
+ *  `setToolCallStatus` actually applied. Pre-fix this function wrote
+ *  the dedupe before the lookup at the call site succeeded, so a
+ *  later retry of the same terminal task was silently suppressed and
+ *  the status flip never got another chance. */
 function synthesizeTaskProgressLine(
   task: BackgroundTaskInfo,
 ): string | null {
   const previous = lastTaskStatusById.get(task.id);
   if (previous === task.status) return null;
-  // Record the new status BEFORE returning the line so re-entrant
-  // dispatches (within the same tick) can short-circuit on the second
-  // call. Failures still record so a `failed -> failed` replay is
-  // suppressed too.
-  lastTaskStatusById.set(task.id, task.status);
 
   const label = displayTaskName(task.tool_name);
   switch (task.status) {
@@ -118,15 +120,44 @@ export function applyTaskStatusToThreadStore(
     topic,
     task.tool_call_id,
   );
-  if (!threadId) return;
+  if (!threadId) {
+    // Bug 2026-05-15 (codex final-3 gap 3): DO NOT record the dedupe
+    // entry — the lookup missed, so a later retry of the same
+    // `completed`/`failed` task MUST be allowed to try again. The
+    // task watcher's poll loop re-fires the same row on every tick,
+    // and the originating `tool/started` may not have landed yet when
+    // the first attempt arrived.
+    return;
+  }
   ThreadStore.appendToolProgress(threadId, task.tool_call_id, progressLine);
   // Mirror the terminal status into ThreadStore so the spinner clears
   // on the same tick the progress line says "done". Non-terminal
   // `spawned`/`running` lines do NOT flip status (the chip is
   // correctly running during those frames).
+  //
+  // Bug 2026-05-15 (codex final-3 gap 3): record the dedupe entry
+  // ONLY AFTER `setToolCallStatus` confirms it actually applied.
+  // `setToolCallStatus` returns `true` when it found the target tool
+  // call and flipped its status, `false` when the lookup no-oped. If
+  // the status flip no-ops (tool call not in store yet, picker
+  // missed, etc.) the next retry should be allowed to try again.
+  let applied = true;
   if (task.status === "completed") {
-    ThreadStore.setToolCallStatus(threadId, task.tool_call_id, "complete");
+    applied = ThreadStore.setToolCallStatus(
+      threadId,
+      task.tool_call_id,
+      "complete",
+    );
   } else if (task.status === "failed") {
-    ThreadStore.setToolCallStatus(threadId, task.tool_call_id, "error");
+    applied = ThreadStore.setToolCallStatus(
+      threadId,
+      task.tool_call_id,
+      "error",
+    );
+  }
+  // Non-terminal `spawned`/`running` lines always count as applied
+  // (the progress line itself landed; no status flip required).
+  if (applied) {
+    lastTaskStatusById.set(task.id, task.status);
   }
 }

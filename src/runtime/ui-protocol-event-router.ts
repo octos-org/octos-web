@@ -42,6 +42,7 @@ import type {
   UiProtocolBridge,
 } from "./ui-protocol-bridge";
 import * as ThreadStore from "@/store/thread-store";
+import * as TaskStore from "@/store/task-store";
 import type { MessageMeta } from "@/store/thread-store";
 import type { MessageInfo } from "@/api/types";
 
@@ -471,26 +472,48 @@ export function handleSpawnComplete(
   // would miss and the status flip would no-op. Run the status flip
   // first, while the ack bubble is still the topmost finalized slot.
   //
-  // Locator strategy: resolve by `task_id`. The envelope's `turn_id` /
-  // `thread_id` may be a foreign id (codex orphan-thread defence
-  // scenario in `chat-thread-tool-failure-preserves-user-prompt.test`)
-  // that does NOT contain the tool call — passing such an id to
+  // Locator strategy: resolve by the originating `tool_call_id` after
+  // translating from the envelope's `task_id`.
+  //
+  // Bug 2026-05-15 (codex final-3 bonus check): the envelope's
+  // `task_id` is the supervisor's `TaskId::new()` UUID (see
+  // `crates/octos-agent/src/task_supervisor.rs::register_full`), NOT
+  // the LLM's `tool_call_id`. The `BackgroundTask` struct keeps them
+  // as separate fields, and `tool/started` registered the LLM's
+  // `tool_call_id`. Passing `event.task_id` directly to ThreadStore's
+  // by-tool-call-id lookup misses (different identifier shapes), and
+  // the spinner stays stuck. We translate `task_id → tool_call_id`
+  // through `TaskStore` (which the task watcher's
+  // `crew:task_status` poll populates with `BackgroundTaskInfo`
+  // rows carrying both `id` and `tool_call_id`). When the mapping is
+  // not yet known (the task watcher hasn't polled, or the task is
+  // brand new) fall back to treating `event.task_id` as the
+  // tool_call_id — the older test fixtures used identical values
+  // there and a fraction of legacy daemons still emit them equal.
+  //
+  // The previous defence (use `findThreadIdForToolCall` not
+  // `setToolCallStatus(thread_id, ...)`) is still required: the
+  // envelope's `turn_id` / `thread_id` may be a foreign id (codex
+  // orphan-thread scenario in
+  // `chat-thread-tool-failure-preserves-user-prompt.test`) that
+  // does NOT contain the tool call — passing such an id to
   // `setToolCallStatus` would mint an empty-user orphan thread via
   // `ensureOrphanThread` and steal attribution from the user's real
-  // prompt. Use the side-effect-free `findThreadIdForToolCall` lookup
-  // instead — it searches all threads in the active session for a
-  // tool call with this id and returns the host thread_id (or null).
-  // No-op when the lookup misses (the originating `tool/started` may
-  // not have landed yet, or fired into a different session).
-  const statusHostThreadId = ThreadStore.findThreadIdForToolCall(
+  // prompt.
+  const resolvedToolCallId = resolveToolCallIdForTask(
     cfg.sessionId,
     cfg.topic,
     event.task_id,
   );
+  const statusHostThreadId = ThreadStore.findThreadIdForToolCall(
+    cfg.sessionId,
+    cfg.topic,
+    resolvedToolCallId,
+  );
   if (statusHostThreadId) {
     ThreadStore.setToolCallStatus(
       statusHostThreadId,
-      event.task_id,
+      resolvedToolCallId,
       "complete",
     );
   }
@@ -513,8 +536,13 @@ export function handleSpawnComplete(
   });
   // Drop the cache entry — the BG task is done. The per-bubble
   // `ToolProgressIndicator` reads from ThreadStore (not window
-  // events), so no terminal dispatch is needed here.
+  // events), so no terminal dispatch is needed here. Drop both
+  // identifier shapes so the cache cannot leak through the
+  // task_id-vs-tool_call_id divergence.
   toolNameByCallId.delete(event.task_id);
+  if (resolvedToolCallId !== event.task_id) {
+    toolNameByCallId.delete(resolvedToolCallId);
+  }
 }
 
 export function handleTaskUpdated(
@@ -546,17 +574,35 @@ export function handleTaskUpdated(
   // therefore needs the spinner-progress fan-out here as well, with
   // the terminal flag set on the completion legs so the row clears.
   //
+  // Bug 2026-05-15 (codex final-3 bonus check): the wire's
+  // `event.task_id` is the supervisor's `TaskId::new()` UUID, NOT
+  // the LLM `tool_call_id` that `tool/started` registered on the
+  // ThreadStore. Translate via `TaskStore` so the
+  // `appendToolProgress` / `setToolCallStatus` calls land on the
+  // correct chip. Falls back to `event.task_id` (legacy daemons that
+  // emit them equal, or pre-watcher boot).
+  const resolvedToolCallId = resolveToolCallIdForTask(
+    cfg.sessionId,
+    cfg.topic,
+    event.task_id,
+  );
+
   // The `tool_name` lookup falls back to the task_id when no preceding
   // `tool/started` cached a name (e.g. a server-side flow that skips
   // `tool/started` entirely and only emits `task/updated`); same shape
-  // `handleToolProgress` uses on the synchronous path.
-  const toolLabel = toolNameByCallId.get(event.task_id) ?? event.task_id;
+  // `handleToolProgress` uses on the synchronous path. Try both the
+  // resolved tool_call_id and the raw task_id so we hit the cache
+  // whichever shape `tool/started` populated.
+  const toolLabel =
+    toolNameByCallId.get(resolvedToolCallId) ??
+    toolNameByCallId.get(event.task_id) ??
+    event.task_id;
 
   switch (event.state) {
     case "spawned":
     case "running": {
       const label = event.title ?? event.runtime_detail ?? event.state;
-      ThreadStore.appendToolProgress(event.turn_id, event.task_id, label);
+      ThreadStore.appendToolProgress(event.turn_id, resolvedToolCallId, label);
       // Mirror the legacy SSE bridge's `crew:bg_tasks` dispatch so any
       // listener that gates a session-level "background work" indicator
       // off the same event keeps firing.
@@ -571,7 +617,11 @@ export function handleTaskUpdated(
       break;
     }
     case "completed": {
-      ThreadStore.setToolCallStatus(event.turn_id, event.task_id, "complete");
+      ThreadStore.setToolCallStatus(
+        event.turn_id,
+        resolvedToolCallId,
+        "complete",
+      );
       dispatchToolProgressEvent(
         cfg,
         event.turn_id,
@@ -580,13 +630,17 @@ export function handleTaskUpdated(
         /* terminal */ true,
       );
       // Drop the cache entry — the task is done, no further frames
-      // should land on this id (mirrors `handleToolCompleted`).
+      // should land on this id (mirrors `handleToolCompleted`). Drop
+      // both identifier shapes.
       toolNameByCallId.delete(event.task_id);
+      if (resolvedToolCallId !== event.task_id) {
+        toolNameByCallId.delete(resolvedToolCallId);
+      }
       break;
     }
     case "failed":
     case "errored": {
-      ThreadStore.setToolCallStatus(event.turn_id, event.task_id, "error");
+      ThreadStore.setToolCallStatus(event.turn_id, resolvedToolCallId, "error");
       dispatchToolProgressEvent(
         cfg,
         event.turn_id,
@@ -595,11 +649,47 @@ export function handleTaskUpdated(
         /* terminal */ true,
       );
       toolNameByCallId.delete(event.task_id);
+      if (resolvedToolCallId !== event.task_id) {
+        toolNameByCallId.delete(resolvedToolCallId);
+      }
       break;
     }
     default:
       break;
   }
+}
+
+/** Map a server-emitted `task_id` (supervisor UUID) to the LLM
+ *  `tool_call_id` the ThreadStore registered via `tool/started`.
+ *
+ *  Codex final-3 bonus check: the server's `TurnSpawnCompleteEvent.task_id`
+ *  and `TaskUpdatedEvent.task_id` carry the supervisor's
+ *  `TaskId::new()` UUID, while `ToolStartedEvent.tool_call_id` carries
+ *  the LLM-emitted tool call id. They are different on the wire. The
+ *  task watcher's `crew:task_status` poll populates `TaskStore` with
+ *  `BackgroundTaskInfo` rows that carry BOTH fields, so we can
+ *  translate by walking the session's tasks for a matching `id`.
+ *
+ *  Falls back to the raw `taskId` when:
+ *  - the watcher hasn't polled yet (task list empty),
+ *  - the task is brand new and not yet in the store,
+ *  - a legacy daemon emits them equal (older tests / fixtures).
+ *
+ *  Returning the raw id is safe — `findThreadIdForToolCall` /
+ *  `setToolCallStatus` no-op cleanly when the lookup misses. */
+function resolveToolCallIdForTask(
+  sessionId: string,
+  topic: string | undefined,
+  taskId: string,
+): string {
+  if (!taskId) return taskId;
+  const tasks = TaskStore.getTasks(sessionId, topic);
+  for (const task of tasks) {
+    if (task.id === taskId && task.tool_call_id) {
+      return task.tool_call_id;
+    }
+  }
+  return taskId;
 }
 
 export function handleTaskOutputDelta(
