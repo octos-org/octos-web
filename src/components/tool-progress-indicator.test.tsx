@@ -235,3 +235,212 @@ describe("ToolProgressIndicator (data-derived)", () => {
     harness.unmount();
   });
 });
+
+/**
+ * Spinner-gating regression (2026-05-14 follow-up to commit `e8cfb94`).
+ *
+ * The bug observed live on mini5: a spawn_only `run_pipeline`
+ * completed (server log: `spawn_only background tool completed
+ * tool=run_pipeline success=true`), the chat bubble correctly
+ * reflected completion in its chip-list, but the leading `Loader2`
+ * icon on the `tool-progress` row kept animating because the icon was
+ * rendered unconditionally — only the row's mount was gated (on
+ * `progress.length > 0`), not the spinner animation itself.
+ *
+ * Fix: the leading icon is now selected by the owning tool call's
+ * `status`:
+ *   - `running`  → animated `Loader2` (`data-testid='tool-progress-spinner'`)
+ *   - `complete` → static `Check` (`data-testid='tool-progress-complete-icon'`)
+ *   - `error`    → static `X`     (`data-testid='tool-progress-error-icon'`)
+ *
+ * The owning tool call is the one whose progress entry won the highest
+ * `ts` — same selection rule the row text uses, so the icon and the
+ * text are always describing the SAME call (avoids the "animated icon
+ * on tool A, text from tool B" mismatch that a naive `some` over all
+ * tool calls would produce).
+ */
+describe("ToolProgressIndicator spinner gating (status-aware icon)", () => {
+  it("renders the animated Loader2 spinner while the owning tool call is running", () => {
+    const message = makeMessage([
+      {
+        id: "tc-1",
+        name: "run_pipeline",
+        status: "running",
+        progress: [{ message: "plan_and_search 5s elapsed", ts: 200 }],
+        retryCount: 0,
+      },
+    ]);
+    const harness = mount(<ToolProgressIndicator message={message} />);
+    const row = harness.container.querySelector(
+      "[data-testid='tool-progress']",
+    );
+    expect(row).not.toBeNull();
+    expect(row!.getAttribute("data-tool-status")).toBe("running");
+    expect(
+      row!.querySelector("[data-testid='tool-progress-spinner']"),
+    ).not.toBeNull();
+    expect(
+      row!.querySelector("[data-testid='tool-progress-complete-icon']"),
+    ).toBeNull();
+    expect(
+      row!.querySelector("[data-testid='tool-progress-error-icon']"),
+    ).toBeNull();
+    harness.unmount();
+  });
+
+  it("swaps the spinner for a static Check icon when the owning tool call is complete", () => {
+    // Reproduces the mini5 run_pipeline observation: bubble shows
+    // completion, icon must NOT animate any more.
+    const message = makeMessage([
+      {
+        id: "tc-1",
+        name: "run_pipeline",
+        status: "complete",
+        progress: [
+          { message: "starting", ts: 100 },
+          { message: "done", ts: 200 },
+        ],
+        retryCount: 0,
+      },
+    ]);
+    const harness = mount(<ToolProgressIndicator message={message} />);
+    const row = harness.container.querySelector(
+      "[data-testid='tool-progress']",
+    );
+    expect(row).not.toBeNull();
+    expect(row!.getAttribute("data-tool-status")).toBe("complete");
+    // The spinner must be gone — no `Loader2` with `animate-spin`.
+    expect(
+      row!.querySelector("[data-testid='tool-progress-spinner']"),
+    ).toBeNull();
+    // Static terminal icon in its place.
+    expect(
+      row!.querySelector("[data-testid='tool-progress-complete-icon']"),
+    ).not.toBeNull();
+    // Text remains so the user sees the last activity message.
+    expect(row!.textContent).toContain("done");
+    harness.unmount();
+  });
+
+  it("swaps the spinner for a static X icon when the owning tool call errored", () => {
+    const message = makeMessage([
+      {
+        id: "tc-1",
+        name: "run_pipeline",
+        status: "error",
+        progress: [{ message: "boom", ts: 100 }],
+        retryCount: 0,
+      },
+    ]);
+    const harness = mount(<ToolProgressIndicator message={message} />);
+    const row = harness.container.querySelector(
+      "[data-testid='tool-progress']",
+    );
+    expect(row).not.toBeNull();
+    expect(row!.getAttribute("data-tool-status")).toBe("error");
+    expect(
+      row!.querySelector("[data-testid='tool-progress-spinner']"),
+    ).toBeNull();
+    expect(
+      row!.querySelector("[data-testid='tool-progress-error-icon']"),
+    ).not.toBeNull();
+    expect(row!.textContent).toContain("boom");
+    harness.unmount();
+  });
+
+  it("transitions from animated spinner to static check across a status flip (heartbeat → complete)", () => {
+    // The live mini5 sequence: heartbeats arrive with status="running"
+    // (spinner ON), then `tool/completed` flips status to "complete"
+    // and the BG task may still emit more heartbeats — but the icon
+    // immediately stops animating because it's tied to the call's
+    // status, not the existence of progress entries.
+    let message = makeMessage([
+      {
+        id: "tc-1",
+        name: "run_pipeline",
+        status: "running",
+        progress: [{ message: "5s elapsed", ts: 100 }],
+        retryCount: 0,
+      },
+    ]);
+    const harness = mount(<ToolProgressIndicator message={message} />);
+    {
+      const row = harness.container.querySelector(
+        "[data-testid='tool-progress']",
+      );
+      expect(row).not.toBeNull();
+      expect(
+        row!.querySelector("[data-testid='tool-progress-spinner']"),
+      ).not.toBeNull();
+    }
+
+    // `tool/completed` → store.setToolCallStatus → status flips.
+    message = makeMessage([
+      {
+        id: "tc-1",
+        name: "run_pipeline",
+        status: "complete",
+        progress: [{ message: "5s elapsed", ts: 100 }],
+        retryCount: 0,
+      },
+    ]);
+    act(() => {
+      harness.root.render(<ToolProgressIndicator message={message} />);
+    });
+    {
+      const row = harness.container.querySelector(
+        "[data-testid='tool-progress']",
+      );
+      expect(row).not.toBeNull();
+      expect(
+        row!.querySelector("[data-testid='tool-progress-spinner']"),
+      ).toBeNull();
+      expect(
+        row!.querySelector("[data-testid='tool-progress-complete-icon']"),
+      ).not.toBeNull();
+    }
+    harness.unmount();
+  });
+
+  it("ties the leading icon to the OWNING call (latest-ts call), not 'any call still running'", () => {
+    // Cross-call mismatch defence: tool A still running with old
+    // progress; tool B already complete with a NEWER heartbeat. The
+    // row text comes from B (newer ts wins), so the icon MUST also
+    // come from B — otherwise we'd render "B's last heartbeat" with
+    // a Loader2 implying A's running state, which contradicts the
+    // chip-list.
+    const message = makeMessage([
+      {
+        id: "tc-a",
+        name: "shell",
+        status: "running",
+        progress: [{ message: "still working on shell", ts: 100 }],
+        retryCount: 0,
+      },
+      {
+        id: "tc-b",
+        name: "run_pipeline",
+        status: "complete",
+        progress: [{ message: "pipeline done", ts: 200 }],
+        retryCount: 0,
+      },
+    ]);
+    const harness = mount(<ToolProgressIndicator message={message} />);
+    const row = harness.container.querySelector(
+      "[data-testid='tool-progress']",
+    );
+    expect(row).not.toBeNull();
+    // Text from B (newest ts).
+    expect(row!.textContent).toContain("run_pipeline");
+    expect(row!.textContent).toContain("pipeline done");
+    // Icon from B's status (complete), NOT A's (running).
+    expect(row!.getAttribute("data-tool-status")).toBe("complete");
+    expect(
+      row!.querySelector("[data-testid='tool-progress-spinner']"),
+    ).toBeNull();
+    expect(
+      row!.querySelector("[data-testid='tool-progress-complete-icon']"),
+    ).not.toBeNull();
+    harness.unmount();
+  });
+});

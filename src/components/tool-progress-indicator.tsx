@@ -1,5 +1,6 @@
-import { Loader2 } from "lucide-react";
-import type { ThreadMessage } from "@/store/thread-store";
+import type { ReactNode } from "react";
+import { Check, Loader2, X } from "lucide-react";
+import type { ThreadMessage, ThreadToolCall } from "@/store/thread-store";
 
 /**
  * Inline spinner row for in-flight tool work.
@@ -27,12 +28,26 @@ import type { ThreadMessage } from "@/store/thread-store";
  * via `appendToolProgress` is visible to this render.
  *
  * **Display rule**: show the most recent `progress` entry across all
- * tool calls in the bubble (with the tool name + spinner icon). The
+ * tool calls in the bubble (with the tool name + status icon). The
  * caller (`ThreadAssistantBubble`) gates the mount on the bubble
  * having at least one tool call with progress entries — the
  * indicator itself only renders if it has a progress entry to
  * display, but the caller-side gate avoids mounting / unmounting on
  * bubbles that never had a tool call at all.
+ *
+ * **Spinner gating (2026-05-14 follow-up)**: the leading icon's
+ * animation is tied to the status of the tool call that owns the
+ * latest progress entry:
+ *
+ *   - `running`  → animated `Loader2` (the live spinner)
+ *   - `complete` → static `Check` (✓)
+ *   - `error`    → static `X` (✗)
+ *
+ * Without this gate the `Loader2` kept animating indefinitely after
+ * `tool/completed` / `task/updated:completed` flipped the chip's
+ * status — visually contradicting the chip-list which had already
+ * settled (no pulse). The row text remains visible so the user can
+ * read the last activity message; only the leading icon changes.
  */
 interface ToolProgressIndicatorProps {
   /** ThreadMessage whose `toolCalls` drive the indicator. The bubble
@@ -45,8 +60,14 @@ export function ToolProgressIndicator({ message }: ToolProgressIndicatorProps) {
   // bubble. We pick the entry with the highest `ts` so a tool that
   // finished early stays beneath a still-running tool whose heartbeat
   // is more recent.
+  //
+  // We also retain the OWNING tool call so the leading icon can
+  // reflect that call's terminal status — a stale "running" Loader2
+  // on a finished call was the spinner-doesn't-stop bug reported on
+  // mini5 for `run_pipeline`.
   let latestTool: string | null = null;
   let latestMessage: string | null = null;
+  let latestStatus: ThreadToolCall["status"] | null = null;
   let latestTs = -Infinity;
   for (const tc of message.toolCalls) {
     for (const entry of tc.progress) {
@@ -54,10 +75,12 @@ export function ToolProgressIndicator({ message }: ToolProgressIndicatorProps) {
         latestTs = entry.ts;
         latestTool = tc.name || "tool";
         latestMessage = entry.message;
+        latestStatus = tc.status;
       }
     }
   }
-  if (latestTool === null || latestMessage === null) return null;
+  if (latestTool === null || latestMessage === null || latestStatus === null)
+    return null;
 
   // Strip [info]/[debug]/[warn] prefixes from tool progress messages
   const cleanMessage = latestMessage.replace(
@@ -65,12 +88,51 @@ export function ToolProgressIndicator({ message }: ToolProgressIndicatorProps) {
     "",
   );
 
+  // Pick the leading icon by the owning tool call's status. Only
+  // `running` deserves the animated `Loader2`; terminal states get a
+  // static glyph so the row stops "spinning" the moment the tool
+  // settles. This is the fix for the spawn_only run_pipeline bug
+  // observed on mini5 (2026-05-14): the bubble correctly said
+  // "completed" but the spinner kept animating because the gate used
+  // `progress.length > 0` rather than `status === "running"`.
+  let leadingIcon: ReactNode;
+  if (latestStatus === "running") {
+    leadingIcon = (
+      <Loader2
+        size={12}
+        className="animate-spin text-accent"
+        data-testid="tool-progress-spinner"
+        aria-label="running"
+      />
+    );
+  } else if (latestStatus === "complete") {
+    leadingIcon = (
+      <Check
+        size={12}
+        className="text-emerald-400"
+        data-testid="tool-progress-complete-icon"
+        aria-label="complete"
+      />
+    );
+  } else {
+    // status === "error"
+    leadingIcon = (
+      <X
+        size={12}
+        className="text-red-400"
+        data-testid="tool-progress-error-icon"
+        aria-label="error"
+      />
+    );
+  }
+
   return (
     <div
       data-testid="tool-progress"
+      data-tool-status={latestStatus}
       className="mt-1.5 flex items-center gap-2 px-1 py-0.5 text-xs text-muted"
     >
-      <Loader2 size={12} className="animate-spin text-accent" />
+      {leadingIcon}
       <span className="text-zinc-400">{latestTool}:</span>
       <span>{cleanMessage}</span>
     </div>

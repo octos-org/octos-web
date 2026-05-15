@@ -284,26 +284,32 @@ describe("Spawn-only spinner placement (per-bubble)", () => {
         },
       );
     });
+    // 2026-05-14 spinner gating: after `turn/completed`,
+    // `finalizeAssistant` sweeps in-flight tool calls (`running` →
+    // `complete`) so the foreground LLM turn is fully settled even
+    // when a spawn_only BG task continues to emit heartbeats. The
+    // indicator's text refreshes with each heartbeat (latest entry
+    // wins), but the leading icon must already be the static
+    // `Check` — a spinning `Loader2` on a settled call was the
+    // run_pipeline-spinner-keeps-spinning bug observed live on mini5
+    // (chat bubble showed "completed" yet the icon kept rotating).
     const row = harness.container.querySelector(
       "[data-testid='tool-progress']",
     );
     expect(row).not.toBeNull();
     expect(row!.textContent).toContain("10s elapsed");
+    expect(row!.getAttribute("data-tool-status")).toBe("complete");
+    expect(
+      row!.querySelector("[data-testid='tool-progress-spinner']"),
+    ).toBeNull();
+    expect(
+      row!.querySelector("[data-testid='tool-progress-complete-icon']"),
+    ).not.toBeNull();
 
-    // Tool completes — the chip status flips to "complete". The
-    // indicator is a pure derivation of the bubble's tool_call
-    // progress, so the latest entry remains visible (showing the
-    // last heartbeat text) even after `tool/completed`. This is
-    // intentional: for spawn_only the foreground `tool/completed`
-    // fires immediately on the ack BUT the BG task continues to
-    // append heartbeat entries via `appendToolProgress` for the
-    // duration of the work. Treating `tool/completed` as a spinner-
-    // hide signal would dim the indicator the moment the user is
-    // most interested in seeing it (the BG task is just starting).
-    // The bubble's `ToolCallBubble` chip color is the authoritative
-    // signal for tool status: `complete` (no pulse) vs `running`
-    // (pulse). The spinner row is the "latest activity message"
-    // affordance.
+    // The explicit `tool/completed` ack (synchronous foreground leg
+    // of a spawn_only tool) is idempotent w.r.t. status — the sweep
+    // already flipped it. The terminal icon stays a static check,
+    // text refreshes if a later heartbeat reuses the call.
     act(() => {
       handleToolCompleted(
         { sessionId: SESSION },
@@ -321,6 +327,75 @@ describe("Spawn-only spinner placement (per-bubble)", () => {
     );
     expect(rowAfter).not.toBeNull();
     expect(rowAfter!.textContent).toContain("10s elapsed");
+    expect(rowAfter!.getAttribute("data-tool-status")).toBe("complete");
+    expect(
+      rowAfter!.querySelector("[data-testid='tool-progress-spinner']"),
+    ).toBeNull();
+    expect(
+      rowAfter!.querySelector("[data-testid='tool-progress-complete-icon']"),
+    ).not.toBeNull();
+
+    harness.unmount();
+  });
+
+  it("shows the animated spinner mid-turn (before turn/completed sweeps the in-flight calls)", () => {
+    // Anchor for the live-spinner-on-running case: BEFORE the
+    // foreground LLM turn settles, the tool call is still
+    // `status: "running"`, so the indicator must surface an
+    // animated `Loader2`. This complements the post-completion test
+    // above where `finalizeAssistant` sweeps to `complete` and the
+    // icon goes static.
+    const cmid = "turn-midflight";
+    act(() => {
+      ThreadStore.addUserMessage(SESSION, {
+        text: "midflight",
+        clientMessageId: cmid,
+      });
+    });
+
+    const harness = mount(
+      <SessionContext.Provider value={makeSessionCtx()}>
+        <ChatThread />
+      </SessionContext.Provider>,
+    );
+
+    act(() => {
+      handleTurnStarted(
+        { sessionId: SESSION },
+        { session_id: SESSION, turn_id: cmid },
+      );
+      handleToolStarted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: "tc-mid",
+          tool_name: "run_pipeline",
+        },
+      );
+      handleToolProgress(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          tool_call_id: "tc-mid",
+          message: "plan_and_search 5s elapsed",
+        },
+      );
+    });
+
+    // NO turn/completed yet — call is still `running`.
+    const row = harness.container.querySelector(
+      "[data-testid='tool-progress']",
+    );
+    expect(row).not.toBeNull();
+    expect(row!.getAttribute("data-tool-status")).toBe("running");
+    expect(
+      row!.querySelector("[data-testid='tool-progress-spinner']"),
+    ).not.toBeNull();
+    expect(
+      row!.querySelector("[data-testid='tool-progress-complete-icon']"),
+    ).toBeNull();
 
     harness.unmount();
   });
