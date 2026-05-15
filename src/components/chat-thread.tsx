@@ -791,6 +791,39 @@ function isVisibleResponse(
   // on the assistant message; rendering them as standalone bubbles would
   // duplicate output (the assistant already shows tool-call status + progress).
   if (message.role === "tool") return false;
+  // 2026-05-14 hard-refresh replay fix: mirror the server-side wire
+  // filter `is_metadata_only_assistant_row` at the SPA render boundary.
+  //
+  // The agent's iterative tool-call loop commits an Assistant `Message`
+  // per LLM iteration. For a turn whose first LLM iteration emits only
+  // `tool_calls` (no rendered text and no media) — the canonical
+  // shape that brackets every `tool/started` → `tool/completed` for a
+  // spawn_only tool such as `run_pipeline` — the JSONL row has
+  // `content=""`, `media=[]` and (server-side) `tool_calls=[...]`.
+  //
+  // The server's `MessageCommitObserver` suppresses these rows from
+  // the LIVE `message/persisted` wire (see `is_metadata_only_assistant_row`
+  // in `crates/octos-cli/src/api/ui_protocol.rs`). The legacy REST
+  // `session/messages_page` returns the unfiltered JSONL — and its
+  // `MessageInfo` shape (handlers.rs:531) strips `tool_calls`. So on
+  // a hard refresh `replayHistory` ingests a `ThreadMessage` with
+  // `text=""`, `files=[]`, `toolCalls=[]` and renders it as an empty
+  // timestamp-only bubble (the recurring user-visible regression).
+  //
+  // Match predicate: assistant role, no text content, no files, no
+  // tool-call data. Live state cannot match this predicate after
+  // `tool/started` runs (which populates `toolCalls`), so the spawn_only
+  // heartbeat path covered by `chat-thread-heartbeat.test.tsx` is
+  // untouched. A finalised bubble with progress chips always carries
+  // `toolCalls.length > 0`.
+  if (
+    message.role === "assistant" &&
+    !message.text.trim() &&
+    message.files.length === 0 &&
+    message.toolCalls.length === 0
+  ) {
+    return false;
+  }
   if (
     hideFileOnlyAssistantMessages &&
     message.role === "assistant" &&
