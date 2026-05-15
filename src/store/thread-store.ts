@@ -294,6 +294,48 @@ function pickAssistantSlot(thread: Thread): ThreadMessage | null {
   return null;
 }
 
+/** Replace an assistant slot's `ThreadMessage` reference in-thread.
+ *
+ *  Bug 2026-05-15: `appendToolProgress` / `setToolCallStatus` / `addToolCall`
+ *  used to mutate the existing `ThreadMessage` (push onto
+ *  `entry.progress`, replace `tcs[idx]` in place). The bubble renderer
+ *  wraps `ThreadAssistantBubble` in `React.memo`, whose default shallow
+ *  comparison treats `message === message` as "skip re-render". So
+ *  after the foreground turn finalised (`pendingAssistant -> responses`),
+ *  every subsequent `tool/progress` heartbeat for a spawn_only
+ *  `run_pipeline` mutated state in the store but never repainted the
+ *  bubble — the user saw the bubble freeze on the 3rd/4th line of a
+ *  20-minute pipeline run.
+ *
+ *  Fix: every mutation that changes a tool call's data MUST replace the
+ *  containing `ThreadMessage` with a fresh object. This helper writes
+ *  the new ref into either `thread.pendingAssistant` or the matching
+ *  `thread.responses[i]` slot.
+ *
+ *  Returns the new `ThreadMessage` reference so the caller can keep
+ *  working with it for the remainder of the mutation.
+ */
+function replaceAssistantSlot(
+  thread: Thread,
+  oldSlot: ThreadMessage,
+  newSlot: ThreadMessage,
+): ThreadMessage {
+  if (thread.pendingAssistant === oldSlot) {
+    thread.pendingAssistant = newSlot;
+    return newSlot;
+  }
+  const idx = thread.responses.indexOf(oldSlot);
+  if (idx !== -1) {
+    thread.responses[idx] = newSlot;
+    return newSlot;
+  }
+  // Slot vanished between read and write (shouldn't happen under
+  // single-threaded JS, but guard anyway). Caller's `oldSlot` reference
+  // is the only thing left holding the data — return it so the caller
+  // can still notify on its mutations even if no live anchor exists.
+  return oldSlot;
+}
+
 /** Get-or-create the in-flight assistant slot for a thread. Used when
  *  fresh assistant content (token / replace) arrives after the original
  *  pending was finalized — we open a follow-on pending so the new text
@@ -727,6 +769,9 @@ export function addToolCall(
   // Skip the by-id match when id is empty (legacy server path) so we
   // don't accidentally collapse two distinct calls that both lack an
   // id; fall through to the by-name retry-collapse instead.
+  //
+  // Bug 2026-05-15: see `replaceAssistantSlot` for the React.memo
+  // freeze that motivates the immutable updates below.
   if (toolCallId) {
     for (const candidate of [
       found.thread.pendingAssistant,
@@ -735,10 +780,13 @@ export function addToolCall(
       if (!candidate) continue;
       const idx = candidate.toolCalls.findIndex((tc) => tc.id === toolCallId);
       if (idx !== -1) {
-        candidate.toolCalls[idx] = {
-          ...candidate.toolCalls[idx],
-          status: "running",
-        };
+        const newTcs = candidate.toolCalls.map((tc, i) =>
+          i === idx ? { ...tc, status: "running" as const } : tc,
+        );
+        replaceAssistantSlot(found.thread, candidate, {
+          ...candidate,
+          toolCalls: newTcs,
+        });
         notify();
         return;
       }
@@ -756,7 +804,13 @@ export function addToolCall(
   if (toolCallId) {
     const byId = tcs.findIndex((tc) => tc.id === toolCallId);
     if (byId !== -1) {
-      tcs[byId] = { ...tcs[byId], status: "running" };
+      const newTcs = tcs.map((tc, i) =>
+        i === byId ? { ...tc, status: "running" as const } : tc,
+      );
+      replaceAssistantSlot(found.thread, slot, {
+        ...slot,
+        toolCalls: newTcs,
+      });
       notify();
       return;
     }
@@ -765,7 +819,7 @@ export function addToolCall(
   // Collapse retry: most recent call has same name → bump retryCount.
   const last = tcs[tcs.length - 1];
   if (last && last.name === name) {
-    tcs[tcs.length - 1] = {
+    const collapsed: ThreadToolCall = {
       ...last,
       id: toolCallId,
       status: "running",
@@ -773,6 +827,11 @@ export function addToolCall(
       // Carry forward progress so the user keeps the running narration.
       progress: last.progress,
     };
+    const newTcs = [...tcs.slice(0, -1), collapsed];
+    replaceAssistantSlot(found.thread, slot, {
+      ...slot,
+      toolCalls: newTcs,
+    });
     notify();
 
     // M9-γ-3 dual-write (codex round-1 BLOCK 2): the retry-collapse
@@ -795,12 +854,19 @@ export function addToolCall(
     return;
   }
 
-  tcs.push({
-    id: toolCallId,
-    name,
-    status: "running",
-    progress: [],
-    retryCount: 0,
+  const newTcs = [
+    ...tcs,
+    {
+      id: toolCallId,
+      name,
+      status: "running" as const,
+      progress: [],
+      retryCount: 0,
+    },
+  ];
+  replaceAssistantSlot(found.thread, slot, {
+    ...slot,
+    toolCalls: newTcs,
   });
   notify();
 
@@ -842,50 +908,68 @@ export function appendToolProgress(
   const slot = pickAssistantSlot(found.thread);
   // No assistant slot at all yet (e.g. orphan thread, never had one) —
   // open a new pending so the progress has somewhere to render.
-  const target = slot ?? ensurePendingAssistant(found.thread);
+  const oldTarget = slot ?? ensurePendingAssistant(found.thread);
 
-  const tcs = target.toolCalls;
-  let entry: ThreadToolCall | undefined;
+  // Bug 2026-05-15: previously this function pushed onto
+  // `entry.progress` and kept the surrounding `ThreadMessage` reference
+  // identical. `ThreadAssistantBubble` is wrapped in `React.memo`, so
+  // identical-by-reference `message` props caused subsequent heartbeats
+  // (`run_pipeline` emits one every 5s) to update the store WITHOUT
+  // repainting the bubble — the user saw only the first 2-3 progress
+  // chips for the entire pipeline run. Fix: build a new tool-call entry
+  // + tool-call list + ThreadMessage so memo's shallow comparison sees
+  // the change.
+  const oldTcs = oldTarget.toolCalls;
+  let entryIdx = -1;
   if (toolCallId) {
-    entry = tcs.find((tc) => tc.id === toolCallId);
+    entryIdx = oldTcs.findIndex((tc) => tc.id === toolCallId);
   } else if (toolName) {
     // Server omitted tool_call_id (legacy daemon). Route by tool name to
     // the most recent matching call so progress still lands on the right
     // bubble — no synthesized id required.
-    for (let i = tcs.length - 1; i >= 0; i -= 1) {
-      if (tcs[i].name === toolName) {
-        entry = tcs[i];
+    for (let i = oldTcs.length - 1; i >= 0; i -= 1) {
+      if (oldTcs[i].name === toolName) {
+        entryIdx = i;
         break;
       }
     }
   }
-  if (!entry) {
-    // Late-arriving progress for a tool whose start we missed (e.g. SSE
-    // resumed mid-stream). Create a stub call so the progress isn't lost.
-    entry = {
-      id: toolCallId,
-      name: toolName ?? "",
-      status: "running",
-      progress: [],
-      retryCount: 0,
-    };
-    tcs.push(entry);
-  }
+  const existing = entryIdx === -1 ? undefined : oldTcs[entryIdx];
   // Idempotency guard: skip exact-duplicate consecutive entries so a
   // task_status replay (e.g. on stream reconnect) doesn't double-render
   // the same line in the timeline. Mirrors the logic in
   // `MessageStore.appendToolProgressByCallId`.
-  const lastEntry = entry.progress[entry.progress.length - 1];
-  if (lastEntry && lastEntry.message === message) {
-    return;
+  if (existing) {
+    const lastEntry = existing.progress[existing.progress.length - 1];
+    if (lastEntry && lastEntry.message === message) {
+      return;
+    }
   }
-  entry.progress.push({ message, ts: Date.now() });
-  if (entry.progress.length > MAX_TOOL_PROGRESS_ENTRIES) {
-    entry.progress.splice(
-      0,
-      entry.progress.length - MAX_TOOL_PROGRESS_ENTRIES,
-    );
+  const baseEntry: ThreadToolCall = existing ?? {
+    // Late-arriving progress for a tool whose start we missed (e.g. SSE
+    // resumed mid-stream). Create a stub call so the progress isn't lost.
+    id: toolCallId,
+    name: toolName ?? "",
+    status: "running",
+    progress: [],
+    retryCount: 0,
+  };
+  const nextProgress = [
+    ...baseEntry.progress,
+    { message, ts: Date.now() },
+  ];
+  // FIFO eviction so a long-running pipeline can't grow the timeline
+  // unbounded (the cap matches `MAX_TOOL_PROGRESS_ENTRIES`).
+  while (nextProgress.length > MAX_TOOL_PROGRESS_ENTRIES) {
+    nextProgress.shift();
   }
+  const newEntry: ThreadToolCall = { ...baseEntry, progress: nextProgress };
+  const newTcs =
+    entryIdx === -1
+      ? [...oldTcs, newEntry]
+      : oldTcs.map((tc, i) => (i === entryIdx ? newEntry : tc));
+  const newTarget: ThreadMessage = { ...oldTarget, toolCalls: newTcs };
+  replaceAssistantSlot(found.thread, oldTarget, newTarget);
   notify();
 
   // M9-γ-3 dual-write: tool_progress envelope. Per the brief, the
@@ -928,7 +1012,15 @@ export function setToolCallStatus(
     }
   }
   if (idx === -1) return;
-  tcs[idx] = { ...tcs[idx], status };
+  // Bug 2026-05-15: see `replaceAssistantSlot` for the React.memo
+  // freeze — assigning into `tcs[idx]` keeps the surrounding
+  // `ThreadMessage` reference identical and the bubble's terminal
+  // status chip never repainted.
+  const newTcs = tcs.map((tc, i) => (i === idx ? { ...tc, status } : tc));
+  replaceAssistantSlot(found.thread, slot, {
+    ...slot,
+    toolCalls: newTcs,
+  });
   notify();
 
   // M9-γ-3 dual-write: setToolCallStatus → tool_end envelope. Skip
