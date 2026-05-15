@@ -14,6 +14,7 @@ import {
   useEffect,
   useMemo,
   memo,
+  type ReactNode,
 } from "react";
 import {
   SendHorizontal,
@@ -28,6 +29,10 @@ import {
   Download,
   Layers,
   Route,
+  ChevronDown,
+  ChevronRight,
+  Loader2,
+  Check,
 } from "lucide-react";
 import { useSession } from "@/runtime/session-context";
 import {
@@ -48,6 +53,7 @@ import { ToolProgressIndicator } from "./tool-progress-indicator";
 import { GhostBubble } from "./GhostBubble";
 import { UserBubbleShell } from "./user-bubble-shell";
 import { CopyMarkdownButton } from "./copy-markdown-button";
+import { ReaderViewTrigger } from "./reader-view-trigger";
 import { buildAuthenticatedFileUrl, buildFileUrl } from "@/api/files";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { nextTopicForCommand } from "@/lib/slash-commands";
@@ -464,6 +470,10 @@ const ThreadUserBubble = memo(function ThreadUserBubble({
   );
 });
 
+function stripProgressLevel(text: string): string {
+  return text.replace(/^\[(info|debug|warn|error)\]\s*/i, "");
+}
+
 function ToolCallBubble({
   toolCall,
   threadId,
@@ -483,6 +493,90 @@ function ToolCallBubble({
       </span>
     ) : null;
 
+  // Per-bubble collapse state (not in the global store — clicking one
+  // bubble's toggle must not affect any other bubble). Default to expanded
+  // while the tool is still running so the user sees live activity, and
+  // auto-collapse once the tool settles so a 300-chip pipeline history
+  // doesn't dominate the scrollback after the bubble finalises.
+  const [expanded, setExpanded] = useState(toolCall.status === "running");
+  // Track whether the user has manually toggled — if so, respect their
+  // choice and skip the auto-collapse on the running -> settled
+  // transition. Without this, a user who hand-expands a completed bubble
+  // would see it stay expanded only until the next render.
+  const userOverrodeRef = useRef(false);
+  const prevStatusRef = useRef(toolCall.status);
+  useEffect(() => {
+    const wasRunning = prevStatusRef.current === "running";
+    const isSettled = toolCall.status !== "running";
+    if (wasRunning && isSettled && !userOverrodeRef.current) {
+      setExpanded(false);
+    }
+    prevStatusRef.current = toolCall.status;
+  }, [toolCall.status]);
+
+  const handleToggle = useCallback(() => {
+    userOverrodeRef.current = true;
+    setExpanded((v) => !v);
+  }, []);
+
+  const progressCount = toolCall.progress.length;
+  const latestProgress =
+    progressCount > 0 ? toolCall.progress[progressCount - 1] : null;
+  // Toggle only makes sense when there's more than one chip to hide.
+  // For a single-chip list, the "collapsed" view would render the same
+  // line as the expanded view, so we skip the chrome.
+  const showToggle = progressCount > 1;
+
+  // 2026-05-14 per-tool status icon (sibling to commit `586ce04` which
+  // fixed `ToolProgressIndicator`'s leading icon). The bubble's
+  // wrapper carries an `animate-pulse` while the call is running, but
+  // the user-facing "tool finished" signal was implicit (pulse stops)
+  // and easy to miss when a progress message contained the literal
+  // word "completed" — a `fm_tts` spawn_only on mini5 surfaced
+  // "fm_tts: completed" inside the chip while the bubble kept
+  // pulsing, reading visually as a stuck spinner. Mirroring
+  // `586ce04`'s gate makes the per-tool affordance explicit:
+  //
+  //   - `running`  → animated `Loader2` (data-testid='tool-call-status-spinner')
+  //   - `complete` → static `Check`    (data-testid='tool-call-status-complete-icon')
+  //   - `error`    → static `X`        (data-testid='tool-call-status-error-icon')
+  //
+  // Status is sourced from `toolCall.status`, which `setToolCallStatus`
+  // (handleToolCompleted / handleTaskUpdated path) and
+  // `finalizeAssistant` (turn/completed sweep, running → complete)
+  // already maintain. The wrapper's `animate-pulse` stays for
+  // continuity with prior UX; the icon adds an unambiguous glyph.
+  let statusIcon: ReactNode;
+  if (toolCall.status === "running") {
+    statusIcon = (
+      <Loader2
+        size={10}
+        className="animate-spin text-accent"
+        data-testid="tool-call-status-spinner"
+        aria-label="running"
+      />
+    );
+  } else if (toolCall.status === "complete") {
+    statusIcon = (
+      <Check
+        size={10}
+        className="text-emerald-400"
+        data-testid="tool-call-status-complete-icon"
+        aria-label="complete"
+      />
+    );
+  } else {
+    // status === "error"
+    statusIcon = (
+      <X
+        size={10}
+        className="text-red-400"
+        data-testid="tool-call-status-error-icon"
+        aria-label="error"
+      />
+    );
+  }
+
   return (
     <div
       data-testid="tool-call-bubble"
@@ -493,6 +587,9 @@ function ToolCallBubble({
       // /api/sessions/:id/tasks[i].tool_call_id).
       data-tool-call-id={toolCall.id || undefined}
       data-tool-call-retry-count={toolCall.retryCount}
+      data-tool-status={toolCall.status}
+      data-progress-expanded={expanded ? "true" : "false"}
+      data-progress-count={progressCount}
       className={`flex flex-col gap-1 rounded-[10px] px-2.5 py-1 text-[10px] font-mono ${
         toolCall.status === "running"
           ? "border-accent/20 bg-accent/14 text-accent animate-pulse"
@@ -501,25 +598,79 @@ function ToolCallBubble({
             : "text-muted"
       } glass-pill`}
     >
-      <span>
-        {toolCall.name || "tool"}
-        {retryBadge}
+      <span className="flex items-center gap-1.5">
+        {statusIcon}
+        <span>
+          {toolCall.name || "tool"}
+          {retryBadge}
+        </span>
       </span>
-      {toolCall.progress.length > 0 && (
-        <ul
-          data-testid="tool-call-runtime-timeline"
-          data-thread-id={threadId}
-          className="m-0 mt-1 flex list-none flex-col gap-0.5 border-l border-current/20 pl-2"
-        >
-          {toolCall.progress.map((entry, idx) => (
-            <li key={idx} className="opacity-80">
-              {entry.message.replace(
-                /^\[(info|debug|warn|error)\]\s*/i,
-                "",
+      {progressCount > 0 && (
+        <>
+          {showToggle && (
+            <button
+              type="button"
+              data-testid="tool-call-runtime-toggle"
+              data-thread-id={threadId}
+              data-expanded={expanded ? "true" : "false"}
+              aria-expanded={expanded}
+              aria-label={
+                expanded
+                  ? "Hide progress updates"
+                  : `Show ${progressCount - 1} more progress update${
+                      progressCount - 1 === 1 ? "" : "s"
+                    }`
+              }
+              onClick={handleToggle}
+              className="mt-1 flex items-center gap-1 self-start rounded-sm px-1 py-0.5 text-[9px] uppercase tracking-wide opacity-70 hover:opacity-100 focus:outline-none focus:ring-1 focus:ring-current/40"
+            >
+              {expanded ? (
+                <ChevronDown size={10} aria-hidden="true" />
+              ) : (
+                <ChevronRight size={10} aria-hidden="true" />
               )}
-            </li>
-          ))}
-        </ul>
+              <span>
+                {expanded
+                  ? `Hide ${progressCount} progress updates`
+                  : `Show ${progressCount - 1} more`}
+              </span>
+            </button>
+          )}
+          {expanded ? (
+            <ul
+              data-testid="tool-call-runtime-timeline"
+              data-thread-id={threadId}
+              data-progress-mode="expanded"
+              className="m-0 mt-1 flex list-none flex-col gap-0.5 border-l border-current/20 pl-2"
+            >
+              {toolCall.progress.map((entry, idx) => (
+                <li key={idx} className="opacity-80">
+                  {stripProgressLevel(entry.message)}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            // Collapsed: still show the latest chip text so the user can
+            // see current activity at a glance without expanding. The
+            // toggle row above shows the hidden-update count and the
+            // expand affordance.
+            <ul
+              data-testid="tool-call-runtime-timeline"
+              data-thread-id={threadId}
+              data-progress-mode="collapsed"
+              className="m-0 mt-1 flex list-none flex-col gap-0.5 border-l border-current/20 pl-2"
+            >
+              {latestProgress && (
+                <li
+                  data-testid="tool-call-runtime-latest"
+                  className="opacity-80"
+                >
+                  {stripProgressLevel(latestProgress.message)}
+                </li>
+              )}
+            </ul>
+          )}
+        </>
       )}
     </div>
   );
@@ -548,6 +699,33 @@ export const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
   // bubble until the turn truly settles.
   const showCopyButton =
     message.status === "complete" && !showLiveIndicators && !!message.text;
+  // 2026-05-14 spawn_only spinner placement fix:
+  //
+  // Previously the tool-progress spinner was lifted to chat-layout
+  // level (above the composer) by commit 86fb70e so it would survive
+  // `turn/completed` for spawn_only flows whose `tool/progress`
+  // heartbeats arrive AFTER the bubble finalises. That introduced a
+  // recurring user-reported UX bug: for `run_pipeline` the
+  // "run_pipeline: running ..." badge sat above the input prompt for
+  // the entire ~25-min background run, visually detached from the
+  // bubble it describes.
+  //
+  // After commit `1a20b7a` (immutable tool-call updates) the bubble
+  // re-renders on every heartbeat — so we can host the spinner row
+  // inside the bubble again, anchored to the bubble whose tool calls
+  // it reports. The indicator is gated on the bubble having at least
+  // one tool call with progress entries (i.e., the tool has actually
+  // reported something) so finalised bubbles without tool activity
+  // don't render a spinner. For spawn_only flows (run_pipeline /
+  // podcast_generate / fm_tts / deep_search / mofa_slides) the
+  // foreground `tool/completed` fires immediately (chip status →
+  // `complete`) but the BG task keeps adding heartbeat progress
+  // entries to the same tool call's `progress[]` — so the indicator
+  // stays anchored to the bubble and continues to show the latest
+  // heartbeat for the full background duration.
+  const showToolProgress = message.toolCalls.some(
+    (tc) => tc.progress.length > 0,
+  );
   return (
     <div className="flex px-4 py-3">
       <div
@@ -589,20 +767,41 @@ export const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
           </div>
         )}
 
-        {/* Thinking indicator (only for the in-flight pending assistant).
-            `ToolProgressIndicator` is lifted to `ChatThreadV2` so the
-            spinner survives `turn/completed` for spawn_only background
-            tasks (podcast_generate / fm_tts / deep_search / mofa_slides)
-            whose `tool/progress` envelopes arrive AFTER the LLM turn
-            has settled and the pending assistant bubble has been
-            unmounted. */}
+        {/* Thinking indicator (only for the in-flight pending assistant). */}
         {showLiveIndicators && <ThinkingIndicator />}
 
-        {/* Message footer: meta on the left, copy button on the right */}
+        {/* Tool-progress spinner — anchored INSIDE the bubble whose tools
+            it reports. The indicator derives its display directly from
+            `message.toolCalls[*].progress`, NOT a window event stream:
+            with `1a20b7a`'s immutable tool-call updates the bubble
+            re-renders on every heartbeat, and reading from the store
+            avoids the listener-attach race the event-driven design
+            suffered from (the indicator was gated on
+            `toolCalls.length > 0` so it didn't exist when the first
+            `tool/started` event fired). For spawn_only tools
+            (run_pipeline, podcast_generate, fm_tts, deep_search,
+            mofa_slides) the foreground `tool/completed` flips the
+            chip's `status` to `complete` immediately, but heartbeats
+            keep appending progress entries; those land here and
+            refresh the row text without needing a separate inflight
+            flag. The previous fix (commit 86fb70e) lifted this to
+            chat-layout level above the composer; that caused a
+            recurring UX bug where `run_pipeline: running` sat above
+            the input prompt for the entire ~25 min background run,
+            detached from its bubble. */}
+        {showToolProgress && <ToolProgressIndicator message={message} />}
+
+        {/* Message footer: meta on the left, action icons on the
+            right. Copy + reader-view both render only on finalized
+            bubbles with non-empty text; the same `showCopyButton`
+            gate suffices for both. */}
         <div className="mt-1.5 flex items-center justify-between gap-2">
           <ThreadMessageMeta message={message} />
           {showCopyButton ? (
-            <CopyMarkdownButton content={message.text} />
+            <div className="flex items-center gap-0.5">
+              <ReaderViewTrigger content={message.text} />
+              <CopyMarkdownButton content={message.text} />
+            </div>
           ) : (
             <span aria-hidden="true" />
           )}
@@ -649,6 +848,39 @@ function isVisibleResponse(
   // on the assistant message; rendering them as standalone bubbles would
   // duplicate output (the assistant already shows tool-call status + progress).
   if (message.role === "tool") return false;
+  // 2026-05-14 hard-refresh replay fix: mirror the server-side wire
+  // filter `is_metadata_only_assistant_row` at the SPA render boundary.
+  //
+  // The agent's iterative tool-call loop commits an Assistant `Message`
+  // per LLM iteration. For a turn whose first LLM iteration emits only
+  // `tool_calls` (no rendered text and no media) — the canonical
+  // shape that brackets every `tool/started` → `tool/completed` for a
+  // spawn_only tool such as `run_pipeline` — the JSONL row has
+  // `content=""`, `media=[]` and (server-side) `tool_calls=[...]`.
+  //
+  // The server's `MessageCommitObserver` suppresses these rows from
+  // the LIVE `message/persisted` wire (see `is_metadata_only_assistant_row`
+  // in `crates/octos-cli/src/api/ui_protocol.rs`). The legacy REST
+  // `session/messages_page` returns the unfiltered JSONL — and its
+  // `MessageInfo` shape (handlers.rs:531) strips `tool_calls`. So on
+  // a hard refresh `replayHistory` ingests a `ThreadMessage` with
+  // `text=""`, `files=[]`, `toolCalls=[]` and renders it as an empty
+  // timestamp-only bubble (the recurring user-visible regression).
+  //
+  // Match predicate: assistant role, no text content, no files, no
+  // tool-call data. Live state cannot match this predicate after
+  // `tool/started` runs (which populates `toolCalls`), so the spawn_only
+  // heartbeat path covered by `chat-thread-heartbeat.test.tsx` is
+  // untouched. A finalised bubble with progress chips always carries
+  // `toolCalls.length > 0`.
+  if (
+    message.role === "assistant" &&
+    !message.text.trim() &&
+    message.files.length === 0 &&
+    message.toolCalls.length === 0
+  ) {
+    return false;
+  }
   if (
     hideFileOnlyAssistantMessages &&
     message.role === "assistant" &&
@@ -852,17 +1084,20 @@ function ChatThreadV2({
           </div>
         </div>
       )}
-      {/* Tool-progress spinner, lifted out of the per-bubble render so
-          it survives `turn/completed` for spawn_only background tasks.
-          The indicator self-scopes to `(currentSessionId, historyTopic)`
-          via `eventMatchesScope`, so one mount is sufficient — it
-          renders only when a `crew:tool_progress` event for THIS
-          session arrives, and clears on `crew:thinking { thinking:
-          false }`. Positioned above the composer to mirror the visual
-          slot the spinner occupied when it lived inside the streaming
-          bubble's bottom. */}
+      {/* The tool-progress spinner used to mount here at chat-layout
+          level (above the composer) so it would survive `turn/completed`
+          for spawn_only flows whose `tool/progress` envelopes arrive
+          after the bubble finalised. That caused a recurring UX bug
+          where the indicator ("run_pipeline: running ...") sat above
+          the input prompt for the entire ~25 min `run_pipeline` run,
+          detached from its bubble. After the `1a20b7a` immutable
+          tool-call updates fix the bubble re-renders on every
+          heartbeat, so we can host the spinner inside
+          `ThreadAssistantBubble` again (gated on
+          `hasRunningToolCall || showLiveIndicators`) and it still
+          surfaces for spawn_only — just anchored where the user
+          expects it. */}
       <div className="shrink-0">
-        <ToolProgressIndicator />
         <Composer mountGhost={mountGhost} unmountGhost={unmountGhost} />
       </div>
     </div>

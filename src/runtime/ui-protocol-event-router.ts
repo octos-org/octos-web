@@ -462,6 +462,10 @@ export function handleSpawnComplete(
     sessionId: cfg.sessionId,
     topic: cfg.topic,
   });
+  // Drop the cache entry — the BG task is done. The per-bubble
+  // `ToolProgressIndicator` reads from ThreadStore (not window
+  // events), so no terminal dispatch is needed here.
+  toolNameByCallId.delete(event.task_id);
 }
 
 export function handleTaskUpdated(
@@ -711,18 +715,16 @@ export function handleTurnError(
 // Synchronous tool-call lifecycle  (regression #1)
 // ---------------------------------------------------------------------------
 //
-// The legacy SSE bridge (`sse-bridge.ts`, deleted in PR #96) was the sole
-// dispatcher of `crew:tool_progress` DOM events — the
-// `ToolProgressIndicator` component listens to that event to render the
-// spinner under the streaming assistant bubble. Without a replacement,
-// the spinner never lit up for any in-flight tool call.
-//
-// Each handler below converts the typed UI Protocol v1 envelope into the
-// same `{ tool, message, sessionId, topic, turnId }` detail shape the
-// component reads (see `src/components/tool-progress-indicator.tsx`).
-// The component clears the spinner on `crew:thinking { thinking: false }`
-// (already dispatched by `handleTurnCompleted` / `handleTurnError`), so
-// no explicit clear event is needed on `tool/completed`.
+// Handlers below feed the ThreadStore (via `addToolCall`,
+// `appendToolProgress`, `setToolCallStatus`) AND dispatch
+// `crew:tool_progress` window events for any external listeners. The
+// `ToolProgressIndicator` component (2026-05-14 redesign,
+// `src/components/tool-progress-indicator.tsx`) is now a pure
+// derivation of the bubble's `message.toolCalls` — no longer a
+// listener — so the window events here serve compatibility callers
+// (e.g. external automation hooks) and are dead code at the
+// indicator level. Removing the dispatches is a separate cleanup
+// (no risk: the indicator is data-driven).
 
 function dispatchToolProgressEvent(
   cfg: RouterConfig,
