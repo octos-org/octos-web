@@ -50,6 +50,7 @@ import { ToolProgressIndicator } from "./tool-progress-indicator";
 import { GhostBubble } from "./GhostBubble";
 import { UserBubbleShell } from "./user-bubble-shell";
 import { CopyMarkdownButton } from "./copy-markdown-button";
+import { ReaderViewTrigger } from "./reader-view-trigger";
 import { buildAuthenticatedFileUrl, buildFileUrl } from "@/api/files";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { nextTopicForCommand } from "@/lib/slash-commands";
@@ -733,11 +734,17 @@ export const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
             detached from its bubble. */}
         {showToolProgress && <ToolProgressIndicator message={message} />}
 
-        {/* Message footer: meta on the left, copy button on the right */}
+        {/* Message footer: meta on the left, action icons on the
+            right. Copy + reader-view both render only on finalized
+            bubbles with non-empty text; the same `showCopyButton`
+            gate suffices for both. */}
         <div className="mt-1.5 flex items-center justify-between gap-2">
           <ThreadMessageMeta message={message} />
           {showCopyButton ? (
-            <CopyMarkdownButton content={message.text} />
+            <div className="flex items-center gap-0.5">
+              <ReaderViewTrigger content={message.text} />
+              <CopyMarkdownButton content={message.text} />
+            </div>
           ) : (
             <span aria-hidden="true" />
           )}
