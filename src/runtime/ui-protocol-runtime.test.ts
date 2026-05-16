@@ -71,6 +71,9 @@ function makeDeferredBridge(): DeferredBridge {
   // P2), so the registry's published-with-state="connecting" entry would
   // otherwise look like null to assertions.
   let stateHandler: ((s: ConnectionState) => void) | null = null;
+  // Track the reopen subscriber so the test can simulate the bridge's
+  // post-reconnect re-handshake event (reload-bug fix Yue 2026-05-15).
+  let reopenedHandler: (() => void) | null = null;
   const bridge: UiProtocolBridge = {
     start: vi.fn(async () => {
       startCalls++;
@@ -107,6 +110,12 @@ function makeDeferredBridge(): DeferredBridge {
       };
     }),
     getConnectionState: vi.fn(() => "connected" as ConnectionState),
+    onReopened: vi.fn((h: () => void) => {
+      reopenedHandler = h;
+      return () => {
+        if (reopenedHandler === h) reopenedHandler = null;
+      };
+    }),
     onWarning: vi.fn(() => () => {}),
     onSessionTitleUpdated: vi.fn(() => () => {}),
     hydrateSession: vi.fn(async () => null),
@@ -117,6 +126,10 @@ function makeDeferredBridge(): DeferredBridge {
     resolveStart: () => resolveStart(),
     rejectStart: (err) => rejectStart(err),
     setConnected: () => stateHandler?.("connected"),
+    /** Simulate the bridge's post-reconnect `session/open` ack
+     *  (reload-bug fix Yue 2026-05-15). The runtime layer subscribes via
+     *  `onReopened` to re-fire `session/hydrate`. */
+    fireReopened: () => reopenedHandler?.(),
     get startCalls() {
       return startCalls;
     },
@@ -257,5 +270,207 @@ describe("startBridgeForSession race safety", () => {
     await expect(dead!.sendTurn("turn-2", [])).rejects.toThrow(
       /WebSocket connection is closed/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reload-bug fix (Yue 2026-05-15): on WS reconnect, the runtime must
+// re-issue `session/hydrate` so envelopes the server emitted while the
+// socket was dropped (e.g. a `TurnSpawnComplete` for a long-running
+// `spawn_only`) get replayed via `replayed_envelopes`. Without this, a
+// 12-min `run_pipeline` whose user lost their WS at completion would
+// complete silently and the UI would show nothing.
+//
+// The bridge's `onReopened` event fires ONLY on a subsequent successful
+// `session/open` ack (not the initial open) — these tests pin both
+// halves: the post-reopen hydrate fires, the initial open does NOT
+// double-hydrate.
+// ---------------------------------------------------------------------------
+describe("reload-bug fix: re-hydrate session on WS reconnect", () => {
+  it("does NOT call hydrateSession a second time on the initial bridge start", async () => {
+    const a = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(a.bridge);
+
+    const startA = startBridgeForSession("sess-A");
+    a.resolveStart();
+    await startA;
+    a.setConnected();
+    // Let the void-immediately-invoked async hydrate settle.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Initial start fires hydrate ONCE. `onReopened` has not fired, so
+    // there should be exactly one call.
+    expect(a.bridge.hydrateSession).toHaveBeenCalledTimes(1);
+    expect(a.bridge.hydrateSession).toHaveBeenCalledWith(["messages"]);
+  });
+
+  it("calls hydrateSession again after the bridge's onReopened event fires", async () => {
+    const a = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(a.bridge);
+
+    const startA = startBridgeForSession("sess-A");
+    a.resolveStart();
+    await startA;
+    a.setConnected();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Sanity: initial hydrate ran.
+    expect(a.bridge.hydrateSession).toHaveBeenCalledTimes(1);
+
+    // Simulate the bridge's post-reconnect `session/open` ack. The
+    // runtime must re-issue `session/hydrate` so the server replays any
+    // envelopes (e.g. a `TurnSpawnComplete`) it emitted while the WS
+    // was disconnected — without this, those envelopes are silently
+    // dropped by the cursorless `session/open` ("live only, no
+    // replay") at `ui_protocol_ledger.rs:1199`.
+    a.fireReopened();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(a.bridge.hydrateSession).toHaveBeenCalledTimes(2);
+    // Both calls request the messages dedup payload.
+    const calls = (a.bridge.hydrateSession as unknown as { mock: { calls: unknown[][] } })
+      .mock.calls;
+    expect(calls[0]).toEqual([["messages"]]);
+    expect(calls[1]).toEqual([["messages"]]);
+  });
+
+  it("applies the post-reopen hydrate result to ThreadStore for replay dedup", async () => {
+    // Reload-bug fix: the post-reconnect hydrate's `replayed_envelopes`
+    // need to reach `setHydrateSnapshot` so ThreadStore's
+    // `applyHydrateDedup` can splice the missed turn into the UI.
+    // Mock `hydrateSession` to return a synthetic envelope that mirrors
+    // what the server replays for a missed `TurnSpawnComplete`.
+    const a = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(a.bridge);
+
+    const REPLAY_PAYLOAD = {
+      messages: [],
+      replayed_envelopes: [
+        {
+          thread_id: "cmid-user-x",
+          turn_id: "turn-x",
+          response_to_client_message_id: "cmid-user-x",
+          task_id: "task_recover_x",
+          seq: 7,
+          message_id: "msg-spawn-x",
+          content: "Replayed completion bubble from durable ledger.",
+          media: ["bg/result.mp3"],
+          persisted_at: "2026-05-15T00:00:00Z",
+        },
+      ],
+    } as const;
+
+    // Initial hydrate returns empty; the post-reopen hydrate returns
+    // the recovery payload.
+    (
+      a.bridge.hydrateSession as unknown as {
+        mockImplementationOnce: (
+          fn: () => Promise<unknown>,
+        ) => unknown;
+      }
+    )
+      .mockImplementationOnce(async () => ({
+        messages: [],
+        replayed_envelopes: [],
+      }))
+      .mockImplementationOnce(async () => REPLAY_PAYLOAD);
+
+    const startA = startBridgeForSession("sess-A");
+    a.resolveStart();
+    await startA;
+    a.setConnected();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Confirm initial hydrate fired with the empty payload.
+    expect(a.bridge.hydrateSession).toHaveBeenCalledTimes(1);
+
+    // Fire reopen — runtime issues the second hydrate.
+    a.fireReopened();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(a.bridge.hydrateSession).toHaveBeenCalledTimes(2);
+    // The second call returned the recovery payload. The runtime's
+    // hydrate callback writes it through `setHydrateSnapshot`. We don't
+    // assert on ThreadStore internals directly here (covered by
+    // thread-store tests) — instead we lock in the call contract: the
+    // RPC was issued post-reopen with the same `["messages"]` include,
+    // which is what server PR #791 keys the dedup payload on.
+    const calls = (a.bridge.hydrateSession as unknown as { mock: { calls: unknown[][] } })
+      .mock.calls;
+    expect(calls[1]).toEqual([["messages"]]);
+  });
+
+  it("does not crash when the bridge mock predates the onReopened method", async () => {
+    // Defensive: existing tests may inject a bridge whose `onReopened`
+    // is undefined. The runtime should skip subscription rather than
+    // throw — the test below validates the guard.
+    const a = makeDeferredBridge();
+    // Strip the method to simulate an older mock.
+    (a.bridge as unknown as { onReopened?: unknown }).onReopened = undefined;
+    createBridgeSpy.mockReturnValueOnce(a.bridge);
+
+    const startA = startBridgeForSession("sess-A");
+    a.resolveStart();
+    const bridge = await startA;
+    a.setConnected();
+    expect(bridge).toBe(a.bridge);
+    // No throw — the runtime's `typeof bridge.onReopened === "function"`
+    // guard skipped the subscription path.
+  });
+
+  it("does not re-hydrate after the runtime has stopped the bridge", async () => {
+    // Race-safety: a reopen that fires after `stopActiveBridge` ran is
+    // either a phantom event from a torn-down bridge or a stale
+    // subscriber. The generation guard in the reopen callback must
+    // skip the hydrate.
+    const a = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(a.bridge);
+
+    const startA = startBridgeForSession("sess-A");
+    a.resolveStart();
+    await startA;
+    a.setConnected();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(a.bridge.hydrateSession).toHaveBeenCalledTimes(1);
+
+    await stopActiveBridge();
+
+    // Fire a stale reopen — must NOT trigger a new hydrate.
+    a.fireReopened();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(a.bridge.hydrateSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips hydrate for topic-scoped bridges (root-scope dedup only)", async () => {
+    // The existing initial-hydrate path skips topic-scoped bridges
+    // because `session/hydrate` returns root-scope envelopes and
+    // applying them to a topic-scoped store would leak cross-topic
+    // events (codex round-2 P2). The reopen path inherits the same
+    // restriction.
+    const a = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(a.bridge);
+
+    const startA = startBridgeForSession("sess-A", "site-x");
+    a.resolveStart();
+    await startA;
+    a.setConnected();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Initial start did NOT hydrate (topic-scoped).
+    expect(a.bridge.hydrateSession).not.toHaveBeenCalled();
+
+    // Reopen also must NOT hydrate.
+    a.fireReopened();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(a.bridge.hydrateSession).not.toHaveBeenCalled();
   });
 });
