@@ -28,6 +28,11 @@ interface ActiveBridge {
   connectionState: ConnectionState;
   /** Cleanup fn for the connection-state subscriber. Detached on stop. */
   unsubscribeState: () => void;
+  /** Cleanup fn for the reopen subscriber (reload-bug fix). Detached on
+   *  stop. The reopen subscriber re-fires `session/hydrate` so missed
+   *  envelopes (e.g. a `TurnSpawnComplete` emitted while the WS was
+   *  dropped) get replayed via `replayed_envelopes`. */
+  unsubscribeReopened: () => void;
 }
 
 let active: ActiveBridge | null = null;
@@ -152,6 +157,29 @@ export async function startBridgeForSession(
       }
     }
   });
+  // Reload-bug fix (Yue 2026-05-15): subscribe to the bridge's `onReopened`
+  // hook BEFORE the initial hydrate kicks off, so a reconnect that races
+  // the initial hydrate still gets handled. The bridge guarantees this
+  // event only fires on a SUBSEQUENT successful `session/open` (i.e. after
+  // a reconnect) — never on the initial open — so we do not double-hydrate
+  // when the bridge first goes live. See `ui-protocol-bridge.ts` →
+  // `onWsOpen` for the gating logic (the `isReopen` snapshot of
+  // `hasEverOpened`).
+  //
+  // Defensive: test mocks of `UiProtocolBridge` may pre-date `onReopened`;
+  // skip subscription rather than crash so existing tests keep working.
+  let unsubscribeReopened: () => void = () => {};
+  if (typeof bridge.onReopened === "function") {
+    unsubscribeReopened = bridge.onReopened(() => {
+      // Only the runtime entry that this start created can speak for the
+      // session — a newer `startBridgeForSession` would have torn this
+      // bridge down before publishing its own. Use the same generation
+      // guard the initial hydrate uses.
+      if (myGeneration !== generation) return;
+      runHydrateFor(sessionId, topic, bridge, myGeneration);
+    });
+  }
+
   active = {
     sessionId,
     topic,
@@ -159,6 +187,7 @@ export async function startBridgeForSession(
     attachment,
     connectionState,
     unsubscribeState,
+    unsubscribeReopened,
   };
 
   // M10 Phase 6.2 (Bug C): immediately fire `session/hydrate` to fetch
@@ -178,23 +207,52 @@ export async function startBridgeForSession(
   // chat (slides/sites) keeps the legacy REST-only render with the
   // pre-fix N+1 limitation. This avoids cross-topic envelope leakage
   // (codex round-2 P2).
-  if (!topic || topic.trim() === "") {
-    void (async () => {
-      if (myGeneration !== generation) return;
-      // Defensive: test mocks of `UiProtocolBridge` may pre-date this
-      // method. Production builds always have it.
-      if (typeof bridge.hydrateSession !== "function") return;
-      const hydrate = await bridge.hydrateSession(["messages"]);
-      if (myGeneration !== generation) return;
-      if (!hydrate) return;
-      setHydrateSnapshot(sessionId, topic, {
-        messages: hydrate.messages,
-        replayed_envelopes: hydrate.replayed_envelopes,
-      });
-    })();
-  }
+  runHydrateFor(sessionId, topic, bridge, myGeneration);
 
   return bridge;
+}
+
+/**
+ * Run a `session/hydrate(["messages"])` RPC and push the result into
+ * ThreadStore. Used by both the initial bridge start and the post-
+ * reconnect reopen path.
+ *
+ * The reload-bug fix (Yue 2026-05-15) added the reopen call site: the
+ * server's `session/open` without an `after` cursor is "live only, no
+ * replay" (`ui_protocol_ledger.rs:1199`). Without this RPC, any
+ * envelopes the server emitted between disconnect and reconnect (e.g.
+ * a `TurnSpawnComplete` for a long-running `spawn_only`) would be
+ * silently dropped. Re-hydrating on reopen rolls the ledger forward.
+ *
+ * Dedup is the caller's responsibility but already covered: ThreadStore's
+ * `applyHydrateDedup` (via `setHydrateSnapshot`) coalesces duplicate
+ * `(message_id, source)` rows from `replayed_envelopes`, so it is safe
+ * to call this multiple times on the same bridge.
+ *
+ * Generation-guarded: skips if a newer `startBridgeForSession` /
+ * `stopActiveBridge` has bumped the global counter, mirroring the
+ * race-safety the initial hydrate uses.
+ */
+function runHydrateFor(
+  sessionId: string,
+  topic: string | undefined,
+  bridge: UiProtocolBridge,
+  capturedGeneration: number,
+): void {
+  if (topic && topic.trim() !== "") return;
+  void (async () => {
+    if (capturedGeneration !== generation) return;
+    // Defensive: test mocks of `UiProtocolBridge` may pre-date this
+    // method. Production builds always have it.
+    if (typeof bridge.hydrateSession !== "function") return;
+    const hydrate = await bridge.hydrateSession(["messages"]);
+    if (capturedGeneration !== generation) return;
+    if (!hydrate) return;
+    setHydrateSnapshot(sessionId, topic, {
+      messages: hydrate.messages,
+      replayed_envelopes: hydrate.replayed_envelopes,
+    });
+  })();
 }
 
 /**
@@ -278,6 +336,7 @@ export async function stopActiveBridge(): Promise<void> {
   active = null;
   handle.attachment.detach();
   handle.unsubscribeState();
+  handle.unsubscribeReopened();
   try {
     await handle.bridge.stop();
   } catch {
@@ -305,6 +364,7 @@ export async function stopActiveBridgeIfScope(
   active = null;
   handle.attachment.detach();
   handle.unsubscribeState();
+  handle.unsubscribeReopened();
   try {
     await handle.bridge.stop();
   } catch {
@@ -337,5 +397,6 @@ export function __setActiveBridgeForTest(
     attachment: { detach: () => {} },
     connectionState,
     unsubscribeState: () => {},
+    unsubscribeReopened: () => {},
   };
 }
