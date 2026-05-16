@@ -1223,6 +1223,148 @@ describe("reconnect with exponential backoff", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Reload-bug fix (Yue 2026-05-15): onReopened fires on every successful
+// `session/open` ack AFTER the initial open — never on the initial open.
+// This is the hook the runtime layer subscribes to so it can re-issue
+// `session/hydrate` and recover envelopes the server emitted while the
+// WS was disconnected. Without this gating the runtime would
+// double-hydrate at startup; without the event at all the
+// run_pipeline-while-disconnected bug stays broken.
+// ---------------------------------------------------------------------------
+
+describe("onReopened — reconnect-only event", () => {
+  it("does NOT fire on the initial session/open ack", async () => {
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const reopenedCounts: { count: number } = { count: 0 };
+    bridge.onReopened(() => {
+      reopenedCounts.count += 1;
+    });
+    void bridge.start({ sessionId: "sess-1" });
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(ws, METHODS.SESSION_OPEN);
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+    expect(reopenedCounts.count).toBe(0);
+  });
+
+  it("fires once on every successful session/open ack AFTER the first", async () => {
+    // Drive the bridge through `initial open -> drop -> reconnect ->
+    // session/open ack`. The first ack must NOT fire `onReopened`; the
+    // second ack MUST.
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const reopened: number[] = [];
+    bridge.onReopened(() => {
+      reopened.push(Date.now());
+    });
+
+    void bridge.start({ sessionId: "sess-1" });
+    await Promise.resolve();
+    const ws1 = lastInstance();
+    ws1.triggerOpen();
+    await Promise.resolve();
+    const open1 = findRequest(ws1, METHODS.SESSION_OPEN);
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      id: open1.id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+    expect(reopened).toHaveLength(0);
+
+    // Drop the socket; bridge schedules a reconnect.
+    ws1.triggerClose(1006, "abnormal");
+    await vi.advanceTimersByTimeAsync(1000);
+    const ws2 = lastInstance();
+    ws2.triggerOpen();
+    await Promise.resolve();
+    const open2 = findRequest(ws2, METHODS.SESSION_OPEN);
+    ws2.triggerMessage({
+      jsonrpc: "2.0",
+      id: open2.id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+    expect(reopened).toHaveLength(1);
+
+    // A second drop + reconnect fires it again.
+    ws2.triggerClose(1006, "abnormal");
+    await vi.advanceTimersByTimeAsync(2000);
+    const ws3 = lastInstance();
+    ws3.triggerOpen();
+    await Promise.resolve();
+    const open3 = findRequest(ws3, METHODS.SESSION_OPEN);
+    ws3.triggerMessage({
+      jsonrpc: "2.0",
+      id: open3.id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+    expect(reopened).toHaveLength(2);
+  });
+
+  it("unsubscribe stops further onReopened deliveries", async () => {
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    let calls = 0;
+    const unsub = bridge.onReopened(() => {
+      calls += 1;
+    });
+
+    void bridge.start({ sessionId: "sess-1" });
+    await Promise.resolve();
+    const ws1 = lastInstance();
+    ws1.triggerOpen();
+    await Promise.resolve();
+    const open1 = findRequest(ws1, METHODS.SESSION_OPEN);
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      id: open1.id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+
+    // First reconnect fires the event.
+    ws1.triggerClose(1006, "abnormal");
+    await vi.advanceTimersByTimeAsync(1000);
+    const ws2 = lastInstance();
+    ws2.triggerOpen();
+    await Promise.resolve();
+    const open2 = findRequest(ws2, METHODS.SESSION_OPEN);
+    ws2.triggerMessage({
+      jsonrpc: "2.0",
+      id: open2.id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+    expect(calls).toBe(1);
+
+    // Unsubscribe, then drive another reconnect.
+    unsub();
+    ws2.triggerClose(1006, "abnormal");
+    await vi.advanceTimersByTimeAsync(2000);
+    const ws3 = lastInstance();
+    ws3.triggerOpen();
+    await Promise.resolve();
+    const open3 = findRequest(ws3, METHODS.SESSION_OPEN);
+    ws3.triggerMessage({
+      jsonrpc: "2.0",
+      id: open3.id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+    expect(calls).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Send queue
 // ---------------------------------------------------------------------------
 
