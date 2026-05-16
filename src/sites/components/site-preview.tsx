@@ -8,27 +8,61 @@ import {
   useState,
 } from "react";
 
+import { type SignedPreviewResponse, signPreview } from "../api";
+
 interface Props {
+  /** Legacy plain preview URL — used for the "open in new tab" button
+   * and the copyable URL row. The iframe `src` is computed from the
+   * signed-URL flow below. */
   previewUrl?: string;
   siteName: string;
   template: string;
   sessionId?: string;
   scaffoldError?: string;
+  /** Profile id the active site lives under. Required for signing. */
+  profileId?: string | null;
+  /** Site slug. Required for signing. */
+  slug?: string;
 }
 
+/**
+ * `<SitePreview>` post-PR #1001.
+ *
+ * PR #1001 closed the cross-tenant `/api/preview/{profile_id}/...`
+ * data-read by requiring `Authorization: Bearer ...` on every request.
+ * That regressed the iframe UX (iframes cannot inject headers), so
+ * codex's design (PR #1006-ish): mint a signed-URL token via
+ * `POST /api/my/preview/sign` and point `iframe.src` at the returned
+ * `preview_url` — the token IS the credential for the iframe GETs.
+ *
+ * Renewal cadence: re-sign at `expires_at - 60s` so the in-flight
+ * iframe never hits a 404 on a freshly-expired token. The component
+ * tracks the latest signed URL in state and updates `iframe.src` when
+ * the renewal returns.
+ *
+ * If the sign call rejects (e.g. 403 because the user logged out, or
+ * the profile no longer matches), the component renders an error UI
+ * with a retry button rather than silently pointing the iframe at the
+ * stale URL.
+ */
 export function SitePreview({
   previewUrl,
   siteName,
   template,
   sessionId,
   scaffoldError,
+  profileId,
+  slug,
 }: Props) {
   const [refreshTick, setRefreshTick] = useState(0);
   const [status, setStatus] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [signed, setSigned] = useState<SignedPreviewResponse | null>(null);
+  const [signError, setSignError] = useState<string | null>(null);
   const autoRefreshAttempts = useRef(0);
   const autoRefreshTimer = useRef<number | null>(null);
   const eventRefreshTimer = useRef<number | null>(null);
+  const renewalTimer = useRef<number | null>(null);
   const copiedTimer = useRef<number | null>(null);
 
   const triggerRefresh = useCallback(() => {
@@ -36,13 +70,73 @@ export function SitePreview({
   }, []);
 
   const scheduleRetry = useCallback(() => {
-    if (autoRefreshAttempts.current >= 8 || autoRefreshTimer.current !== null) return;
+    if (autoRefreshAttempts.current >= 8 || autoRefreshTimer.current !== null)
+      return;
     autoRefreshAttempts.current += 1;
     autoRefreshTimer.current = window.setTimeout(() => {
       autoRefreshTimer.current = null;
       triggerRefresh();
     }, 2500);
   }, [triggerRefresh]);
+
+  /**
+   * Sign and (re-)mint a signed-URL token. Stashes the result in
+   * state so the iframe re-renders against `signed.preview_url`, and
+   * schedules a renewal at `expires_at - 60s`. We clamp the renewal
+   * window to a minimum of 250 ms so a clock skew or a very short TTL
+   * (test rigs use 5-second TTLs) doesn't pin the iframe on a stale
+   * URL while React batches the state update.
+   */
+  const refreshSignedToken = useCallback(async () => {
+    if (!profileId || !sessionId || !slug) {
+      // Missing coordinates — we cannot mint a signed token, but the
+      // caller's `previewUrl` row may still surface scaffold status,
+      // so don't surface an "error" here. The iframe will simply not
+      // render until the coordinates arrive (typically on first poll).
+      setSigned(null);
+      setSignError(null);
+      return;
+    }
+    try {
+      const response = await signPreview({
+        profile_id: profileId,
+        session_id: sessionId,
+        site_slug: slug,
+      });
+      setSigned(response);
+      setSignError(null);
+
+      // Schedule renewal at expires_at - 60s, clamped to a positive
+      // window so test rigs (5-second TTLs) don't no-op the timer.
+      if (renewalTimer.current !== null) {
+        window.clearTimeout(renewalTimer.current);
+      }
+      const expiresMs = Date.parse(response.expires_at);
+      const nowMs = Date.now();
+      const delay = Math.max(250, expiresMs - nowMs - 60_000);
+      renewalTimer.current = window.setTimeout(() => {
+        renewalTimer.current = null;
+        void refreshSignedToken();
+      }, delay);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "sign failed";
+      setSignError(message);
+      setSigned(null);
+    }
+  }, [profileId, sessionId, slug]);
+
+  // Mint on mount and whenever the coordinates change. The renewal
+  // is scheduled INSIDE refreshSignedToken (after each successful
+  // sign) so changing coordinates cancels any in-flight renewal.
+  useEffect(() => {
+    void refreshSignedToken();
+    return () => {
+      if (renewalTimer.current !== null) {
+        window.clearTimeout(renewalTimer.current);
+        renewalTimer.current = null;
+      }
+    };
+  }, [refreshSignedToken]);
 
   useEffect(() => {
     autoRefreshAttempts.current = 0;
@@ -60,6 +154,9 @@ export function SitePreview({
       }
       if (eventRefreshTimer.current !== null) {
         window.clearTimeout(eventRefreshTimer.current);
+      }
+      if (renewalTimer.current !== null) {
+        window.clearTimeout(renewalTimer.current);
       }
       if (copiedTimer.current !== null) {
         window.clearTimeout(copiedTimer.current);
@@ -125,10 +222,10 @@ export function SitePreview({
   }, [previewUrl, sessionId, triggerRefresh]);
 
   const iframeUrl = useMemo(() => {
-    if (!previewUrl) return "";
-    const separator = previewUrl.includes("?") ? "&" : "?";
-    return `${previewUrl}${separator}v=${refreshTick}`;
-  }, [previewUrl, refreshTick]);
+    if (!signed?.preview_url) return "";
+    const separator = signed.preview_url.includes("?") ? "&" : "?";
+    return `${signed.preview_url}${separator}v=${refreshTick}`;
+  }, [signed?.preview_url, refreshTick]);
 
   const handleCopyPreviewUrl = useCallback(() => {
     if (!previewUrl) return;
@@ -170,7 +267,8 @@ export function SitePreview({
   if (!previewUrl) {
     return (
       <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted">
-        {scaffoldError || "The preview URL will appear once the backend scaffold finishes."}
+        {scaffoldError ||
+          "The preview URL will appear once the backend scaffold finishes."}
       </div>
     );
   }
@@ -211,13 +309,34 @@ export function SitePreview({
       </div>
       <div className="min-h-0 flex-1 bg-surface-dark p-3">
         <div className="h-full overflow-hidden rounded-2xl border border-border bg-white shadow-2xl">
-          <iframe
-            key={iframeUrl}
-            src={iframeUrl}
-            title={`${siteName} preview`}
-            className="h-full w-full border-0"
-            onLoad={handleLoad}
-          />
+          {signError ? (
+            <div
+              data-testid="site-preview-error"
+              className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center text-sm text-muted"
+            >
+              <div>
+                Preview is unavailable: <code>{signError}</code>
+              </div>
+              <button
+                onClick={() => void refreshSignedToken()}
+                className="rounded-lg border border-border px-3 py-1 text-xs text-text hover:bg-surface-container"
+              >
+                Retry
+              </button>
+            </div>
+          ) : iframeUrl ? (
+            <iframe
+              key={iframeUrl}
+              src={iframeUrl}
+              title={`${siteName} preview`}
+              className="h-full w-full border-0"
+              onLoad={handleLoad}
+            />
+          ) : (
+            <div className="flex h-full items-center justify-center text-xs text-muted">
+              Loading preview…
+            </div>
+          )}
         </div>
         {status && (
           <div className="px-1 pt-2 text-xs text-muted">{status}</div>
