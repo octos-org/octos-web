@@ -1365,6 +1365,288 @@ describe("onReopened — reconnect-only event", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Issue #137 (Yue 2026-05-15): visibility-driven reset of `reconnectAbandoned`.
+//
+// PR #136 wired `onReopened` → `session/hydrate(["messages"])` so reconnects
+// WITHIN the 121s window now pick up missed envelopes. But after the bridge's
+// 8 attempts elapse (cumulative ~121s), `reconnectAbandoned=true` latches and
+// the bridge stops trying — live state is stranded until manual refresh.
+//
+// Fix: when `document.visibilitychange` fires with `visibilityState='visible'`
+// and the bridge has latched via the *attempt-exhaustion* path (NOT the auth-
+// rejected path — the token is still dead there), clear the latch, reset the
+// attempt counter, and kick off ONE fresh reconnect through the existing
+// `openSocket()` → `onWsOpen()` → `onReopened` flow.
+// ---------------------------------------------------------------------------
+
+describe("visibility-driven reset of reconnectAbandoned (#137)", () => {
+  /** Helper: drive the bridge to `state==="error"` + `reconnectAbandoned=true`
+   *  via the attempt-exhaustion path (NOT the auth-rejected path). */
+  async function drainToAbandoned(maxAttempts = 2): Promise<void> {
+    // Caller has already called bridge.start(); just trigger close cycles.
+    // After `maxAttempts` close events, scheduleReconnect latches.
+    for (let i = 0; i < maxAttempts + 1; i++) {
+      const ws = lastInstance();
+      ws.triggerClose(1006, "abnormal");
+      // Use the longest backoff (16s should cover the first few schedule slots).
+      await vi.advanceTimersByTimeAsync(16000);
+    }
+  }
+
+  function dispatchVisibilityChange(state: "visible" | "hidden"): void {
+    Object.defineProperty(document, "visibilityState", {
+      value: state,
+      configurable: true,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }
+
+  it("after attempt-exhaustion latch, visibilitychange='visible' triggers ONE fresh reconnect", async () => {
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(
+      makeBridgeOpts({ maxReconnectAttempts: 2 }),
+    );
+    void bridge.start({ sessionId: "sess-1" });
+    await Promise.resolve();
+
+    // Initial open succeeds → hasEverOpened = true.
+    const ws1 = lastInstance();
+    ws1.triggerOpen();
+    await Promise.resolve();
+    const open1 = findRequest(ws1, METHODS.SESSION_OPEN);
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      id: open1.id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+
+    // Exhaust reconnects. We start with 1 ws instance.
+    const instancesBeforeExhaustion = MockWebSocket.instances.length;
+    await drainToAbandoned(2);
+    const instancesAfterExhaustion = MockWebSocket.instances.length;
+    expect(instancesAfterExhaustion).toBeGreaterThan(instancesBeforeExhaustion);
+    expect(bridge.getConnectionState()).toBe("error");
+
+    // Dispatch visibilitychange='visible' → bridge should clear the latch
+    // and call openSocket() exactly once.
+    const instancesBeforeVisibility = MockWebSocket.instances.length;
+    dispatchVisibilityChange("visible");
+    await Promise.resolve();
+    const instancesAfterVisibility = MockWebSocket.instances.length;
+    expect(instancesAfterVisibility - instancesBeforeVisibility).toBe(1);
+    expect(bridge.getConnectionState()).toBe("connecting");
+
+    await bridge.stop();
+  });
+
+  it("visibilitychange='visible' while NOT abandoned is a no-op", async () => {
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    void bridge.start({ sessionId: "sess-1" });
+    await Promise.resolve();
+    const ws1 = lastInstance();
+    ws1.triggerOpen();
+    await Promise.resolve();
+    const open1 = findRequest(ws1, METHODS.SESSION_OPEN);
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      id: open1.id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+    expect(bridge.getConnectionState()).toBe("connected");
+
+    const instancesBefore = MockWebSocket.instances.length;
+    dispatchVisibilityChange("visible");
+    await Promise.resolve();
+    const instancesAfter = MockWebSocket.instances.length;
+    expect(instancesAfter).toBe(instancesBefore);
+    expect(bridge.getConnectionState()).toBe("connected");
+
+    await bridge.stop();
+  });
+
+  it("visibilitychange='hidden' is a no-op even when abandoned", async () => {
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(
+      makeBridgeOpts({ maxReconnectAttempts: 2 }),
+    );
+    void bridge.start({ sessionId: "sess-1" });
+    await Promise.resolve();
+    const ws1 = lastInstance();
+    ws1.triggerOpen();
+    await Promise.resolve();
+    const open1 = findRequest(ws1, METHODS.SESSION_OPEN);
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      id: open1.id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+
+    await drainToAbandoned(2);
+    expect(bridge.getConnectionState()).toBe("error");
+
+    const instancesBefore = MockWebSocket.instances.length;
+    dispatchVisibilityChange("hidden");
+    await Promise.resolve();
+    const instancesAfter = MockWebSocket.instances.length;
+    expect(instancesAfter).toBe(instancesBefore);
+    expect(bridge.getConnectionState()).toBe("error");
+
+    await bridge.stop();
+  });
+
+  it("auth-rejected latch (close-code 1008) is NOT recovered by visibilitychange (token still dead)", async () => {
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    void bridge.start({ sessionId: "sess-1" });
+    await Promise.resolve();
+    const ws1 = lastInstance();
+    // Server rejects upgrade with 1008. Bridge latches reconnectAbandoned
+    // for the auth-rejected reason (token is dead) — do NOT retry on
+    // visibility flip.
+    ws1.triggerClose(1008, "auth_rejected");
+    await Promise.resolve();
+    expect(bridge.getConnectionState()).toBe("error");
+
+    const instancesBefore = MockWebSocket.instances.length;
+    dispatchVisibilityChange("visible");
+    await Promise.resolve();
+    const instancesAfter = MockWebSocket.instances.length;
+    expect(instancesAfter).toBe(instancesBefore);
+    expect(bridge.getConnectionState()).toBe("error");
+
+    await bridge.stop();
+  });
+
+  it("post-visibility reconnect fires onReopened so the hydrate path runs", async () => {
+    // The whole point of this fix: a visibility-driven reconnect must
+    // route through the same `openSocket()` → `session/open` → `onReopened`
+    // path the bounded loop uses, so PR #136's hydrate hook still fires
+    // and `session/hydrate` replays envelopes that landed during the
+    // long offline window.
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(
+      makeBridgeOpts({ maxReconnectAttempts: 2 }),
+    );
+    const reopened: number[] = [];
+    bridge.onReopened(() => {
+      reopened.push(Date.now());
+    });
+
+    void bridge.start({ sessionId: "sess-1" });
+    await Promise.resolve();
+    const ws1 = lastInstance();
+    ws1.triggerOpen();
+    await Promise.resolve();
+    const open1 = findRequest(ws1, METHODS.SESSION_OPEN);
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      id: open1.id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+    expect(reopened).toHaveLength(0);
+
+    await drainToAbandoned(2);
+    expect(bridge.getConnectionState()).toBe("error");
+    expect(reopened).toHaveLength(0);
+
+    dispatchVisibilityChange("visible");
+    await Promise.resolve();
+    const wsAfter = lastInstance();
+    wsAfter.triggerOpen();
+    await Promise.resolve();
+    const openAfter = findRequest(wsAfter, METHODS.SESSION_OPEN);
+    wsAfter.triggerMessage({
+      jsonrpc: "2.0",
+      id: openAfter.id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+    expect(bridge.getConnectionState()).toBe("connected");
+    // onReopened must have fired exactly once — the visibility-driven
+    // reconnect is a "reopen" in every meaningful sense.
+    expect(reopened).toHaveLength(1);
+
+    await bridge.stop();
+  });
+
+  it("multiple rapid visibilitychange events do not stack additional reconnects (idempotent)", async () => {
+    // Mobile browsers can fire visibilitychange multiple times in quick
+    // succession when the user app-switches. Once we have started a
+    // reconnect attempt, additional `visible` events must not pile on
+    // more sockets.
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(
+      makeBridgeOpts({ maxReconnectAttempts: 2 }),
+    );
+    void bridge.start({ sessionId: "sess-1" });
+    await Promise.resolve();
+    const ws1 = lastInstance();
+    ws1.triggerOpen();
+    await Promise.resolve();
+    const open1 = findRequest(ws1, METHODS.SESSION_OPEN);
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      id: open1.id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+
+    await drainToAbandoned(2);
+    expect(bridge.getConnectionState()).toBe("error");
+
+    const instancesBefore = MockWebSocket.instances.length;
+    dispatchVisibilityChange("visible");
+    await Promise.resolve();
+    // While the new socket is still `connecting` (no triggerOpen yet),
+    // fire another visibilitychange. It must be a no-op.
+    dispatchVisibilityChange("visible");
+    await Promise.resolve();
+    dispatchVisibilityChange("visible");
+    await Promise.resolve();
+    const instancesAfter = MockWebSocket.instances.length;
+    expect(instancesAfter - instancesBefore).toBe(1);
+
+    await bridge.stop();
+  });
+
+  it("removes the visibilitychange listener on stop()", async () => {
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(
+      makeBridgeOpts({ maxReconnectAttempts: 2 }),
+    );
+    void bridge.start({ sessionId: "sess-1" });
+    await Promise.resolve();
+    const ws1 = lastInstance();
+    ws1.triggerOpen();
+    await Promise.resolve();
+    const open1 = findRequest(ws1, METHODS.SESSION_OPEN);
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      id: open1.id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+
+    await drainToAbandoned(2);
+    expect(bridge.getConnectionState()).toBe("error");
+
+    await bridge.stop();
+
+    // After stop, visibilitychange must NOT spin up a new socket.
+    const instancesBefore = MockWebSocket.instances.length;
+    dispatchVisibilityChange("visible");
+    await Promise.resolve();
+    const instancesAfter = MockWebSocket.instances.length;
+    expect(instancesAfter).toBe(instancesBefore);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Send queue
 // ---------------------------------------------------------------------------
 
