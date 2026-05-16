@@ -400,6 +400,21 @@ export interface UiProtocolBridge {
    *  the listener fires can be classified as terminal-fast-reject
    *  (skip the 45s grace) vs reconnectable. */
   getConnectionState(): ConnectionState;
+  /** Fires every time `session/open` is successfully acked AFTER the
+   *  initial open in this bridge lifecycle — i.e. on every RECONNECT.
+   *  The initial open does NOT fire this event because the runtime
+   *  layer already hydrates immediately after `startBridgeForSession`.
+   *
+   *  The reload-bug fix (Yue 2026-05-15): when the user's WS drops
+   *  during a long-running `spawn_only` and the bridge reconnects, the
+   *  server's `session/open` without an `after` cursor serves "live
+   *  only, no replay" (`ui_protocol_ledger.rs:1199`). Any envelopes the
+   *  server emitted between disconnect and reconnect are silently
+   *  dropped. Subscribers (the runtime layer) re-issue
+   *  `bridge.hydrateSession(["messages"])` on this event to recover the
+   *  missed completion bubble + media attachment from the durable
+   *  ledger via `replayed_envelopes`. */
+  onReopened(handler: () => void): () => void;
   onWarning(handler: (e: WarningEvent) => void): () => void;
   /** Issue #113.2: server-emitted title update for cross-tab and
    *  auto-title flows. SessionProvider subscribes to keep its
@@ -1294,6 +1309,12 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private readonly subQueueState = new Subscribers<QueueStateEvent>();
   private readonly subWarning = new Subscribers<WarningEvent>();
   private readonly subState = new Subscribers<ConnectionState>();
+  /** Reload-bug fix (Yue 2026-05-15): fires once on every successful
+   *  RECONNECT (subsequent `session/open` acks in the same bridge
+   *  lifecycle — not the initial open). The runtime layer subscribes
+   *  to re-issue `session/hydrate` so envelopes emitted while the WS
+   *  was disconnected get replayed from `replayed_envelopes`. */
+  private readonly subReopened = new Subscribers<void>();
   private readonly subSessionTitleUpdated = new Subscribers<{
     session_id: string;
     title: string;
@@ -1645,6 +1666,9 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   getConnectionState(): ConnectionState {
     return this.state;
   }
+  onReopened(handler: Listener<void>): () => void {
+    return this.subReopened.add(handler);
+  }
   onWarning(handler: Listener<WarningEvent>): () => void {
     return this.subWarning.add(handler);
   }
@@ -1765,10 +1789,27 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       if (this.stopped) return;
       this.reconnectAttempts = 0;
       this.reconnectAbandoned = false;
+      // Snapshot whether this is a reopen BEFORE flipping `hasEverOpened`,
+      // so the emit below only fires after a reconnect (subsequent
+      // `session/open` ack) and not on the initial open — the runtime
+      // layer hydrates immediately on the initial open via
+      // `startBridgeForSession`.
+      const isReopen = this.hasEverOpened;
       this.hasEverOpened = true;
       this.setState("connected");
       this.startKeepalive();
       this.flushSendQueue();
+      if (isReopen) {
+        // Reload-bug fix (Yue 2026-05-15): the server treats a
+        // cursorless `session/open` as "live only, no replay"
+        // (`ui_protocol_ledger.rs:1199`). Envelopes the server emitted
+        // while the WS was disconnected (e.g. a `TurnSpawnComplete`
+        // for a long-running `spawn_only`) would be silently dropped
+        // without this hook. The runtime layer subscribes here to
+        // re-fetch `session/hydrate` so `replayed_envelopes` rolls the
+        // ledger forward for the user's missed turn.
+        this.subReopened.emit();
+      }
     } catch (err) {
       if (this.stopped) return;
       this.subWarning.emit({
