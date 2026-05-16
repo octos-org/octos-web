@@ -64,6 +64,24 @@ export function SitePreview({
   const eventRefreshTimer = useRef<number | null>(null);
   const renewalTimer = useRef<number | null>(null);
   const copiedTimer = useRef<number | null>(null);
+  /**
+   * Latest-wins guard for in-flight `signPreview()` promises.
+   *
+   * `signPreview()` is async. Between the call site and its resolution,
+   * the component may have unmounted (cleanup ran) OR the preview
+   * coordinates may have changed (a newer sign is already in flight).
+   * In either case the resolution must NOT call `setState` or schedule
+   * a renewal — doing so leaks the old preview into the new render and,
+   * post-unmount, leaks the renewal timer forever.
+   *
+   * Implementation: each call site increments `signReqId.current` and
+   * captures its own id. When the promise resolves, it checks the
+   * latest id; if they differ the result is dropped on the floor.
+   * Cleanup runs bump `signReqId.current` via the `mounted` flag —
+   * `mounted.current === false` is the unmount sentinel.
+   */
+  const signReqId = useRef(0);
+  const mounted = useRef(true);
 
   const triggerRefresh = useCallback(() => {
     setRefreshTick((value) => value + 1);
@@ -93,21 +111,41 @@ export function SitePreview({
       // caller's `previewUrl` row may still surface scaffold status,
       // so don't surface an "error" here. The iframe will simply not
       // render until the coordinates arrive (typically on first poll).
+      // Bump the request id so any in-flight sign for the previous
+      // (valid) coordinates is dropped on resolution.
+      signReqId.current += 1;
       setSigned(null);
       setSignError(null);
       return;
     }
+    // Latest-wins guard (codex GAP 2/3): capture this call's request
+    // id BEFORE awaiting, so resolutions for stale coordinates / a
+    // previously-unmounted instance can be discarded by comparing
+    // against the live `signReqId.current` after the await.
+    const myReqId = ++signReqId.current;
     try {
       const response = await signPreview({
         profile_id: profileId,
         session_id: sessionId,
         site_slug: slug,
       });
+      // Drop the response if the coordinates changed mid-flight or
+      // the component unmounted. Without this, a slow `signPreview`
+      // followed by a rapid prop change or unmount leaks state +
+      // schedules a renewal timer that fires on a dead component.
+      if (!mounted.current || signReqId.current !== myReqId) {
+        return;
+      }
       setSigned(response);
       setSignError(null);
 
       // Schedule renewal at expires_at - 60s, clamped to a positive
       // window so test rigs (5-second TTLs) don't no-op the timer.
+      // The renewal is keyed to `myReqId` via the latest-wins guard
+      // INSIDE its `refreshSignedToken` recursion — a newer sign
+      // bumps `signReqId.current`, so when this timer's recursive
+      // call awaits and re-enters the guard, it'll see the bumped id
+      // and drop the result. The timer itself is cleared on cleanup.
       if (renewalTimer.current !== null) {
         window.clearTimeout(renewalTimer.current);
       }
@@ -116,9 +154,15 @@ export function SitePreview({
       const delay = Math.max(250, expiresMs - nowMs - 60_000);
       renewalTimer.current = window.setTimeout(() => {
         renewalTimer.current = null;
+        if (!mounted.current || signReqId.current !== myReqId) return;
         void refreshSignedToken();
       }, delay);
     } catch (error) {
+      // Same guard on the error path: don't surface an old failure
+      // after the user has navigated to a different preview.
+      if (!mounted.current || signReqId.current !== myReqId) {
+        return;
+      }
       const message = error instanceof Error ? error.message : "sign failed";
       setSignError(message);
       setSigned(null);
@@ -149,6 +193,10 @@ export function SitePreview({
 
   useEffect(() => {
     return () => {
+      // Mark unmounted so any in-flight `signPreview()` resolution
+      // (codex GAP 2/3 latest-wins guard) returns without touching
+      // state or scheduling timers.
+      mounted.current = false;
       if (autoRefreshTimer.current !== null) {
         window.clearTimeout(autoRefreshTimer.current);
       }
@@ -325,11 +373,33 @@ export function SitePreview({
               </button>
             </div>
           ) : iframeUrl ? (
+            /*
+             * Issue #993 / PR #139 — iframe sandbox (XSS bridge fix).
+             *
+             * The preview is same-origin with the SPA
+             * (`API_BASE === ""`). Without a `sandbox` attribute, the
+             * LLM-authored HTML/JS in the preview can read
+             * `window.parent.localStorage` and exfiltrate
+             * `octos_session_token` + `octos_auth_token`.
+             *
+             * `allow-scripts` + `allow-forms` are required for
+             * legitimate framework hydration (Next/Astro/React) and
+             * site forms. `allow-same-origin` is INTENTIONALLY OMITTED
+             * — granting it would defeat the fix because the iframe
+             * IS same-origin with the parent, so it could still reach
+             * `window.parent.localStorage`.
+             *
+             * This duplicates the attribute from PR #139
+             * (`fix/site-preview-iframe-sandbox`). If #139 merges
+             * first, this PR's rebase resolves to the same value; if
+             * this PR merges first, #139 has a clean rebase.
+             */
             <iframe
               key={iframeUrl}
               src={iframeUrl}
               title={`${siteName} preview`}
               className="h-full w-full border-0"
+              sandbox="allow-scripts allow-forms"
               onLoad={handleLoad}
             />
           ) : (

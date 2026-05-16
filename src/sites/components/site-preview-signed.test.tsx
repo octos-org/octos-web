@@ -201,4 +201,240 @@ describe("<SitePreview> signed-URL iframe", () => {
 
     harness.unmount();
   });
+
+  /**
+   * Codex GAP 2 — stale signPreview response after unmount.
+   *
+   * If `signPreview()` resolves AFTER the component unmounts, the
+   * resolution handler must NOT call `setState` (no-op warning in
+   * React 19) and MUST NOT schedule a renewal timer. The latest-wins
+   * guard in `refreshSignedToken` short-circuits on
+   * `mounted.current === false`.
+   */
+  it("drops the stale signPreview response when the component unmounts before it resolves", async () => {
+    const now = Date.now();
+    vi.setSystemTime(now);
+
+    // Slow sign — kept in a deferred so we can resolve it AFTER unmount.
+    let resolveSign!: (value: {
+      token: string;
+      preview_url: string;
+      expires_at: string;
+    }) => void;
+    signPreviewMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSign = resolve;
+        }),
+    );
+
+    let harness!: MountedHarness;
+    await act(async () => {
+      harness = mount(
+        <SitePreview
+          previewUrl="ignored"
+          siteName="Test Site"
+          template="astro-site"
+          sessionId="site-A"
+          profileId="tenant-a"
+          slug="test-site"
+        />,
+      );
+      // signPreview is invoked but does NOT resolve yet.
+      await Promise.resolve();
+    });
+    expect(signPreviewMock).toHaveBeenCalledTimes(1);
+
+    // Snapshot the active-timer count so we can prove no renewal was
+    // scheduled by the stale resolution. With `vi.useFakeTimers()` the
+    // count is observable via `vi.getTimerCount()`.
+    const timersBeforeUnmount = vi.getTimerCount();
+
+    // Unmount THEN resolve the sign. With the latest-wins guard,
+    // `mounted.current === false` should cause the resolution to
+    // bail before touching state or scheduling a renewal.
+    harness.unmount();
+
+    await act(async () => {
+      resolveSign({
+        token: SIGNED_TOKEN,
+        preview_url: SIGNED_URL,
+        expires_at: new Date(now + 600_000).toISOString(),
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // No new timers (i.e. no renewal scheduled by the stale response).
+    expect(vi.getTimerCount()).toBeLessThanOrEqual(timersBeforeUnmount);
+    // The unmounted container has no iframe — the stale setState was
+    // dropped, so no React warning + no leaked state.
+    expect(harness.container.querySelector("iframe")).toBeNull();
+  });
+
+  /**
+   * Codex GAP 3 — rapid re-render race.
+   *
+   * Three previews fire in quick succession before any resolves. Only
+   * the THIRD signed URL must end up in the iframe.src — earlier
+   * resolutions are dropped because their captured `myReqId` is stale.
+   */
+  it("handles rapid preview changes — only the latest signPreview wins", async () => {
+    const now = Date.now();
+    vi.setSystemTime(now);
+
+    // Three previews, three URLs. We deliberately resolve out of
+    // order: 3rd first, then 1st, then 2nd. The latest-wins guard
+    // must accept only the 3rd's result.
+    const urls = [
+      `/api/preview-signed/${"1".repeat(64)}/index.html`,
+      `/api/preview-signed/${"2".repeat(64)}/index.html`,
+      `/api/preview-signed/${"3".repeat(64)}/index.html`,
+    ];
+    const deferreds: Array<(value: {
+      token: string;
+      preview_url: string;
+      expires_at: string;
+    }) => void> = [];
+    signPreviewMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          deferreds.push(resolve);
+        }),
+    );
+
+    let harness!: MountedHarness;
+    await act(async () => {
+      harness = mount(
+        <SitePreview
+          previewUrl="ignored"
+          siteName="Test Site"
+          template="astro-site"
+          sessionId="site-A"
+          profileId="tenant-a"
+          slug="slug-1"
+        />,
+      );
+      await Promise.resolve();
+    });
+    // Re-render with two more slugs in succession. Each prop change
+    // re-runs the `useEffect` that calls `refreshSignedToken()`,
+    // bumping `signReqId.current` and capturing a fresh `myReqId`.
+    await act(async () => {
+      harness.root.render(
+        <SitePreview
+          previewUrl="ignored"
+          siteName="Test Site"
+          template="astro-site"
+          sessionId="site-A"
+          profileId="tenant-a"
+          slug="slug-2"
+        />,
+      );
+      await Promise.resolve();
+    });
+    await act(async () => {
+      harness.root.render(
+        <SitePreview
+          previewUrl="ignored"
+          siteName="Test Site"
+          template="astro-site"
+          sessionId="site-A"
+          profileId="tenant-a"
+          slug="slug-3"
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    // We expect THREE in-flight signs.
+    expect(signPreviewMock).toHaveBeenCalledTimes(3);
+    expect(deferreds.length).toBe(3);
+
+    // Resolve out of order: 3rd, then 1st, then 2nd.
+    await act(async () => {
+      deferreds[2]({
+        token: "3".repeat(64),
+        preview_url: urls[2],
+        expires_at: new Date(now + 600_000).toISOString(),
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // After the latest resolves, the iframe must point at urls[2].
+    let iframe = harness.container.querySelector("iframe");
+    expect(iframe?.getAttribute("src")).toContain(urls[2]);
+
+    // Now resolve the stale 1st and 2nd. They must NOT clobber the
+    // iframe — the latest-wins guard drops them.
+    await act(async () => {
+      deferreds[0]({
+        token: "1".repeat(64),
+        preview_url: urls[0],
+        expires_at: new Date(now + 600_000).toISOString(),
+      });
+      deferreds[1]({
+        token: "2".repeat(64),
+        preview_url: urls[1],
+        expires_at: new Date(now + 600_000).toISOString(),
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    iframe = harness.container.querySelector("iframe");
+    expect(iframe?.getAttribute("src")).toContain(urls[2]);
+    expect(iframe?.getAttribute("src")).not.toContain(urls[0]);
+    expect(iframe?.getAttribute("src")).not.toContain(urls[1]);
+
+    harness.unmount();
+  });
+
+  /**
+   * Codex GAP 5 — iframe sandbox attribute (mirrors PR #139's #993
+   * test). The preview is same-origin with the SPA; without `sandbox`
+   * the LLM-authored HTML in the preview can read
+   * `window.parent.localStorage` and exfiltrate auth tokens. The
+   * sandbox attribute must equal `"allow-scripts allow-forms"`
+   * (NOT `allow-same-origin` — that defeats the fix).
+   */
+  it("renders iframe with sandbox=\"allow-scripts allow-forms\" (issue #993 / PR #139)", async () => {
+    const now = Date.now();
+    signPreviewMock.mockResolvedValueOnce({
+      token: SIGNED_TOKEN,
+      preview_url: SIGNED_URL,
+      expires_at: new Date(now + 600_000).toISOString(),
+    });
+
+    let harness!: MountedHarness;
+    await act(async () => {
+      harness = mount(
+        <SitePreview
+          previewUrl="ignored"
+          siteName="Test Site"
+          template="astro-site"
+          sessionId="site-A"
+          profileId="tenant-a"
+          slug="test-site"
+        />,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const iframe = harness.container.querySelector("iframe");
+    expect(iframe).not.toBeNull();
+    const sandboxAttr = iframe?.getAttribute("sandbox") ?? "";
+    expect(sandboxAttr).toBe("allow-scripts allow-forms");
+
+    // Anti-regression for the headline #993 anti-assertion: granting
+    // `allow-same-origin` here would re-enable
+    // `window.parent.localStorage` reads from inside the iframe.
+    const tokens = sandboxAttr.split(/\s+/).filter(Boolean);
+    expect(tokens).toContain("allow-scripts");
+    expect(tokens).toContain("allow-forms");
+    expect(tokens).not.toContain("allow-same-origin");
+
+    harness.unmount();
+  });
 });
