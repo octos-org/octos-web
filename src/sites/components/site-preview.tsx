@@ -1,6 +1,5 @@
-import { Check, Copy, ExternalLink, RefreshCw } from "lucide-react";
+import { Check, Copy, RefreshCw } from "lucide-react";
 import {
-  type SyntheticEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -144,28 +143,28 @@ export function SitePreview({
     });
   }, [previewUrl]);
 
-  const handleLoad = useCallback(
-    (event: SyntheticEvent<HTMLIFrameElement>) => {
-      const frame = event.currentTarget;
-      const title = frame.contentDocument?.title?.trim() || "";
-      const fallbackTitles = new Set([
-        "Site Preview Not Found",
-        "Missing Site Metadata",
-        "Preview Build Failed",
-        "Preview Asset Missing",
-      ]);
+  // Issue #993 fix: the iframe is sandboxed without `allow-same-origin`,
+  // so `frame.contentDocument` is no longer readable from the parent
+  // (cross-origin frame -> null / SecurityError). The previous
+  // title-sniffing fallback-detection path is therefore impossible.
+  //
+  // Replacement: trust the server. If `onLoad` fires AT ALL, the server
+  // returned a response and the browser rendered it. Hard failures
+  // (network error, 5xx with no body) are surfaced via `onError`. Soft
+  // failures (server returns 200 with a "Preview Build Failed" HTML
+  // page) are visible to the user via the iframe content itself; the
+  // automatic retry-on-title path is intentionally dropped — see the
+  // follow-up tracking issue for switching those server responses to
+  // proper HTTP 4xx/5xx so `onError` catches them.
+  const handleLoad = useCallback(() => {
+    setStatus(null);
+    autoRefreshAttempts.current = 0;
+  }, []);
 
-      if (fallbackTitles.has(title)) {
-        setStatus(`${title}. Retrying preview...`);
-        scheduleRetry();
-        return;
-      }
-
-      setStatus(null);
-      autoRefreshAttempts.current = 0;
-    },
-    [scheduleRetry],
-  );
+  const handleError = useCallback(() => {
+    setStatus("Preview failed to load. Retrying...");
+    scheduleRetry();
+  }, [scheduleRetry]);
 
   if (!previewUrl) {
     return (
@@ -198,25 +197,48 @@ export function SitePreview({
           >
             <RefreshCw size={16} />
           </button>
-          <a
-            href={previewUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="rounded-lg p-2 text-muted transition hover:bg-surface-container hover:text-text"
-            title="Open preview in new tab"
-          >
-            <ExternalLink size={16} />
-          </a>
+          {/*
+           * Issue #993 fix: the "Open preview in new tab" link is
+           * intentionally removed. The preview URL is same-origin with
+           * the SPA (`API_BASE === ""`), so opening it as a top-level
+           * document gives any LLM-authored HTML/JS full read access to
+           * `localStorage` (auth + session tokens). Track restoration
+           * via Phase 3 signed-URL endpoint follow-up — once `/api/preview/*`
+           * returns a redirect to a sandbox-origin (or one-time signed
+           * URL) host, the link can come back.
+           */}
         </div>
       </div>
       <div className="min-h-0 flex-1 bg-surface-dark p-3">
         <div className="h-full overflow-hidden rounded-2xl border border-border bg-white shadow-2xl">
+          {/*
+           * Issue #993 fix: the iframe is sandboxed without
+           * `allow-same-origin`. The preview is served from the same
+           * origin as the SPA (`API_BASE === ""`), so without `sandbox`
+           * the LLM-authored HTML/JS inside the preview can read
+           * `window.parent.localStorage` -> exfiltrate
+           * `octos_session_token` + `octos_auth_token`.
+           *
+           * Tokens granted:
+           *   - allow-scripts: preview HTML legitimately needs JS for
+           *     framework hydration (Next/React templates).
+           *   - allow-forms: site templates may include sign-up / search
+           *     forms; harmless without same-origin since submissions
+           *     can't read parent state.
+           *
+           * Explicitly NOT granted: allow-same-origin. Granting it
+           * defeats the entire fix — sandbox + allow-same-origin still
+           * lets the frame reach `window.parent.localStorage` because
+           * it's same-origin with the parent.
+           */}
           <iframe
             key={iframeUrl}
             src={iframeUrl}
             title={`${siteName} preview`}
             className="h-full w-full border-0"
+            sandbox="allow-scripts allow-forms"
             onLoad={handleLoad}
+            onError={handleError}
           />
         </div>
         {status && (
