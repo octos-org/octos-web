@@ -22,6 +22,10 @@ function SitesEditorContent() {
           template={project?.template || "site"}
           sessionId={project?.id}
           scaffoldError={project?.scaffoldError}
+          // #1001 follow-up: signed-URL flow needs the profile id
+          // and slug to mint the iframe `src` server-side.
+          profileId={project?.profileId}
+          slug={project?.slug}
         />
       }
       chatPanel={
