@@ -1271,6 +1271,27 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
    *  to avoid rejecting sends queued during the brief `onerror -> onclose`
    *  window of an otherwise recoverable network hiccup. */
   private reconnectAbandoned = false;
+  /** Issue #137 (Yue 2026-05-15): the visibility-driven reset needs to
+   *  distinguish *why* the bridge gave up. `"attempts_exhausted"` =
+   *  `scheduleReconnect` ran out of attempts after a network outage;
+   *  the visibility flip means the user is back and we should retry
+   *  once. `"auth_rejected"` = the token was dead (1008 close,
+   *  permission_denied on `session/open`, or 401 on the upgrade
+   *  fallback); retrying is wasted load until the user re-logs in.
+   *  `null` = not abandoned (sentinel for cleared state). */
+  private latchReason: "attempts_exhausted" | "auth_rejected" | null = null;
+  /** Issue #137: idempotency guard for the visibilitychange handler.
+   *  Mobile browsers can fire `visibilitychange` multiple times in
+   *  quick succession during app-switches; once we have already
+   *  scheduled a visibility-driven reconnect attempt, additional
+   *  events must be no-ops until either the attempt finishes (success
+   *  resets the flag in `onWsOpen`) or fails (the bounded reconnect
+   *  loop takes over and eventually re-latches the abandonment). */
+  private visibilityReconnectInFlight = false;
+  /** Issue #137: bound visibilitychange listener. Stashed so `stop()`
+   *  can remove it; React strict-mode and SPA session-switch flows
+   *  call start() → stop() → start() back-to-back. */
+  private visibilityListener: (() => void) | null = null;
   private reconnectTimer: unknown = null;
   private keepaliveTimer: unknown = null;
   private lastInboundAt = 0;
@@ -1463,8 +1484,11 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.topicScope = t && t.length > 0 ? t : null;
     this.reconnectAttempts = 0;
     this.reconnectAbandoned = false;
+    this.latchReason = null;
+    this.visibilityReconnectInFlight = false;
     this.hasEverOpened = false;
     this.authExpiredDispatched = false;
+    this.installVisibilityListener();
     await this.openSocket();
   }
 
@@ -1473,6 +1497,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.stopped = true;
     this.cancelReconnectTimer();
     this.cancelKeepalive();
+    this.removeVisibilityListener();
     this.setState("closed");
     const ws = this.ws;
     this.ws = null;
@@ -1789,6 +1814,10 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       if (this.stopped) return;
       this.reconnectAttempts = 0;
       this.reconnectAbandoned = false;
+      // Issue #137: a successful (re)open clears the latch reason and
+      // releases the visibility-reconnect idempotency flag.
+      this.latchReason = null;
+      this.visibilityReconnectInFlight = false;
       // Snapshot whether this is a reopen BEFORE flipping `hasEverOpened`,
       // so the emit below only fires after a reconnect (subsequent
       // `session/open` ack) and not on the initial open — the runtime
@@ -1826,6 +1855,9 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       if (err instanceof BridgeRpcError && err.code === RPC_ERROR_PERMISSION_DENIED) {
         this.dispatchAuthExpired("permission_denied:session/open");
         this.reconnectAbandoned = true;
+        // Issue #137: tag as auth-rejected so the visibilitychange-driven
+        // reset does NOT retry — the token is dead, retrying is wasted load.
+        this.latchReason = "auth_rejected";
         this.setState("error");
         this.rejectAllPending(new BridgeStoppedError("auth permission denied"));
         return;
@@ -1967,6 +1999,9 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       // Stop reconnect attempts — the token is dead, retrying is
       // wasted load on the server and noise on the client.
       this.reconnectAbandoned = true;
+      // Issue #137: auth-rejected latch — the visibility-driven reset
+      // must NOT retry here. The visibility listener gates on this.
+      this.latchReason = "auth_rejected";
       this.setState("error");
       this.rejectAllPending(new BridgeStoppedError("auth expired"));
       return;
@@ -2020,6 +2055,8 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       if (resp.status === 401) {
         this.dispatchAuthExpired("upgrade_401");
         this.reconnectAbandoned = true;
+        // Issue #137: probe-driven auth-rejected latch.
+        this.latchReason = "auth_rejected";
       }
     } catch {
       // Network probe failed — leave reconnect scheduling alone.
@@ -2030,6 +2067,10 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     if (this.stopped) return;
     if (this.reconnectAttempts >= this.cfg.maxReconnectAttempts) {
       this.reconnectAbandoned = true;
+      // Issue #137: attempt-exhaustion latch. Distinct from the
+      // auth-rejected latch sites above — the visibilitychange
+      // handler ONLY retries when the latch is for this reason.
+      this.latchReason = "attempts_exhausted";
       this.setState("error");
       this.rejectAllPending(new BridgeStoppedError("max reconnect attempts"));
       return;
@@ -2050,6 +2091,105 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       this.cfg.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+  }
+
+  /**
+   * Issue #137 (Yue 2026-05-15): visibility-driven reset of
+   * `reconnectAbandoned`.
+   *
+   * PR #136 wired `onReopened` → `session/hydrate(["messages"])` so
+   * reconnects WITHIN the bounded loop's 121s envelope now replay missed
+   * envelopes correctly. But after the 8 attempts elapse,
+   * `reconnectAbandoned=true` latches and live state is stranded until
+   * the user manually refreshes — exactly the lid-open / phone-unlock /
+   * long-network-drop scenario the user reported.
+   *
+   * The fix is conservative: we only revive the bridge when (1) the
+   * user is demonstrably back at the tab (`visibilityState='visible'`),
+   * (2) the bridge has *given up* (`reconnectAbandoned=true`), and (3)
+   * the reason for giving up was *attempt exhaustion* (NOT an
+   * auth-rejected latch — the token is still dead in that case, so
+   * retrying just spams the server). We also require (4) we have
+   * actually connected once in this bridge lifecycle (`hasEverOpened`),
+   * because the visibility flip during the initial-connection phase is
+   * the user simply switching to the tab as the page loads — the
+   * regular reconnect loop is still in flight and should not be
+   * shoved aside.
+   *
+   * On the trigger we clear the latch + reset the attempt counter +
+   * call `openSocket()`. That routes through the same code path the
+   * bounded loop uses, so `onWsOpen` will see `hasEverOpened=true` and
+   * fire `subReopened`, which the runtime layer subscribes to in order
+   * to re-issue `session/hydrate` and recover the missed envelopes.
+   *
+   * SSR / non-browser env: `document` may be undefined (e.g. Node
+   * worker, vitest's default environment is jsdom but consumers may
+   * inject the bridge in a server-side context); guard accordingly.
+   */
+  private installVisibilityListener(): void {
+    if (typeof document === "undefined") return;
+    if (this.visibilityListener) return; // already installed
+    const handler = () => {
+      this.onVisibilityChange();
+    };
+    this.visibilityListener = handler;
+    try {
+      document.addEventListener("visibilitychange", handler);
+    } catch {
+      // Defensive: some sandbox envs may forbid event listeners.
+      this.visibilityListener = null;
+    }
+  }
+
+  private removeVisibilityListener(): void {
+    if (typeof document === "undefined") return;
+    const handler = this.visibilityListener;
+    if (!handler) return;
+    this.visibilityListener = null;
+    try {
+      document.removeEventListener("visibilitychange", handler);
+    } catch {
+      // best-effort
+    }
+  }
+
+  private onVisibilityChange(): void {
+    if (this.stopped) return;
+    if (typeof document === "undefined") return;
+    if (document.visibilityState !== "visible") return;
+    // Gate: only fire when the bridge has *given up* via attempt
+    // exhaustion. An auth-rejected latch (`"auth_rejected"`) means the
+    // token is dead — retrying is wasted load until the user
+    // re-authenticates; AuthProvider's `crew:auth_expired` subscriber
+    // has already kicked off that flow.
+    if (!this.reconnectAbandoned) return;
+    if (this.latchReason !== "attempts_exhausted") return;
+    // Skip the trigger during the bridge's initial-connection phase.
+    // If we have never reached `connected` in this lifecycle, the
+    // regular reconnect loop is still working on it (or the bridge is
+    // mid-`openSocket()`); the user can wait for the regular path.
+    if (!this.hasEverOpened) return;
+    // Idempotency: mobile browsers fire `visibilitychange` repeatedly
+    // during app-switches. Once we have started a reconnect attempt
+    // from this trigger and it's still in flight, swallow further
+    // visible events until either `onWsOpen` resets the flag or the
+    // bounded reconnect loop re-latches the abandonment.
+    if (this.visibilityReconnectInFlight) return;
+    this.visibilityReconnectInFlight = true;
+
+    // Clear the latch + reset the attempt counter. The reset is
+    // important: pre-fix, `reconnectAttempts` was at
+    // `maxReconnectAttempts` after the bounded loop gave up, so even
+    // if we cleared `reconnectAbandoned` without resetting the
+    // counter, the very next `scheduleReconnect` call (e.g. from an
+    // `onWsClose` after this new socket fails to open) would
+    // immediately re-latch.
+    this.reconnectAbandoned = false;
+    this.latchReason = null;
+    this.reconnectAttempts = 0;
+    // Start ONE reconnect attempt through the existing flow so
+    // `onWsOpen` fires `subReopened` (the hydrate hook) on success.
+    void this.openSocket();
   }
 
   private startKeepalive(): void {
