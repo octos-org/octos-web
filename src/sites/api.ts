@@ -77,6 +77,59 @@ export function buildSitePreviewUrl(
   return `${API_BASE}/api/site-preview/${encodeURIComponent(sessionId)}/${encodeURIComponent(slug)}/index.html`;
 }
 
+/**
+ * Issue #1001 follow-up: `<iframe>` tags cannot inject the
+ * `Authorization: Bearer ...` header that the
+ * `/api/preview/{profile_id}/...` route requires post-PR #1001, so
+ * the iframe 401-loops. Codex's design: mint an opaque token via
+ * `POST /api/my/preview/sign`, point `iframe.src` at the returned
+ * `/api/preview-signed/{token}/index.html`, and let the public
+ * signed route consume the token as its auth credential.
+ *
+ * `signPreview` is the thin HTTP helper. The `<SitePreview>`
+ * component owns the renewal scheduling (re-sign at
+ * `expires_at - 60s`) and the iframe.src swap.
+ *
+ * The server validates that the authenticated identity is authorised
+ * for `profile_id` and 4xx-rejects mismatches — this helper throws on
+ * any non-2xx so callers can surface an error UI instead of silently
+ * pointing the iframe at a stale URL.
+ */
+export interface SignPreviewRequest {
+  profile_id: string;
+  session_id: string;
+  site_slug: string;
+}
+
+export interface SignedPreviewResponse {
+  token: string;
+  preview_url: string;
+  /** RFC 3339 timestamp. The component subtracts 60 s to schedule the renewal. */
+  expires_at: string;
+}
+
+export async function signPreview(
+  req: SignPreviewRequest,
+): Promise<SignedPreviewResponse> {
+  const response = await fetch(`${API_BASE}/api/my/preview/sign`, {
+    method: "POST",
+    headers: buildApiHeaders(
+      { "Content-Type": "application/json" },
+      req.profile_id,
+    ),
+    body: JSON.stringify(req),
+  });
+  if (!response.ok) {
+    // Surface the status code in the message so the iframe component
+    // can branch on 401/403/404 if it wants. Mirrors how the rest of
+    // this module reports HTTP failures (`throw new Error("HTTP ...")`).
+    throw new Error(
+      `HTTP ${response.status} signing preview for ${req.session_id}/${req.site_slug}`,
+    );
+  }
+  return (await response.json()) as SignedPreviewResponse;
+}
+
 export async function listSiteFiles(
   dirs: string | string[],
   options: ListSiteFilesOptions = {},
