@@ -208,8 +208,9 @@ describe("<SitePreview> signed-URL iframe", () => {
    * If `signPreview()` resolves AFTER the component unmounts, the
    * resolution handler must NOT call `setState` (no-op warning in
    * React 19) and MUST NOT schedule a renewal timer. The latest-wins
-   * guard in `refreshSignedToken` short-circuits on
-   * `mounted.current === false`.
+   * guard in `refreshSignedToken` short-circuits because the unmount
+   * cleanup bumps `signReqId.current`, so the captured `myReqId`
+   * differs from the live value.
    */
   it("drops the stale signPreview response when the component unmounts before it resolves", async () => {
     const now = Date.now();
@@ -251,8 +252,9 @@ describe("<SitePreview> signed-URL iframe", () => {
     const timersBeforeUnmount = vi.getTimerCount();
 
     // Unmount THEN resolve the sign. With the latest-wins guard,
-    // `mounted.current === false` should cause the resolution to
-    // bail before touching state or scheduling a renewal.
+    // the unmount cleanup bumps `signReqId.current` so the captured
+    // `myReqId` no longer matches — the resolution bails before
+    // touching state or scheduling a renewal.
     harness.unmount();
 
     await act(async () => {
@@ -434,6 +436,70 @@ describe("<SitePreview> signed-URL iframe", () => {
     expect(tokens).toContain("allow-scripts");
     expect(tokens).toContain("allow-forms");
     expect(tokens).not.toContain("allow-same-origin");
+
+    harness.unmount();
+  });
+
+  /**
+   * Codex round-3 HIGH — StrictMode double-mount / remount cycle.
+   *
+   * Pre-fixup bug (`site-preview.tsx:199`): the cleanup set
+   * `mounted.current = false` but never reset it to `true` on the
+   * next mount. React 19 StrictMode (`main.tsx`) runs effects twice
+   * in dev — mount → cleanup → mount-again. The first cleanup
+   * flipped `mounted.current` to `false`; the second mount ran
+   * without resetting it, so every `signPreview` resolution was
+   * silently dropped by the `!mounted.current` short-circuit in the
+   * latest-wins guard. The iframe was stuck on "Loading preview…"
+   * forever in dev.
+   *
+   * Post-fixup the `mounted` ref is removed entirely. The cleanup
+   * bumps `signReqId.current`, which is sufficient to invalidate
+   * in-flight resolutions; the next mount captures a fresh id and
+   * succeeds. We simulate StrictMode by wrapping the SUT in
+   * `<StrictMode>` so React runs the dev-only mount → cleanup →
+   * mount cycle.
+   */
+  it("should_recover_after_unmount_remount_cycle (StrictMode regression)", async () => {
+    const now = Date.now();
+    vi.setSystemTime(now);
+
+    // Two resolutions because StrictMode causes the effect to run
+    // twice — both must complete, but only the second matters for
+    // the rendered iframe. We give them distinct URLs so we can tell
+    // which one landed.
+    signPreviewMock.mockResolvedValue({
+      token: SIGNED_TOKEN,
+      preview_url: SIGNED_URL,
+      expires_at: new Date(now + 600_000).toISOString(),
+    });
+
+    let harness!: MountedHarness;
+    await act(async () => {
+      harness = mount(
+        <React.StrictMode>
+          <SitePreview
+            previewUrl="ignored"
+            siteName="Test Site"
+            template="astro-site"
+            sessionId="site-A"
+            profileId="tenant-a"
+            slug="test-site"
+          />
+        </React.StrictMode>,
+      );
+      // Flush both passes of StrictMode's mount → cleanup → mount.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Pre-fixup: the iframe is absent because every signPreview
+    // resolution is dropped by the stale `!mounted.current` check.
+    // Post-fixup: the iframe renders against SIGNED_URL.
+    const iframe = harness.container.querySelector("iframe");
+    expect(iframe).not.toBeNull();
+    expect(iframe?.getAttribute("src")).toContain(SIGNED_URL);
 
     harness.unmount();
   });

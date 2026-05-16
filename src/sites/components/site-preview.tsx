@@ -77,11 +77,19 @@ export function SitePreview({
    * Implementation: each call site increments `signReqId.current` and
    * captures its own id. When the promise resolves, it checks the
    * latest id; if they differ the result is dropped on the floor.
-   * Cleanup runs bump `signReqId.current` via the `mounted` flag —
-   * `mounted.current === false` is the unmount sentinel.
+   * The unmount cleanup ALSO bumps `signReqId.current` so any
+   * in-flight resolutions see the bumped id and short-circuit.
+   *
+   * This single-ref design replaces an earlier `mounted` boolean ref
+   * (codex round-3 HIGH): a `mounted` ref set to `false` in cleanup
+   * would never reset on remount under React 19 StrictMode dev mode,
+   * so every signPreview resolution after the first effect cleanup
+   * was silently dropped → the iframe was stuck on "Loading preview…"
+   * in dev. The request-id check alone is sufficient: bumping
+   * `signReqId.current` on cleanup makes every in-flight resolution
+   * stale relative to any subsequent mount.
    */
   const signReqId = useRef(0);
-  const mounted = useRef(true);
 
   const triggerRefresh = useCallback(() => {
     setRefreshTick((value) => value + 1);
@@ -133,7 +141,9 @@ export function SitePreview({
       // the component unmounted. Without this, a slow `signPreview`
       // followed by a rapid prop change or unmount leaks state +
       // schedules a renewal timer that fires on a dead component.
-      if (!mounted.current || signReqId.current !== myReqId) {
+      // Unmount cleanup bumps `signReqId.current`, so a stale
+      // resolution sees a different id and bails.
+      if (signReqId.current !== myReqId) {
         return;
       }
       setSigned(response);
@@ -154,13 +164,13 @@ export function SitePreview({
       const delay = Math.max(250, expiresMs - nowMs - 60_000);
       renewalTimer.current = window.setTimeout(() => {
         renewalTimer.current = null;
-        if (!mounted.current || signReqId.current !== myReqId) return;
+        if (signReqId.current !== myReqId) return;
         void refreshSignedToken();
       }, delay);
     } catch (error) {
       // Same guard on the error path: don't surface an old failure
       // after the user has navigated to a different preview.
-      if (!mounted.current || signReqId.current !== myReqId) {
+      if (signReqId.current !== myReqId) {
         return;
       }
       const message = error instanceof Error ? error.message : "sign failed";
@@ -193,10 +203,14 @@ export function SitePreview({
 
   useEffect(() => {
     return () => {
-      // Mark unmounted so any in-flight `signPreview()` resolution
-      // (codex GAP 2/3 latest-wins guard) returns without touching
-      // state or scheduling timers.
-      mounted.current = false;
+      // Bump the request id so any in-flight `signPreview()`
+      // resolution returns without touching state or scheduling
+      // timers (codex GAP 2/3 latest-wins guard). The earlier
+      // implementation used a `mounted` boolean ref but never
+      // reset it on remount, which under React 19 StrictMode dev
+      // mode silently dropped every subsequent sign — see the
+      // `should_recover_after_unmount_remount_cycle` test.
+      signReqId.current += 1;
       if (autoRefreshTimer.current !== null) {
         window.clearTimeout(autoRefreshTimer.current);
       }
