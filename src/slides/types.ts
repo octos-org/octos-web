@@ -53,7 +53,13 @@ export interface SlidesProject {
   versions: SlideVersion[];
   /** Manifest generatedAt — used to detect content changes when file paths stay the same */
   manifestGeneratedAt?: string;
-  /** Links back to StudioProject if created from studio */
+  /** Legacy: previously linked back to a `StudioProject` for slides
+   *  generated from the deprecated Studio feature. The Studio feature
+   *  was removed in M9-β-2 along with the `studio/*` route stub; these
+   *  fields are kept on the type to avoid breaking older
+   *  localStorage-persisted slides records, but are no longer
+   *  populated by any code path. Safe to drop in a future schema
+   *  migration. */
   studioProjectId?: string;
   studioOutputId?: string;
 }
