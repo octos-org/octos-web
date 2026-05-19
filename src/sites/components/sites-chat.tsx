@@ -131,8 +131,22 @@ export function SitesChat({ sessionId }: Props) {
     [threads],
   );
 
+  // Mirror the slides-chat fix: `loadHistory` mount-races the bridge
+  // handshake, throws "no connected bridge", catch silently clears
+  // loadedSessions, deps never change, no retry. Listen for
+  // `crew:bridge_connected` (dispatched at
+  // `runtime/ui-protocol-runtime.ts:152` when the bridge reaches
+  // `connected`) and re-issue with `force: true` so the dedup gate
+  // doesn't short-circuit.
   useEffect(() => {
     void ThreadStore.loadHistory(sessionId, historyTopic);
+    const onBridgeReady = () => {
+      void ThreadStore.loadHistory(sessionId, historyTopic, { force: true });
+    };
+    window.addEventListener("crew:bridge_connected", onBridgeReady);
+    return () => {
+      window.removeEventListener("crew:bridge_connected", onBridgeReady);
+    };
   }, [historyTopic, sessionId]);
 
   const ensureSiteScaffolded = useCallback(
