@@ -70,9 +70,20 @@ export function SlidesProvider({
         const latest = projectRef.current;
         if (!latest?.slug) return;
 
-        const files = await listSlidesFiles(`slides/${latest.slug}`, {
-          sessionId: latest.id,
-        });
+        // List BOTH the scaffold dir and the plugin-output dir. The
+        // `mofa_slides` plugin writes generated PNGs to
+        // `skill-output/slides/<slug>/output/slide-NN.png`;
+        // `synthesizeManifestFromImages` only matches files whose group
+        // starts with `skill-output/slides/<slug>/output`. Listing only
+        // `slides/<slug>` (the pre-fix shape) returned the scaffold
+        // trio with no PNGs, so the synthesizer fell to `null` and the
+        // preview never updated after a re-generation — the initial
+        // hydrate sweep correctly listed both dirs, so the first paint
+        // worked; subsequent renders did not.
+        const files = await listSlidesFiles(
+          [`slides/${latest.slug}`, `skill-output/slides/${latest.slug}`],
+          { sessionId: latest.id },
+        );
         if (stopped) return;
 
         const manifest = await fetchSlidesManifest(latest.slug, files);
