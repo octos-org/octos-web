@@ -221,30 +221,41 @@ function defaultDispatch(event: Event): void {
 
 /**
  * Translate the flat `MessagePersistedEvent` (UPCR-2026-012 wire shape;
- * server P1.3 fix in PR #767) into the `MessageInfo` shape that
- * `ThreadStore.appendPersistedMessage` expects, for the late-artifact
- * path (no live `pendingAssistant` to promote).
+ * server P1.3 fix in PR #767 added `media`; subsequent
+ * "summary-missing-in-chat" fix in 2026-05-19 added optional `content`)
+ * into the `MessageInfo` shape that `ThreadStore.appendPersistedMessage`
+ * expects, for the late-artifact path (no live `pendingAssistant` to
+ * promote).
  *
- * The wire shape is metadata-only — there is no `content` field. The
- * row's `content` is set to the empty string in both branches:
- *   - media-bearing rows: ThreadStore's media-only-merge predicate
- *     treats empty content as a companion row and merges the file into
- *     the existing assistant response;
- *   - text-only rows with no live pending: the row is still recorded
- *     with its seq/role so `session/hydrate` can later replace it with
- *     the canonical text.
+ * The row's `content` is now sourced from `event.content` when the
+ * server carries it (non-empty captions / summaries accompanying a
+ * `send_file` / mofa_slides / fm_tts delivery), and falls back to `""`
+ * when omitted. Pre-fix the client hardcoded `""` here, which dropped
+ * the assistant's caption on every media-bearing late artifact —
+ * users saw the file in chat but not the text summary explaining it.
+ *
+ * Two ThreadStore merge behaviors are still honoured:
+ *   - empty `content` + non-empty `media`: ThreadStore's media-only-merge
+ *     predicate (`isMediaOnlyCompanion`, thread-store.ts:1706) treats
+ *     this as a companion row and merges the file into the preceding
+ *     assistant response — preserves the legacy file-only delivery UX.
+ *   - non-empty `content` + non-empty `media`: NOT a media-only
+ *     companion, so it lands as its own row with text + file rendered
+ *     together — this is the new path that surfaces summaries.
+ *   - text-only rows with no live pending fall through `appendPersistedMessage`
+ *     and become text rows; `session/hydrate` may later replace them
+ *     with canonical text but seq stays stable.
  */
 function eventToMessageInfo(event: MessagePersistedEvent): MessageInfo {
   const media = event.media ?? [];
-  // Empty `content` (NOT a synthesised placeholder) is required so
-  // `ThreadStore.appendPersistedMessage` recognises this as a
-  // media-only companion row and merges it into the existing assistant
-  // response — the merge predicate only treats empty/whitespace or
-  // `[file: ...]` marker text as media-only (`thread-store.ts:702`).
-  // The attachment renderer makes the bubble visible without text.
+  // Use server-carried content when present so captions / summaries
+  // alongside a file delivery reach the chat bubble. Fall back to ""
+  // when omitted, which preserves the media-only-companion merge path
+  // for legacy file-only deliveries.
+  const content = event.content ?? "";
   return {
     role: event.role,
-    content: "",
+    content,
     thread_id: event.thread_id,
     client_message_id: event.client_message_id,
     response_to_client_message_id: undefined,
@@ -274,26 +285,31 @@ export function handleMessagePersisted(
   cfg: RouterConfig,
   event: MessagePersistedEvent,
 ): void {
-  // The wire shape per UPCR-2026-012 is metadata-only — there is no
-  // `content` field. Final text is the streamed `pendingAssistant.text`
-  // accumulated from `message/delta`; this event finalises the bubble
-  // and (since server PR #767) carries the row's `media` attachments.
+  // For live foreground turns the streamed `pendingAssistant.text`
+  // (accumulated from `message/delta`) is the authoritative text source
+  // and this event finalises the bubble. Since the 2026-05-19
+  // "summary-missing-in-chat" fix the server now ALSO carries the
+  // committed row's text on `event.content` (omitted when empty) so the
+  // late-artifact path can surface captions / summaries that arrived
+  // outside of a delta stream.
   //
   // Two cases:
   //
   //   (1) Match condition (assistant role + thread_id resolves to a
-  //       thread with `pendingAssistant`): keep the streamed text,
-  //       append each `media` URL to the pending bubble, then finalise
-  //       with the event's `seq`. The downstream `turn/completed`
-  //       no-ops because `pendingAssistant` is null after this.
+  //       thread with `pendingAssistant`): keep the streamed text
+  //       (still authoritative for the live bubble), append each
+  //       `media` URL to the pending bubble, then finalise with the
+  //       event's `seq`. The downstream `turn/completed` no-ops
+  //       because `pendingAssistant` is null after this.
   //
   //   (2) Unmatched (no pending — late artifact, non-assistant role,
   //       or assistant whose live pending was lost across reconnect):
   //       fall through to `appendPersistedMessage` so a fresh row
-  //       appears in the thread. With empty content + non-empty
-  //       `media`, ThreadStore merges this into the existing
-  //       assistant response as a companion row; the attachment
-  //       renderer makes the file URL visible.
+  //       appears in the thread. `event.content` (when present) is
+  //       surfaced as the row's text; `event.media` lands as
+  //       attachments — together they render as a text+file bubble
+  //       (mofa_slides "Generated 12 slides..." + deck.pptx,
+  //       fm_tts narration summary + audio, etc.).
   if (event.role === "assistant" && event.thread_id) {
     const promoted = tryPromotePendingFromPersisted(
       cfg.sessionId,
@@ -306,17 +322,17 @@ export function handleMessagePersisted(
     // multiple `message/persisted` events per turn under the same
     // `thread_id`. The router promotes/finalises the live
     // `pendingAssistant` on the FIRST assistant persisted event for the
-    // turn. The wire shape per UPCR-2026-012 is metadata-only (no
-    // `content`) — every subsequent assistant persisted event for the
-    // same turn carries `content=""` and (typically) `media=[]`, and
-    // its streamed text already landed in the now-finalised bubble.
-    // Falling through to `appendPersistedMessage` for those events
-    // would synthesise an empty-content empty-media row that renders
-    // as a phantom timestamp-only bubble. Drop the event when it has
-    // no media (no attachment to render) — the streamed text is
-    // already on the bubble we finalised earlier. Media-bearing late
-    // artifacts still flow through to `appendPersistedMessage` for
-    // attachment merging.
+    // turn. Subsequent assistant persisted events for the same turn
+    // carry text that already streamed into the now-finalised bubble
+    // via `message/delta` — the wire `content` is a duplicate of text
+    // the user already sees. Falling through to
+    // `appendPersistedMessage` for those events would render a second
+    // bubble with the same text. Drop the event when it has no media
+    // (no attachment to render that the finalised bubble doesn't
+    // already have) — the post-2026-05-19 `event.content` does not
+    // change this rule because the streamed bubble is still
+    // authoritative. Media-bearing late artifacts always flow through
+    // to `appendPersistedMessage` for attachment + text merging.
     const eventMedia = event.media ?? [];
     if (eventMedia.length === 0) {
       return;

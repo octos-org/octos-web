@@ -110,6 +110,45 @@ describe("router event mapping", () => {
     expect(thread).toBeDefined();
   });
 
+  it("message/persisted with wire `content` surfaces summary alongside media on the late-artifact path", () => {
+    // 2026-05-19 fix: server now carries the persisted row's `content`
+    // on the wire (omitted when empty) so captions / summaries that
+    // accompany a `send_file` / mofa_slides / fm_tts delivery reach the
+    // chat bubble. Pre-fix the SPA hardcoded `content: ""` here, so the
+    // file rendered but the summary text vanished — "file were
+    // delivered, what was missing is the summary in chat".
+    //
+    // Expectation: a late-artifact `message/persisted` with both
+    // `content` and `media` lands as a row whose text == event.content
+    // and whose files == event.media. The row is NOT detected as a
+    // media-only companion (because content is non-empty), so it
+    // renders as its own bubble with text + file together.
+    const evt: MessagePersistedEvent = {
+      session_id: SESSION,
+      turn_id: "cmid-summary",
+      thread_id: "cmid-summary",
+      seq: 18,
+      role: "assistant",
+      message_id: "msg-summary",
+      source: "background",
+      cursor: { stream: SESSION, seq: 18 },
+      persisted_at: "2026-05-19T00:00:00Z",
+      media: ["slides/deck-1779207239/output/deck.pptx"],
+      content: "Generated 12 slides — Intel 2026 stock outlook deck is ready.",
+    };
+    handleMessagePersisted({ sessionId: SESSION }, evt);
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread).toBeDefined();
+    const row = thread.responses[thread.responses.length - 1];
+    expect(row).toBeDefined();
+    expect(row.text).toBe(
+      "Generated 12 slides — Intel 2026 stock outlook deck is ready.",
+    );
+    expect(row.files.map((f) => f.path)).toEqual([
+      "slides/deck-1779207239/output/deck.pptx",
+    ]);
+  });
+
   it("message/persisted (assistant, no media, empty pending) leaves pending alive for the late delta", () => {
     // M10 Phase 5b empty-placeholder fix: when an assistant
     // `message/persisted` lands BEFORE the streamed `message/delta`
