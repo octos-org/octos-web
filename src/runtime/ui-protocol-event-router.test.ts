@@ -1746,6 +1746,7 @@ describe("router seq preservation", () => {
         source: "background",
         cursor: { stream: SESSION, seq: 42 },
         persisted_at: "2026-04-30T00:00:00Z",
+        content: "late artifact",
       },
     );
     const [thread] = ThreadStore.getThreads(SESSION);

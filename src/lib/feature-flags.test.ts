@@ -13,7 +13,7 @@
  *   - UNSET (null)                                                 → ON
  */
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   AUX_REST_TO_WS_V1_FLAG_KEY,
@@ -107,5 +107,22 @@ describe("isAuxRestToWsV1Enabled — opt-out token semantics", () => {
   it('empty string → ON (not a disable token)', () => {
     setRaw("");
     expect(isAuxRestToWsV1Enabled()).toBe(true);
+  });
+
+  it("warns once when localStorage changes after the flag has been latched", () => {
+    setRaw("1");
+    expect(isAuxRestToWsV1Enabled()).toBe(true);
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    localStorage.setItem(AUX_REST_TO_WS_V1_FLAG_KEY, "0");
+
+    expect(isAuxRestToWsV1Enabled()).toBe(true);
+    expect(isAuxRestToWsV1Enabled()).toBe(true);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      `[octos] ${AUX_REST_TO_WS_V1_FLAG_KEY} changed mid-session; ` +
+        "the new value is ignored until reload to keep wrapper " +
+        "routing consistent across the page load.",
+    );
   });
 });

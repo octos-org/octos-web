@@ -945,9 +945,9 @@ describe("connection lifecycle", () => {
       // duplicated. A double `push` in `getUiProtocolFeatures()` would
       // pass the `toContain` check above but break the server-side
       // capability set comparison.
-      const auxOccurrences = ws.url.split(
-        `ui_feature=${AUX_REST_TO_WS_V1_FEATURE}`,
-      ).length - 1;
+      const auxOccurrences = new URL(ws.url).searchParams
+        .getAll("ui_feature")
+        .filter((feature) => feature === AUX_REST_TO_WS_V1_FEATURE).length;
       expect(auxOccurrences).toBe(1);
       await bridge.stop();
     } finally {

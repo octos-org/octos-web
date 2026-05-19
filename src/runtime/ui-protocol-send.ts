@@ -258,58 +258,18 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
   // bubble.
   const clientMessageId = opts.clientMessageId ?? crypto.randomUUID();
   const pinnedOpts: SendOptions = { ...opts, clientMessageId };
+  let optimisticMirrored = false;
 
-  // The signal we hand to `sendMessageV1`. The lifecycle handler resolves
-  // it on `turn/completed` or `turn/error` (or on early failure inside
-  // `sendMessageV1`). The next chained call awaits this signal before
-  // issuing its own `bridge.sendTurn`.
-  let release!: () => void;
-  const lifecycleDone = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  // Build the chain entry as a fresh promise we keep a stable reference to,
-  // so the cleanup compare-and-delete is correct. Issue #109.1: the chain
-  // entry must be installed SYNCHRONOUSLY (before the bridge-start await)
-  // so that rapid back-to-back sendMessage() calls observe each other in
-  // `turnQueues.get(key)` and serialise correctly. Pre-fix, awaiting the
-  // bridge start before `turnQueues.set` let two rapid sends each read
-  // `Promise.resolve()` as their `prev`, defeating the per-session FIFO.
-  const chained = prev.then(() => lifecycleDone);
-  turnQueues.set(key, chained);
-  // Wave4-A: surface the push BEFORE awaiting the prior turn so the
-  // toolbar pill updates synchronously with the user's submit. The
-  // matching `decrementQueueTotal` runs in the `finally` block below.
-  incrementQueueTotal(key, clientMessageId);
-
-  try {
-    await prev;
-    // Issue #109.1: ensure the bridge is usable BEFORE mutating
-    // ThreadStore / firing `onSessionActive`. Pre-fix, the optimistic
-    // row + session-active callback ran unconditionally, so a failed
-    // bridge start left an orphan user bubble + an "active" session
-    // row that never reached JSONL. `startBridgeForSession` is
-    // idempotent for same-scope already-started bridges so the happy
-    // path stays cheap.
-    try {
-      await startBridgeForSession(
-        pinnedOpts.sessionId,
-        pinnedOpts.historyTopic,
-      );
-    } catch {
-      if (typeof console !== "undefined" && console.warn) {
-        console.warn(
-          "ui-protocol-send: bridge start failed; aborting optimistic projection",
-        );
-      }
-      pinnedOpts.onComplete?.();
-      release();
-      return;
-    }
+  const mirrorOptimisticUserMessage = () => {
+    if (optimisticMirrored) return;
+    optimisticMirrored = true;
 
     // Codex round 4-6 P2: mirror the user message into ThreadStore
     // before issuing `sendTurn`, so the bubble is visible the instant
-    // the bridge is confirmed available. The mirror runs once per
-    // send; the WS path's own listener never re-mirrors.
+    // the bridge is confirmed available. Queued follow-ups with an
+    // already-active bridge mirror before the FIFO wait below, so the
+    // user's just-submitted message renders while it is parked behind
+    // the in-flight turn.
     const localFiles = pinnedOpts.media.map((path) => ({
       filename: displayFilenameFromPath(path),
       path,
@@ -336,6 +296,70 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
       );
     }
     pinnedOpts.onSessionActive?.(pinnedOpts.text);
+  };
+
+  // The signal we hand to `sendMessageV1`. The lifecycle handler resolves
+  // it on `turn/completed` or `turn/error` (or on early failure inside
+  // `sendMessageV1`). The next chained call awaits this signal before
+  // issuing its own `bridge.sendTurn`.
+  let release!: () => void;
+  const lifecycleDone = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  // Build the chain entry as a fresh promise we keep a stable reference to,
+  // so the cleanup compare-and-delete is correct. Issue #109.1: the chain
+  // entry must be installed SYNCHRONOUSLY (before the bridge-start await)
+  // so that rapid back-to-back sendMessage() calls observe each other in
+  // `turnQueues.get(key)` and serialise correctly. Pre-fix, awaiting the
+  // bridge start before `turnQueues.set` let two rapid sends each read
+  // `Promise.resolve()` as their `prev`, defeating the per-session FIFO.
+  const chained = prev.then(() => lifecycleDone);
+  turnQueues.set(key, chained);
+  // Wave4-A: surface the push BEFORE awaiting the prior turn so the
+  // toolbar pill updates synchronously with the user's submit. The
+  // matching `decrementQueueTotal` runs in the `finally` block below.
+  incrementQueueTotal(key, clientMessageId);
+
+  try {
+    // If the runtime already has a same-scope bridge, the queued user
+    // message is accepted by the client now even though its `turn/start`
+    // must wait for the prior lifecycle gate. Render that user bubble
+    // immediately so follow-up sends do not look lost while queued.
+    if (getActiveBridge(pinnedOpts.sessionId, pinnedOpts.historyTopic)) {
+      mirrorOptimisticUserMessage();
+    }
+
+    await prev;
+    // Issue #109.1: ensure the bridge is usable BEFORE mutating
+    // ThreadStore / firing `onSessionActive`. Pre-fix, the optimistic
+    // row + session-active callback ran unconditionally, so a failed
+    // bridge start left an orphan user bubble + an "active" session
+    // row that never reached JSONL. `startBridgeForSession` is
+    // idempotent for same-scope already-started bridges so the happy
+    // path stays cheap.
+    try {
+      await startBridgeForSession(
+        pinnedOpts.sessionId,
+        pinnedOpts.historyTopic,
+      );
+    } catch {
+      if (typeof console !== "undefined" && console.warn) {
+        console.warn(
+          "ui-protocol-send: bridge start failed; aborting optimistic projection",
+        );
+      }
+      if (optimisticMirrored) {
+        ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
+      }
+      pinnedOpts.onComplete?.();
+      release();
+      return;
+    }
+
+    // The no-active-bridge path still waits for `startBridgeForSession`
+    // before mutating ThreadStore, preserving the #109.1 failed-start /
+    // no-orphan contract. Already-active queued sends mirrored above.
+    mirrorOptimisticUserMessage();
 
     // M9-β-1 (UPCR-2026-015 / server PR #860): the three previously
     // unsupported variants — media-bearing, /queue-rewrite, and
