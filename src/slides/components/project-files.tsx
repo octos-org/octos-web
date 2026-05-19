@@ -310,6 +310,7 @@ export function ProjectFiles({
     let idleStreak = 0;
     let prevSignature = "";
     let inFlight = false;
+    let pendingRefresh = false;
 
     function nextDelay(): number {
       if (idleStreak < 3) return 2500;
@@ -342,7 +343,16 @@ export function ProjectFiles({
     }
 
     async function load() {
-      if (stopped || inFlight) return;
+      if (stopped) return;
+      // If a load is already in flight, mark a pending refresh so we
+      // re-poll immediately on completion. Without this, a `crew:file`
+      // event landing mid-poll is silently dropped and freshness can
+      // slip up to the next backoff tick (~30 s once idle). Codex
+      // MINOR (PR #142).
+      if (inFlight) {
+        pendingRefresh = true;
+        return;
+      }
       inFlight = true;
       if (pollTimer) {
         clearTimeout(pollTimer);
@@ -373,7 +383,12 @@ export function ProjectFiles({
         }
       } finally {
         inFlight = false;
-        schedule();
+        if (pendingRefresh && !stopped) {
+          pendingRefresh = false;
+          void load();
+        } else {
+          schedule();
+        }
       }
     }
 
@@ -421,19 +436,26 @@ export function ProjectFiles({
       }
     }
 
+    // Only listen to `crew:file` — the genuine "new file landed in this
+    // session" signal dispatched by `task-watcher.emitNewFileEvents`.
+    // The other crew events fire on every task-watcher poll
+    // (`crew:task_status` fans out per-task per-cycle at 2.5 s,
+    // `crew:bg_tasks` per cycle while any task is alive,
+    // `crew:tool_progress` per progress chunk) and are nominally
+    // throttled to 3 s here — but 3 s aliases the 2.5 s watcher cadence
+    // into one accepted refresh every two cycles (~5 s), which
+    // bypasses the 10 s/30 s backoff ladder entirely. The file panel
+    // doesn't need those signals; the periodic poll already discovers
+    // file changes within at most 30 s of disk write, and `crew:file`
+    // surfaces fresh files immediately when the agent actually
+    // produces one.
     window.addEventListener("focus", triggerRefresh);
     window.addEventListener("crew:file", handleEvent);
-    window.addEventListener("crew:bg_tasks", handleEvent);
-    window.addEventListener("crew:task_status", handleEvent);
-    window.addEventListener("crew:tool_progress", handleEvent);
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       window.removeEventListener("focus", triggerRefresh);
       window.removeEventListener("crew:file", handleEvent);
-      window.removeEventListener("crew:bg_tasks", handleEvent);
-      window.removeEventListener("crew:task_status", handleEvent);
-      window.removeEventListener("crew:tool_progress", handleEvent);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [historyTopic, sessionId, triggerRefresh]);
