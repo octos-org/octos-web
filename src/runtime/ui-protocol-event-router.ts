@@ -317,24 +317,32 @@ export function handleMessagePersisted(
       event,
     );
     if (promoted) return;
-    // Phantom-bubble defence (production bug 2026-05-09):
-    // Multi-iteration agent loops (assistant -> tool -> assistant) emit
-    // multiple `message/persisted` events per turn under the same
-    // `thread_id`. The router promotes/finalises the live
-    // `pendingAssistant` on the FIRST assistant persisted event for the
-    // turn. Subsequent assistant persisted events for the same turn
-    // carry text that already streamed into the now-finalised bubble
-    // via `message/delta` — the wire `content` is a duplicate of text
-    // the user already sees. Falling through to
-    // `appendPersistedMessage` for those events would render a second
-    // bubble with the same text. Drop the event when it has no media
-    // (no attachment to render that the finalised bubble doesn't
-    // already have) — the post-2026-05-19 `event.content` does not
-    // change this rule because the streamed bubble is still
-    // authoritative. Media-bearing late artifacts always flow through
-    // to `appendPersistedMessage` for attachment + text merging.
+    // Phantom-bubble defence (production bug 2026-05-09; revised
+    // 2026-05-19 once the server began carrying `content` on the wire):
+    //
+    // The original defence dropped ALL assistant persisted rows with
+    // empty media that arrived without a pending to promote — built on
+    // the UPCR-2026-012 invariant that text only travels via
+    // `message/delta`, so a `message/persisted` arriving at an empty
+    // thread was a bookkeeping artefact whose text was already in the
+    // streamed bubble.
+    //
+    // Post-wire-content fix that invariant no longer holds: multi-iter
+    // assistant rows (assistant → tool → assistant within one turn)
+    // commit per-iteration with `content` populated. After the first
+    // iter's persist promotes/finalises the pending, the streamed
+    // pending is null, so subsequent iters' `message/delta` text is
+    // dropped by `appendAssistantToken`'s `isFinalizedAndIdle` guard
+    // — meaning iter-2+ text would be LOST if we kept dropping
+    // empty-media rows here. The new rule: drop only when BOTH content
+    // AND media are empty (true bookkeeping). A non-empty `content`
+    // or non-empty `media` falls through to `appendPersistedMessage`,
+    // whose seq-based dedupe (see `thread-store.ts:appendPersistedMessage`)
+    // prevents duplicate rendering when the streamed bubble already
+    // contained the text.
     const eventMedia = event.media ?? [];
-    if (eventMedia.length === 0) {
+    const eventContent = (event.content ?? "").trim();
+    if (eventMedia.length === 0 && eventContent.length === 0) {
       return;
     }
   }
@@ -390,6 +398,22 @@ function tryPromotePendingFromPersisted(
       caption: "",
     });
   }
+  // 2026-05-19 wire-content fix: when the streamed `message/delta`
+  // raced/never-arrived and pending text is still empty, fall back to
+  // `event.content` from the wire so the finalised bubble shows real
+  // text instead of being empty. Streamed text remains authoritative
+  // for non-empty pending (re-applying content would clobber partial
+  // edits the user already saw on screen). This preserves the
+  // Phase 5b empty-placeholder fix's intent — keep the bubble alive
+  // until something renders — while shortcutting the "delta never
+  // shows up" failure mode now that the wire carries text directly.
+  const wireContent = (event.content ?? "").trim();
+  if (
+    thread.pendingAssistant.text.trim().length === 0 &&
+    wireContent.length > 0
+  ) {
+    ThreadStore.appendAssistantToken(threadId, event.content ?? "");
+  }
   // Phase 5b empty-placeholder defence: only finalise when the bubble
   // has something to render right now. Empty pending + no-media event
   // = wait for delta or `turn/completed` rather than freezing an empty
@@ -399,13 +423,10 @@ function tryPromotePendingFromPersisted(
   //
   // Media-bearing branch: `eventMedia.length > 0` finalises
   // immediately. Server-side contract is that media-bearing
-  // `message/persisted` rows are file-only — `message/delta` is
-  // text-only by spec § 9 (ephemeral text stream), and the agent never
-  // streams text into a row that also carries `media`. If the
-  // contract ever loosens (e.g. a media row with late text delta),
-  // this branch would freeze the row before the delta arrives — same
-  // failure mode the no-media branch fixes — and would need a
-  // matching defence.
+  // `message/persisted` rows pair their files with the row's content
+  // (text + file render together post-2026-05-19 wire-content fix);
+  // any text was either already streamed via `message/delta` or just
+  // appended above from `event.content`.
   const pendingHasContent =
     thread.pendingAssistant.text.trim().length > 0 ||
     thread.pendingAssistant.files.length > 0 ||
