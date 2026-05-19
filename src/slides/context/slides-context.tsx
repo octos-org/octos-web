@@ -46,19 +46,58 @@ export function SlidesProvider({
 
     let stopped = false;
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
+    let idleStreak = 0;
+
+    function nextDelay(): number {
+      if (idleStreak < 3) return 5000;
+      if (idleStreak < 10) return 15_000;
+      return 30_000;
+    }
+
+    function schedule() {
+      if (stopped) return;
+      pollTimer = setTimeout(() => {
+        if (typeof document !== "undefined" && document.hidden) {
+          schedule();
+          return;
+        }
+        void pollSlideImages();
+      }, nextDelay());
+    }
 
     async function pollSlideImages() {
       try {
         const latest = projectRef.current;
         if (!latest?.slug) return;
 
-        const files = await listSlidesFiles(`slides/${latest.slug}`, {
-          sessionId: latest.id,
-        });
+        // List BOTH the scaffold dir and the plugin-output dir. The
+        // `mofa_slides` plugin writes generated PNGs to
+        // `skill-output/slides/<slug>/output/slide-NN.png`;
+        // `synthesizeManifestFromImages` only matches files whose group
+        // starts with `skill-output/slides/<slug>/output`. Listing only
+        // `slides/<slug>` (the pre-fix shape) returned the scaffold
+        // trio with no PNGs, so the synthesizer fell to `null` and the
+        // preview never updated after a re-generation — the initial
+        // hydrate sweep correctly listed both dirs, so the first paint
+        // worked; subsequent renders did not.
+        const files = await listSlidesFiles(
+          [`slides/${latest.slug}`, `skill-output/slides/${latest.slug}`],
+          { sessionId: latest.id },
+        );
         if (stopped) return;
 
         const manifest = await fetchSlidesManifest(latest.slug, files);
-        if (stopped || !manifest) return;
+        if (stopped) return;
+        // Codex MAJOR (PR #142): a scaffolded project without any
+        // generated images returns `manifest === null` here. Pre-fix
+        // we `return`ed without bumping `idleStreak`, so the poller
+        // stayed pinned at the 5 s base cadence forever for any deck
+        // the agent has not started rendering yet. Treat null manifest
+        // as a no-change tick.
+        if (!manifest) {
+          idleStreak += 1;
+          return;
+        }
 
         const existingByAsset = new Map<string, Slide>();
         for (const slide of latest.slides) {
@@ -95,23 +134,35 @@ export function SlidesProvider({
             );
           });
 
-        // Also detect content changes even when paths stay the same.
-        // manifest.generatedAt changes on every regeneration.
-        const contentChanged =
+        // Codex MAJOR (PR #142): also persist when only the
+        // `generatedAt` cache-buster changes (same-path PNG
+        // overwrite — the file content has changed but every slide's
+        // `thumbnailUrl` is identical). The synthesizer's
+        // `generatedAt` is derived deterministically from file mtimes
+        // so this is a real "files-on-disk changed" signal, not the
+        // pre-fix `new Date()` churn.
+        const manifestStampChanged =
           !slidesChanged &&
           manifest.generatedAt !== latest.manifestGeneratedAt;
 
-        if (slidesChanged || contentChanged) {
+        if (slidesChanged || manifestStampChanged) {
+          idleStreak = 0;
           updateSlidesProject(latest.id, {
             slides: nextSlides,
             manifestGeneratedAt: manifest.generatedAt,
           });
           reload();
+        } else {
+          idleStreak += 1;
         }
       } catch {
-        // Keep polling even if the backend scaffold is still warming up.
+        // Codex MAJOR (PR #142): increment idleStreak on transport
+        // failure too. Pre-fix the empty catch left the streak frozen
+        // and the poller hammered 5 s while the backend was warming up
+        // (or down).
+        idleStreak += 1;
       } finally {
-        if (!stopped) pollTimer = setTimeout(pollSlideImages, 5000);
+        schedule();
       }
     }
 

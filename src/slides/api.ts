@@ -166,21 +166,78 @@ export async function fetchSlidesManifest(
   files: SlidesFileEntry[],
 ): Promise<SlidesRenderManifest | null> {
   const manifestPath = resolveSlidesManifestPath(slug, files);
-  if (!manifestPath) return null;
-
-  const resp = await fetch(buildFileUrl(manifestPath), {
-    headers: buildApiHeaders(),
-    cache: "no-store",
-  });
-  if (resp.status === 404) {
-    return null;
+  if (manifestPath) {
+    const resp = await fetch(buildFileUrl(manifestPath), {
+      headers: buildApiHeaders(),
+      cache: "no-store",
+    });
+    if (resp.ok) {
+      const data = (await resp.json()) as unknown;
+      return normalizeSlidesManifest(data, manifestPath, files);
+    }
+    if (resp.status !== 404) {
+      throw new Error(`HTTP ${resp.status}`);
+    }
+    // 404 falls through to the synthesizer below
   }
-  if (!resp.ok) {
-    throw new Error(`HTTP ${resp.status}`);
-  }
+  // mofa-slides 0.4.0 stopped emitting `manifest.json` and now writes
+  // images directly to `skill-output/slides/<slug>/output/slide-NN.png`.
+  // Synthesize a manifest from those filenames so the center-panel
+  // preview keeps working until the plugin restores the explicit index.
+  return synthesizeManifestFromImages(slug, files);
+}
 
-  const data = (await resp.json()) as unknown;
-  return normalizeSlidesManifest(data, manifestPath, files);
+function synthesizeManifestFromImages(
+  slug: string,
+  files: SlidesFileEntry[],
+): SlidesRenderManifest | null {
+  // Match `slide-NN.png` (final composite). DELIBERATELY excludes
+  // `slide-NN-ref.png` — the reference images from the image-gen API,
+  // not the composited slide. Sort by NN so playback order matches the
+  // deck order even if the listing endpoint returns paths out of order.
+  const slideRe = /^slide-(\d+)\.png$/i;
+  const expectedOutput = normalizeSlidesDir(
+    `skill-output/slides/${slug}/output`,
+  );
+  const matches: { index: number; file: SlidesFileEntry }[] = [];
+  for (const file of files) {
+    const group = normalizeSlidesDir(file.group);
+    if (group !== expectedOutput && !group.startsWith(`${expectedOutput}/`)) {
+      continue;
+    }
+    const m = file.filename.match(slideRe);
+    if (!m) continue;
+    matches.push({ index: Number.parseInt(m[1], 10) - 1, file });
+  }
+  if (matches.length === 0) return null;
+  matches.sort((a, b) => a.index - b.index);
+  // Deterministic stamp: derive from the newest matched file's
+  // mtime+size so a same-path re-generation (PNG overwrite) flips the
+  // value, but an idle poll over unchanged files returns the same
+  // string. Pre-fix this was `new Date().toISOString()` which churned
+  // on every call and made `pollSlideImages`'s change-detection trip
+  // every cycle regardless of disk state. Codex MAJOR (PR #142).
+  let newestMtime = "";
+  let totalSize = 0;
+  for (const { file } of matches) {
+    totalSize += file.size;
+    if (file.modified && file.modified > newestMtime) {
+      newestMtime = file.modified;
+    }
+  }
+  return {
+    version: 0,
+    generatedAt: `${newestMtime || "0"}|${totalSize}`,
+    slideDir: expectedOutput,
+    outFile: "",
+    slideCount: matches.length,
+    slides: matches.map(({ index, file }) => ({
+      index,
+      filename: file.filename,
+      path: file.path,
+    })),
+    manifestPath: "",
+  };
 }
 
 export async function hydrateSlidesProjectFromSession(
@@ -333,7 +390,17 @@ async function hydrateSlidesProjectCandidate(
   lookupSessionId: string,
   projectSessionId: string,
 ): Promise<SlidesProject | null> {
-  const files = await listSlidesFiles("slides", { sessionId: lookupSessionId });
+  // The mofa-slides plugin writes its generated images and PPTX under
+  // `skill-output/slides/<slug>/output/` (the plugin-output convention),
+  // not under `slides/<slug>/output/imgs/` where this client originally
+  // looked. List BOTH so the manifest/synthesizer can pull the rendered
+  // images for the center-panel preview. Without this second dir the
+  // file array only carries the scaffold trio (script.js / memory.md /
+  // changelog.md) and the deck shows zero slides even after a
+  // successful render.
+  const files = await listSlidesFiles(["slides", "skill-output/slides"], {
+    sessionId: lookupSessionId,
+  });
   const sessionFiles = await getSessionFiles(lookupSessionId).catch(() => []);
   const mergedFiles = [
     ...files,
