@@ -110,6 +110,140 @@ describe("router event mapping", () => {
     expect(thread).toBeDefined();
   });
 
+  it("message/persisted with wire `content` surfaces summary alongside media on the late-artifact path", () => {
+    // 2026-05-19 fix: server now carries the persisted row's `content`
+    // on the wire (omitted when empty) so captions / summaries that
+    // accompany a `send_file` / mofa_slides / fm_tts delivery reach the
+    // chat bubble. Pre-fix the SPA hardcoded `content: ""` here, so the
+    // file rendered but the summary text vanished — "file were
+    // delivered, what was missing is the summary in chat".
+    //
+    // Expectation: a late-artifact `message/persisted` with both
+    // `content` and `media` lands as a row whose text == event.content
+    // and whose files == event.media. The row is NOT detected as a
+    // media-only companion (because content is non-empty), so it
+    // renders as its own bubble with text + file together.
+    const evt: MessagePersistedEvent = {
+      session_id: SESSION,
+      turn_id: "cmid-summary",
+      thread_id: "cmid-summary",
+      seq: 18,
+      role: "assistant",
+      message_id: "msg-summary",
+      source: "background",
+      cursor: { stream: SESSION, seq: 18 },
+      persisted_at: "2026-05-19T00:00:00Z",
+      media: ["slides/deck-1779207239/output/deck.pptx"],
+      content: "Generated 12 slides — Intel 2026 stock outlook deck is ready.",
+    };
+    handleMessagePersisted({ sessionId: SESSION }, evt);
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread).toBeDefined();
+    const row = thread.responses[thread.responses.length - 1];
+    expect(row).toBeDefined();
+    expect(row.text).toBe(
+      "Generated 12 slides — Intel 2026 stock outlook deck is ready.",
+    );
+    expect(row.files.map((f) => f.path)).toEqual([
+      "slides/deck-1779207239/output/deck.pptx",
+    ]);
+  });
+
+  it("multi-iter assistant row with wire content lands as its own bubble after first iter finalised", () => {
+    // 2026-05-19 codex MAJOR fix: pre-fix the phantom-bubble defence
+    // dropped EVERY no-media assistant `message/persisted`, including
+    // iter-2+ rows whose text was no longer being streamed (the
+    // pending bubble was finalised by iter-1's persist and the
+    // `isFinalizedAndIdle` guard drops late `appendAssistantToken`).
+    // That LOST iter-2+ text entirely. Post-fix: dropping is gated on
+    // BOTH content AND media being empty, so a content-bearing iter-2
+    // row falls through to `appendPersistedMessage` and lands as a
+    // separate bubble. ThreadStore's seq-based idempotency prevents
+    // duplicate rendering on replay.
+    const cmid = "cmid-multi-iter";
+    seedThread(cmid, "ask multi");
+
+    // Iter 1: delta-streamed text + persist finalises the bubble.
+    handleMessageDelta(
+      { sessionId: SESSION },
+      { session_id: SESSION, turn_id: cmid, text: "Iter 1 text." },
+    );
+    handleMessagePersisted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        thread_id: cmid,
+        seq: 30,
+        role: "assistant",
+        message_id: "msg-iter1",
+        source: "assistant",
+        cursor: { stream: SESSION, seq: 30 },
+        persisted_at: "2026-05-19T00:00:00Z",
+        content: "Iter 1 text.",
+      },
+    );
+
+    // Iter 2: arrives after the pending was finalised. Carries only
+    // wire `content` (no media, no streamed delta). Pre-fix this row
+    // was dropped by the phantom-bubble defence; post-fix it lands as
+    // a new bubble.
+    handleMessagePersisted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        thread_id: cmid,
+        seq: 31,
+        role: "assistant",
+        message_id: "msg-iter2",
+        source: "assistant",
+        cursor: { stream: SESSION, seq: 31 },
+        persisted_at: "2026-05-19T00:00:01Z",
+        content: "Iter 2 final answer.",
+      },
+    );
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses).toHaveLength(2);
+    expect(thread.responses[0].text).toBe("Iter 1 text.");
+    expect(thread.responses[1].text).toBe("Iter 2 final answer.");
+    expect(thread.responses[1].historySeq).toBe(31);
+  });
+
+  it("tryPromote falls back to wire content when streamed delta never arrived", () => {
+    // 2026-05-19 codex MAJOR fix: when the server emits `content` on
+    // the wire but the streamed `message/delta` never arrives (or
+    // arrives after persist), pre-fix the bubble was finalised empty.
+    // Post-fix: tryPromote appends `event.content` as the bubble's
+    // text before finalising, so the user sees real content.
+    const cmid = "cmid-delta-skipped";
+    seedThread(cmid, "ask");
+    // No `handleMessageDelta` — simulate the race where persist wins.
+    handleMessagePersisted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        thread_id: cmid,
+        seq: 50,
+        role: "assistant",
+        message_id: "msg-no-delta",
+        source: "assistant",
+        cursor: { stream: SESSION, seq: 50 },
+        persisted_at: "2026-05-19T00:00:00Z",
+        content: "Wire content stood in for the missing delta.",
+      },
+    );
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.pendingAssistant).toBeNull(); // finalised
+    expect(thread.responses).toHaveLength(1);
+    expect(thread.responses[0].text).toBe(
+      "Wire content stood in for the missing delta.",
+    );
+    expect(thread.responses[0].historySeq).toBe(50);
+  });
+
   it("message/persisted (assistant, no media, empty pending) leaves pending alive for the late delta", () => {
     // M10 Phase 5b empty-placeholder fix: when an assistant
     // `message/persisted` lands BEFORE the streamed `message/delta`

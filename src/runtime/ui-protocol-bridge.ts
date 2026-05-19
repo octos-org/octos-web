@@ -608,6 +608,13 @@ function guardMessagePersisted(p: unknown): MessagePersistedEvent | null {
     const filtered = p.media.filter((u): u is string => isString(u) && u.length > 0);
     if (filtered.length > 0) media = filtered;
   }
+  // 2026-05-19: server now emits the persisted row's text content on
+  // the wire (`content`, omitted when empty) so the SPA can surface
+  // captions / summaries alongside `media`. Accept the field here so
+  // the router sees it; pre-fix the guard stripped it and the router
+  // wrote `""` to the bubble even when content was present on the wire.
+  const content =
+    typeof p.content === "string" && p.content.length > 0 ? p.content : undefined;
   return {
     session_id: p.session_id,
     turn_id,
@@ -620,6 +627,7 @@ function guardMessagePersisted(p: unknown): MessagePersistedEvent | null {
     cursor: { stream: p.cursor.stream, seq: p.cursor.seq },
     persisted_at: p.persisted_at,
     media,
+    content,
   };
 }
 

@@ -142,18 +142,27 @@ export interface PersistedMessage {
 
 /**
  * `message/persisted` notification per `UPCR-2026-012`. Server emits a
- * flat metadata-only payload — content travels via `message/delta`, this
- * notification confirms the durable commit and (since the server's P1.3
- * fix in PR #767) carries the persisted row's `media` attachments so
- * the client can render them as `<a href>` in the chat bubble.
+ * flat payload — text content travels via `message/delta` for live
+ * foreground turns, this notification confirms the durable commit and
+ * (since the server's P1.3 fix in PR #767) carries the persisted row's
+ * `media` attachments.
  *
- * IMPORTANT: this struct is the on-the-wire shape. The earlier nested
- * `{ message: { id, thread_id, content, role, files? } }` shape this
- * project once expected was speculative and never matched a real server
- * payload. Do NOT read `event.message.content` here — there is no
- * `content` field on the wire. The pending bubble's already-streamed
- * text is authoritative; this event finalises the bubble and adds
- * media URLs.
+ * Wire-content field (added in PR fixing "summary missing in chat"
+ * regression, 2026-05-19): the server now ALSO carries the row's
+ * `content` string on this event when non-empty. This lets the client
+ * surface assistant captions that accompany a media delivery —
+ * `send_file` with a caption, mofa_slides "Generated 12 slides..."
+ * summary, fm_tts narration summary — instead of dropping them to
+ * `""` on the client side. The field is optional/omitted-when-empty
+ * so legacy text-only delta rows still arrive in their old shape; the
+ * primary consumer is the late-artifact path in `eventToMessageInfo`
+ * (no live `pendingAssistant` to merge into).
+ *
+ * For the live foreground turn case the streamed `message/delta` text
+ * is still authoritative — the bubble already contains the text by the
+ * time `message/persisted` fires. The wire `content` is mainly useful
+ * when there is no pending to promote (late artifact, replay,
+ * background spawn_only delivery).
  */
 export interface MessagePersistedEvent {
   session_id: string;
@@ -182,6 +191,12 @@ export interface MessagePersistedEvent {
    *  tools (`deep_search`, `mofa_*`, `fm_tts`) or an explicit
    *  `send_file` call. Absent or empty for ordinary text rows. */
   media?: string[];
+  /** Optional text content of the persisted row. Carried when non-empty
+   *  so the client can render captions / summaries alongside `media`
+   *  on the late-artifact path. Omitted (= undefined) on the wire for
+   *  empty/whitespace rows so legacy text-only delta-streamed rows
+   *  arrive in their pre-fix shape. */
+  content?: string;
 }
 
 /**
