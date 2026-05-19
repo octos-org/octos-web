@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -280,19 +280,40 @@ export function ProjectFiles({
     [slug],
   );
 
+  // Cross-remount state. Pre-fix `idleStreak` and `prevSignature` were
+  // declared inside the effect body, so any remount (triggered by
+  // `setRefreshTick` from the `crew:task_status` / `crew:bg_tasks`
+  // listeners below — those fire every task-watcher poll, every 2.5 s,
+  // for EVERY task including terminal ones) reset both to 0/empty.
+  // Net effect: the backoff never engaged because the streak counter
+  // restarted on each remount, even when the file/contract payload
+  // hadn't actually changed.
+  const idleStreakRef = useRef(0);
+  const prevSignatureRef = useRef("");
+  const lastLoadAtRef = useRef(0);
+  const lastRefreshAtRef = useRef(0);
+
+  // Throttle external refresh triggers. `crew:task_status` fires once
+  // per task per task-watcher poll cycle (every 2.5 s), so without
+  // throttling the effect remounts ≥1/s for any session with stored
+  // tasks — making the backoff useless. 3 s is well under any
+  // signal a user would notice (a real file change still surfaces on
+  // the next backoff tick).
   const triggerRefresh = useCallback(() => {
+    const now = Date.now();
+    if (now - lastRefreshAtRef.current < 3000) return;
+    lastRefreshAtRef.current = now;
     setRefreshTick((value) => value + 1);
   }, []);
 
   useEffect(() => {
     let stopped = false;
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
-    let prevSignature = "";
-    let idleStreak = 0;
 
     function nextDelay(): number {
-      if (idleStreak < 3) return 2500;
-      if (idleStreak < 10) return 10_000;
+      const streak = idleStreakRef.current;
+      if (streak < 3) return 2500;
+      if (streak < 10) return 10_000;
       return 30_000;
     }
 
@@ -321,6 +342,7 @@ export function ProjectFiles({
 
     async function load() {
       try {
+        lastLoadAtRef.current = Date.now();
         const [nextFiles, nextContract] = await Promise.all([
           listSlidesFiles(requestedDirs, { sessionId }),
           fetchSlidesWorkspaceContract(sessionId, slug).catch(() => null),
@@ -328,11 +350,11 @@ export function ProjectFiles({
         const nextManifest = await fetchSlidesManifest(slug, nextFiles);
         if (!stopped) {
           const sig = signatureOf(nextFiles, nextContract);
-          if (sig === prevSignature) {
-            idleStreak += 1;
+          if (sig === prevSignatureRef.current) {
+            idleStreakRef.current += 1;
           } else {
-            idleStreak = 0;
-            prevSignature = sig;
+            idleStreakRef.current = 0;
+            prevSignatureRef.current = sig;
             setFiles(nextFiles);
             setManifest(nextManifest);
             setContract(nextContract);
@@ -348,7 +370,15 @@ export function ProjectFiles({
       }
     }
 
-    void load();
+    // Suppress the immediate on-mount load if we already polled
+    // recently. Without this guard a remount fires `void load()`
+    // unconditionally, so even a properly throttled `triggerRefresh`
+    // would force one poll per remount.
+    if (Date.now() - lastLoadAtRef.current < 2000) {
+      schedule();
+    } else {
+      void load();
+    }
 
     return () => {
       stopped = true;
