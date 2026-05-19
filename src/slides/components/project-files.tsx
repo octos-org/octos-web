@@ -287,6 +287,37 @@ export function ProjectFiles({
   useEffect(() => {
     let stopped = false;
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
+    let prevSignature = "";
+    let idleStreak = 0;
+
+    function nextDelay(): number {
+      if (idleStreak < 3) return 2500;
+      if (idleStreak < 10) return 10_000;
+      return 30_000;
+    }
+
+    function signatureOf(
+      files: SlidesFileEntry[],
+      contract: SlidesWorkspaceContract | null,
+    ): string {
+      const fileSig = files
+        .map((f) => `${f.path}|${f.size}|${f.modified}`)
+        .sort()
+        .join("\n");
+      const contractSig = contract ? JSON.stringify(contract) : "";
+      return `${fileSig}\n--\n${contractSig}`;
+    }
+
+    function schedule() {
+      if (stopped) return;
+      pollTimer = setTimeout(() => {
+        if (typeof document !== "undefined" && document.hidden) {
+          schedule();
+          return;
+        }
+        void load();
+      }, nextDelay());
+    }
 
     async function load() {
       try {
@@ -296,9 +327,16 @@ export function ProjectFiles({
         ]);
         const nextManifest = await fetchSlidesManifest(slug, nextFiles);
         if (!stopped) {
-          setFiles(nextFiles);
-          setManifest(nextManifest);
-          setContract(nextContract);
+          const sig = signatureOf(nextFiles, nextContract);
+          if (sig === prevSignature) {
+            idleStreak += 1;
+          } else {
+            idleStreak = 0;
+            prevSignature = sig;
+            setFiles(nextFiles);
+            setManifest(nextManifest);
+            setContract(nextContract);
+          }
           setError(null);
         }
       } catch (err) {
@@ -306,7 +344,7 @@ export function ProjectFiles({
           setError(err instanceof Error ? err.message : "Failed to load files");
         }
       } finally {
-        if (!stopped) pollTimer = setTimeout(load, 2500);
+        schedule();
       }
     }
 

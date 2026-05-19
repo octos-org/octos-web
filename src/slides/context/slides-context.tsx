@@ -46,6 +46,24 @@ export function SlidesProvider({
 
     let stopped = false;
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
+    let idleStreak = 0;
+
+    function nextDelay(): number {
+      if (idleStreak < 3) return 5000;
+      if (idleStreak < 10) return 15_000;
+      return 30_000;
+    }
+
+    function schedule() {
+      if (stopped) return;
+      pollTimer = setTimeout(() => {
+        if (typeof document !== "undefined" && document.hidden) {
+          schedule();
+          return;
+        }
+        void pollSlideImages();
+      }, nextDelay());
+    }
 
     async function pollSlideImages() {
       try {
@@ -95,23 +113,20 @@ export function SlidesProvider({
             );
           });
 
-        // Also detect content changes even when paths stay the same.
-        // manifest.generatedAt changes on every regeneration.
-        const contentChanged =
-          !slidesChanged &&
-          manifest.generatedAt !== latest.manifestGeneratedAt;
-
-        if (slidesChanged || contentChanged) {
+        if (slidesChanged) {
+          idleStreak = 0;
           updateSlidesProject(latest.id, {
             slides: nextSlides,
             manifestGeneratedAt: manifest.generatedAt,
           });
           reload();
+        } else {
+          idleStreak += 1;
         }
       } catch {
         // Keep polling even if the backend scaffold is still warming up.
       } finally {
-        if (!stopped) pollTimer = setTimeout(pollSlideImages, 5000);
+        schedule();
       }
     }
 
