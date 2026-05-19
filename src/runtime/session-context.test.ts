@@ -13,19 +13,49 @@
  * These tests cover the pure {@link mergeSessionLists} helper.
  */
 
-import { describe, expect, it } from "vitest";
+import * as React from "react";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+(
+  globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
+
+const apiMocks = vi.hoisted(() => ({
+  listSessions: vi.fn(),
+  getMessages: vi.fn(),
+  getMessagesPage: vi.fn(),
+  getSessionTasks: vi.fn(),
+  deleteSession: vi.fn(),
+  setSessionTitle: vi.fn(),
+}));
+
+vi.mock("@/api/sessions", () => ({
+  listSessions: apiMocks.listSessions,
+  getMessages: apiMocks.getMessages,
+  getMessagesPage: apiMocks.getMessagesPage,
+  getSessionTasks: apiMocks.getSessionTasks,
+  deleteSession: apiMocks.deleteSession,
+  setSessionTitle: apiMocks.setSessionTitle,
+}));
+
 import {
   applyOptimisticRename,
   mergeSessionLists,
   rollbackOptimisticRename,
   sessionTimestamp,
+  SessionProvider,
   SESSION_LIST_RENDER_CAP,
+  useSession,
+  type SessionContextValue,
   type SessionWithTitle,
 } from "./session-context";
 import type { SessionInfo } from "@/api/types";
 
 const NO_TITLES: Record<string, string> = {};
 const NO_DELETES = new Set<string>();
+const SESSION_TITLES_KEY = "octos_session_titles";
 
 // `sessionTimestamp` rejects ms timestamps < 1700000000000 (~Nov 2023) so
 // fixtures need a realistic base.
@@ -42,6 +72,75 @@ function webSession(
 function idAt(offsetMs: number, suffix = "abc"): string {
   return `web-${TS_BASE + offsetMs}-${suffix}`;
 }
+
+interface MountedHarness {
+  container: HTMLDivElement;
+  root: Root;
+  unmount: () => void;
+}
+
+function CaptureSessionContext({
+  onValue,
+}: {
+  onValue: (ctx: SessionContextValue) => void;
+}) {
+  onValue(useSession());
+  return null;
+}
+
+function mountSessionProvider(
+  onValue: (ctx: SessionContextValue) => void,
+): MountedHarness {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  act(() => {
+    root.render(
+      React.createElement(
+        SessionProvider,
+        null,
+        React.createElement(CaptureSessionContext, { onValue }),
+      ),
+    );
+  });
+  return {
+    container,
+    root,
+    unmount: () => {
+      act(() => root.unmount());
+      container.remove();
+    },
+  };
+}
+
+async function flushReactWork(cycles = 8): Promise<void> {
+  await act(async () => {
+    for (let i = 0; i < cycles; i += 1) {
+      await Promise.resolve();
+    }
+  });
+}
+
+beforeEach(() => {
+  localStorage.clear();
+  vi.clearAllMocks();
+  apiMocks.listSessions.mockResolvedValue([]);
+  apiMocks.getMessages.mockResolvedValue([]);
+  apiMocks.getMessagesPage.mockResolvedValue({
+    messages: [],
+    has_more: false,
+    next_offset: null,
+  });
+  apiMocks.getSessionTasks.mockResolvedValue([]);
+  apiMocks.deleteSession.mockResolvedValue(undefined);
+  apiMocks.setSessionTitle.mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  for (const node of [...document.body.children]) node.remove();
+  localStorage.clear();
+  vi.restoreAllMocks();
+});
 
 describe("sessionTimestamp", () => {
   it("parses web-{ms}-{rand} format", () => {
@@ -213,6 +312,86 @@ describe("mergeSessionLists", () => {
     const ids = merged.map((s) => s.id);
     expect(ids).toContain(idAt(500, "mine"));
     expect(merged).toHaveLength(31);
+  });
+});
+
+describe("SessionProvider title integration", () => {
+  it("rolls back renameSession through the actual provider callback when setSessionTitle rejects", async () => {
+    const sessionId = idAt(42, "rename");
+    apiMocks.listSessions.mockResolvedValue([
+      { id: sessionId, message_count: 3, title: "old title" },
+    ] satisfies SessionInfo[]);
+    apiMocks.setSessionTitle.mockRejectedValueOnce(
+      new Error("forbidden: invalid title"),
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    let latest: SessionContextValue | null = null;
+    const harness = mountSessionProvider((ctx) => {
+      latest = ctx;
+    });
+    try {
+      await flushReactWork();
+      expect(latest?.sessions.find((s) => s.id === sessionId)?.title).toBe(
+        "old title",
+      );
+
+      act(() => {
+        latest?.renameSession(sessionId, "  doomed rename  ");
+      });
+      expect(apiMocks.setSessionTitle).toHaveBeenCalledWith(
+        sessionId,
+        "doomed rename",
+      );
+
+      await flushReactWork();
+      expect(latest?.sessions.find((s) => s.id === sessionId)?.title).toBe(
+        "old title",
+      );
+      expect(JSON.parse(localStorage.getItem(SESSION_TITLES_KEY) || "{}")).toEqual({
+        [sessionId]: "old title",
+      });
+      expect(warn).toHaveBeenCalledWith(
+        `renameSession failed for ${sessionId}: forbidden: invalid title`,
+      );
+    } finally {
+      harness.unmount();
+    }
+  });
+
+  it("applies cross-tab session title updates from the runtime subscriber event", async () => {
+    const sessionId = idAt(84, "title-event");
+    apiMocks.listSessions.mockResolvedValue([
+      { id: sessionId, message_count: 2, title: "old title" },
+    ] satisfies SessionInfo[]);
+
+    let latest: SessionContextValue | null = null;
+    const harness = mountSessionProvider((ctx) => {
+      latest = ctx;
+    });
+    try {
+      await flushReactWork();
+      expect(latest?.sessions.find((s) => s.id === sessionId)?.title).toBe(
+        "old title",
+      );
+
+      act(() => {
+        window.dispatchEvent(
+          new CustomEvent("crew:session_title_updated", {
+            detail: { session_id: sessionId, title: "server title" },
+          }),
+        );
+      });
+
+      expect(latest?.sessions.find((s) => s.id === sessionId)?.title).toBe(
+        "server title",
+      );
+      expect(JSON.parse(localStorage.getItem(SESSION_TITLES_KEY) || "{}")).toEqual({
+        [sessionId]: "server title",
+      });
+    } finally {
+      harness.unmount();
+    }
   });
 });
 

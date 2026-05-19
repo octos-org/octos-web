@@ -574,9 +574,10 @@ describe("sendMessage", () => {
 
   // Codex P2 round 4 (M10 follow-up Bug B): the user message must be
   // mirrored before subsequent sends process. Issue #109.1 reordered the
-  // mirror to run AFTER `startBridgeForSession` resolves (so a failed
-  // start cannot orphan a bubble); the queue chain entry is still
-  // installed synchronously so per-session FIFO ordering survives.
+  // no-active-bridge path to run AFTER `startBridgeForSession` resolves
+  // (so a failed start cannot orphan a bubble); once a same-scope bridge
+  // is already active, queued follow-ups can mirror immediately while
+  // `sendTurn` remains serialized behind the prior lifecycle gate.
   it("mirrors queued v1 user messages once the bridge has confirmed start", async () => {
     const bridge = makeBridge();
     __setActiveBridgeForTest(SESSION, bridge);
@@ -606,13 +607,14 @@ describe("sendMessage", () => {
       clientMessageId: "cmid-Q2",
     });
 
-    // After the bridge-start await resolves and the chain advances Q1
-    // through to its sendTurn, the Q1 mirror is present and Q2 is
-    // parked behind the lifecycle gate.
+    // Both user bubbles render promptly because the same-scope bridge
+    // is already active. Only Q1 has reached sendTurn; Q2 is still
+    // parked behind Q1's lifecycle gate.
     for (let i = 0; i < 12; i++) await Promise.resolve();
     let threads = ThreadStore.getThreads(SESSION);
-    expect(threads.map((t) => t.id)).toEqual(["cmid-Q1"]);
+    expect(threads.map((t) => t.id)).toEqual(["cmid-Q1", "cmid-Q2"]);
     expect(threads[0].userMsg.text).toBe("Q1");
+    expect(threads[1].userMsg.text).toBe("Q2");
     expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
     expect(bridge.sendTurn).toHaveBeenLastCalledWith(
       "cmid-Q1",
@@ -625,7 +627,6 @@ describe("sendMessage", () => {
     expect(bridge.sendTurn).toHaveBeenCalledTimes(2);
     threads = ThreadStore.getThreads(SESSION);
     expect(threads.map((t) => t.id)).toEqual(["cmid-Q1", "cmid-Q2"]);
-    expect(threads[1].userMsg.text).toBe("Q2");
   });
 
   // Codex P2 round 3 (M10 follow-up Bug B): a throwing `onComplete`
