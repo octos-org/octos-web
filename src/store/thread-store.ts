@@ -2796,7 +2796,13 @@ export function appendPersistedMessage(
       ? new Date(message.timestamp).getTime()
       : null;
     const incomingText = typeof message.content === "string" ? message.content : "";
-    if (incomingTs !== null) {
+    // Non-empty text gate (codex MINOR on #148): an empty-content
+    // media-only assistant row with the same timestamp as a prior
+    // empty-content row would otherwise collide here. The dspfac bug
+    // pattern (spawn_only "Background work started..." ack) always
+    // carries stable non-empty text, so this gate doesn't weaken the
+    // fix; it just prevents a hypothetical empty-content false-positive.
+    if (incomingTs !== null && incomingText.trim().length > 0) {
       for (const r of thread.responses) {
         if (
           r.role === message.role &&
