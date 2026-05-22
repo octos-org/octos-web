@@ -140,17 +140,18 @@ afterEach(() => {
 });
 
 describe("ToolCallBubble — no trailing spinner after terminal status", () => {
-  it("renders zero animating descendants in the assistant bubble after tool/completed (turn still streaming, podcast_generate spawn_only)", () => {
-    // CRITICAL window this test pins: foreground `tool/completed` has
-    // fired (bubble's ToolCallBubble already shows the static Check
-    // and the wrapper `animate-pulse` is gone), BUT `turn/completed`
-    // has NOT fired yet — `pendingAssistant.status === "streaming"`
-    // and `isStreaming === true`. The legacy code rendered three
-    // `animate-pulse` placeholder dots in this window because
-    // `message.text === ""`, even though a tool call inside the
-    // bubble had already settled to "complete". From the user's
-    // perspective: the chip says "podcast_generate: completed" and a
-    // spinner is animating right next to it inside the bubble.
+  it("keeps the spawn_only spinner alive after foreground tool/completed until task/updated terminal (defect A, 2026-05-22)", () => {
+    // Defect A (M9 follow-up): the foreground `tool/completed`
+    // envelope for a spawn_only tool (`podcast_generate`,
+    // `run_pipeline`, etc.) fires ~2ms after `tool/started` — it's
+    // only the supervisor's acknowledgement, the background work is
+    // still in flight. Pre-fix the bubble settled to "complete" the
+    // moment foreground completion landed, planting a static Check on
+    // a tool card whose work was still running for minutes. Post-fix
+    // the chip stays "running" until `task/updated:completed` (the
+    // real terminal signal) arrives — verified in a separate test in
+    // ui-protocol-event-router.test.ts; this test pins the bubble
+    // rendering invariant.
     const cmid = "turn-podcast-mid-stream";
     const toolCallId = "tc-podcast";
 
@@ -219,59 +220,32 @@ describe("ToolCallBubble — no trailing spinner after terminal status", () => {
       // the in-flight window the bug surfaces in.
     });
 
-    // Sanity: the tool bubble itself is in the post-terminal state
-    // (already covered by chat-thread-tool-call-status-icon.test.tsx
-    // — kept here so a regression of that gate would surface as a
-    // single readable failure in this file too).
+    // Post-defect-A: the bubble must NOT have flipped to "complete"
+    // off the foreground `tool/completed`. The chip stays "running"
+    // and the running affordance (the three-ball spinner that
+    // replaced the legacy Loader2) is still mounted under the same
+    // `data-testid` the spec uses to find it.
     const bubble = harness.container.querySelector(
       "[data-testid='tool-call-bubble']",
     );
     expect(bubble).not.toBeNull();
-    expect(bubble!.getAttribute("data-tool-status")).toBe("complete");
-    expect(
-      bubble!.querySelector("[data-testid='tool-call-status-complete-icon']"),
-    ).not.toBeNull();
+    expect(bubble!.getAttribute("data-tool-status")).toBe("running");
     expect(
       bubble!.querySelector("[data-testid='tool-call-status-spinner']"),
+    ).not.toBeNull();
+    expect(
+      bubble!.querySelector("[data-testid='tool-call-status-complete-icon']"),
     ).toBeNull();
+    // The legacy `Loader2` rotation (Tailwind `animate-spin`) has been
+    // retired in favour of the three-ball CSS keyframe `tool-ball` —
+    // the umbrella "no orphan SVG spinner" invariant still holds.
     expect(bubble!.querySelector(".animate-spin")).toBeNull();
-    expect(bubble!.querySelector(".animate-pulse")).toBeNull();
-    expect(bubble!.classList.contains("animate-pulse")).toBe(false);
 
-    // The actual fix: the ASSISTANT BUBBLE that hosts this tool call
-    // must not have streaming-placeholder dots animating in it. The
-    // user identifies the spinner as "inside the bubble alongside
-    // the completed status" — that's the assistant card the
-    // ToolCallBubble and ToolProgressIndicator both live in.
     const assistant = harness.container.querySelector(
       "[data-testid='assistant-message']",
     );
     expect(assistant).not.toBeNull();
-
-    // No Loader2 / animate-spin anywhere inside the assistant
-    // bubble. (Already covered by the leading-icon gate, but this
-    // file owns the umbrella invariant so a regression elsewhere
-    // also fails here.)
-    expect(
-      assistant!.querySelector("[data-testid='tool-call-status-spinner']"),
-    ).toBeNull();
-    expect(
-      assistant!.querySelector("[data-testid='tool-progress-spinner']"),
-    ).toBeNull();
     expect(assistant!.querySelector(".animate-spin")).toBeNull();
-
-    // The streaming-text placeholder dots
-    // (chat-thread.tsx:741-747: three `animate-pulse` spans rendered
-    // when `isStreaming && !message.text`) must NOT render while the
-    // bubble has at least one settled tool call — they're the
-    // pre-fix stuck-spinner the user saw. We assert there is no
-    // `animate-pulse` element anywhere inside the assistant bubble.
-    // The `animate-shell-rise` intro animation on the bubble wrapper
-    // is a one-shot fade-in (0.24s), not a forever-spinning class,
-    // and the lucide-react SVGs themselves never carry an animate
-    // class — so an empty match here is the right invariant.
-    const pulses = assistant!.querySelectorAll(".animate-pulse");
-    expect(pulses.length).toBe(0);
   });
 
   it("renders zero animating descendants after both tool/completed AND turn/completed (spawn_only happy path)", () => {

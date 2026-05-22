@@ -31,7 +31,6 @@ import {
   Route,
   ChevronDown,
   ChevronRight,
-  Loader2,
   Check,
 } from "lucide-react";
 import { useSession } from "@/runtime/session-context";
@@ -548,13 +547,31 @@ function ToolCallBubble({
   // continuity with prior UX; the icon adds an unambiguous glyph.
   let statusIcon: ReactNode;
   if (toolCall.status === "running") {
+    // Three color-cycling bouncing balls (M9 follow-up, 2026-05-22).
+    // Keeps the same `data-testid` the legacy `Loader2` carried, so
+    // unit + playwright specs that target
+    // `[data-testid='tool-call-status-spinner']` still find the
+    // running affordance — only the DOM shape changes.
     statusIcon = (
-      <Loader2
-        size={10}
-        className="animate-spin text-accent"
+      <span
         data-testid="tool-call-status-spinner"
+        className="inline-flex items-center gap-[2px]"
         aria-label="running"
-      />
+        aria-hidden="true"
+      >
+        <span
+          className="tool-ball block h-[5px] w-[5px] rounded-full bg-accent"
+          style={{ animationDelay: "0ms" }}
+        />
+        <span
+          className="tool-ball block h-[5px] w-[5px] rounded-full bg-accent/70"
+          style={{ animationDelay: "150ms" }}
+        />
+        <span
+          className="tool-ball block h-[5px] w-[5px] rounded-full bg-accent/40"
+          style={{ animationDelay: "300ms" }}
+        />
+      </span>
     );
   } else if (toolCall.status === "complete") {
     statusIcon = (

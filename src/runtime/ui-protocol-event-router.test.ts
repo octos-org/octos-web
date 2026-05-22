@@ -2281,12 +2281,13 @@ describe("regression A: tool/* events fan out into crew:tool_progress", () => {
     expect((dispatched[0] as CustomEvent).detail.tool).toBe("shell");
   });
 
-  it("tool/completed marks the crew:tool_progress event terminal (spawn_only spinner clear signal)", () => {
+  it("tool/completed marks crew:tool_progress terminal for non-spawn_only tools (legacy spinner clear signal)", () => {
     // The lifted `ToolProgressIndicator` (chat-layout level) cannot
-    // rely on `crew:thinking false` for spawn_only flows — that event
-    // already fired at `turn/completed` BEFORE the background task
-    // started emitting `tool/progress`. The terminal flag is the
-    // dedicated clear signal the indicator listens for.
+    // rely on `crew:thinking false` for foreground tool completions —
+    // for synchronous tools the terminal flag is the dedicated clear
+    // signal. For spawn_only tools we DEFER the terminal flag (see
+    // the spawn_only test below) since the foreground completion is
+    // only an ack.
     const dispatched: Event[] = [];
     handleToolCompleted(
       { sessionId: SESSION, dispatchEvent: (e) => dispatched.push(e) },
@@ -2294,13 +2295,107 @@ describe("regression A: tool/* events fan out into crew:tool_progress", () => {
         session_id: SESSION,
         turn_id: "cmid-A4",
         tool_call_id: "tc-4",
-        tool_name: "podcast_generate",
+        tool_name: "shell",
         success: true,
       },
     );
     expect(dispatched).toHaveLength(1);
     expect((dispatched[0] as CustomEvent).detail.terminal).toBe(true);
+    expect((dispatched[0] as CustomEvent).detail.tool).toBe("shell");
+  });
+
+  it("tool/completed does NOT mark crew:tool_progress terminal for spawn_only tools (defect A, 2026-05-22)", () => {
+    // Defect A (M9 follow-up): the foreground `tool/completed` for a
+    // spawn_only tool (`podcast_generate`, `run_pipeline`, `fm_tts`,
+    // etc.) fires ~2ms after `tool/started` — it's only the
+    // supervisor's ack, not a signal that the background task has
+    // finished. Pre-fix this dispatched a terminal `crew:tool_progress`
+    // event that cleared the lifted spinner while the background task
+    // was still running (and planted a static Check on the tool card).
+    // Post-fix the dispatched event keeps `terminal` unset; the real
+    // terminal signal arrives via `task/updated:completed` →
+    // `handleTaskUpdated`'s dedicated terminal dispatch.
+    const dispatched: Event[] = [];
+    handleToolCompleted(
+      { sessionId: SESSION, dispatchEvent: (e) => dispatched.push(e) },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-A4-spawn",
+        tool_call_id: "tc-4-spawn",
+        tool_name: "podcast_generate",
+        success: true,
+      },
+    );
+    expect(dispatched).toHaveLength(1);
+    expect((dispatched[0] as CustomEvent).detail.terminal).toBeUndefined();
     expect((dispatched[0] as CustomEvent).detail.tool).toBe("podcast_generate");
+  });
+
+  it("tool/completed for a spawn_only tool leaves toolCall.status running (defect A, 2026-05-22)", () => {
+    // Companion to the test above — the chip itself must NOT flip.
+    // Seed a tool call via `handleToolStarted`, fire foreground
+    // `tool/completed` (the spawn_only ack leg), and assert the
+    // ThreadStore tool call is still `"running"`.
+    const cmid = "cmid-defectA-status";
+    seedThread(cmid, "generate a podcast");
+    handleToolStarted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: "tc-podcast-defectA",
+        tool_name: "run_pipeline",
+      },
+    );
+    handleToolCompleted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: "tc-podcast-defectA",
+        tool_name: "run_pipeline",
+        success: true,
+      },
+    );
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const tc = thread.pendingAssistant?.toolCalls.find(
+      (t) => t.id === "tc-podcast-defectA",
+    );
+    expect(tc).toBeDefined();
+    expect(tc!.status).toBe("running");
+  });
+
+  it("tool/completed with success=false for a spawn_only tool DOES flip to error (real failure)", () => {
+    // The spawn_only defer is ONLY for `success: true` — a foreground
+    // failure means the supervisor refused to spawn the work, so it's
+    // genuinely terminal and the chip MUST flip to "error" right away.
+    const cmid = "cmid-defectA-err";
+    seedThread(cmid, "synthesise");
+    handleToolStarted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: "tc-fmtts-err",
+        tool_name: "fm_tts",
+      },
+    );
+    handleToolCompleted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: "tc-fmtts-err",
+        tool_name: "fm_tts",
+        success: false,
+      },
+    );
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const tc = thread.pendingAssistant?.toolCalls.find(
+      (t) => t.id === "tc-fmtts-err",
+    );
+    expect(tc).toBeDefined();
+    expect(tc!.status).toBe("error");
   });
 
   it("tool/started and tool/progress do NOT carry the terminal flag", () => {

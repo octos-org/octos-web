@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Check, Loader2, X } from "lucide-react";
+import { Check, X } from "lucide-react";
 import type { ThreadMessage, ThreadToolCall } from "@/store/thread-store";
 
 /**
@@ -97,13 +97,30 @@ export function ToolProgressIndicator({ message }: ToolProgressIndicatorProps) {
   // `progress.length > 0` rather than `status === "running"`.
   let leadingIcon: ReactNode;
   if (latestStatus === "running") {
+    // Three color-cycling bouncing balls; same `data-testid` the
+    // legacy `Loader2` had, so existing unit + e2e specs that target
+    // `[data-testid='tool-progress-spinner']` still resolve the
+    // animated row indicator.
     leadingIcon = (
-      <Loader2
-        size={12}
-        className="animate-spin text-accent"
+      <span
         data-testid="tool-progress-spinner"
+        className="inline-flex items-center gap-[3px]"
         aria-label="running"
-      />
+        aria-hidden="true"
+      >
+        <span
+          className="tool-ball block h-1.5 w-1.5 rounded-full bg-accent"
+          style={{ animationDelay: "0ms" }}
+        />
+        <span
+          className="tool-ball block h-1.5 w-1.5 rounded-full bg-accent/70"
+          style={{ animationDelay: "150ms" }}
+        />
+        <span
+          className="tool-ball block h-1.5 w-1.5 rounded-full bg-accent/40"
+          style={{ animationDelay: "300ms" }}
+        />
+      </span>
     );
   } else if (latestStatus === "complete") {
     leadingIcon = (

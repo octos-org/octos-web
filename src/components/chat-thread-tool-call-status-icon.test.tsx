@@ -52,6 +52,7 @@ import * as ThreadStore from "@/store/thread-store";
 import {
   __resetRouterStateForTest,
   __resetTurnMetaForTest,
+  handleTaskUpdated,
   handleToolCompleted,
   handleToolProgress,
   handleToolStarted,
@@ -186,9 +187,14 @@ describe("ToolCallBubble leading status icon", () => {
   });
 
   it("renders the static Check when toolCall.status is 'complete'", () => {
-    // Drive a synthetic complete state by calling `setToolCallStatus`
-    // directly — mirrors the wire path where `handleToolCompleted`
-    // flips status to `"complete"`.
+    // Drive a synthetic complete state via a non-spawn_only tool
+    // (`shell`) so the foreground `tool/completed` flips status to
+    // "complete" the moment it lands. For spawn_only tools (fm_tts /
+    // podcast_generate / run_pipeline / etc.) the foreground envelope
+    // is only an ack — defect A defers the terminal flip until
+    // `task/updated:completed`. This test pins the non-spawn_only
+    // happy path; the spawn_only terminal transition is covered in
+    // ui-protocol-event-router.test.ts via `task/updated:completed`.
     const cmid = "turn-complete";
     const toolCallId = "tc-complete";
     act(() => {
@@ -215,7 +221,7 @@ describe("ToolCallBubble leading status icon", () => {
           session_id: SESSION,
           turn_id: cmid,
           tool_call_id: toolCallId,
-          tool_name: "fm_tts",
+          tool_name: "shell",
         },
       );
       handleToolProgress(
@@ -233,7 +239,7 @@ describe("ToolCallBubble leading status icon", () => {
           session_id: SESSION,
           turn_id: cmid,
           tool_call_id: toolCallId,
-          tool_name: "fm_tts",
+          tool_name: "shell",
           success: true,
         },
       );
@@ -321,14 +327,17 @@ describe("ToolCallBubble leading status icon", () => {
     harness.unmount();
   });
 
-  it("clears the per-tool spinner on a spawn_only fm_tts terminal transition", () => {
-    // End-to-end check for the bug observed on mini5: a spawn_only
-    // `fm_tts` call ran, the BG task emitted a progress message
-    // containing the literal text "completed", and the bubble's
-    // wrapper kept pulsing because nothing tied the per-tool
-    // affordance to `toolCall.status`. This test fires the same
-    // sequence and asserts the leading icon flips from animated
-    // Loader2 → static Check the moment `handleToolCompleted` runs.
+  it("defers a spawn_only fm_tts terminal until task/updated:completed (defect A, 2026-05-22)", () => {
+    // Defect A (M9 follow-up): the foreground `tool/completed`
+    // envelope for a spawn_only tool (fm_tts here, also covers
+    // podcast_generate / run_pipeline / mofa_* / voice_synthesize /
+    // deep_search) fires ~2ms after `tool/started` — it's only the
+    // supervisor acknowledgement. Pre-fix the chip flipped to
+    // "complete" the moment that envelope landed, planting a static
+    // Check on a card whose work was still running. Post-fix the
+    // chip stays "running" through every foreground `tool/completed`
+    // + late progress heartbeat, and finally settles when the real
+    // `task/updated:completed` arrives.
     const cmid = "turn-fm-tts-spawnonly";
     const toolCallId = "tc-fm-tts";
     act(() => {
@@ -380,7 +389,9 @@ describe("ToolCallBubble leading status icon", () => {
     ).not.toBeNull();
 
     // Foreground `tool/completed` arrives (spawn_only's synchronous
-    // leg). Status flips to `complete`.
+    // ack leg). Post-defect-A: status DOES NOT flip — the real
+    // terminal signal is `task/updated:completed`, which lands once
+    // the background task actually finishes.
     act(() => {
       handleToolCompleted(
         { sessionId: SESSION },
@@ -398,18 +409,16 @@ describe("ToolCallBubble leading status icon", () => {
       "[data-testid='tool-call-bubble']",
     );
     expect(bubble).not.toBeNull();
-    expect(bubble!.getAttribute("data-tool-status")).toBe("complete");
-    // The animated Loader2 is gone; the static Check has replaced it.
+    expect(bubble!.getAttribute("data-tool-status")).toBe("running");
     expect(
       bubble!.querySelector("[data-testid='tool-call-status-spinner']"),
-    ).toBeNull();
+    ).not.toBeNull();
     expect(
       bubble!.querySelector("[data-testid='tool-call-status-complete-icon']"),
-    ).not.toBeNull();
+    ).toBeNull();
 
-    // Even a LATE background heartbeat (typical for spawn_only) must
-    // NOT resurrect the spinner — the call's status remains
-    // `complete` and the leading icon stays a static Check.
+    // A late background heartbeat lands while the supervisor task is
+    // still running — chip stays in "running".
     act(() => {
       handleToolProgress(
         { sessionId: SESSION },
@@ -418,6 +427,27 @@ describe("ToolCallBubble leading status icon", () => {
           turn_id: cmid,
           tool_call_id: toolCallId,
           message: "background flush, 30s elapsed",
+        },
+      );
+    });
+
+    bubble = harness.container.querySelector(
+      "[data-testid='tool-call-bubble']",
+    );
+    expect(bubble).not.toBeNull();
+    expect(bubble!.getAttribute("data-tool-status")).toBe("running");
+
+    // Finally `task/updated:completed` lands — the real terminal
+    // signal. The chip flips to "complete" and the spinner clears.
+    act(() => {
+      handleTaskUpdated(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          task_id: toolCallId,
+          tool_call_id: toolCallId,
+          state: "completed",
+          tool_name: "fm_tts",
         },
       );
     });
