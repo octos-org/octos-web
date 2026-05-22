@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Check, Loader2, X } from "lucide-react";
+import { Check, X } from "lucide-react";
 import type { ThreadMessage, ThreadToolCall } from "@/store/thread-store";
 
 /**
@@ -97,13 +97,40 @@ export function ToolProgressIndicator({ message }: ToolProgressIndicatorProps) {
   // `progress.length > 0` rather than `status === "running"`.
   let leadingIcon: ReactNode;
   if (latestStatus === "running") {
+    // Three color-cycling bouncing balls; same `data-testid` the
+    // legacy `Loader2` had, so existing unit + e2e specs that target
+    // `[data-testid='tool-progress-spinner']` still resolve the
+    // animated row indicator.
+    // codex PR #147 review (MINOR 1, 2026-05-22): the outer wrapper
+    // carries `role="img"` + `aria-label` so screen readers announce
+    // "running"; `aria-hidden` is moved to the individual visual balls
+    // so the decorative shapes are hidden but the accessible name still
+    // exposes. Previously the wrapper had BOTH `aria-label` AND
+    // `aria-hidden="true"` — the hidden flag won, so AT users got
+    // nothing.
     leadingIcon = (
-      <Loader2
-        size={12}
-        className="animate-spin text-accent"
+      <span
         data-testid="tool-progress-spinner"
+        className="inline-flex items-center gap-[3px]"
+        role="img"
         aria-label="running"
-      />
+      >
+        <span
+          aria-hidden="true"
+          className="tool-ball block h-1.5 w-1.5 rounded-full bg-accent"
+          style={{ animationDelay: "0ms" }}
+        />
+        <span
+          aria-hidden="true"
+          className="tool-ball block h-1.5 w-1.5 rounded-full bg-accent/70"
+          style={{ animationDelay: "150ms" }}
+        />
+        <span
+          aria-hidden="true"
+          className="tool-ball block h-1.5 w-1.5 rounded-full bg-accent/40"
+          style={{ animationDelay: "300ms" }}
+        />
+      </span>
     );
   } else if (latestStatus === "complete") {
     leadingIcon = (

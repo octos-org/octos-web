@@ -547,6 +547,92 @@ describe.each(FLAG_STATES)("thread-store [$label]", ({ projectionV1 }) => {
     expect(tcs[0].status).toBe("complete");
   });
 
+  // Defect B (M9 follow-up, 2026-05-22): late `appendToolProgress` for a
+  // `tool_call_id` whose originating bubble has been finalised into
+  // `thread.responses` AND a more-recent assistant response has been
+  // appended (e.g. a `turn/spawn_complete` completion bubble after the
+  // foreground ack response). Pre-fix `pickAssistantSlot` returned the
+  // most-recent assistant, `findIndex` missed on it, and the function
+  // minted a stub `{id: toolCallId, name: toolName ?? "", status:
+  // "running"}` on the wrong slot — surfacing as a SECOND, empty
+  // ToolCallBubble titled "tool". The fix scans every assistant slot
+  // in the thread for the owning `toolCallId` before falling back to
+  // stub creation; the late progress now lands on the originating
+  // (earlier) response and the most-recent response stays untouched.
+  it("appendToolProgress_routes_late_progress_to_originating_finalized_slot_not_stub_on_newer_response", () => {
+    // 1) Foreground turn finalises with a tool call on the assistant
+    //    ack response (this is the "originating bubble").
+    makeUser("generate a podcast", "cmid-1");
+    ThreadStore.addToolCall("cmid-1", "tc-podcast-1", "podcast_generate");
+    ThreadStore.appendAssistantToken(
+      "cmid-1",
+      "Started background podcast generation.",
+    );
+    ThreadStore.finalizeAssistant("cmid-1", { committedSeq: 1 });
+
+    // 2) A later spawn_complete bubble appends onto the same thread
+    //    as a NEW finalised assistant response. After this the most
+    //    recent assistant slot picked by `pickAssistantSlot` is the
+    //    spawn_complete bubble — NOT the originating ack response.
+    ThreadStore.appendCompletionBubble("cmid-1", {
+      text: "✓ podcast generated (output.mp3)",
+      media: ["out/output.mp3"],
+      spawnComplete: true,
+      sourceClientMessageId: "cmid-1",
+      historySeq: 17,
+      messageId: "msg-spawn-1",
+      persistedAt: new Date().toISOString(),
+      sessionId: SESSION,
+    });
+
+    // Sanity: two finalised responses, neither has been opened a new
+    // pendingAssistant on. The first response carries the tool call.
+    const before = ThreadStore.getThreads(SESSION)[0];
+    expect(before.responses.length).toBeGreaterThanOrEqual(2);
+    const originating = before.responses.find(
+      (r) =>
+        r.role === "assistant" &&
+        r.toolCalls.some((tc) => tc.id === "tc-podcast-1"),
+    );
+    expect(originating).toBeDefined();
+    const completionBubble = before.responses[before.responses.length - 1];
+    expect(completionBubble.toolCalls).toHaveLength(0);
+
+    // 3) Late `tool/progress` arrives for the originating tool call
+    //    (e.g. a `crew:task_status` mirror after the foreground turn
+    //    ended). Without the defect-B fix this would mint a stub on
+    //    the completion bubble — surfacing as a phantom empty
+    //    "tool" titled ToolCallBubble next to the file row.
+    ThreadStore.appendToolProgress(
+      "cmid-1",
+      "tc-podcast-1",
+      "synthesising 7/10",
+      "podcast_generate",
+    );
+
+    const after = ThreadStore.getThreads(SESSION)[0];
+
+    // No phantom stub on the most-recent (completion) bubble.
+    const completionAfter = after.responses[after.responses.length - 1];
+    expect(
+      completionAfter.toolCalls,
+      "late tool_progress must route back to the originating finalised slot, not mint a stub on a later response (defect B 2026-05-22)",
+    ).toHaveLength(0);
+
+    // The originating finalised response received the progress entry.
+    const originatingAfter = after.responses.find(
+      (r) =>
+        r.role === "assistant" &&
+        r.toolCalls.some((tc) => tc.id === "tc-podcast-1"),
+    );
+    expect(originatingAfter).toBeDefined();
+    const tc = originatingAfter!.toolCalls.find(
+      (t) => t.id === "tc-podcast-1",
+    );
+    expect(tc).toBeDefined();
+    expect(tc!.progress.map((p) => p.message)).toContain("synthesising 7/10");
+  });
+
   it("loadHistory_synthesizes_threads_for_legacy_records_without_thread_id", async () => {
     // Legacy daemon: no thread_id on any record. Synthesizer must derive one
     // per user-message role-flip so the chat still groups into 2 threads.
@@ -938,8 +1024,15 @@ describe.each(FLAG_STATES)("thread-store [$label]", ({ projectionV1 }) => {
   // ---------------------------------------------------------------------------
 
   it("finalizeAssistant_sweeps_running_tool_calls_to_complete", () => {
-    makeUser("kick off pipeline", "cmid-1");
-    ThreadStore.addToolCall("cmid-1", "call_A", "run_pipeline");
+    // Use a NON-spawn_only tool name. After codex PR #147 BLOCKER
+    // (2026-05-22) the sweep is gated by `SPAWN_ONLY_TOOL_NAMES`, so
+    // tools like `run_pipeline` are intentionally left in `running`
+    // (their terminal flip comes from `task/updated:completed`, not
+    // the turn sweep). A synchronous tool like `read_file` is still
+    // swept because the server's `done` is the only terminal signal
+    // when an explicit `tool_end` was suppressed.
+    makeUser("read a file", "cmid-1");
+    ThreadStore.addToolCall("cmid-1", "call_A", "read_file");
     ThreadStore.appendToolProgress("cmid-1", "call_A", "[info] step 1");
     // No tool_end fires — server omits it. `done` arrives.
     ThreadStore.finalizeAssistant("cmid-1", { committedSeq: 3 });
@@ -951,9 +1044,37 @@ describe.each(FLAG_STATES)("thread-store [$label]", ({ projectionV1 }) => {
     expect(tcs).toHaveLength(1);
     expect(
       tcs[0].status,
-      "running tool chip must flip to complete on done — never stay spinning",
+      "running non-spawn_only tool chip must flip to complete on done — never stay spinning",
     ).toBe("complete");
     expect(tcs[0].id).toBe("call_A");
+  });
+
+  it("finalizeAssistant_leaves_running_spawn_only_tool_calls_in_running", () => {
+    // codex PR #147 BLOCKER (2026-05-22): the sweep is gated by
+    // `SPAWN_ONLY_TOOL_NAMES`. For spawn_only tools the foreground
+    // `tool/completed` is just the supervisor's acknowledgement —
+    // the background work continues for minutes after the LLM turn
+    // ends. Sweeping the chip to `complete` here would silently undo
+    // the Defect A deferral. The terminal flip MUST come from
+    // `handleTaskUpdated`, not `finalizeAssistant`.
+    makeUser("kick off pipeline", "cmid-1");
+    ThreadStore.addToolCall("cmid-1", "call_pipe", "run_pipeline");
+    ThreadStore.appendToolProgress("cmid-1", "call_pipe", "[info] starting");
+    // No tool_end fires (typical for spawn_only — foreground
+    // completion would only acknowledge the supervisor handoff).
+    // `done` arrives.
+    ThreadStore.finalizeAssistant("cmid-1", { committedSeq: 3 });
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.pendingAssistant).toBeNull();
+    expect(thread.responses).toHaveLength(1);
+    const tcs = thread.responses[0].toolCalls;
+    expect(tcs).toHaveLength(1);
+    expect(
+      tcs[0].status,
+      "spawn_only tool chip MUST stay `running` until task/updated:completed",
+    ).toBe("running");
+    expect(tcs[0].name).toBe("run_pipeline");
   });
 
   it("finalizeAssistant_does_not_regress_already_complete_tool_calls", () => {

@@ -45,6 +45,7 @@ import * as ThreadStore from "@/store/thread-store";
 import * as TaskStore from "@/store/task-store";
 import type { MessageMeta } from "@/store/thread-store";
 import type { MessageInfo } from "@/api/types";
+import { isSpawnOnlyToolName } from "./spawn-only-tools";
 
 // ---------------------------------------------------------------------------
 // Per-turn meta snapshot
@@ -1129,37 +1130,63 @@ export function handleToolCompleted(
   cfg: RouterConfig,
   event: ToolCompletedEvent,
 ): void {
+  const isSpawnOnly = isSpawnOnlyToolName(event.tool_name);
   const message =
     event.success === false
       ? "error"
       : event.success === true
         ? "done"
         : "complete";
-  // Codex round-2 P2: persist the terminal tool-call status onto the
-  // bubble's tool card so the chip stops spinning. Failed calls
-  // surface as "error"; everything else as "complete" (matching the
-  // `handleTaskUpdated` `completed` / `failed` mapping).
-  ThreadStore.setToolCallStatus(
-    event.turn_id,
-    event.tool_call_id,
-    event.success === false ? "error" : "complete",
-  );
+  // Defect A (M9 follow-up, 2026-05-22): for spawn_only background
+  // tools (run_pipeline / podcast_generate / mofa_* / fm_tts /
+  // deep_search / voice_synthesize) the foreground `tool/completed`
+  // envelope fires ~2ms after `tool/started` — it's only the supervisor
+  // acknowledging the work, not a signal that the background task has
+  // finished. Flipping the tool-card chip to "complete" here put a
+  // static check icon on a card whose work was still in flight (often
+  // for minutes). Defer the terminal flip to `task/updated:completed`,
+  // which `handleTaskUpdated` maps onto `setToolCallStatus(..., "complete")`.
+  //
+  // Failed (`success: false`) tool/completed events ARE genuine
+  // terminal signals — the supervisor refused to spawn the work, so
+  // the tool card SHOULD flip to "error" right away.
+  const shouldFlipStatus = !isSpawnOnly || event.success === false;
+  if (shouldFlipStatus) {
+    // Codex round-2 P2: persist the terminal tool-call status onto the
+    // bubble's tool card so the chip stops spinning. Failed calls
+    // surface as "error"; everything else as "complete" (matching the
+    // `handleTaskUpdated` `completed` / `failed` mapping).
+    ThreadStore.setToolCallStatus(
+      event.turn_id,
+      event.tool_call_id,
+      event.success === false ? "error" : "complete",
+    );
+  }
   // Mark terminal so the lifted `ToolProgressIndicator` clears the
   // spinner row. The bubble's `ToolCallBubble` reads the final
   // status from `ThreadStore.setToolCallStatus` above and keeps the
   // history-pill state intact — only the transient spinner row goes
   // away. Critical for spawn_only flows where `crew:thinking false`
   // already fired at `turn/completed` and cannot clean up.
+  //
+  // Defect A (continued): when we DEFER the status flip for a
+  // spawn_only success, the dispatched `crew:tool_progress` event is
+  // NOT terminal — the spinner row must keep alive until the real
+  // `task/updated:completed` arrives.
   dispatchToolProgressEvent(
     cfg,
     event.turn_id,
     event.tool_name,
     message,
-    /* terminal */ true,
+    /* terminal */ shouldFlipStatus,
   );
-  // Clear the cache entry so a long-lived session doesn't accumulate
-  // dead tool_call_id mappings.
-  toolNameByCallId.delete(event.tool_call_id);
+  // Defect A: only drop the `tool_call_id` → `tool_name` cache entry
+  // when the chip actually settled. For deferred spawn_only completions
+  // we still need the cache so future `task/updated` heartbeats can
+  // surface the friendly tool name in the spinner row.
+  if (shouldFlipStatus) {
+    toolNameByCallId.delete(event.tool_call_id);
+  }
 }
 
 // ---------------------------------------------------------------------------

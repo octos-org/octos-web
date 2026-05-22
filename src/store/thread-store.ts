@@ -35,6 +35,7 @@ import type {
   EnvelopeToolEndStatus,
   Payload,
 } from "@/runtime/ui-protocol-types";
+import { SPAWN_ONLY_TOOL_NAMES } from "@/runtime/spawn-only-tools";
 import {
   ingest as projectionIngest,
   isProjectionV1Enabled,
@@ -946,9 +947,73 @@ export function appendToolProgress(
   // assistant so a late spawn_only tool_progress (#649) still updates
   // the bubble even after `done` finalized the turn.
   const slot = pickAssistantSlot(found.thread);
-  // No assistant slot at all yet (e.g. orphan thread, never had one) —
-  // open a new pending so the progress has somewhere to render.
-  const oldTarget = slot ?? ensurePendingAssistant(found.thread);
+
+  // Defect B (M9 follow-up, 2026-05-22): when `pickAssistantSlot`
+  // returns the most-recent assistant slot but the toolCallId actually
+  // lives on an EARLIER slot (e.g. the originating bubble was
+  // finalised into `thread.responses`, then a NEW user prompt minted a
+  // fresh pendingAssistant), the legacy lookup missed and minted a
+  // stub `{id: toolCallId, name: toolName ?? "", status: "running"}`
+  // on the new slot — rendering as a second, empty ToolCallBubble
+  // titled "tool". Mirror `setToolCallStatus`'s thread-wide scan
+  // (pending + every assistant response, most-recent-first) so a late
+  // progress chunk always routes back to its originating bubble.
+  let containingSlot: ThreadMessage | null = null;
+  let entryIdx = -1;
+  if (toolCallId && slot) {
+    const idxOnSlot = slot.toolCalls.findIndex((tc) => tc.id === toolCallId);
+    if (idxOnSlot !== -1) {
+      containingSlot = slot;
+      entryIdx = idxOnSlot;
+    }
+  }
+  if (containingSlot === null && toolCallId) {
+    // Scan every assistant slot in this thread, most-recent first, for
+    // a tool call owning `toolCallId`. The pending slot (if any) gets
+    // priority because that's the slot a successful `pickAssistantSlot`
+    // would have returned; falling through to finalised responses
+    // catches the defect-B case where the originating slot is already
+    // in `thread.responses`.
+    const candidates: ThreadMessage[] = [];
+    if (found.thread.pendingAssistant) {
+      candidates.push(found.thread.pendingAssistant);
+    }
+    for (let i = found.thread.responses.length - 1; i >= 0; i -= 1) {
+      const candidate = found.thread.responses[i];
+      if (candidate.role === "assistant") candidates.push(candidate);
+    }
+    for (const candidate of candidates) {
+      const idxOnCandidate = candidate.toolCalls.findIndex(
+        (tc) => tc.id === toolCallId,
+      );
+      if (idxOnCandidate !== -1) {
+        containingSlot = candidate;
+        entryIdx = idxOnCandidate;
+        break;
+      }
+    }
+  }
+  if (containingSlot === null && !toolCallId && toolName && slot) {
+    // Legacy daemon path — no tool_call_id on the wire. Route by tool
+    // name to the most recent matching call on the picked slot. Same
+    // semantics as the pre-defect-B code.
+    for (let i = slot.toolCalls.length - 1; i >= 0; i -= 1) {
+      if (slot.toolCalls[i].name === toolName) {
+        containingSlot = slot;
+        entryIdx = i;
+        break;
+      }
+    }
+  }
+  // No matching tool call anywhere in the thread — fall back to the
+  // picked slot (or open a new pending) and mint a stub. This is the
+  // legitimate "late-arriving progress for a tool we missed start
+  // for" path, e.g. SSE resumed mid-stream. With the thread-wide scan
+  // above, this branch fires only when truly no prior slot owns the
+  // id — the spurious stub on a fresh slot defect B reported can no
+  // longer happen.
+  const oldTarget =
+    containingSlot ?? slot ?? ensurePendingAssistant(found.thread);
 
   // Bug 2026-05-15: previously this function pushed onto
   // `entry.progress` and kept the surrounding `ThreadMessage` reference
@@ -960,20 +1025,6 @@ export function appendToolProgress(
   // + tool-call list + ThreadMessage so memo's shallow comparison sees
   // the change.
   const oldTcs = oldTarget.toolCalls;
-  let entryIdx = -1;
-  if (toolCallId) {
-    entryIdx = oldTcs.findIndex((tc) => tc.id === toolCallId);
-  } else if (toolName) {
-    // Server omitted tool_call_id (legacy daemon). Route by tool name to
-    // the most recent matching call so progress still lands on the right
-    // bubble — no synthesized id required.
-    for (let i = oldTcs.length - 1; i >= 0; i -= 1) {
-      if (oldTcs[i].name === toolName) {
-        entryIdx = i;
-        break;
-      }
-    }
-  }
   const existing = entryIdx === -1 ? undefined : oldTcs[entryIdx];
   // Idempotency guard: skip exact-duplicate consecutive entries so a
   // task_status replay (e.g. on stream reconnect) doesn't double-render
@@ -1612,9 +1663,27 @@ export function finalizeAssistant(
     // Also remember which ids were swept so the projection dual-write
     // below can emit synthetic `tool_end` envelopes for them BEFORE
     // `turn_completed` (codex round-1 BLOCK 3).
+    //
+    // SPAWN_ONLY EXCEPTION (codex PR #147 review BLOCKER, 2026-05-22):
+    // spawn_only tools (`run_pipeline`, `podcast_generate`, `fm_tts`,
+    // ...) intentionally fire their foreground `tool/completed` ~ms
+    // after `tool/started` — the actual background work runs for
+    // minutes after `turn/completed` lands. The real terminal signal
+    // for the bubble is `task/updated:completed` (or `:failed`), which
+    // `handleTaskUpdated` routes to `setToolCallStatus`. Sweeping the
+    // chip to `complete` here would silently undo the Defect A
+    // deferral for the second code path — the chip would settle
+    // before the background work actually finishes. We leave
+    // spawn_only chips alone here; `handleTaskUpdated` flips them
+    // when the supervisor task settles.
     const sweptToolCallIds: string[] = [];
     const sweptToolCalls = thread.pendingAssistant.toolCalls.map((tc) => {
       if (tc.status === "running") {
+        if (SPAWN_ONLY_TOOL_NAMES.has(tc.name)) {
+          // Leave spawn_only chips in `running` — the terminal flip
+          // comes from `handleTaskUpdated`, not the turn sweep.
+          return tc;
+        }
         if (tc.id) sweptToolCallIds.push(tc.id);
         return { ...tc, status: "complete" as const };
       }

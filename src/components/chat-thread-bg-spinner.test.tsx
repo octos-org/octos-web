@@ -58,6 +58,7 @@ import * as ThreadStore from "@/store/thread-store";
 import {
   __resetRouterStateForTest,
   __resetTurnMetaForTest,
+  handleTaskUpdated,
   handleToolCompleted,
   handleToolProgress,
   handleToolStarted,
@@ -284,32 +285,29 @@ describe("Spawn-only spinner placement (per-bubble)", () => {
         },
       );
     });
-    // 2026-05-14 spinner gating: after `turn/completed`,
-    // `finalizeAssistant` sweeps in-flight tool calls (`running` →
-    // `complete`) so the foreground LLM turn is fully settled even
-    // when a spawn_only BG task continues to emit heartbeats. The
-    // indicator's text refreshes with each heartbeat (latest entry
-    // wins), but the leading icon must already be the static
-    // `Check` — a spinning `Loader2` on a settled call was the
-    // run_pipeline-spinner-keeps-spinning bug observed live on mini5
-    // (chat bubble showed "completed" yet the icon kept rotating).
+    // codex PR #147 BLOCKER (2026-05-22): `finalizeAssistant`'s
+    // `turn/completed` sweep is now gated by `SPAWN_ONLY_TOOL_NAMES`.
+    // `run_pipeline` is in the set, so the chip stays in `running`
+    // until `task/updated:completed` lands — even though the
+    // foreground LLM turn has finalised. The spinner row reflects
+    // that the BG work is still in flight.
     const row = harness.container.querySelector(
       "[data-testid='tool-progress']",
     );
     expect(row).not.toBeNull();
     expect(row!.textContent).toContain("10s elapsed");
-    expect(row!.getAttribute("data-tool-status")).toBe("complete");
+    expect(row!.getAttribute("data-tool-status")).toBe("running");
     expect(
       row!.querySelector("[data-testid='tool-progress-spinner']"),
-    ).toBeNull();
+    ).not.toBeNull();
     expect(
       row!.querySelector("[data-testid='tool-progress-complete-icon']"),
-    ).not.toBeNull();
+    ).toBeNull();
 
     // The explicit `tool/completed` ack (synchronous foreground leg
-    // of a spawn_only tool) is idempotent w.r.t. status — the sweep
-    // already flipped it. The terminal icon stays a static check,
-    // text refreshes if a later heartbeat reuses the call.
+    // of a spawn_only tool) is intentionally a no-op for the chip
+    // status (Defect A). Heartbeats refresh the text; the chip stays
+    // `running` until `task/updated:completed`.
     act(() => {
       handleToolCompleted(
         { sessionId: SESSION },
@@ -322,17 +320,52 @@ describe("Spawn-only spinner placement (per-bubble)", () => {
         },
       );
     });
-    const rowAfter = harness.container.querySelector(
+    const rowAfterToolCompleted = harness.container.querySelector(
       "[data-testid='tool-progress']",
     );
-    expect(rowAfter).not.toBeNull();
-    expect(rowAfter!.textContent).toContain("10s elapsed");
-    expect(rowAfter!.getAttribute("data-tool-status")).toBe("complete");
+    expect(rowAfterToolCompleted).not.toBeNull();
+    expect(rowAfterToolCompleted!.textContent).toContain("10s elapsed");
+    expect(rowAfterToolCompleted!.getAttribute("data-tool-status")).toBe(
+      "running",
+    );
     expect(
-      rowAfter!.querySelector("[data-testid='tool-progress-spinner']"),
+      rowAfterToolCompleted!.querySelector(
+        "[data-testid='tool-progress-spinner']",
+      ),
+    ).not.toBeNull();
+
+    // `task/updated:completed` is the real terminal signal for a
+    // spawn_only tool: the supervisor task settled, so the chip
+    // flips to `complete` and the row shows the static check.
+    act(() => {
+      handleTaskUpdated(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          task_id: "tc-x",
+          tool_call_id: "tc-x",
+          state: "completed",
+          tool_name: "run_pipeline",
+        },
+      );
+    });
+    const rowAfterTaskCompleted = harness.container.querySelector(
+      "[data-testid='tool-progress']",
+    );
+    expect(rowAfterTaskCompleted).not.toBeNull();
+    expect(rowAfterTaskCompleted!.textContent).toContain("10s elapsed");
+    expect(rowAfterTaskCompleted!.getAttribute("data-tool-status")).toBe(
+      "complete",
+    );
+    expect(
+      rowAfterTaskCompleted!.querySelector(
+        "[data-testid='tool-progress-spinner']",
+      ),
     ).toBeNull();
     expect(
-      rowAfter!.querySelector("[data-testid='tool-progress-complete-icon']"),
+      rowAfterTaskCompleted!.querySelector(
+        "[data-testid='tool-progress-complete-icon']",
+      ),
     ).not.toBeNull();
 
     harness.unmount();

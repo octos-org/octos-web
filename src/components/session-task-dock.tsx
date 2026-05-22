@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, type ReactElement } from "react";
 import type { BackgroundTaskInfo as TaskInfo } from "@/api/types";
 import { useTasks } from "@/store/task-store";
 import { useSession } from "@/runtime/session-context";
@@ -27,81 +27,140 @@ function taskDisplayName(toolName: string): string {
   }
 }
 
-function buildSessionSummary(tasks: TaskInfo[]): {
+interface IndicatorSummary {
+  active: TaskInfo[];
+  failed: TaskInfo | null;
   label: string;
   detail: string;
-  active: boolean;
-  failed: boolean;
-} | null {
+  state: "active" | "failed";
+}
+
+function buildSummary(tasks: TaskInfo[]): IndicatorSummary | null {
   const active = tasks.filter(isTaskActive);
+  if (active.length === 1) {
+    return {
+      active,
+      failed: null,
+      label: `${taskDisplayName(active[0].tool_name)} running`,
+      detail: "Background work continues independently of chat messages.",
+      state: "active",
+    };
+  }
   if (active.length > 1) {
     return {
+      active,
+      failed: null,
       label: `${active.length} tasks running`,
       detail: active.map((task) => taskDisplayName(task.tool_name)).join(" · "),
-      active: true,
-      failed: false,
+      state: "active",
     };
   }
-
-  if (active.length === 1) {
-    const task = active[0];
+  const failed = tasks.find((task) => task.status === "failed") ?? null;
+  if (failed !== null) {
     return {
-      label: `${taskDisplayName(task.tool_name)} running`,
-      detail: "Background work continues independently of chat messages.",
-      active: true,
-      failed: false,
+      active: [],
+      failed,
+      label: `${taskDisplayName(failed.tool_name)} failed`,
+      detail: failed.error || "Background task needs attention.",
+      state: "failed",
     };
   }
-
-  const failed = tasks.filter((task) => task.status === "failed");
-  if (failed.length > 0) {
-    const task = failed[0];
-    return {
-      label: `${taskDisplayName(task.tool_name)} failed`,
-      detail: task.error || "Background task needs attention.",
-      active: false,
-      failed: true,
-    };
-  }
-
   return null;
 }
+
+// Small palette cycled by index. Falls back to plain accent if the
+// theme doesn't define the secondary/tertiary slots — Tailwind ignores
+// unknown utilities at runtime, but to be safe we use opacity steps
+// on `bg-accent` which always resolve.
+const DOT_PALETTE = ["bg-accent", "bg-accent/70", "bg-accent/40"] as const;
 
 export function SessionTaskIndicator() {
   const { currentSessionId, historyTopic } = useSession();
   const currentTasks = useTasks(currentSessionId, historyTopic);
 
-  const summary = useMemo(
-    () => {
-      return buildSessionSummary(currentTasks);
-    },
-    [currentTasks],
-  );
+  const summary = useMemo(() => buildSummary(currentTasks), [currentTasks]);
 
   if (!summary) return null;
 
+  // Header constellation (M9 follow-up, 2026-05-22). Inline dot-per-task
+  // visualisation that scales with count, replacing the "glass-pill"
+  // rectangle. The pill chrome is gone — just dots + a small label.
+  //
+  // codex PR #147 review (MINOR 2, 2026-05-22): cap the rendered dots
+  // at MAX_VISIBLE_DOTS so 20+ active tasks don't blow past the header
+  // `42vw` max-width. When the real count exceeds the cap we render
+  // the first (MAX_VISIBLE_DOTS - 1) dots followed by a "+N" overflow
+  // indicator. `data-task-count` still reflects the REAL count so
+  // existing tests asserting numerics continue to pass.
+  const MAX_VISIBLE_DOTS = 8;
+  const dots: ReactElement[] = [];
+  if (summary.state === "failed") {
+    dots.push(
+      <span
+        key="failed-dot"
+        className="task-constellation-dot block h-1.5 w-1.5 rounded-full bg-red-400"
+        style={{ animationDelay: "0ms" }}
+      />,
+    );
+  } else {
+    const total = summary.active.length;
+    if (total <= MAX_VISIBLE_DOTS) {
+      for (let i = 0; i < total; i += 1) {
+        const task = summary.active[i];
+        dots.push(
+          <span
+            key={task.id}
+            className={`task-constellation-dot block h-1.5 w-1.5 rounded-full ${DOT_PALETTE[i % DOT_PALETTE.length]}`}
+            style={{ animationDelay: `${i * 200}ms` }}
+          />,
+        );
+      }
+    } else {
+      // Render the first (MAX_VISIBLE_DOTS - 1) dots, then a "+N"
+      // overflow chip in place of dot #MAX_VISIBLE_DOTS.
+      const visible = MAX_VISIBLE_DOTS - 1;
+      for (let i = 0; i < visible; i += 1) {
+        const task = summary.active[i];
+        dots.push(
+          <span
+            key={task.id}
+            className={`task-constellation-dot block h-1.5 w-1.5 rounded-full ${DOT_PALETTE[i % DOT_PALETTE.length]}`}
+            style={{ animationDelay: `${i * 200}ms` }}
+          />,
+        );
+      }
+      const overflow = total - visible;
+      dots.push(
+        <span
+          key="task-constellation-overflow"
+          data-testid="task-constellation-overflow"
+          className="task-constellation-overflow ml-0.5 inline-flex items-center text-[10px] font-medium text-text-strong"
+        >
+          {`+${overflow}`}
+        </span>,
+      );
+    }
+  }
+
+  const count = summary.state === "failed" ? 1 : summary.active.length;
+
   return (
     <div
-      className="session-task-indicator glass-pill min-w-0 rounded-full px-3 py-2"
+      data-testid="session-task-indicator"
+      data-task-count={count}
+      data-task-state={summary.state}
+      className="session-task-indicator inline-flex items-center gap-2"
       title={summary.detail}
     >
       <span
-        className={`session-task-indicator-dot ${
-          summary.active
-            ? "is-active"
-            : summary.failed
-              ? "is-failed"
-              : ""
-        }`}
-      />
-      <div className="min-w-0">
-        <div className="truncate text-[12px] font-semibold text-text-strong">
-          {summary.label}
-        </div>
-        <div className="truncate text-[10px] text-muted">
-          {summary.detail}
-        </div>
-      </div>
+        className="inline-flex items-center gap-1"
+        aria-hidden="true"
+      >
+        {dots}
+      </span>
+      <span className="truncate text-[12px] font-medium text-text-strong">
+        {summary.label}
+      </span>
     </div>
   );
 }
