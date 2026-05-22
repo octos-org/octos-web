@@ -2400,6 +2400,60 @@ describe("regression B: progress/updated fans out into crew:cost (+ crew:message
     expect(dispatched).toHaveLength(0);
   });
 
+  it("status_word dispatches crew:status_word with the rotating word", () => {
+    // Server-side StatusIndicator rotates a creative status word every
+    // ~8s and emits `progress/updated{kind:"status_word"}` carrying the
+    // current word in `metadata.label`. The router lifts that onto
+    // `crew:status_word` so the in-flight ThinkingIndicator can swap
+    // the word in the bubble.
+    const dispatched: Event[] = [];
+    handleProgressUpdated(
+      { sessionId: SESSION, dispatchEvent: (e) => dispatched.push(e) },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-status-word",
+        metadata: { kind: "status_word", label: "Pondering" },
+      },
+    );
+    const ev = dispatched.find((e) => e.type === "crew:status_word") as
+      | CustomEvent<{
+          sessionId: string;
+          topic?: string;
+          turnId?: string;
+          word: string;
+        }>
+      | undefined;
+    expect(ev).toBeDefined();
+    expect(ev!.detail.word).toBe("Pondering");
+    expect(ev!.detail.sessionId).toBe(SESSION);
+    expect(ev!.detail.turnId).toBe("cmid-status-word");
+  });
+
+  it("status_word with empty/missing label does NOT dispatch", () => {
+    // Defensive: ignore status_word frames that carry no word so the
+    // bubble doesn't flicker to an empty caption.
+    const dispatched: Event[] = [];
+    handleProgressUpdated(
+      { sessionId: SESSION, dispatchEvent: (e) => dispatched.push(e) },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-status-empty",
+        metadata: { kind: "status_word", label: "" },
+      },
+    );
+    handleProgressUpdated(
+      { sessionId: SESSION, dispatchEvent: (e) => dispatched.push(e) },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-status-missing",
+        metadata: { kind: "status_word" },
+      },
+    );
+    expect(dispatched.filter((e) => e.type === "crew:status_word")).toHaveLength(
+      0,
+    );
+  });
+
   it("token_cost_update prefers metadata.token_cost.model over metadata.label", () => {
     // Server PR `feat/cost-update-carry-model` adds an authoritative
     // `metadata.token_cost.model` field, populated from
