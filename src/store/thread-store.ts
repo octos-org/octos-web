@@ -2775,12 +2775,37 @@ export function appendPersistedMessage(
 
   // Idempotency: skip if a response with the same historySeq is already in
   // the thread. The server-side seq is per-session monotonic so this is a
-  // safe identity check — and the only one available since `MessageInfo`
-  // has no stable id field.
+  // safe identity check when available.
   const incomingSeq = typeof message.seq === "number" ? message.seq : undefined;
   if (incomingSeq !== undefined) {
     for (const r of thread.responses) {
       if (r.historySeq === incomingSeq) return;
+    }
+  } else {
+    // Fallback identity for legacy `session/messages_page` poll responses.
+    // The server's `MessageInfo` struct (`crates/octos-cli/src/api/handlers.rs`
+    // `MessageInfo`) strips `seq` and `message_id`, so polled rows arrive
+    // with `message.seq === undefined`. `task-watcher.ts` polls every
+    // ~2500ms, so without this fallback the same persisted row (e.g. the
+    // spawn_only "Background work started" ack) gets appended on every
+    // tick — producing the runaway duplicate-bubble pattern reported
+    // against `run_pipeline` deep_research. (role, content, timestamp)
+    // is the only deterministic identity available in the polled
+    // response shape.
+    const incomingTs = message.timestamp
+      ? new Date(message.timestamp).getTime()
+      : null;
+    const incomingText = typeof message.content === "string" ? message.content : "";
+    if (incomingTs !== null) {
+      for (const r of thread.responses) {
+        if (
+          r.role === message.role &&
+          r.text === incomingText &&
+          r.timestamp === incomingTs
+        ) {
+          return;
+        }
+      }
     }
   }
 
