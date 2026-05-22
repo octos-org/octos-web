@@ -1469,6 +1469,51 @@ describe.each(FLAG_STATES)("thread-store [$label]", ({ projectionV1 }) => {
     ).toHaveLength(1);
   });
 
+  it("appendPersistedMessage_seqless_poll_dedupes_against_live_persisted_row", () => {
+    // Regression: dspfac reproducer — `task-watcher.ts` polls
+    // `session/messages_page` every 2500ms during a long-running
+    // `run_pipeline` (deep_research) turn. The server's `MessageInfo`
+    // struct strips `seq`/`message_id`, so polled rows arrive with
+    // `message.seq === undefined`. Pre-fix the seq-only dedupe always
+    // missed and the same persisted row (typically the spawn_only
+    // "Background work started for `run_pipeline`..." ack) got
+    // appended on every tick — producing the runaway 5+ duplicate
+    // bubble pattern. The (role, content, timestamp) fallback
+    // identity catches this without needing a server change.
+    makeUser("深度研究 ...", "cm-poll");
+    const liveRow = {
+      seq: 4,
+      role: "assistant" as const,
+      content: "Background work started for `run_pipeline`. The final result will be delivered automatically when it is ready.",
+      response_to_client_message_id: "cm-poll",
+      thread_id: "cm-poll",
+      timestamp: "2026-04-28T10:00:05Z",
+    };
+    // 1. live wire row arrives WITH seq
+    ThreadStore.appendPersistedMessage(SESSION, undefined, liveRow);
+    // 2. polling task-watcher fetches the same row 8 times in 20 seconds,
+    // but the server strips seq and message_id from the MessageInfo
+    // response — only role/content/timestamp/thread_id survive
+    const polledRow = {
+      role: "assistant" as const,
+      content: liveRow.content,
+      thread_id: "cm-poll",
+      timestamp: liveRow.timestamp,
+    };
+    for (let i = 0; i < 8; i += 1) {
+      ThreadStore.appendPersistedMessage(SESSION, undefined, polledRow);
+    }
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const acks = thread.responses.filter((r) =>
+      r.text.startsWith("Background work started"),
+    );
+    expect(
+      acks,
+      "polled rows that re-echo a live persisted row must dedupe via (role,text,timestamp)",
+    ).toHaveLength(1);
+  });
+
   it("appendPersistedMessage_falls_back_to_legacy_thread_id_when_thread_id_missing", () => {
     // Legacy daemon: server omits thread_id. Helper must derive it from
     // client_message_id / response_to_client_message_id and find the
