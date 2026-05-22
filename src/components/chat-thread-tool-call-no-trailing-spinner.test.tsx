@@ -248,11 +248,22 @@ describe("ToolCallBubble — no trailing spinner after terminal status", () => {
     expect(assistant!.querySelector(".animate-spin")).toBeNull();
   });
 
-  it("renders zero animating descendants after both tool/completed AND turn/completed (spawn_only happy path)", () => {
-    // Post-finalisation: this is the path
-    // `chat-thread-tool-call-status-icon.test.tsx` already covers
-    // partially. Re-asserted here so the same file pins both halves
-    // of the lifecycle.
+  it("keeps the spawn_only chip in `running` after turn/completed (codex PR #147 BLOCKER, 2026-05-22)", () => {
+    // The original assertion ("after both tool/completed AND
+    // turn/completed → chip flips to complete") was the second code
+    // path Defect A's foreground fix missed: `finalizeAssistant`'s
+    // sweep over `pendingAssistant.toolCalls` flipped EVERY in-flight
+    // call to `complete` when `turn/completed` landed, regardless of
+    // whether the work was actually done. For a spawn_only tool the
+    // real background task runs minutes after `turn/completed` —
+    // sweeping the chip silently undid the Defect A deferral.
+    //
+    // Post-codex-fix: the sweep is gated by `SPAWN_ONLY_TOOL_NAMES`.
+    // The chip stays in `running` after `turn/completed`; the real
+    // terminal signal is `task/updated:completed`, handled by
+    // `handleTaskUpdated`. The non-spawn_only path is covered by a
+    // separate test (see "non-spawn_only tools still settle on the
+    // turn/completed sweep" below).
     const cmid = "turn-podcast-final";
     const toolCallId = "tc-podcast-final";
 
@@ -317,16 +328,18 @@ describe("ToolCallBubble — no trailing spinner after terminal status", () => {
       "[data-testid='tool-call-bubble']",
     );
     expect(bubble).not.toBeNull();
-    expect(bubble!.getAttribute("data-tool-status")).toBe("complete");
+    // The chip is still in `running` — the spawn_only background work
+    // hasn't reported completion via `task/updated` yet.
+    expect(bubble!.getAttribute("data-tool-status")).toBe("running");
+    expect(
+      bubble!.querySelector("[data-testid='tool-call-status-spinner']"),
+    ).not.toBeNull();
+    expect(
+      bubble!.querySelector("[data-testid='tool-call-status-complete-icon']"),
+    ).toBeNull();
+    // Umbrella "no legacy SVG spinner" invariant still holds —
+    // `animate-spin` belonged to the retired `Loader2` shape.
     expect(bubble!.querySelector(".animate-spin")).toBeNull();
-    expect(bubble!.querySelector(".animate-pulse")).toBeNull();
-
-    const assistant = harness.container.querySelector(
-      "[data-testid='assistant-message']",
-    );
-    expect(assistant).not.toBeNull();
-    expect(assistant!.querySelector(".animate-spin")).toBeNull();
-    expect(assistant!.querySelectorAll(".animate-pulse").length).toBe(0);
   });
 
   it("still shows the streaming-text placeholder dots when there are NO tool calls (no regression for plain text turns)", () => {

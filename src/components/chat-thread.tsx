@@ -552,22 +552,32 @@ function ToolCallBubble({
     // unit + playwright specs that target
     // `[data-testid='tool-call-status-spinner']` still find the
     // running affordance — only the DOM shape changes.
+    // codex PR #147 review (MINOR 1, 2026-05-22): the outer wrapper
+    // carries `role="img"` + `aria-label` so screen readers announce
+    // "running"; `aria-hidden` is moved to the individual visual balls
+    // so the decorative shapes are hidden but the accessible name still
+    // exposes. Previously the wrapper had BOTH `aria-label` AND
+    // `aria-hidden="true"` — the hidden flag won, so AT users got
+    // nothing.
     statusIcon = (
       <span
         data-testid="tool-call-status-spinner"
         className="inline-flex items-center gap-[2px]"
+        role="img"
         aria-label="running"
-        aria-hidden="true"
       >
         <span
+          aria-hidden="true"
           className="tool-ball block h-[5px] w-[5px] rounded-full bg-accent"
           style={{ animationDelay: "0ms" }}
         />
         <span
+          aria-hidden="true"
           className="tool-ball block h-[5px] w-[5px] rounded-full bg-accent/70"
           style={{ animationDelay: "150ms" }}
         />
         <span
+          aria-hidden="true"
           className="tool-ball block h-[5px] w-[5px] rounded-full bg-accent/40"
           style={{ animationDelay: "300ms" }}
         />

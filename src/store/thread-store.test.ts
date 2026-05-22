@@ -1024,8 +1024,15 @@ describe.each(FLAG_STATES)("thread-store [$label]", ({ projectionV1 }) => {
   // ---------------------------------------------------------------------------
 
   it("finalizeAssistant_sweeps_running_tool_calls_to_complete", () => {
-    makeUser("kick off pipeline", "cmid-1");
-    ThreadStore.addToolCall("cmid-1", "call_A", "run_pipeline");
+    // Use a NON-spawn_only tool name. After codex PR #147 BLOCKER
+    // (2026-05-22) the sweep is gated by `SPAWN_ONLY_TOOL_NAMES`, so
+    // tools like `run_pipeline` are intentionally left in `running`
+    // (their terminal flip comes from `task/updated:completed`, not
+    // the turn sweep). A synchronous tool like `read_file` is still
+    // swept because the server's `done` is the only terminal signal
+    // when an explicit `tool_end` was suppressed.
+    makeUser("read a file", "cmid-1");
+    ThreadStore.addToolCall("cmid-1", "call_A", "read_file");
     ThreadStore.appendToolProgress("cmid-1", "call_A", "[info] step 1");
     // No tool_end fires — server omits it. `done` arrives.
     ThreadStore.finalizeAssistant("cmid-1", { committedSeq: 3 });
@@ -1037,9 +1044,37 @@ describe.each(FLAG_STATES)("thread-store [$label]", ({ projectionV1 }) => {
     expect(tcs).toHaveLength(1);
     expect(
       tcs[0].status,
-      "running tool chip must flip to complete on done — never stay spinning",
+      "running non-spawn_only tool chip must flip to complete on done — never stay spinning",
     ).toBe("complete");
     expect(tcs[0].id).toBe("call_A");
+  });
+
+  it("finalizeAssistant_leaves_running_spawn_only_tool_calls_in_running", () => {
+    // codex PR #147 BLOCKER (2026-05-22): the sweep is gated by
+    // `SPAWN_ONLY_TOOL_NAMES`. For spawn_only tools the foreground
+    // `tool/completed` is just the supervisor's acknowledgement —
+    // the background work continues for minutes after the LLM turn
+    // ends. Sweeping the chip to `complete` here would silently undo
+    // the Defect A deferral. The terminal flip MUST come from
+    // `handleTaskUpdated`, not `finalizeAssistant`.
+    makeUser("kick off pipeline", "cmid-1");
+    ThreadStore.addToolCall("cmid-1", "call_pipe", "run_pipeline");
+    ThreadStore.appendToolProgress("cmid-1", "call_pipe", "[info] starting");
+    // No tool_end fires (typical for spawn_only — foreground
+    // completion would only acknowledge the supervisor handoff).
+    // `done` arrives.
+    ThreadStore.finalizeAssistant("cmid-1", { committedSeq: 3 });
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.pendingAssistant).toBeNull();
+    expect(thread.responses).toHaveLength(1);
+    const tcs = thread.responses[0].toolCalls;
+    expect(tcs).toHaveLength(1);
+    expect(
+      tcs[0].status,
+      "spawn_only tool chip MUST stay `running` until task/updated:completed",
+    ).toBe("running");
+    expect(tcs[0].name).toBe("run_pipeline");
   });
 
   it("finalizeAssistant_does_not_regress_already_complete_tool_calls", () => {

@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, type ReactElement } from "react";
 import type { BackgroundTaskInfo as TaskInfo } from "@/api/types";
 import { useTasks } from "@/store/task-store";
 import { useSession } from "@/runtime/session-context";
@@ -85,22 +85,62 @@ export function SessionTaskIndicator() {
   // Header constellation (M9 follow-up, 2026-05-22). Inline dot-per-task
   // visualisation that scales with count, replacing the "glass-pill"
   // rectangle. The pill chrome is gone — just dots + a small label.
-  const dots =
-    summary.state === "failed"
-      ? [
-          <span
-            key="failed-dot"
-            className="task-constellation-dot block h-1.5 w-1.5 rounded-full bg-red-400"
-            style={{ animationDelay: "0ms" }}
-          />,
-        ]
-      : summary.active.map((task, i) => (
+  //
+  // codex PR #147 review (MINOR 2, 2026-05-22): cap the rendered dots
+  // at MAX_VISIBLE_DOTS so 20+ active tasks don't blow past the header
+  // `42vw` max-width. When the real count exceeds the cap we render
+  // the first (MAX_VISIBLE_DOTS - 1) dots followed by a "+N" overflow
+  // indicator. `data-task-count` still reflects the REAL count so
+  // existing tests asserting numerics continue to pass.
+  const MAX_VISIBLE_DOTS = 8;
+  const dots: ReactElement[] = [];
+  if (summary.state === "failed") {
+    dots.push(
+      <span
+        key="failed-dot"
+        className="task-constellation-dot block h-1.5 w-1.5 rounded-full bg-red-400"
+        style={{ animationDelay: "0ms" }}
+      />,
+    );
+  } else {
+    const total = summary.active.length;
+    if (total <= MAX_VISIBLE_DOTS) {
+      for (let i = 0; i < total; i += 1) {
+        const task = summary.active[i];
+        dots.push(
           <span
             key={task.id}
             className={`task-constellation-dot block h-1.5 w-1.5 rounded-full ${DOT_PALETTE[i % DOT_PALETTE.length]}`}
             style={{ animationDelay: `${i * 200}ms` }}
-          />
-        ));
+          />,
+        );
+      }
+    } else {
+      // Render the first (MAX_VISIBLE_DOTS - 1) dots, then a "+N"
+      // overflow chip in place of dot #MAX_VISIBLE_DOTS.
+      const visible = MAX_VISIBLE_DOTS - 1;
+      for (let i = 0; i < visible; i += 1) {
+        const task = summary.active[i];
+        dots.push(
+          <span
+            key={task.id}
+            className={`task-constellation-dot block h-1.5 w-1.5 rounded-full ${DOT_PALETTE[i % DOT_PALETTE.length]}`}
+            style={{ animationDelay: `${i * 200}ms` }}
+          />,
+        );
+      }
+      const overflow = total - visible;
+      dots.push(
+        <span
+          key="task-constellation-overflow"
+          data-testid="task-constellation-overflow"
+          className="task-constellation-overflow ml-0.5 inline-flex items-center text-[10px] font-medium text-text-strong"
+        >
+          {`+${overflow}`}
+        </span>,
+      );
+    }
+  }
 
   const count = summary.state === "failed" ? 1 : summary.active.length;
 

@@ -35,6 +35,7 @@ import type {
   EnvelopeToolEndStatus,
   Payload,
 } from "@/runtime/ui-protocol-types";
+import { SPAWN_ONLY_TOOL_NAMES } from "@/runtime/spawn-only-tools";
 import {
   ingest as projectionIngest,
   isProjectionV1Enabled,
@@ -1662,9 +1663,27 @@ export function finalizeAssistant(
     // Also remember which ids were swept so the projection dual-write
     // below can emit synthetic `tool_end` envelopes for them BEFORE
     // `turn_completed` (codex round-1 BLOCK 3).
+    //
+    // SPAWN_ONLY EXCEPTION (codex PR #147 review BLOCKER, 2026-05-22):
+    // spawn_only tools (`run_pipeline`, `podcast_generate`, `fm_tts`,
+    // ...) intentionally fire their foreground `tool/completed` ~ms
+    // after `tool/started` — the actual background work runs for
+    // minutes after `turn/completed` lands. The real terminal signal
+    // for the bubble is `task/updated:completed` (or `:failed`), which
+    // `handleTaskUpdated` routes to `setToolCallStatus`. Sweeping the
+    // chip to `complete` here would silently undo the Defect A
+    // deferral for the second code path — the chip would settle
+    // before the background work actually finishes. We leave
+    // spawn_only chips alone here; `handleTaskUpdated` flips them
+    // when the supervisor task settles.
     const sweptToolCallIds: string[] = [];
     const sweptToolCalls = thread.pendingAssistant.toolCalls.map((tc) => {
       if (tc.status === "running") {
+        if (SPAWN_ONLY_TOOL_NAMES.has(tc.name)) {
+          // Leave spawn_only chips in `running` — the terminal flip
+          // comes from `handleTaskUpdated`, not the turn sweep.
+          return tc;
+        }
         if (tc.id) sweptToolCallIds.push(tc.id);
         return { ...tc, status: "complete" as const };
       }

@@ -467,10 +467,21 @@ describe("ToolCallBubble leading status icon", () => {
     harness.unmount();
   });
 
-  it("clears the per-tool spinner on the turn/completed sweep (run_pipeline)", () => {
-    // Companion case to fm_tts: run_pipeline relies on the
-    // `finalizeAssistant` sweep at `turn/completed` to flip
-    // `running` → `complete`. The leading icon must follow.
+  it("keeps the run_pipeline spinner alive after turn/completed (codex PR #147 BLOCKER, 2026-05-22)", () => {
+    // Original assertion: "turn/completed sweeps the in-flight tool
+    // call to `complete`; the leading icon flips from spinner to
+    // Check". That sweep was the second code path Defect A's
+    // foreground fix missed — for spawn_only tools the background
+    // task runs minutes after `turn/completed` lands.
+    //
+    // Post-codex-fix: `finalizeAssistant`'s sweep is gated by
+    // `SPAWN_ONLY_TOOL_NAMES`. `run_pipeline` is in the set, so the
+    // chip stays in `running` past `turn/completed`. The real
+    // terminal flip comes from `handleTaskUpdated:completed`.
+    //
+    // Test order: spinner present at start → spinner STILL present
+    // after `turn/completed` → spinner clears + Check appears only
+    // after `task/updated:completed`.
     const cmid = "turn-run-pipeline";
     const toolCallId = "tc-run-pipeline";
     act(() => {
@@ -519,7 +530,7 @@ describe("ToolCallBubble leading status icon", () => {
       bubble!.querySelector("[data-testid='tool-call-status-spinner']"),
     ).not.toBeNull();
 
-    // turn/completed sweeps the in-flight tool call to "complete".
+    // turn/completed lands — sweep is now gated; spawn_only chip stays.
     act(() => {
       handleTurnCompleted(
         { sessionId: SESSION },
@@ -528,6 +539,33 @@ describe("ToolCallBubble leading status icon", () => {
           turn_id: cmid,
           message_id: "msg-x",
           persisted_at: new Date().toISOString(),
+        },
+      );
+    });
+
+    bubble = harness.container.querySelector(
+      "[data-testid='tool-call-bubble']",
+    );
+    expect(bubble).not.toBeNull();
+    expect(bubble!.getAttribute("data-tool-status")).toBe("running");
+    expect(
+      bubble!.querySelector("[data-testid='tool-call-status-spinner']"),
+    ).not.toBeNull();
+    expect(
+      bubble!.querySelector("[data-testid='tool-call-status-complete-icon']"),
+    ).toBeNull();
+
+    // `task/updated:completed` lands — supervisor reports background
+    // work is done. The chip finally flips to `complete`.
+    act(() => {
+      handleTaskUpdated(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          task_id: toolCallId,
+          tool_call_id: toolCallId,
+          state: "completed",
+          tool_name: "run_pipeline",
         },
       );
     });
