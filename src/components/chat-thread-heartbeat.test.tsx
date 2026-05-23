@@ -203,16 +203,21 @@ describe("run_pipeline heartbeat chip list", () => {
       });
     }
 
-    // The bubble starts expanded (status === "running") and stays that
-    // way: `run_pipeline` is in `SPAWN_ONLY_TOOL_NAMES`, so the
-    // `turn/completed` sweep no longer flips the chip to `complete`
-    // (codex PR #147 BLOCKER, 2026-05-22). Without the running →
-    // settled transition the auto-collapse useEffect doesn't fire, so
-    // the timeline is visible without a toggle click. The point of
-    // this regression test is that every chip survived in the store
-    // across the finalise transition (the React.memo bug it pins).
-    // Collapse UX is exercised separately in
-    // `chat-thread-progress-toggle.test.tsx`.
+    // `run_pipeline` is in SPAWN_ONLY_TOOL_NAMES so the bubble defaults
+    // to COLLAPSED (dspfac UX request 2026-05-22 — spawn_only progress
+    // chips dominate the scrollback otherwise). The test pins
+    // chip-retention across the finalise transition (a React.memo
+    // regression target), so we click the expand toggle to inspect
+    // the full timeline. Collapse UX itself is exercised separately
+    // in `chat-thread-progress-toggle.test.tsx`.
+    const toggle = harness.container.querySelector<HTMLElement>(
+      "[data-testid='tool-call-runtime-toggle']",
+    );
+    if (toggle) {
+      act(() => {
+        toggle.click();
+      });
+    }
     const timeline = harness.container.querySelector(
       "[data-testid='tool-call-runtime-timeline']",
     );

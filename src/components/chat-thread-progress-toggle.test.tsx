@@ -120,7 +120,11 @@ function setupRunningPipeline(cmid: string, toolCallId: string): void {
         session_id: SESSION,
         turn_id: cmid,
         tool_call_id: toolCallId,
-        tool_name: "run_pipeline",
+        // Non-spawn_only tool: shell. Spawn_only tools (run_pipeline /
+        // podcast / mofa_*) now default to collapsed per dspfac UX
+        // request 2026-05-22; default-expanded assertions need a
+        // non-spawn_only baseline.
+        tool_name: "shell",
       },
     );
   });
