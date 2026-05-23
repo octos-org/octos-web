@@ -983,6 +983,99 @@ describe("router event mapping", () => {
   });
 
   // -------------------------------------------------------------------------
+  // dspfac "two bubbles per turn" — server-side suppression of the
+  // synthesised spawn_only ack (server PR: `fix(api): suppress
+  // synthesized spawn_only ack bubble via Background source override`).
+  // -------------------------------------------------------------------------
+  //
+  // Bug shape: an iter-1 spawn_only turn (the LLM picks `run_pipeline`,
+  // emits a preamble TEXT + `tool_calls`, then stops) used to commit
+  // TWO assistant `message/persisted` envelopes:
+  //
+  //   1. The iter-1 LLM reply (assistant role, preamble TEXT + tool_calls,
+  //      `source: assistant`) — "Bubble with details" (preamble + tool card).
+  //   2. The synthesised ack the agent loop fabricates
+  //      ("Background work started for `run_pipeline`. The final result
+  //      will be delivered automatically when it is ready.",
+  //      `source: assistant`) — "Bubble without details" (text only).
+  //
+  // Both reached the SPA as assistant rows, so the chat shape was TWO
+  // adjacent bubbles per turn.
+  //
+  // Server fix tags the synthesised ack row with
+  // `MessagePersistedSource::Background`. The existing capability filter
+  // at `crates/octos-cli/src/api/ui_protocol.rs::live_event_passes_capability_filter`
+  // (line ~7600) then SUPPRESSES that row for SPAs that negotiated
+  // `event.spawn_complete.v1` (today's SPA always does). Legacy clients
+  // without that capability continue to receive the ack — backward-compatible.
+  //
+  // SPA-observable wire shape for upgraded clients (today's SPA):
+  //
+  //   delta(preamble) → persisted(preamble, source=assistant) →
+  //                                                turn/completed
+  //
+  // The persisted ack envelope NEVER reaches the SPA (server-suppressed),
+  // so the thread settles with EXACTLY ONE assistant response.
+  it(
+    "spawn_only turn collapses to ONE bubble when server suppresses the synthesised ack (dspfac fix)",
+    () => {
+      const cmid = "cmid-spawn-only-collapse";
+      seedThread(cmid, "Please run the pipeline.");
+
+      // Stream the iter-1 preamble TEXT (the LLM's reply that drove the
+      // spawn_only branch).
+      const preambleText = "Sure, I'll kick off the pipeline now.";
+      handleMessageDelta(
+        { sessionId: SESSION },
+        { session_id: SESSION, turn_id: cmid, text: preambleText },
+      );
+
+      // Persist the iter-1 row: `source: assistant` (role-derived
+      // default — this is `response.messages[0]` in the agent loop,
+      // NOT the synthesised ack).
+      handleMessagePersisted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          thread_id: cmid,
+          seq: 40,
+          role: "assistant",
+          message_id: "msg-preamble",
+          source: "assistant",
+          cursor: { stream: SESSION, seq: 40 },
+          persisted_at: "2026-05-22T00:00:00Z",
+          content: preambleText,
+        },
+      );
+
+      // The synthesised ack `message/persisted` (with
+      // `source: background`) is SERVER-SUPPRESSED for clients that
+      // negotiated `event.spawn_complete.v1` — i.e. it is NEVER
+      // dispatched into the router. Today's SPA always negotiates the
+      // capability, so the realistic wire sequence skips that frame.
+
+      // Turn finalises.
+      handleTurnCompleted(
+        { sessionId: SESSION },
+        {
+          session_id: SESSION,
+          turn_id: cmid,
+          reason: "stop",
+        },
+      );
+
+      const [thread] = ThreadStore.getThreads(SESSION);
+      expect(thread.pendingAssistant).toBeNull();
+      // Single-bubble assertion — pre-fix this was 2 (the duplicate
+      // synthesised ack rendered as its own bubble).
+      expect(thread.responses).toHaveLength(1);
+      expect(thread.responses[0].text).toBe(preambleText);
+      expect(thread.responses[0].historySeq).toBe(40);
+    },
+  );
+
+  // -------------------------------------------------------------------------
   // Stuck-spinner-after-spawn_only-completion bug — codex independent diagnosis
   // -------------------------------------------------------------------------
   //
