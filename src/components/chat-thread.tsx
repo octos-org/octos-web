@@ -49,6 +49,7 @@ import { getActiveBridge } from "@/runtime/ui-protocol-runtime";
 import { MarkdownContent } from "./markdown-renderer";
 import { ThinkingIndicator } from "./thinking-indicator";
 import { ToolProgressIndicator } from "./tool-progress-indicator";
+import { useTasks } from "@/store/task-store";
 import { GhostBubble } from "./GhostBubble";
 import { UserBubbleShell } from "./user-bubble-shell";
 import { CopyMarkdownButton } from "./copy-markdown-button";
@@ -947,6 +948,22 @@ function ThreadView({
   const visibleResponses = thread.responses.filter((r) =>
     isVisibleResponse(r, hideFileOnlyAssistantMessages),
   );
+  // Drive `showLiveIndicators` from the same TaskStore the header
+  // `SessionTaskIndicator` uses. For spawn_only tools (run_pipeline /
+  // podcast / mofa_*) the `pendingAssistant.status` flips to
+  // "complete" within ~30ms of the ack returning, but the background
+  // work runs for minutes — pre-fix the inside-bubble
+  // `ThinkingIndicator` unmounted at that 30ms boundary, taking the
+  // status_word rotator + elapsed timer with it. The header dock
+  // already had the right signal (running task count); we mirror it
+  // here so the in-bubble live surface stays visible for the same
+  // window. Single-thread cases are unaffected (the streaming gate
+  // flips first; the bg-task gate takes over at turn/completed).
+  const { currentSessionId, historyTopic } = useSession();
+  const sessionTasks = useTasks(currentSessionId, historyTopic);
+  const hasRunningBackgroundTask = sessionTasks.some(
+    (t) => t.status === "spawned" || t.status === "running",
+  );
   return (
     <div data-testid="chat-thread-bundle" data-thread-id={thread.id}>
       <ThreadUserBubble message={thread.userMsg} threadId={thread.id} />
@@ -964,7 +981,10 @@ function ThreadView({
           key={thread.pendingAssistant.id}
           message={thread.pendingAssistant}
           isStreaming={thread.pendingAssistant.status === "streaming"}
-          showLiveIndicators={thread.pendingAssistant.status === "streaming"}
+          showLiveIndicators={
+            thread.pendingAssistant.status === "streaming" ||
+            hasRunningBackgroundTask
+          }
           threadId={thread.id}
         />
       )}
