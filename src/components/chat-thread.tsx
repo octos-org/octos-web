@@ -50,6 +50,7 @@ import { MarkdownContent } from "./markdown-renderer";
 import { ThinkingIndicator } from "./thinking-indicator";
 import { ToolProgressIndicator } from "./tool-progress-indicator";
 import { useTasks } from "@/store/task-store";
+import { SPAWN_ONLY_TOOL_NAMES } from "@/runtime/spawn-only-tools";
 import { GhostBubble } from "./GhostBubble";
 import { UserBubbleShell } from "./user-bubble-shell";
 import { CopyMarkdownButton } from "./copy-markdown-button";
@@ -498,7 +499,16 @@ function ToolCallBubble({
   // while the tool is still running so the user sees live activity, and
   // auto-collapse once the tool settles so a 300-chip pipeline history
   // doesn't dominate the scrollback after the bubble finalises.
-  const [expanded, setExpanded] = useState(toolCall.status === "running");
+  //
+  // SPAWN_ONLY exception (2026-05-22, dspfac UX request): run_pipeline /
+  // podcast / mofa_* tools emit dozens of progress chips during their
+  // long background runs (~20+ min). The default-expanded surface
+  // dominates the chat scrollback. Default these to collapsed so the
+  // chat reads cleanly; user can still click to expand on demand.
+  const isSpawnOnly = SPAWN_ONLY_TOOL_NAMES.has(toolCall.name);
+  const [expanded, setExpanded] = useState(
+    toolCall.status === "running" && !isSpawnOnly,
+  );
   // Track whether the user has manually toggled — if so, respect their
   // choice and skip the auto-collapse on the running -> settled
   // transition. Without this, a user who hand-expands a completed bubble
@@ -812,8 +822,16 @@ export const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
           </div>
         )}
 
-        {/* Thinking indicator (only for the in-flight pending assistant). */}
-        {showLiveIndicators && <ThinkingIndicator />}
+        {/* Thinking indicator (only for the in-flight pending assistant).
+            Wrapped in a block-level container so the pill-shaped
+            `inline-flex` indicator sits cleanly below the tool-card row
+            instead of overlapping it (reported on dspfac 2026-05-22:
+            "渡劫中…(13s) is overlapped on task status bubble"). */}
+        {showLiveIndicators && (
+          <div className="mt-2 block">
+            <ThinkingIndicator />
+          </div>
+        )}
 
         {/* Tool-progress spinner — anchored INSIDE the bubble whose tools
             it reports. The indicator derives its display directly from
