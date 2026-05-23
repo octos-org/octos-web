@@ -2796,18 +2796,23 @@ export function appendPersistedMessage(
       ? new Date(message.timestamp).getTime()
       : null;
     const incomingText = typeof message.content === "string" ? message.content : "";
-    // Non-empty text gate (codex MINOR on #148): an empty-content
-    // media-only assistant row with the same timestamp as a prior
-    // empty-content row would otherwise collide here. The dspfac bug
-    // pattern (spawn_only "Background work started..." ack) always
-    // carries stable non-empty text, so this gate doesn't weaken the
-    // fix; it just prevents a hypothetical empty-content false-positive.
+    // PR #148 fixup (2026-05-22 dspfac re-repro): strict timestamp
+    // equality was too narrow — the live wire row's `r.timestamp` is
+    // stamped via `Date.now()` at append time (browser clock), while
+    // the polled `session/messages_page` row carries the server's
+    // RFC3339 `persisted_at`. They never line up exactly, so the
+    // dedupe missed and "Background work started..." duplicated again.
+    // Widen to a 5-minute proximity window: polled echo will land
+    // within seconds of the live row, while distinct repeated content
+    // is typically minutes apart. Non-empty text gate kept (codex
+    // MINOR on #148) so empty-content media-only rows don't collide.
+    const PROXIMITY_MS = 5 * 60 * 1000;
     if (incomingTs !== null && incomingText.trim().length > 0) {
       for (const r of thread.responses) {
         if (
           r.role === message.role &&
           r.text === incomingText &&
-          r.timestamp === incomingTs
+          Math.abs(r.timestamp - incomingTs) < PROXIMITY_MS
         ) {
           return;
         }

@@ -1498,7 +1498,13 @@ describe.each(FLAG_STATES)("thread-store [$label]", ({ projectionV1 }) => {
       role: "assistant" as const,
       content: liveRow.content,
       thread_id: "cm-poll",
-      timestamp: liveRow.timestamp,
+      // PR #149 followup: server's `persisted_at` and the live row's
+      // `r.timestamp` (`Date.now()` at append time) NEVER line up
+      // exactly. Polled rows on dspfac arrive ~150ms-2s after the
+      // live row. Drift the polled timestamp on purpose so the
+      // regression test pins the 5-min proximity window, not strict
+      // equality.
+      timestamp: "2026-04-28T10:00:07Z",
     };
     for (let i = 0; i < 8; i += 1) {
       ThreadStore.appendPersistedMessage(SESSION, undefined, polledRow);
@@ -1510,7 +1516,7 @@ describe.each(FLAG_STATES)("thread-store [$label]", ({ projectionV1 }) => {
     );
     expect(
       acks,
-      "polled rows that re-echo a live persisted row must dedupe via (role,text,timestamp)",
+      "polled rows within the 5-min proximity window must dedupe even when timestamps drift",
     ).toHaveLength(1);
   });
 
