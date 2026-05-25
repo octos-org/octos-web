@@ -2,6 +2,7 @@ import { useMemo, type ReactElement } from "react";
 import type { BackgroundTaskInfo as TaskInfo } from "@/api/types";
 import { useTasks } from "@/store/task-store";
 import { useSession } from "@/runtime/session-context";
+import { rollupTasksByCall } from "@/runtime/task-rollup";
 
 // The tasks dock reads from `useTasks()`, which is fed by
 // `runtime/task-watcher.ts` polling through the `getSessionTasks`
@@ -36,7 +37,11 @@ interface IndicatorSummary {
 }
 
 function buildSummary(tasks: TaskInfo[]): IndicatorSummary | null {
-  const active = tasks.filter(isTaskActive);
+  // WEB-NEW-18: roll pipeline children up under the parent
+  // `run_pipeline` task by `tool_call_id` so the dock counter reflects
+  // the real number of user-visible jobs rather than the raw
+  // parent+children fanout. See `runtime/task-rollup.ts`.
+  const active = rollupTasksByCall(tasks.filter(isTaskActive));
   if (active.length === 1) {
     return {
       active,
