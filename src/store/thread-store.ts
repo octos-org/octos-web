@@ -1604,6 +1604,97 @@ export function appendAssistantFile(
 }
 
 /**
+ * Attach a delivered file to the SPECIFIC assistant response that owns
+ * `toolCallId`. Used by the `file/attached` envelope router (codex P2
+ * round, 2026-05-25): the previous code path mutated the latest
+ * assistant message in the thread, which mis-routed deliveries when a
+ * turn contained multiple spawn_only completions or when the envelope
+ * replayed AFTER another assistant response was appended.
+ *
+ * Lookup order matches `findThreadIdForToolCall`: pending in-flight
+ * assistant first (the spawn_only tool call may still be running), then
+ * `responses` most-recent-first (the foreground bubble already
+ * finalised). Path-deduplicated like `appendAssistantFile` so repeated
+ * envelopes are no-ops.
+ *
+ * Returns `true` when the file landed on (or was already attached to)
+ * the owning bubble, `false` when no assistant message in the thread
+ * owns `toolCallId` (caller should fall back or drop).
+ */
+export function appendAssistantFileToToolCall(
+  threadId: string,
+  toolCallId: string,
+  file: MessageFile,
+): boolean {
+  if (!toolCallId) return false;
+  const found = findThreadById(threadId);
+  if (!found) return false;
+  const thread = found.thread;
+
+  // Locate the specific assistant message that owns `toolCallId`.
+  // Pending first (still-running spawn_only), then finalised responses
+  // (most-recent-first matches `findThreadIdForToolCall`).
+  let slot: ThreadMessage | null = null;
+  if (thread.pendingAssistant?.toolCalls.some((tc) => tc.id === toolCallId)) {
+    slot = thread.pendingAssistant;
+  } else {
+    for (let i = thread.responses.length - 1; i >= 0; i -= 1) {
+      const r = thread.responses[i];
+      if (r.role !== "assistant") continue;
+      if (r.toolCalls.some((tc) => tc.id === toolCallId)) {
+        slot = r;
+        break;
+      }
+    }
+  }
+  if (!slot) return false;
+
+  // Path dedupe: a redundant replay of the same envelope (or the same
+  // path arriving via both the richer `message/persisted` reducer and
+  // this envelope) is a no-op.
+  if (slot.files.some((f) => f.path === file.path)) return true;
+  slot.files = [...slot.files, file];
+  notify();
+
+  // M9-γ-3 dual-write parity with `appendAssistantFile`.
+  if (isProjectionV1Enabled()) {
+    const key = shimResolveKey(threadId);
+    if (key) {
+      shimIngest(key, threadId, {
+        type: "file_attached",
+        data: {
+          path: file.path,
+          mime: "",
+          size_bytes: 0,
+        },
+      });
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Return `true` when `threadId` exists in the (sessionId, topic) scope.
+ * Used by the `file/attached` router's turn-id fallback (codex P2, round
+ * 2026-05-25) to scope orphan-thread minting to the active session —
+ * pre-fix the fallback walked every loaded `SessionState` and could
+ * route an artefact to a stale session that was still resident in
+ * memory.
+ */
+export function hasThreadInScope(
+  sessionId: string,
+  topic: string | undefined,
+  threadId: string,
+): boolean {
+  if (!threadId) return false;
+  const key = storeKey(sessionId, topic);
+  const state = sessionsByKey.get(key);
+  if (!state) return false;
+  return state.byId.has(threadId);
+}
+
+/**
  * M10 Phase 5b: stamp the per-thread server seq onto the in-flight
  * `pendingAssistant` without finalising it. Used by the v1 router's
  * empty-placeholder defence: when an assistant `message/persisted`

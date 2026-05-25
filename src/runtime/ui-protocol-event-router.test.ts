@@ -18,6 +18,7 @@ import {
   __resetTurnMetaForTest,
   attachRouter,
   handleApprovalRequested,
+  handleFileAttached,
   handleMessageDelta,
   handleMessagePersisted,
   handleProgressUpdated,
@@ -1772,6 +1773,274 @@ describe("router event mapping", () => {
     const ce = dispatched[0] as CustomEvent;
     expect(ce.type).toBe("crew:approval_requested");
     expect(ce.detail).toEqual(evt);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Codex P2 round (2026-05-25, octos-web PR #156): file/attached routing
+// MUST target the assistant message owning `tool_call_id` AND scope the
+// turn-id fallback to the active session.
+// ---------------------------------------------------------------------------
+
+describe("file/attached: per-tool_call_id placement + scoped fallback (codex P2)", () => {
+  function seedFinalizedToolCall(opts: {
+    cmid: string;
+    toolCallId: string;
+    toolName: string;
+    text?: string;
+    committedSeq?: number;
+  }): void {
+    seedThread(opts.cmid, "ask");
+    ThreadStore.appendAssistantToken(opts.cmid, opts.text ?? "Background work started.");
+    ThreadStore.finalizeAssistant(opts.cmid, {
+      committedSeq: opts.committedSeq ?? 4,
+    });
+    handleToolStarted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: opts.cmid,
+        tool_call_id: opts.toolCallId,
+        tool_name: opts.toolName,
+      },
+    );
+  }
+
+  it("targets the assistant response owning tool_call_id, not the latest sibling", () => {
+    // Turn has TWO spawn_only completions. The first tool call lives on
+    // response[0]; the second on response[1] (sibling). A `file/attached`
+    // envelope for the FIRST tool call MUST attach to response[0], not
+    // the latest response[1] (the pre-fix behaviour).
+    const cmid = "cmid-multi-spawn";
+    const firstToolCallId = "call_pptx_first";
+    const secondToolCallId = "call_pptx_second";
+
+    seedThread(cmid, "make two decks");
+    // Foreground bubble + first tool call attached to response[0].
+    ThreadStore.appendAssistantToken(cmid, "First deck queued.");
+    ThreadStore.finalizeAssistant(cmid, { committedSeq: 3 });
+    handleToolStarted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: firstToolCallId,
+        tool_name: "mofa_slides",
+      },
+    );
+
+    // Second assistant row via `turn/spawn_complete` — this is how a
+    // sibling spawn_only completion lands in the same thread. Then
+    // register the second tool call on this new row.
+    handleSpawnComplete(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        thread_id: cmid,
+        task_id: "task_second_deck",
+        response_to_client_message_id: cmid,
+        seq: 5,
+        message_id: "msg-second-deck",
+        source: "background",
+        cursor: { stream: SESSION, seq: 5 },
+        persisted_at: "2026-05-04T00:00:00Z",
+        content: "Second deck queued.",
+      },
+    );
+    handleToolStarted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: secondToolCallId,
+        tool_name: "mofa_slides",
+      },
+    );
+
+    const before = ThreadStore.getThreads(SESSION)[0];
+    // Sanity: two rows, second one owns secondToolCallId.
+    expect(before.responses).toHaveLength(2);
+    expect(
+      before.responses[1].toolCalls.some((tc) => tc.id === secondToolCallId),
+    ).toBe(true);
+    expect(
+      before.responses[0].toolCalls.some((tc) => tc.id === firstToolCallId),
+    ).toBe(true);
+
+    // Envelope for the FIRST tool call.
+    handleFileAttached(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: firstToolCallId,
+        path: "/decks/first.pptx",
+      },
+    );
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    // First response gets the file (it owns firstToolCallId).
+    expect(thread.responses[0].files.map((f) => f.path)).toEqual([
+      "/decks/first.pptx",
+    ]);
+    // Second response (latest sibling) MUST stay empty — pre-fix it would
+    // have received the file because `appendAssistantFile` picks the
+    // latest assistant slot in the thread.
+    expect(thread.responses[1].files).toEqual([]);
+  });
+
+  it("dedupes replays of the same envelope on the same tool_call_id + path", () => {
+    const cmid = "cmid-replay";
+    const toolCallId = "call_pptx_replay";
+    seedFinalizedToolCall({ cmid, toolCallId, toolName: "mofa_slides" });
+
+    const evt: FileAttachedEvent = {
+      session_id: SESSION,
+      turn_id: cmid,
+      tool_call_id: toolCallId,
+      path: "/decks/replay.pptx",
+    };
+    handleFileAttached({ sessionId: SESSION }, evt);
+    handleFileAttached({ sessionId: SESSION }, evt);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    // EXACTLY one file entry on the bubble — the replay is a no-op.
+    const files = thread.responses[0].files.filter(
+      (f) => f.path === "/decks/replay.pptx",
+    );
+    expect(files).toHaveLength(1);
+  });
+
+  it("drops envelopes with no tool_call_id whose turn_id resolves to a non-active session", () => {
+    // Stale session bucket still resident in ThreadStore.
+    const STALE = "sess-stale-fa";
+    const ACTIVE = "sess-active-fa";
+    const staleCmid = "cmid-stale-fa";
+    const activeCmid = "cmid-active-fa";
+    ThreadStore.addUserMessage(STALE, {
+      text: "old",
+      clientMessageId: staleCmid,
+    });
+    ThreadStore.addUserMessage(ACTIVE, {
+      text: "new",
+      clientMessageId: activeCmid,
+    });
+
+    // Envelope carries `turn_id = staleCmid` and NO tool_call_id. The
+    // active router (`sessionId: ACTIVE`) MUST drop rather than route
+    // into the stale session.
+    handleFileAttached(
+      { sessionId: ACTIVE },
+      {
+        session_id: ACTIVE,
+        turn_id: staleCmid,
+        path: "/decks/wrong-session.pptx",
+      },
+    );
+
+    const [staleThread] = ThreadStore.getThreads(STALE);
+    // Stale session's thread untouched — no file attached anywhere.
+    // `addUserMessage` mints a `pendingAssistant` placeholder, so we
+    // assert that placeholder carries no `files`, AND that no response
+    // row was promoted/appended on the stale session.
+    expect(staleThread.responses).toHaveLength(0);
+    expect(staleThread.pendingAssistant?.files ?? []).toEqual([]);
+    expect(staleThread.userMsg.files).toEqual([]);
+    // ACTIVE thread is also untouched (no orphan bubble minted there).
+    const [activeThread] = ThreadStore.getThreads(ACTIVE);
+    expect(activeThread.responses).toHaveLength(0);
+    expect(activeThread.pendingAssistant?.files ?? []).toEqual([]);
+  });
+
+  it("uses turn_id fallback when tool_call_id is absent AND turn_id resolves inside active scope", () => {
+    // Preserves the existing fallback behaviour: an envelope without a
+    // tool_call_id whose `turn_id` matches a thread in the ACTIVE
+    // session attaches via `appendAssistantFile` (pending or latest
+    // finalized).
+    const cmid = "cmid-fallback-active";
+    seedThread(cmid, "ask");
+    ThreadStore.appendAssistantToken(cmid, "Body.");
+    ThreadStore.finalizeAssistant(cmid, { committedSeq: 2 });
+
+    handleFileAttached(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        // tool_call_id intentionally omitted.
+        path: "/decks/fallback.pptx",
+      },
+    );
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses[0].files.map((f) => f.path)).toEqual([
+      "/decks/fallback.pptx",
+    ]);
+  });
+
+  it("drops envelopes whose tool_call_id matches no registered tool call AND turn_id is out of scope", () => {
+    // Defence-in-depth: tool_call_id is present but unknown to
+    // ThreadStore (e.g. the bubble has already been evicted on a
+    // hydrate cycle), and the turn_id fallback can't find the thread
+    // in the active session. The router MUST drop rather than mint
+    // an orphan bubble.
+    const ACTIVE = "sess-active-drop";
+    ThreadStore.addUserMessage(ACTIVE, {
+      text: "new",
+      clientMessageId: "cmid-active-drop",
+    });
+
+    handleFileAttached(
+      { sessionId: ACTIVE },
+      {
+        session_id: ACTIVE,
+        turn_id: "cmid-ghost",
+        tool_call_id: "call_ghost_nowhere",
+        path: "/decks/ghost.pptx",
+      },
+    );
+
+    const threads = ThreadStore.getThreads(ACTIVE);
+    expect(threads).toHaveLength(1);
+    // Active thread untouched.
+    expect(threads[0].responses).toHaveLength(0);
+    expect(threads[0].userMsg.files).toEqual([]);
+  });
+
+  it("attaches the file to a still-pending assistant when the tool call hangs off pendingAssistant", () => {
+    // Edge: a tool call registered on the still-in-flight
+    // pendingAssistant (foreground turn with a spawn_only nested
+    // call) must still receive the file when the envelope arrives
+    // before `finalizeAssistant`.
+    const cmid = "cmid-pending";
+    const toolCallId = "call_pending_pptx";
+    seedThread(cmid, "ask");
+    ThreadStore.appendAssistantToken(cmid, "Streaming…");
+    handleToolStarted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: toolCallId,
+        tool_name: "mofa_slides",
+      },
+    );
+
+    handleFileAttached(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: toolCallId,
+        path: "/decks/pending.pptx",
+      },
+    );
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.pendingAssistant?.files.map((f) => f.path)).toEqual([
+      "/decks/pending.pptx",
+    ]);
   });
 });
 
