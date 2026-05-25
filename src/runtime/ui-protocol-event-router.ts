@@ -219,48 +219,12 @@ function fileAttachKey(
   return `${threadId}|${toolCallId ?? ""}|${path}`;
 }
 
-/**
- * Codex round 4 (2026-05-25) — per-thread path claim registry.
- * Keyed by `${threadId}|${path}` → set of `tool_call_id`s that have
- * authoritatively claimed this artefact via a `file/attached`
- * envelope. Used by cross-slot dedupe: a sibling slot holding `path`
- * whose tool_calls intersect this claim set legitimately owns the
- * artefact (two distinct background completions delivering the same
- * file). A sibling holding `path` with NO tool_call in the claim set
- * is stale (legacy `appendAssistantFile` mis-placement) and gets
- * stripped.
- */
-const fileAttachClaims = new Map<string, Set<string>>();
-
-function fileClaimKey(threadId: string, path: string): string {
-  return `${threadId}|${path}`;
-}
-
-function claimFileForToolCall(
-  threadId: string,
-  toolCallId: string,
-  path: string,
-): void {
-  const key = fileClaimKey(threadId, path);
-  let set = fileAttachClaims.get(key);
-  if (!set) {
-    set = new Set();
-    fileAttachClaims.set(key, set);
-  }
-  set.add(toolCallId);
-}
-
-function pathClaimedBy(threadId: string, path: string): Set<string> {
-  return fileAttachClaims.get(fileClaimKey(threadId, path)) ?? new Set();
-}
-
 /** Reset the per-task state map. Tests call this between cases; production
  *  code does not need it because the map is bounded by the number of live
  *  tasks per session (~tens, never thousands). */
 export function __resetRouterStateForTest(): void {
   lastTaskStateById.clear();
   seenFileAttachments.clear();
-  fileAttachClaims.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -756,61 +720,31 @@ export function handleFileAttached(
       );
       if (attached) {
         seenFileAttachments.add(dedupeKey);
-        // Claim path for this tool_call BEFORE running cross-slot
-        // cleanup. The claim set is the authority that distinguishes
-        // a legitimate distinct-tool-call delivery from a stale
-        // legacy-mis-placement copy.
-        claimFileForToolCall(hostThreadId, event.tool_call_id, event.path);
 
-        // Cross-slot cleanup (codex round 4, 2026-05-25): remove
-        // stale copies of `path` from OTHER assistant slots in the
-        // thread — but ONLY those whose tool_calls do NOT intersect
-        // the per-path claim set (no other tool_call has
-        // authoritatively claimed this artefact for that slot).
+        // Cross-slot cleanup: strip the path from "naive media
+        // siblings" — assistant slots with NO tool_calls that
+        // absorbed the path via the legacy `appendAssistantFile`
+        // latest-sibling fallback (`tryPromotePendingFromPersisted` →
+        // `pickAssistantSlot` → latest-finalized when the pending
+        // already moved). That's the documented mis-placement
+        // pattern `file/attached` exists to correct.
         //
-        // Two flavours of stale copy:
-        //   (a) "Naive media sibling" — a spawn-ack/foreground bubble
-        //       with NO tool_calls of its own that absorbed `path`
-        //       via the legacy `appendAssistantFile` latest-sibling
-        //       fallback. Stripped via `stripFileFromNaiveSiblings`
-        //       (skips owner; skips slots with own tool_calls).
-        //   (b) Sibling with its OWN tool_calls, none of which have
-        //       claimed `path`. Pre-fix (codex round 3) this branch
-        //       was protected and the duplicate stayed visible.
-        //       Stripped via `stripFileFromAssistantSlot` per slot.
-        //
-        // A sibling whose tool_calls DO intersect the claim set
-        // (legitimate distinct delivery — two background completions
-        // sharing a path) is left untouched.
-        const claims = pathClaimedBy(hostThreadId, event.path);
-        const slots = ThreadStore.snapshotAssistantSlots(hostThreadId);
-        for (const s of slots) {
-          // Owner: skip.
-          if (s.toolCallIds.includes(event.tool_call_id)) continue;
-          if (!s.paths.includes(event.path)) continue;
-          if (s.toolCallIds.length === 0) {
-            // Branch (a): naive sibling, no tool_calls. Strip.
-            ThreadStore.stripFileFromNaiveSiblings(
-              hostThreadId,
-              event.tool_call_id,
-              event.path,
-            );
-            continue;
-          }
-          // Branch (b): sibling has tool_calls. Strip only if none of
-          // them have claimed this path.
-          const intersects = s.toolCallIds.some((id) => claims.has(id));
-          if (!intersects) {
-            // Use the first tool_call_id on the slot as the locator
-            // (every tool_call_id on the slot identifies the same
-            // assistant message via `findThreadIdForToolCall`).
-            ThreadStore.stripFileFromAssistantSlot(
-              hostThreadId,
-              s.toolCallIds[0],
-              event.path,
-            );
-          }
-        }
+        // Codex round 5 (2026-05-25): deliberately do NOT strip from
+        // siblings that HAVE their own tool_calls. Absence from the
+        // router's in-memory claim set is not proof of staleness — a
+        // sibling owner may have received the path via its own
+        // `media[]` delivery (the documented redundant channel
+        // `file/attached` complements) before its own claim envelope
+        // arrives, or its `file/attached` may be absent entirely on
+        // hydrate/fallback paths. The redundancy contract treats both
+        // delivery channels as authoritative for their respective
+        // owners; cleanup is limited to the narrow legacy
+        // mis-placement target.
+        ThreadStore.stripFileFromNaiveSiblings(
+          hostThreadId,
+          event.tool_call_id,
+          event.path,
+        );
       }
       return;
     }

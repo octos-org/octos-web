@@ -2243,18 +2243,27 @@ describe("file/attached: per-tool_call_id placement + scoped fallback (codex P2)
     expect(after.responses[1].files.map((f) => f.path)).toEqual([]);
   });
 
-  it("strips stale copy even when the wrong sibling has its OWN tool call (codex round 4)", () => {
-    // Codex round-4 P2: a stale-misrouted copy can land on a sibling
-    // that already owns its OWN tool_call. The round-3 narrow guard
-    // ("skip slots with tool_calls") protected this sibling and the
-    // duplicate stayed visible after the authoritative envelope
-    // arrived. Fix: consult the per-thread path claim registry — a
-    // sibling whose tool_calls don't intersect the claim set carries a
-    // stale copy and should be stripped.
-    const cmid = "cmid-mixed-stale";
-    const ownerToolCallId = "call_pptx_owner_mixed";
-    const otherToolCallId = "call_pptx_other_with_own_tc";
-    const stalePath = "/decks/mis-routed-on-tc-slot.pptx";
+  it("does NOT strip same-path file from a sibling that has its own tool_call (codex round 5)", () => {
+    // Codex round-5 narrowing: absence of a `file/attached` claim is
+    // not proof of staleness on a tool-call-owning sibling. The
+    // sibling may legitimately own the path via the redundant
+    // `media[]` delivery channel (which `file/attached` complements,
+    // per the redundancy contract) before its own claim envelope
+    // arrives — or its `file/attached` may be absent entirely on
+    // hydrate / fallback paths. Cleanup is limited to "naive media
+    // siblings" (NO tool_calls); tool-call-owning siblings are left
+    // intact.
+    //
+    // Trade-off: when both the legacy mis-placement AND the
+    // authoritative envelope land on tool-call-owning slots, the
+    // SPA may briefly show the file on two bubbles. The redundancy
+    // contract prioritises NOT losing legitimate attachments over
+    // hiding rare visual duplicates — losing a slide button breaks
+    // the user, a duplicated button is recoverable on next refresh.
+    const cmid = "cmid-respect-other-owner";
+    const ownerToolCallId = "call_owner_path";
+    const otherToolCallId = "call_other_owns_media";
+    const sharedPath = "/decks/shared-by-media.pptx";
 
     seedThread(cmid, "ask");
     ThreadStore.appendAssistantToken(cmid, "Foreground.");
@@ -2269,6 +2278,10 @@ describe("file/attached: per-tool_call_id placement + scoped fallback (codex P2)
       },
     );
 
+    // Sibling with its own tool_call AND its own media[] from
+    // `turn/spawn_complete` (the documented redundant delivery
+    // channel) — file/attached for the sibling hasn't arrived yet
+    // (or never will, per the soak failure mode).
     handleSpawnComplete(
       { sessionId: SESSION },
       {
@@ -2282,7 +2295,8 @@ describe("file/attached: per-tool_call_id placement + scoped fallback (codex P2)
         source: "background",
         cursor: { stream: SESSION, seq: 4 },
         persisted_at: "2026-05-04T00:00:00Z",
-        content: "Other sibling has its own tool call.",
+        content: "Other sibling.",
+        media: [sharedPath],
       },
     );
     handleToolStarted(
@@ -2294,40 +2308,30 @@ describe("file/attached: per-tool_call_id placement + scoped fallback (codex P2)
         tool_name: "mofa_slides",
       },
     );
-    // Force the stale path onto the sibling-with-tool-call (the exact
-    // shape codex pointed at: legacy mis-routing hit a slot that
-    // happens to have its OWN tool_call, NOT the naive-no-toolcall
-    // pattern).
-    ThreadStore.appendAssistantFile(cmid, {
-      filename: "mis-routed-on-tc-slot.pptx",
-      path: stalePath,
-      caption: "",
-    });
 
-    // Sanity: file is on response[1] (latest) which DOES have a
-    // tool_call (otherToolCallId), NOT on response[0] (owner).
+    // Sanity: response[1] (other owner) holds `sharedPath`; response[0]
+    // (target owner) does not.
     const before = ThreadStore.getThreads(SESSION)[0];
-    expect(before.responses[1].toolCalls.map((tc) => tc.id)).toContain(
-      otherToolCallId,
-    );
-    expect(before.responses[1].files.map((f) => f.path)).toEqual([stalePath]);
+    expect(before.responses[1].files.map((f) => f.path)).toEqual([sharedPath]);
+    expect(before.responses[0].files.map((f) => f.path)).toEqual([]);
 
-    // Authoritative envelope claims `stalePath` for `ownerToolCallId`.
+    // `file/attached` for `ownerToolCallId` lands.
     handleFileAttached(
       { sessionId: SESSION },
       {
         session_id: SESSION,
         turn_id: cmid,
         tool_call_id: ownerToolCallId,
-        path: stalePath,
+        path: sharedPath,
       },
     );
 
     const [thread] = ThreadStore.getThreads(SESSION);
-    // Owner gets the file; sibling-with-tool-call is stripped (no
-    // matching claim for `otherToolCallId`).
-    expect(thread.responses[0].files.map((f) => f.path)).toEqual([stalePath]);
-    expect(thread.responses[1].files.map((f) => f.path)).toEqual([]);
+    // Owner gets the file; the OTHER tool-call-owning sibling
+    // keeps its `media[]`-delivered copy untouched. The redundancy
+    // contract is honoured: no legitimate attachment is lost.
+    expect(thread.responses[0].files.map((f) => f.path)).toEqual([sharedPath]);
+    expect(thread.responses[1].files.map((f) => f.path)).toEqual([sharedPath]);
   });
 
   it("attaches the file to a still-pending assistant when the tool call hangs off pendingAssistant", () => {
