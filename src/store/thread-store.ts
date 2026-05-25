@@ -1604,6 +1604,256 @@ export function appendAssistantFile(
 }
 
 /**
+ * Attach a delivered file to the SPECIFIC assistant response that owns
+ * `toolCallId`. Used by the `file/attached` envelope router (codex P2
+ * round, 2026-05-25): the previous code path mutated the latest
+ * assistant message in the thread, which mis-routed deliveries when a
+ * turn contained multiple spawn_only completions or when the envelope
+ * replayed AFTER another assistant response was appended.
+ *
+ * Lookup order matches `findThreadIdForToolCall`: pending in-flight
+ * assistant first (the spawn_only tool call may still be running), then
+ * `responses` most-recent-first (the foreground bubble already
+ * finalised).
+ *
+ * Cross-slot dedupe (codex round 2, 2026-05-25): the richer-envelope
+ * reducers (`tryPromotePendingFromPersisted`,
+ * `appendCompletionBubble` via the legacy `appendAssistantFile`
+ * fallback) MAY have already attached the same `path` to a DIFFERENT
+ * assistant slot in the thread (the "latest sibling" placement that
+ * `file/attached` exists to correct). This handler treats the
+ * `tool_call_id` envelope as the AUTHORITATIVE placement signal —
+ * remove a stale copy from any other assistant slot first, then attach
+ * to the owner. Without this, the same artefact would render on two
+ * sibling bubbles after the safety net runs (codex 2026-05-25 round 2).
+ *
+ * Path-deduplicated within the owner slot so repeated envelopes are
+ * no-ops.
+ *
+ * Returns `true` when the file landed on (or was already attached to)
+ * the owning bubble, `false` when no assistant message in the thread
+ * owns `toolCallId` (caller should fall back or drop).
+ */
+export function appendAssistantFileToToolCall(
+  threadId: string,
+  toolCallId: string,
+  file: MessageFile,
+): boolean {
+  if (!toolCallId) return false;
+  const found = findThreadById(threadId);
+  if (!found) return false;
+  const thread = found.thread;
+
+  // Locate the specific assistant message that owns `toolCallId`.
+  // Pending first (still-running spawn_only), then finalised responses
+  // (most-recent-first matches `findThreadIdForToolCall`).
+  let slot: ThreadMessage | null = null;
+  if (thread.pendingAssistant?.toolCalls.some((tc) => tc.id === toolCallId)) {
+    slot = thread.pendingAssistant;
+  } else {
+    for (let i = thread.responses.length - 1; i >= 0; i -= 1) {
+      const r = thread.responses[i];
+      if (r.role !== "assistant") continue;
+      if (r.toolCalls.some((tc) => tc.id === toolCallId)) {
+        slot = r;
+        break;
+      }
+    }
+  }
+  if (!slot) return false;
+
+  // Path dedupe on the owner slot: a redundant replay of the same
+  // envelope is a no-op. Cross-slot cleanup (stripping stale copies
+  // from sibling assistant slots without burning a legitimate
+  // distinct-tool-call delivery) is the router's responsibility,
+  // because only the router has the claim registry of which
+  // `tool_call_id`s have authoritatively claimed which paths
+  // (`seenFileAttachments` keyed by `(threadId, tool_call_id, path)`).
+  // See `handleFileAttached` for the cross-slot cleanup path.
+  const ownerHasPath = slot.files.some((f) => f.path === file.path);
+  if (!ownerHasPath) {
+    // Codex round-3 immutable-slot fix: `ThreadAssistantBubble` is
+    // wrapped in `React.memo`, so mutating `slot.files` in place
+    // leaves the memoized bubble holding a stale reference and the
+    // repaint never happens. `replaceAssistantSlot` swaps in a fresh
+    // `ThreadMessage` so the bubble re-renders.
+    replaceAssistantSlot(thread, slot, {
+      ...slot,
+      files: [...slot.files, file],
+    });
+    notify();
+
+    // M9-γ-3 dual-write parity with `appendAssistantFile`.
+    if (isProjectionV1Enabled()) {
+      const key = shimResolveKey(threadId);
+      if (key) {
+        shimIngest(key, threadId, {
+          type: "file_attached",
+          data: {
+            path: file.path,
+            mime: "",
+            size_bytes: 0,
+          },
+        });
+      }
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Remove a file path from a SPECIFIC assistant slot in a thread,
+ * identified by any tool_call_id the slot owns. Used by the
+ * `file/attached` router's cross-slot dedupe (codex round 4,
+ * 2026-05-25): when an authoritative envelope claims `path` for a
+ * specific tool_call, the router walks every OTHER slot in the thread
+ * and strips stale copies — but only when the router's per-thread
+ * claim registry confirms no other tool_call has claimed the same
+ * path on that slot.
+ *
+ * The lookup uses `slotToolCallId` rather than a slot reference
+ * because the router only knows tool_call ids, not slot identities;
+ * the store finds the assistant message whose `toolCalls` contain
+ * `slotToolCallId` and strips `path` from its files via
+ * `replaceAssistantSlot` (immutable swap, `React.memo` repaints).
+ *
+ * Returns `true` when a file was actually stripped, `false` when the
+ * slot was not found OR the path was not present.
+ */
+export function stripFileFromAssistantSlot(
+  threadId: string,
+  slotToolCallId: string,
+  path: string,
+): boolean {
+  if (!slotToolCallId) return false;
+  const found = findThreadById(threadId);
+  if (!found) return false;
+  const thread = found.thread;
+
+  let slot: ThreadMessage | null = null;
+  if (thread.pendingAssistant?.toolCalls.some((tc) => tc.id === slotToolCallId)) {
+    slot = thread.pendingAssistant;
+  } else {
+    for (let i = thread.responses.length - 1; i >= 0; i -= 1) {
+      const r = thread.responses[i];
+      if (r.role !== "assistant") continue;
+      if (r.toolCalls.some((tc) => tc.id === slotToolCallId)) {
+        slot = r;
+        break;
+      }
+    }
+  }
+  if (!slot) return false;
+  const idx = slot.files.findIndex((f) => f.path === path);
+  if (idx === -1) return false;
+  const newFiles = slot.files.filter((_, i) => i !== idx);
+  replaceAssistantSlot(thread, slot, { ...slot, files: newFiles });
+  notify();
+  return true;
+}
+
+/**
+ * Strip `path` from the no-tool-call sibling that legacy
+ * `appendAssistantFile` would have targeted. Used by the
+ * `file/attached` router's cross-slot dedupe for the "naive media
+ * sibling" pattern: a spawn-ack/foreground bubble with no tool_calls
+ * that absorbed the path via the latest-sibling fallback. Slots that
+ * own their own tool calls are handled separately by the router via
+ * `stripFileFromAssistantSlot` after consulting its claim registry.
+ *
+ * Returns `true` when a file was stripped, `false` otherwise.
+ */
+export function stripFileFromNaiveSiblings(
+  threadId: string,
+  excludeSlotToolCallId: string,
+  path: string,
+): boolean {
+  const found = findThreadById(threadId);
+  if (!found) return false;
+  const thread = found.thread;
+  let mutated = false;
+
+  const tryStrip = (other: ThreadMessage): void => {
+    if (other.role !== "assistant") return;
+    // Skip the owner slot (carries excludeSlotToolCallId).
+    if (
+      excludeSlotToolCallId &&
+      other.toolCalls.some((tc) => tc.id === excludeSlotToolCallId)
+    ) {
+      return;
+    }
+    // Skip slots with their own tool_calls — router handles those.
+    if (other.toolCalls.length > 0) return;
+    const idx = other.files.findIndex((f) => f.path === path);
+    if (idx === -1) return;
+    const newFiles = other.files.filter((_, i) => i !== idx);
+    replaceAssistantSlot(thread, other, { ...other, files: newFiles });
+    mutated = true;
+  };
+  if (thread.pendingAssistant) tryStrip(thread.pendingAssistant);
+  for (const r of [...thread.responses]) tryStrip(r);
+  if (mutated) notify();
+  return mutated;
+}
+
+/**
+ * Read-only: list every assistant slot in `threadId` and the
+ * tool_call_ids each one owns. Used by the `file/attached` router
+ * (codex round 4) to walk siblings carrying the just-claimed path
+ * and consult its per-thread claim registry: a sibling slot whose
+ * tool_calls intersect the claim set legitimately owns the path;
+ * otherwise the copy is stale and the router calls
+ * `stripFileFromAssistantSlot` to remove it.
+ *
+ * Returns rows in the same order ThreadStore exposes through
+ * `getThreads` — pending first, then `responses` in arrival order.
+ * Empty when the thread is not found.
+ */
+export function snapshotAssistantSlots(
+  threadId: string,
+): { toolCallIds: string[]; paths: string[] }[] {
+  const found = findThreadById(threadId);
+  if (!found) return [];
+  const thread = found.thread;
+  const rows: { toolCallIds: string[]; paths: string[] }[] = [];
+  if (thread.pendingAssistant && thread.pendingAssistant.role === "assistant") {
+    rows.push({
+      toolCallIds: thread.pendingAssistant.toolCalls.map((tc) => tc.id),
+      paths: thread.pendingAssistant.files.map((f) => f.path),
+    });
+  }
+  for (const r of thread.responses) {
+    if (r.role !== "assistant") continue;
+    rows.push({
+      toolCallIds: r.toolCalls.map((tc) => tc.id),
+      paths: r.files.map((f) => f.path),
+    });
+  }
+  return rows;
+}
+
+/**
+ * Return `true` when `threadId` exists in the (sessionId, topic) scope.
+ * Used by the `file/attached` router's turn-id fallback (codex P2, round
+ * 2026-05-25) to scope orphan-thread minting to the active session —
+ * pre-fix the fallback walked every loaded `SessionState` and could
+ * route an artefact to a stale session that was still resident in
+ * memory.
+ */
+export function hasThreadInScope(
+  sessionId: string,
+  topic: string | undefined,
+  threadId: string,
+): boolean {
+  if (!threadId) return false;
+  const key = storeKey(sessionId, topic);
+  const state = sessionsByKey.get(key);
+  if (!state) return false;
+  return state.byId.has(threadId);
+}
+
+/**
  * M10 Phase 5b: stamp the per-thread server seq onto the in-flight
  * `pendingAssistant` without finalising it. Used by the v1 router's
  * empty-placeholder defence: when an assistant `message/persisted`

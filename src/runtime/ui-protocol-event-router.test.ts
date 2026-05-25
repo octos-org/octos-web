@@ -18,6 +18,7 @@ import {
   __resetTurnMetaForTest,
   attachRouter,
   handleApprovalRequested,
+  handleFileAttached,
   handleMessageDelta,
   handleMessagePersisted,
   handleProgressUpdated,
@@ -36,6 +37,7 @@ import {
 } from "./ui-protocol-event-router";
 import type {
   ApprovalRequestedEvent,
+  FileAttachedEvent,
   MessageDeltaEvent,
   MessagePersistedEvent,
   ProgressUpdatedEvent,
@@ -1775,6 +1777,600 @@ describe("router event mapping", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Codex P2 round (2026-05-25, octos-web PR #156): file/attached routing
+// MUST target the assistant message owning `tool_call_id` AND scope the
+// turn-id fallback to the active session.
+// ---------------------------------------------------------------------------
+
+describe("file/attached: per-tool_call_id placement + scoped fallback (codex P2)", () => {
+  function seedFinalizedToolCall(opts: {
+    cmid: string;
+    toolCallId: string;
+    toolName: string;
+    text?: string;
+    committedSeq?: number;
+  }): void {
+    seedThread(opts.cmid, "ask");
+    ThreadStore.appendAssistantToken(opts.cmid, opts.text ?? "Background work started.");
+    ThreadStore.finalizeAssistant(opts.cmid, {
+      committedSeq: opts.committedSeq ?? 4,
+    });
+    handleToolStarted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: opts.cmid,
+        tool_call_id: opts.toolCallId,
+        tool_name: opts.toolName,
+      },
+    );
+  }
+
+  it("targets the assistant response owning tool_call_id, not the latest sibling", () => {
+    // Turn has TWO spawn_only completions. The first tool call lives on
+    // response[0]; the second on response[1] (sibling). A `file/attached`
+    // envelope for the FIRST tool call MUST attach to response[0], not
+    // the latest response[1] (the pre-fix behaviour).
+    const cmid = "cmid-multi-spawn";
+    const firstToolCallId = "call_pptx_first";
+    const secondToolCallId = "call_pptx_second";
+
+    seedThread(cmid, "make two decks");
+    // Foreground bubble + first tool call attached to response[0].
+    ThreadStore.appendAssistantToken(cmid, "First deck queued.");
+    ThreadStore.finalizeAssistant(cmid, { committedSeq: 3 });
+    handleToolStarted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: firstToolCallId,
+        tool_name: "mofa_slides",
+      },
+    );
+
+    // Second assistant row via `turn/spawn_complete` — this is how a
+    // sibling spawn_only completion lands in the same thread. Then
+    // register the second tool call on this new row.
+    handleSpawnComplete(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        thread_id: cmid,
+        task_id: "task_second_deck",
+        response_to_client_message_id: cmid,
+        seq: 5,
+        message_id: "msg-second-deck",
+        source: "background",
+        cursor: { stream: SESSION, seq: 5 },
+        persisted_at: "2026-05-04T00:00:00Z",
+        content: "Second deck queued.",
+      },
+    );
+    handleToolStarted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: secondToolCallId,
+        tool_name: "mofa_slides",
+      },
+    );
+
+    const before = ThreadStore.getThreads(SESSION)[0];
+    // Sanity: two rows, second one owns secondToolCallId.
+    expect(before.responses).toHaveLength(2);
+    expect(
+      before.responses[1].toolCalls.some((tc) => tc.id === secondToolCallId),
+    ).toBe(true);
+    expect(
+      before.responses[0].toolCalls.some((tc) => tc.id === firstToolCallId),
+    ).toBe(true);
+
+    // Envelope for the FIRST tool call.
+    handleFileAttached(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: firstToolCallId,
+        path: "/decks/first.pptx",
+      },
+    );
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    // First response gets the file (it owns firstToolCallId).
+    expect(thread.responses[0].files.map((f) => f.path)).toEqual([
+      "/decks/first.pptx",
+    ]);
+    // Second response (latest sibling) MUST stay empty — pre-fix it would
+    // have received the file because `appendAssistantFile` picks the
+    // latest assistant slot in the thread.
+    expect(thread.responses[1].files).toEqual([]);
+  });
+
+  it("dedupes replays of the same envelope on the same tool_call_id + path", () => {
+    const cmid = "cmid-replay";
+    const toolCallId = "call_pptx_replay";
+    seedFinalizedToolCall({ cmid, toolCallId, toolName: "mofa_slides" });
+
+    const evt: FileAttachedEvent = {
+      session_id: SESSION,
+      turn_id: cmid,
+      tool_call_id: toolCallId,
+      path: "/decks/replay.pptx",
+    };
+    handleFileAttached({ sessionId: SESSION }, evt);
+    handleFileAttached({ sessionId: SESSION }, evt);
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    // EXACTLY one file entry on the bubble — the replay is a no-op.
+    const files = thread.responses[0].files.filter(
+      (f) => f.path === "/decks/replay.pptx",
+    );
+    expect(files).toHaveLength(1);
+  });
+
+  it("drops envelopes with no tool_call_id whose turn_id resolves to a non-active session", () => {
+    // Stale session bucket still resident in ThreadStore.
+    const STALE = "sess-stale-fa";
+    const ACTIVE = "sess-active-fa";
+    const staleCmid = "cmid-stale-fa";
+    const activeCmid = "cmid-active-fa";
+    ThreadStore.addUserMessage(STALE, {
+      text: "old",
+      clientMessageId: staleCmid,
+    });
+    ThreadStore.addUserMessage(ACTIVE, {
+      text: "new",
+      clientMessageId: activeCmid,
+    });
+
+    // Envelope carries `turn_id = staleCmid` and NO tool_call_id. The
+    // active router (`sessionId: ACTIVE`) MUST drop rather than route
+    // into the stale session.
+    handleFileAttached(
+      { sessionId: ACTIVE },
+      {
+        session_id: ACTIVE,
+        turn_id: staleCmid,
+        path: "/decks/wrong-session.pptx",
+      },
+    );
+
+    const [staleThread] = ThreadStore.getThreads(STALE);
+    // Stale session's thread untouched — no file attached anywhere.
+    // `addUserMessage` mints a `pendingAssistant` placeholder, so we
+    // assert that placeholder carries no `files`, AND that no response
+    // row was promoted/appended on the stale session.
+    expect(staleThread.responses).toHaveLength(0);
+    expect(staleThread.pendingAssistant?.files ?? []).toEqual([]);
+    expect(staleThread.userMsg.files).toEqual([]);
+    // ACTIVE thread is also untouched (no orphan bubble minted there).
+    const [activeThread] = ThreadStore.getThreads(ACTIVE);
+    expect(activeThread.responses).toHaveLength(0);
+    expect(activeThread.pendingAssistant?.files ?? []).toEqual([]);
+  });
+
+  it("uses turn_id fallback when tool_call_id is absent AND turn_id resolves inside active scope", () => {
+    // Preserves the existing fallback behaviour: an envelope without a
+    // tool_call_id whose `turn_id` matches a thread in the ACTIVE
+    // session attaches via `appendAssistantFile` (pending or latest
+    // finalized).
+    const cmid = "cmid-fallback-active";
+    seedThread(cmid, "ask");
+    ThreadStore.appendAssistantToken(cmid, "Body.");
+    ThreadStore.finalizeAssistant(cmid, { committedSeq: 2 });
+
+    handleFileAttached(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        // tool_call_id intentionally omitted.
+        path: "/decks/fallback.pptx",
+      },
+    );
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses[0].files.map((f) => f.path)).toEqual([
+      "/decks/fallback.pptx",
+    ]);
+  });
+
+  it("drops envelopes whose tool_call_id matches no registered tool call AND turn_id is out of scope", () => {
+    // Defence-in-depth: tool_call_id is present but unknown to
+    // ThreadStore (e.g. the bubble has already been evicted on a
+    // hydrate cycle), and the turn_id fallback can't find the thread
+    // in the active session. The router MUST drop rather than mint
+    // an orphan bubble.
+    const ACTIVE = "sess-active-drop";
+    ThreadStore.addUserMessage(ACTIVE, {
+      text: "new",
+      clientMessageId: "cmid-active-drop",
+    });
+
+    handleFileAttached(
+      { sessionId: ACTIVE },
+      {
+        session_id: ACTIVE,
+        turn_id: "cmid-ghost",
+        tool_call_id: "call_ghost_nowhere",
+        path: "/decks/ghost.pptx",
+      },
+    );
+
+    const threads = ThreadStore.getThreads(ACTIVE);
+    expect(threads).toHaveLength(1);
+    // Active thread untouched.
+    expect(threads[0].responses).toHaveLength(0);
+    expect(threads[0].userMsg.files).toEqual([]);
+  });
+
+  it("moves a stale copy off the wrong sibling onto the tool_call_id owner (codex round 2)", () => {
+    // Codex round-2 P2: the richer-envelope reducers
+    // (`tryPromotePendingFromPersisted`, etc.) MAY have already
+    // attached the same path to the "latest sibling" bubble. When
+    // `file/attached` then arrives with the authoritative
+    // `tool_call_id`, the same artefact MUST NOT render on two
+    // sibling bubbles. Pre-fix the stale copy stayed put and the
+    // owner-slot got a second copy → duplicate render.
+    const cmid = "cmid-cross-slot";
+    const ownerToolCallId = "call_pptx_owner";
+    const stalePath = "/decks/from-message-persisted.pptx";
+
+    seedThread(cmid, "ask");
+    // First assistant row owns the tool call.
+    ThreadStore.appendAssistantToken(cmid, "First.");
+    ThreadStore.finalizeAssistant(cmid, { committedSeq: 2 });
+    handleToolStarted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: ownerToolCallId,
+        tool_name: "mofa_slides",
+      },
+    );
+
+    // Add a second sibling row via spawn_complete and PRE-LOAD the
+    // file there to simulate `appendAssistantFile` landing on the
+    // wrong "latest" sibling.
+    handleSpawnComplete(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        thread_id: cmid,
+        task_id: "task_unrelated",
+        response_to_client_message_id: cmid,
+        seq: 4,
+        message_id: "msg-sibling",
+        source: "background",
+        cursor: { stream: SESSION, seq: 4 },
+        persisted_at: "2026-05-04T00:00:00Z",
+        content: "Sibling.",
+      },
+    );
+    // Force a stale file onto the latest sibling — the exact bug shape
+    // codex pointed at (richer-envelope reducer mis-routed).
+    ThreadStore.appendAssistantFile(cmid, {
+      filename: "from-message-persisted.pptx",
+      path: stalePath,
+      caption: "",
+    });
+
+    // Sanity: the file is on response[1] (latest), not response[0].
+    const before = ThreadStore.getThreads(SESSION)[0];
+    expect(before.responses[0].files.map((f) => f.path)).toEqual([]);
+    expect(before.responses[1].files.map((f) => f.path)).toEqual([stalePath]);
+
+    // `file/attached` envelope corrects placement: owner is
+    // response[0] (carries `ownerToolCallId`).
+    handleFileAttached(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: ownerToolCallId,
+        path: stalePath,
+      },
+    );
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    // File moved: owner gets it, sibling no longer has it.
+    expect(thread.responses[0].files.map((f) => f.path)).toEqual([stalePath]);
+    expect(thread.responses[1].files.map((f) => f.path)).toEqual([]);
+  });
+
+  it("preserves same-path files on OTHER tool-call owners (codex round 3)", () => {
+    // Codex round-3 narrowing: when two distinct background completions
+    // legitimately share a media path (e.g. each tool call delivered
+    // `/decks/shared.pptx` because they synthesised the same artefact
+    // for the same prompt), both owners MUST retain their copy.
+    // Pre-fix the cross-slot cleanup stripped the file from the earlier
+    // tool-call owner as soon as the LATER `file/attached` for a
+    // different tool_call_id landed.
+    const cmid = "cmid-shared-path";
+    const firstToolCallId = "call_pptx_first_owner";
+    const secondToolCallId = "call_pptx_second_owner";
+    const sharedPath = "/decks/shared.pptx";
+
+    seedThread(cmid, "ask");
+    ThreadStore.appendAssistantToken(cmid, "First.");
+    ThreadStore.finalizeAssistant(cmid, { committedSeq: 2 });
+    handleToolStarted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: firstToolCallId,
+        tool_name: "mofa_slides",
+      },
+    );
+
+    handleSpawnComplete(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        thread_id: cmid,
+        task_id: "task_second",
+        response_to_client_message_id: cmid,
+        seq: 4,
+        message_id: "msg-second",
+        source: "background",
+        cursor: { stream: SESSION, seq: 4 },
+        persisted_at: "2026-05-04T00:00:00Z",
+        content: "Second.",
+      },
+    );
+    handleToolStarted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: secondToolCallId,
+        tool_name: "mofa_slides",
+      },
+    );
+
+    // First envelope: shared path delivered for the FIRST owner.
+    handleFileAttached(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: firstToolCallId,
+        path: sharedPath,
+      },
+    );
+
+    // Sanity: first owner has the file, second doesn't yet.
+    const mid = ThreadStore.getThreads(SESSION)[0];
+    expect(mid.responses[0].files.map((f) => f.path)).toEqual([sharedPath]);
+    expect(mid.responses[1].files.map((f) => f.path)).toEqual([]);
+
+    // Second envelope: SAME shared path delivered for the SECOND
+    // owner. The first owner's copy MUST stay (sibling has its OWN
+    // tool call; not the "naive media sibling" that legacy
+    // mis-placement targets).
+    handleFileAttached(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: secondToolCallId,
+        path: sharedPath,
+      },
+    );
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.responses[0].files.map((f) => f.path)).toEqual([sharedPath]);
+    expect(thread.responses[1].files.map((f) => f.path)).toEqual([sharedPath]);
+  });
+
+  it("replaces the mutated ThreadMessage so React.memo repaints (codex round 3)", () => {
+    // Codex round-3 immutable-slot finding: `ThreadAssistantBubble` is
+    // wrapped in `React.memo`. If `appendAssistantFileToToolCall`
+    // mutates `slot.files` in place, the bubble holds the same
+    // `message` reference and won't repaint — the stale file stays
+    // visible. Assert that BOTH the owner slot AND the stripped sibling
+    // get a fresh `ThreadMessage` reference after the envelope runs.
+    const cmid = "cmid-repaint";
+    const ownerToolCallId = "call_pptx_owner_repaint";
+    const stalePath = "/decks/repaint.pptx";
+
+    seedThread(cmid, "ask");
+    ThreadStore.appendAssistantToken(cmid, "Foreground.");
+    ThreadStore.finalizeAssistant(cmid, { committedSeq: 2 });
+    handleToolStarted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: ownerToolCallId,
+        tool_name: "mofa_slides",
+      },
+    );
+
+    // Sibling row WITHOUT a tool call (the legacy mis-routing target).
+    handleSpawnComplete(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        thread_id: cmid,
+        task_id: "task_naive_sibling",
+        response_to_client_message_id: cmid,
+        seq: 4,
+        message_id: "msg-naive",
+        source: "background",
+        cursor: { stream: SESSION, seq: 4 },
+        persisted_at: "2026-05-04T00:00:00Z",
+        content: "Naive sibling.",
+      },
+    );
+    // Pre-load the stale file onto the naive sibling.
+    ThreadStore.appendAssistantFile(cmid, {
+      filename: "repaint.pptx",
+      path: stalePath,
+      caption: "",
+    });
+
+    const before = ThreadStore.getThreads(SESSION)[0];
+    const ownerBefore = before.responses[0];
+    const siblingBefore = before.responses[1];
+
+    handleFileAttached(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: ownerToolCallId,
+        path: stalePath,
+      },
+    );
+
+    const after = ThreadStore.getThreads(SESSION)[0];
+    // Identity changed for the owner (file added) — React.memo will
+    // diff and repaint.
+    expect(after.responses[0]).not.toBe(ownerBefore);
+    // Identity changed for the sibling (file stripped) — repaint OK.
+    expect(after.responses[1]).not.toBe(siblingBefore);
+    expect(after.responses[0].files.map((f) => f.path)).toEqual([stalePath]);
+    expect(after.responses[1].files.map((f) => f.path)).toEqual([]);
+  });
+
+  it("does NOT strip same-path file from a sibling that has its own tool_call (codex round 5)", () => {
+    // Codex round-5 narrowing: absence of a `file/attached` claim is
+    // not proof of staleness on a tool-call-owning sibling. The
+    // sibling may legitimately own the path via the redundant
+    // `media[]` delivery channel (which `file/attached` complements,
+    // per the redundancy contract) before its own claim envelope
+    // arrives — or its `file/attached` may be absent entirely on
+    // hydrate / fallback paths. Cleanup is limited to "naive media
+    // siblings" (NO tool_calls); tool-call-owning siblings are left
+    // intact.
+    //
+    // Trade-off: when both the legacy mis-placement AND the
+    // authoritative envelope land on tool-call-owning slots, the
+    // SPA may briefly show the file on two bubbles. The redundancy
+    // contract prioritises NOT losing legitimate attachments over
+    // hiding rare visual duplicates — losing a slide button breaks
+    // the user, a duplicated button is recoverable on next refresh.
+    const cmid = "cmid-respect-other-owner";
+    const ownerToolCallId = "call_owner_path";
+    const otherToolCallId = "call_other_owns_media";
+    const sharedPath = "/decks/shared-by-media.pptx";
+
+    seedThread(cmid, "ask");
+    ThreadStore.appendAssistantToken(cmid, "Foreground.");
+    ThreadStore.finalizeAssistant(cmid, { committedSeq: 2 });
+    handleToolStarted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: ownerToolCallId,
+        tool_name: "mofa_slides",
+      },
+    );
+
+    // Sibling with its own tool_call AND its own media[] from
+    // `turn/spawn_complete` (the documented redundant delivery
+    // channel) — file/attached for the sibling hasn't arrived yet
+    // (or never will, per the soak failure mode).
+    handleSpawnComplete(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        thread_id: cmid,
+        task_id: "task_other",
+        response_to_client_message_id: cmid,
+        seq: 4,
+        message_id: "msg-other",
+        source: "background",
+        cursor: { stream: SESSION, seq: 4 },
+        persisted_at: "2026-05-04T00:00:00Z",
+        content: "Other sibling.",
+        media: [sharedPath],
+      },
+    );
+    handleToolStarted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: otherToolCallId,
+        tool_name: "mofa_slides",
+      },
+    );
+
+    // Sanity: response[1] (other owner) holds `sharedPath`; response[0]
+    // (target owner) does not.
+    const before = ThreadStore.getThreads(SESSION)[0];
+    expect(before.responses[1].files.map((f) => f.path)).toEqual([sharedPath]);
+    expect(before.responses[0].files.map((f) => f.path)).toEqual([]);
+
+    // `file/attached` for `ownerToolCallId` lands.
+    handleFileAttached(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: ownerToolCallId,
+        path: sharedPath,
+      },
+    );
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    // Owner gets the file; the OTHER tool-call-owning sibling
+    // keeps its `media[]`-delivered copy untouched. The redundancy
+    // contract is honoured: no legitimate attachment is lost.
+    expect(thread.responses[0].files.map((f) => f.path)).toEqual([sharedPath]);
+    expect(thread.responses[1].files.map((f) => f.path)).toEqual([sharedPath]);
+  });
+
+  it("attaches the file to a still-pending assistant when the tool call hangs off pendingAssistant", () => {
+    // Edge: a tool call registered on the still-in-flight
+    // pendingAssistant (foreground turn with a spawn_only nested
+    // call) must still receive the file when the envelope arrives
+    // before `finalizeAssistant`.
+    const cmid = "cmid-pending";
+    const toolCallId = "call_pending_pptx";
+    seedThread(cmid, "ask");
+    ThreadStore.appendAssistantToken(cmid, "Streaming…");
+    handleToolStarted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: toolCallId,
+        tool_name: "mofa_slides",
+      },
+    );
+
+    handleFileAttached(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: toolCallId,
+        path: "/decks/pending.pptx",
+      },
+    );
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.pendingAssistant?.files.map((f) => f.path)).toEqual([
+      "/decks/pending.pptx",
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Parity: feed equivalent SSE-shaped and v1 events into their respective
 // handlers and assert the ThreadStore terminal state matches.
 // ---------------------------------------------------------------------------
@@ -2008,6 +2604,7 @@ class FakeBridge implements UiProtocolBridge {
   emitMessageDelta?: (e: MessageDeltaEvent) => void;
   emitMessagePersisted?: (e: MessagePersistedEvent) => void;
   emitSpawnComplete?: (e: TurnSpawnCompleteEvent) => void;
+  emitFileAttached?: (e: FileAttachedEvent) => void;
   emitTaskUpdated?: (e: TaskUpdatedEvent) => void;
   emitTaskOutputDelta?: (e: TaskOutputDeltaEvent) => void;
   emitTurnLifecycle?: (
@@ -2050,6 +2647,12 @@ class FakeBridge implements UiProtocolBridge {
     this.emitSpawnComplete = h;
     return () => {
       this.emitSpawnComplete = undefined;
+    };
+  }
+  onFileAttached(h: (e: FileAttachedEvent) => void) {
+    this.emitFileAttached = h;
+    return () => {
+      this.emitFileAttached = undefined;
     };
   }
   onTaskUpdated(h: (e: TaskUpdatedEvent) => void) {

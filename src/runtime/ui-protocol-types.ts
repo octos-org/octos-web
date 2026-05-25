@@ -275,6 +275,50 @@ export interface TurnSpawnCompleteEvent {
   media?: string[];
 }
 
+/**
+ * UPCR-2026-014 M9-α-9 `file/attached` notification — one envelope per
+ * artefact delivered by a `spawn_only` background tool.
+ *
+ * Capability-gated on `event.file_attached.v1`. Servers that negotiate
+ * the feature emit ONE envelope per unique path across the background
+ * payload's persist-media + envelope-only-media lists, deduplicated
+ * server-side. The envelope rides on the same per-session WS broadcast
+ * as `message/persisted` / `turn/spawn_complete` and is filtered out
+ * for clients that didn't negotiate the capability.
+ *
+ * Coexistence: `file/attached` is REDUNDANT with the `media` arrays
+ * already carried on `message/persisted` and `turn/spawn_complete`.
+ * SPA reducers MUST treat the envelope as a placement-tolerant safety
+ * net — appending the file to the host bubble identified by
+ * `tool_call_id` (preferred) or `turn_id` (fallback), and silently
+ * dropping when the host can't be located rather than minting an
+ * orphan bubble. Mirrors the server's slides soak motivation: when
+ * the richer-envelope reducers drop a delivery (placement bug,
+ * sticky-thread drift, etc.), this signal still surfaces a clickable
+ * button.
+ */
+export interface FileAttachedEvent {
+  session_id: string;
+  /** REQUIRED — placement context. The originating `spawn_only` tool
+   *  call landed under this turn. */
+  turn_id: string;
+  /** Absolute or workspace-relative path the server resolved for the
+   *  artefact. Clients route through `buildAuthenticatedFileUrl()` for
+   *  the actual fetch URL. */
+  path: string;
+  /** Optional. The LLM-emitted `tool_call_id` of the originating
+   *  `spawn_only` tool call. Strongest placement signal — when
+   *  present, the SPA reducer attaches the file to the bubble that
+   *  hosts this tool call. Absent on edge-case callers without a
+   *  tracked tool call (rare). */
+  tool_call_id?: string;
+  /** Optional MIME hint. Server populates from extension for the
+   *  artefact families spawn_only producers actually emit (`.pptx`,
+   *  `.md`, `.mp3`, `.html`, image/video). Clients fall back to
+   *  extension-based detection when absent. */
+  mime?: string;
+}
+
 export interface TaskUpdatedEvent {
   session_id: string;
   /** Optional. Server's `TaskUpdatedEvent` struct does NOT carry

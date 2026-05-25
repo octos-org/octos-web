@@ -24,6 +24,7 @@
 
 import type {
   ApprovalRequestedEvent,
+  FileAttachedEvent,
   MessageDeltaEvent,
   MessagePersistedEvent,
   ProgressUpdatedEvent,
@@ -45,6 +46,7 @@ import * as ThreadStore from "@/store/thread-store";
 import * as TaskStore from "@/store/task-store";
 import type { MessageMeta } from "@/store/thread-store";
 import type { MessageInfo } from "@/api/types";
+import { recordRuntimeCounter } from "./observability";
 import { isSpawnOnlyToolName } from "./spawn-only-tools";
 
 // ---------------------------------------------------------------------------
@@ -187,11 +189,42 @@ interface LastTaskState {
 }
 const lastTaskStateById = new Map<string, LastTaskState>();
 
+/**
+ * Codex P2 round (2026-05-25) — dedupe set for `file/attached`
+ * envelopes. The envelope's authoritative siblings (`message/persisted`,
+ * `turn/spawn_complete`) MAY redeliver the same artefact, and the
+ * envelope itself can replay across reconnects. Without a dedupe layer
+ * the file would attach twice to the owning bubble (`appendAssistantFile`
+ * is path-deduplicated but `appendAssistantFileToToolCall` was added to
+ * target a specific assistant message, and a turn with multiple
+ * spawn_only completions can produce identical `(threadId, path)` keys
+ * for DIFFERENT bubbles — so we key on `tool_call_id` too).
+ *
+ * Key shape: `${threadId}|${toolCallId ?? ""}|${path}`. Bounded by the
+ * number of artefacts the active sessions have delivered — for chat
+ * sessions that's tens, even after long-running soaks.
+ *
+ * Reset between tests via `__resetRouterStateForTest`. Production memory
+ * is reclaimed when a session is cleared via the host-app session
+ * lifecycle; the router itself doesn't observe session lifecycle so it
+ * keeps a single flat set.
+ */
+const seenFileAttachments = new Set<string>();
+
+function fileAttachKey(
+  threadId: string,
+  toolCallId: string | undefined,
+  path: string,
+): string {
+  return `${threadId}|${toolCallId ?? ""}|${path}`;
+}
+
 /** Reset the per-task state map. Tests call this between cases; production
  *  code does not need it because the map is bounded by the number of live
  *  tasks per session (~tens, never thousands). */
 export function __resetRouterStateForTest(): void {
   lastTaskStateById.clear();
+  seenFileAttachments.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -602,6 +635,144 @@ export function handleSpawnComplete(
   toolNameByCallId.delete(event.task_id);
   if (resolvedToolCallId !== event.task_id) {
     toolNameByCallId.delete(resolvedToolCallId);
+  }
+}
+
+/**
+ * UPCR-2026-014 M9-α-9 — route a `file/attached` envelope to the
+ * bubble that hosts the originating `spawn_only` tool call.
+ *
+ * Redundancy contract: this handler is the slides-soak safety net. The
+ * authoritative file-delivery path is still `message/persisted` +
+ * `turn/spawn_complete` — both carry `media[]`, and both reducers
+ * (`tryPromotePendingFromPersisted`, `handleSpawnComplete`) attach the
+ * file via `appendAssistantFile`. When those reducers drop the
+ * delivery (placement bug, sticky-thread drift, capability-filter
+ * mismatch — the 5/8 → 0/8 mini soak gap), this handler still surfaces
+ * the artefact on whichever bubble hosts the tool call.
+ *
+ * Placement priority:
+ *   1. `tool_call_id` → ThreadStore.findThreadIdForToolCall →
+ *      `appendAssistantFileToToolCall` on the assistant message that
+ *      OWNS the tool call. Pre-fix (codex P2, 2026-05-25) the handler
+ *      called `appendAssistantFile`, which targets the latest sibling
+ *      in the thread — when a turn has multiple spawn_only completions
+ *      OR the envelope replays after another assistant response has
+ *      landed, the file would attach to the wrong bubble. Targeting
+ *      by `tool_call_id` is correctness-critical.
+ *   2. `turn_id` → `appendAssistantFile` (which falls back to pending
+ *      assistant or the most-recent finalized response on the thread).
+ *      Scoped to `cfg.sessionId` / `cfg.topic` (codex P2 round 2,
+ *      2026-05-25): pre-fix the fallback walked every loaded session
+ *      and could route an artefact to a stale session that was still
+ *      resident. If the thread is missing from the active scope, the
+ *      event is DROPPED rather than silently routed to the wrong
+ *      session.
+ *   3. No placement context → drop. Better than minting an orphan
+ *      bubble that would confuse the user.
+ *
+ * Dedupe contract (codex P2 round, 2026-05-25): keyed by
+ * `(threadId, tool_call_id, path)`. A replay of the same envelope (or
+ * a same-path delivery from the richer `message/persisted` reducer
+ * AFTER this handler ran) is a no-op. The underlying store mutators
+ * are path-deduplicated, but the dedupe set here is the canonical guard
+ * so the metric / log only fires once per unique artefact.
+ */
+export function handleFileAttached(
+  cfg: RouterConfig,
+  event: FileAttachedEvent,
+): void {
+  if (!event.path || event.path.length === 0) {
+    return;
+  }
+  const file = {
+    filename: filenameFromPath(event.path),
+    path: event.path,
+    caption: "",
+  };
+
+  // Priority 1: route by tool_call_id (strongest placement signal).
+  // Target the SPECIFIC assistant message that owns the tool call,
+  // not just the latest assistant message in the thread.
+  if (event.tool_call_id) {
+    const hostThreadId = ThreadStore.findThreadIdForToolCall(
+      cfg.sessionId,
+      cfg.topic,
+      event.tool_call_id,
+    );
+    if (hostThreadId) {
+      const dedupeKey = fileAttachKey(
+        hostThreadId,
+        event.tool_call_id,
+        event.path,
+      );
+      if (seenFileAttachments.has(dedupeKey)) {
+        recordRuntimeCounter("octos_file_attached_dedup_total", {
+          surface: "router_v1",
+          path: "tool_call",
+        });
+        return;
+      }
+      const attached = ThreadStore.appendAssistantFileToToolCall(
+        hostThreadId,
+        event.tool_call_id,
+        file,
+      );
+      if (attached) {
+        seenFileAttachments.add(dedupeKey);
+
+        // Cross-slot cleanup: strip the path from "naive media
+        // siblings" — assistant slots with NO tool_calls that
+        // absorbed the path via the legacy `appendAssistantFile`
+        // latest-sibling fallback (`tryPromotePendingFromPersisted` →
+        // `pickAssistantSlot` → latest-finalized when the pending
+        // already moved). That's the documented mis-placement
+        // pattern `file/attached` exists to correct.
+        //
+        // Codex round 5 (2026-05-25): deliberately do NOT strip from
+        // siblings that HAVE their own tool_calls. Absence from the
+        // router's in-memory claim set is not proof of staleness — a
+        // sibling owner may have received the path via its own
+        // `media[]` delivery (the documented redundant channel
+        // `file/attached` complements) before its own claim envelope
+        // arrives, or its `file/attached` may be absent entirely on
+        // hydrate/fallback paths. The redundancy contract treats both
+        // delivery channels as authoritative for their respective
+        // owners; cleanup is limited to the narrow legacy
+        // mis-placement target.
+        ThreadStore.stripFileFromNaiveSiblings(
+          hostThreadId,
+          event.tool_call_id,
+          event.path,
+        );
+      }
+      return;
+    }
+  }
+
+  // Priority 2: fall back to turn_id. Scope the lookup to the active
+  // (sessionId, topic) — if the thread is missing from active scope,
+  // DROP rather than silently route to a stale session.
+  if (!event.turn_id) {
+    return;
+  }
+  if (!ThreadStore.hasThreadInScope(cfg.sessionId, cfg.topic, event.turn_id)) {
+    recordRuntimeCounter("octos_file_attached_dropped_out_of_scope_total", {
+      surface: "router_v1",
+    });
+    return;
+  }
+  const dedupeKey = fileAttachKey(event.turn_id, event.tool_call_id, event.path);
+  if (seenFileAttachments.has(dedupeKey)) {
+    recordRuntimeCounter("octos_file_attached_dedup_total", {
+      surface: "router_v1",
+      path: "turn_id",
+    });
+    return;
+  }
+  const attached = ThreadStore.appendAssistantFile(event.turn_id, file);
+  if (attached) {
+    seenFileAttachments.add(dedupeKey);
   }
 }
 
@@ -1524,6 +1695,9 @@ export function attachRouter(
   const offSpawnComplete = bridge.onSpawnComplete((e) =>
     handleSpawnComplete(cfg, e),
   );
+  const offFileAttached = bridge.onFileAttached((e) =>
+    handleFileAttached(cfg, e),
+  );
   const offTaskUpdated = bridge.onTaskUpdated((e) => handleTaskUpdated(cfg, e));
   const offTaskOutputDelta = bridge.onTaskOutputDelta((e) =>
     handleTaskOutputDelta(cfg, e),
@@ -1576,6 +1750,7 @@ export function attachRouter(
       offMessageDelta();
       offMessagePersisted();
       offSpawnComplete();
+      offFileAttached();
       offTaskUpdated();
       offTaskOutputDelta();
       offTurnLifecycle();
