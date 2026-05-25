@@ -188,3 +188,198 @@ describe("SessionTaskIndicator — constellation dot cap", () => {
     harness.unmount();
   });
 });
+
+describe("SessionTaskIndicator — pipeline child rollup (WEB-NEW-18)", () => {
+  // Repro: server emits 1 parent `run_pipeline` plus N child
+  // `pipeline:<node>` tasks all sharing one `tool_call_id`. Pre-fix the
+  // dock counted every entry, so 2 real pipelines inflated to 5–9.
+  // Post-fix: the dock rolls children under the parent by
+  // `tool_call_id`.
+
+  function seedRawTasks(tasks: BackgroundTaskInfo[]): void {
+    act(() => {
+      TaskStore.replaceTasks(SESSION, tasks);
+    });
+  }
+
+  function makePipelineFamily(
+    callId: string,
+    children: string[],
+    parentTime: number,
+  ): BackgroundTaskInfo[] {
+    const family: BackgroundTaskInfo[] = [
+      {
+        id: `parent-${callId}`,
+        tool_name: "run_pipeline",
+        tool_call_id: callId,
+        status: "running",
+        started_at: new Date(2026, 0, 1, 0, 0, parentTime).toISOString(),
+        completed_at: null,
+        output_files: [],
+        error: null,
+      },
+    ];
+    children.forEach((node, idx) => {
+      family.push({
+        id: `child-${callId}-${idx}`,
+        tool_name: `pipeline:${node}`,
+        tool_call_id: callId,
+        status: "running",
+        started_at: new Date(2026, 0, 1, 0, 0, parentTime + idx + 1).toISOString(),
+        completed_at: null,
+        output_files: [],
+        error: null,
+      });
+    });
+    return family;
+  }
+
+  it("counts 1 parent + 3 children as a single dock entry", () => {
+    seedRawTasks(
+      makePipelineFamily("call_A", ["analyze", "synthesize", "plan_and_search"], 0),
+    );
+
+    const harness = mount(
+      <SessionContext.Provider value={makeSessionCtx()}>
+        <SessionTaskIndicator />
+      </SessionContext.Provider>,
+    );
+
+    const indicator = harness.container.querySelector(
+      "[data-testid='session-task-indicator']",
+    );
+    expect(indicator).not.toBeNull();
+    expect(indicator!.getAttribute("data-task-count")).toBe("1");
+    // Single-active branch renders the parent's tool_name in the label.
+    expect(indicator!.textContent).toContain("run pipeline running");
+
+    harness.unmount();
+  });
+
+  it("counts 2 parents with distinct tool_call_ids as 2 dock entries", () => {
+    seedRawTasks([
+      ...makePipelineFamily("call_A", ["analyze", "synthesize"], 0),
+      ...makePipelineFamily("call_B", ["plan_and_search", "analyze", "synthesize"], 30),
+    ]);
+
+    const harness = mount(
+      <SessionContext.Provider value={makeSessionCtx()}>
+        <SessionTaskIndicator />
+      </SessionContext.Provider>,
+    );
+
+    const indicator = harness.container.querySelector(
+      "[data-testid='session-task-indicator']",
+    );
+    expect(indicator).not.toBeNull();
+    expect(indicator!.getAttribute("data-task-count")).toBe("2");
+    expect(indicator!.textContent).toContain("2 tasks running");
+
+    harness.unmount();
+  });
+
+  it("keeps a pipeline parent + a null-tool_call_id task as 2 entries", () => {
+    seedRawTasks([
+      ...makePipelineFamily("call_A", ["analyze", "synthesize"], 0),
+      // Non-pipeline spawn_only task with no tool_call_id (e.g. an
+      // out-of-band podcast_generate).
+      {
+        id: "task-standalone",
+        tool_name: "podcast_generate",
+        status: "running",
+        started_at: new Date(2026, 0, 1, 0, 1, 0).toISOString(),
+        completed_at: null,
+        output_files: [],
+        error: null,
+      },
+    ]);
+
+    const harness = mount(
+      <SessionContext.Provider value={makeSessionCtx()}>
+        <SessionTaskIndicator />
+      </SessionContext.Provider>,
+    );
+
+    const indicator = harness.container.querySelector(
+      "[data-testid='session-task-indicator']",
+    );
+    expect(indicator).not.toBeNull();
+    expect(indicator!.getAttribute("data-task-count")).toBe("2");
+
+    harness.unmount();
+  });
+
+  it("rolls orphan children (parent completed, children still running) to 1 entry", () => {
+    // Post-restart case: the parent row is no longer in the active set
+    // (status=completed or absent). Pre-fix the dock would show "3
+    // tasks running"; post-fix the three children collapse to 1.
+    seedRawTasks([
+      {
+        id: "parent-orphan",
+        tool_name: "run_pipeline",
+        tool_call_id: "call_orphan",
+        status: "completed",
+        started_at: new Date(2026, 0, 1, 0, 0, 0).toISOString(),
+        completed_at: new Date(2026, 0, 1, 0, 0, 10).toISOString(),
+        output_files: [],
+        error: null,
+      },
+      {
+        id: "child-orphan-0",
+        tool_name: "pipeline:analyze",
+        tool_call_id: "call_orphan",
+        status: "running",
+        started_at: new Date(2026, 0, 1, 0, 0, 1).toISOString(),
+        completed_at: null,
+        output_files: [],
+        error: null,
+      },
+      {
+        id: "child-orphan-1",
+        tool_name: "pipeline:synthesize",
+        tool_call_id: "call_orphan",
+        status: "running",
+        started_at: new Date(2026, 0, 1, 0, 0, 2).toISOString(),
+        completed_at: null,
+        output_files: [],
+        error: null,
+      },
+      {
+        id: "child-orphan-2",
+        tool_name: "pipeline:plan_and_search",
+        tool_call_id: "call_orphan",
+        status: "running",
+        started_at: new Date(2026, 0, 1, 0, 0, 3).toISOString(),
+        completed_at: null,
+        output_files: [],
+        error: null,
+      },
+    ]);
+
+    const harness = mount(
+      <SessionContext.Provider value={makeSessionCtx()}>
+        <SessionTaskIndicator />
+      </SessionContext.Provider>,
+    );
+
+    const indicator = harness.container.querySelector(
+      "[data-testid='session-task-indicator']",
+    );
+    expect(indicator).not.toBeNull();
+    expect(indicator!.getAttribute("data-task-count")).toBe("1");
+    // Label degrades to a prettified child name (the parent is
+    // `completed` and therefore not in the active set). TaskStore
+    // sorts by started_at DESC so the exact child shown depends on
+    // the store's ordering — assert only that we render an orphan
+    // pipeline label (no `pipeline:` prefix, no parent's
+    // `run_pipeline`). The count being correct is the load-bearing
+    // assertion.
+    expect(indicator!.textContent).toMatch(
+      /(analyze|synthesize|plan and search) running/u,
+    );
+    expect(indicator!.textContent).not.toContain("pipeline:");
+    expect(indicator!.textContent).not.toContain("run pipeline running");
+
+    harness.unmount();
+  });
+});
