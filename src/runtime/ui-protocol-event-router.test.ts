@@ -36,6 +36,7 @@ import {
 } from "./ui-protocol-event-router";
 import type {
   ApprovalRequestedEvent,
+  FileAttachedEvent,
   MessageDeltaEvent,
   MessagePersistedEvent,
   ProgressUpdatedEvent,
@@ -2008,6 +2009,7 @@ class FakeBridge implements UiProtocolBridge {
   emitMessageDelta?: (e: MessageDeltaEvent) => void;
   emitMessagePersisted?: (e: MessagePersistedEvent) => void;
   emitSpawnComplete?: (e: TurnSpawnCompleteEvent) => void;
+  emitFileAttached?: (e: FileAttachedEvent) => void;
   emitTaskUpdated?: (e: TaskUpdatedEvent) => void;
   emitTaskOutputDelta?: (e: TaskOutputDeltaEvent) => void;
   emitTurnLifecycle?: (
@@ -2050,6 +2052,12 @@ class FakeBridge implements UiProtocolBridge {
     this.emitSpawnComplete = h;
     return () => {
       this.emitSpawnComplete = undefined;
+    };
+  }
+  onFileAttached(h: (e: FileAttachedEvent) => void) {
+    this.emitFileAttached = h;
+    return () => {
+      this.emitFileAttached = undefined;
     };
   }
   onTaskUpdated(h: (e: TaskUpdatedEvent) => void) {

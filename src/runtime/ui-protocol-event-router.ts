@@ -24,6 +24,7 @@
 
 import type {
   ApprovalRequestedEvent,
+  FileAttachedEvent,
   MessageDeltaEvent,
   MessagePersistedEvent,
   ProgressUpdatedEvent,
@@ -603,6 +604,65 @@ export function handleSpawnComplete(
   if (resolvedToolCallId !== event.task_id) {
     toolNameByCallId.delete(resolvedToolCallId);
   }
+}
+
+/**
+ * UPCR-2026-014 M9-α-9 — route a `file/attached` envelope to the
+ * bubble that hosts the originating `spawn_only` tool call.
+ *
+ * Redundancy contract: this handler is the slides-soak safety net. The
+ * authoritative file-delivery path is still `message/persisted` +
+ * `turn/spawn_complete` — both carry `media[]`, and both reducers
+ * (`tryPromotePendingFromPersisted`, `handleSpawnComplete`) attach the
+ * file via `appendAssistantFile`. When those reducers drop the
+ * delivery (placement bug, sticky-thread drift, capability-filter
+ * mismatch — the 5/8 → 0/8 mini soak gap), this handler still surfaces
+ * the artefact on whichever bubble hosts the tool call.
+ *
+ * Placement priority:
+ *   1. `tool_call_id` → ThreadStore.findThreadIdForToolCall →
+ *      `appendAssistantFile` on the hosting bubble. Strongest signal —
+ *      the bubble that emitted the tool call is the canonical owner.
+ *   2. `turn_id` → `appendAssistantFile` (which falls back to pending
+ *      assistant or the most-recent finalized response on the thread).
+ *      Used when `tool_call_id` is absent (rare; edge-case callers
+ *      that don't track a tool call).
+ *   3. No placement context → drop. Better than minting an orphan
+ *      bubble that would confuse the user.
+ *
+ * `appendAssistantFile` is path-deduplicated: when the richer
+ * envelopes already attached the file, this re-add is a no-op.
+ */
+export function handleFileAttached(
+  cfg: RouterConfig,
+  event: FileAttachedEvent,
+): void {
+  if (!event.path || event.path.length === 0) {
+    return;
+  }
+  const file = {
+    filename: filenameFromPath(event.path),
+    path: event.path,
+    caption: "",
+  };
+
+  // Priority 1: route by tool_call_id (strongest placement signal).
+  if (event.tool_call_id) {
+    const hostThreadId = ThreadStore.findThreadIdForToolCall(
+      cfg.sessionId,
+      cfg.topic,
+      event.tool_call_id,
+    );
+    if (hostThreadId) {
+      ThreadStore.appendAssistantFile(hostThreadId, file);
+      return;
+    }
+  }
+
+  // Priority 2: fall back to turn_id. `appendAssistantFile` itself
+  // selects the right slot (pending OR most-recent finalized) so a
+  // late-arriving envelope after the bubble finalised still attaches.
+  ThreadStore.appendAssistantFile(event.turn_id, file);
 }
 
 export function handleTaskUpdated(
@@ -1524,6 +1584,9 @@ export function attachRouter(
   const offSpawnComplete = bridge.onSpawnComplete((e) =>
     handleSpawnComplete(cfg, e),
   );
+  const offFileAttached = bridge.onFileAttached((e) =>
+    handleFileAttached(cfg, e),
+  );
   const offTaskUpdated = bridge.onTaskUpdated((e) => handleTaskUpdated(cfg, e));
   const offTaskOutputDelta = bridge.onTaskOutputDelta((e) =>
     handleTaskOutputDelta(cfg, e),
@@ -1576,6 +1639,7 @@ export function attachRouter(
       offMessageDelta();
       offMessagePersisted();
       offSpawnComplete();
+      offFileAttached();
       offTaskUpdated();
       offTaskOutputDelta();
       offTurnLifecycle();

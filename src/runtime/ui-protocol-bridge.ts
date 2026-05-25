@@ -27,6 +27,7 @@ import type {
   ConnectionState,
   HydratedMessage,
   MessageDeltaEvent,
+  FileAttachedEvent,
   MessagePersistedEvent,
   ProgressUpdatedEvent,
   QueueStateEvent,
@@ -82,6 +83,7 @@ export type {
   TurnErrorEvent,
   TurnInterruptResult,
   TurnSpawnCompleteEvent,
+  FileAttachedEvent,
   TurnStartExtras,
   TurnStartInput,
   TurnStartMediaRef,
@@ -138,6 +140,13 @@ export const METHODS = {
   TURN_COMPLETED: "turn/completed",
   TURN_ERROR: "turn/error",
   TURN_SPAWN_COMPLETE: "turn/spawn_complete",
+  // UPCR-2026-014 M9-α-9: dedicated per-artefact envelope emitted by the
+  // server alongside the media carriers on message/persisted /
+  // turn/spawn_complete. The runtime routes this through
+  // ThreadStore.appendFileAttachment so the bubble's <FileAttachment>
+  // row renders even when the richer-envelope reducers miss the
+  // placement (slides soak 2026-05-24 failure mode).
+  FILE_ATTACHED: "file/attached",
   APPROVAL_REQUESTED: "approval/requested",
   WARNING: "warning",
   // Synchronous tool-call lifecycle. Server emits these as
@@ -207,6 +216,17 @@ export const UI_PROTOCOL_FEATURES = [
   // PR (Phase 2) only ADDS the new envelope handling so the migration is
   // backward-compatible during rollout.
   "event.spawn_complete.v1",
+  // UPCR-2026-014 M9-α-9 (server commit landing alongside this web PR):
+  // dedicated `file/attached` envelope per delivered artefact from any
+  // `spawn_only` background tool (mofa_slides, podcast_generate,
+  // fm_tts, deep_search, mofa_*). Runs alongside the existing media
+  // carriers on `message/persisted` / `turn/spawn_complete` as a
+  // redundant wire signal — when the richer envelopes' placement
+  // logic drops a delivery (slides soak 2026-05-24: PPTX on disk but
+  // no button on SPA), the dedicated envelope ensures the user still
+  // sees the file. Server only emits the envelope to connections that
+  // negotiated this capability.
+  "event.file_attached.v1",
   // M10 Phase 6.2 (server PR #791 / Bug C): server gates `session/hydrate`
   // RPC behind this feature when feature negotiation is present (UPCR-2026-009).
   // Without it, our hydrate dedup pass never runs because the server
@@ -356,6 +376,14 @@ export interface UiProtocolBridge {
   onMessageDelta(handler: (e: MessageDeltaEvent) => void): () => void;
   onMessagePersisted(handler: (e: MessagePersistedEvent) => void): () => void;
   onSpawnComplete(handler: (e: TurnSpawnCompleteEvent) => void): () => void;
+  /** UPCR-2026-014 M9-α-9 dedicated per-artefact envelope subscriber.
+   *  Routes one event per `file/attached` notification — the SPA
+   *  reducer attaches the file to the bubble that hosts
+   *  `tool_call_id` (preferred) or `turn_id` (fallback). Slides soak
+   *  redundancy: even when the richer envelopes' media arrays land
+   *  but the placement reducer drops them, this signal lets the
+   *  bubble surface a clickable button. */
+  onFileAttached(handler: (e: FileAttachedEvent) => void): () => void;
   onTaskUpdated(handler: (e: TaskUpdatedEvent) => void): () => void;
   onTaskOutputDelta(handler: (e: TaskOutputDeltaEvent) => void): () => void;
   onTurnLifecycle(
@@ -716,6 +744,39 @@ function guardSpawnComplete(p: unknown): TurnSpawnCompleteEvent | null {
     persisted_at: p.persisted_at,
     content: p.content,
     media,
+  };
+}
+
+/**
+ * UPCR-2026-014 M9-α-9 `file/attached` envelope guard. Fail-closed on
+ * required-field violations matching the server-side `FileAttachedEvent`
+ * struct (`crates/octos-core/src/ui_protocol.rs`):
+ *
+ *   - session_id    — non-empty string
+ *   - turn_id       — non-empty string
+ *   - path          — non-empty string
+ *   - tool_call_id  — optional non-empty string
+ *   - mime          — optional non-empty string
+ *
+ * Surfaces the envelope to subscribers only when ALL placement context
+ * (turn_id + path) is present; orphan envelopes that would mint a
+ * placeholder bubble are dropped instead.
+ */
+function guardFileAttached(p: unknown): FileAttachedEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.session_id)) return null;
+  if (!isString(p.turn_id)) return null;
+  if (!isString(p.path)) return null;
+  return {
+    session_id: p.session_id,
+    turn_id: p.turn_id,
+    path: p.path,
+    tool_call_id:
+      typeof p.tool_call_id === "string" && p.tool_call_id.length > 0
+        ? p.tool_call_id
+        : undefined,
+    mime:
+      typeof p.mime === "string" && p.mime.length > 0 ? p.mime : undefined,
   };
 }
 
@@ -1323,6 +1384,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private readonly subMessageDelta = new Subscribers<MessageDeltaEvent>();
   private readonly subMessagePersisted = new Subscribers<MessagePersistedEvent>();
   private readonly subSpawnComplete = new Subscribers<TurnSpawnCompleteEvent>();
+  private readonly subFileAttached = new Subscribers<FileAttachedEvent>();
   private readonly subTaskUpdated = new Subscribers<TaskUpdatedEvent>();
   private readonly subTaskOutputDelta = new Subscribers<TaskOutputDeltaEvent>();
   private readonly subTurnLifecycle = new Subscribers<
@@ -1367,6 +1429,10 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     [METHODS.TURN_SPAWN_COMPLETE]: {
       guard: guardSpawnComplete,
       emit: (v) => this.subSpawnComplete.emit(v as TurnSpawnCompleteEvent),
+    },
+    [METHODS.FILE_ATTACHED]: {
+      guard: guardFileAttached,
+      emit: (v) => this.subFileAttached.emit(v as FileAttachedEvent),
     },
     [METHODS.TASK_UPDATED]: {
       guard: guardTaskUpdated,
@@ -1521,6 +1587,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.subMessageDelta.clear();
     this.subMessagePersisted.clear();
     this.subSpawnComplete.clear();
+    this.subFileAttached.clear();
     this.subTaskUpdated.clear();
     this.subTaskOutputDelta.clear();
     this.subTurnLifecycle.clear();
@@ -1657,6 +1724,9 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   }
   onSpawnComplete(handler: Listener<TurnSpawnCompleteEvent>): () => void {
     return this.subSpawnComplete.add(handler);
+  }
+  onFileAttached(handler: Listener<FileAttachedEvent>): () => void {
+    return this.subFileAttached.add(handler);
   }
   onTaskUpdated(handler: Listener<TaskUpdatedEvent>): () => void {
     return this.subTaskUpdated.add(handler);

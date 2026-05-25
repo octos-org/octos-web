@@ -65,6 +65,7 @@ function stubBridgeForMessagesPage(messages: unknown[]): {
     onMessageDelta: () => () => {},
     onMessagePersisted: () => () => {},
     onSpawnComplete: () => () => {},
+    onFileAttached: () => () => {},
     onTaskUpdated: () => () => {},
     onTaskOutputDelta: () => () => {},
     onTurnLifecycle: () => () => {},
