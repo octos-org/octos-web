@@ -2008,6 +2008,82 @@ describe("file/attached: per-tool_call_id placement + scoped fallback (codex P2)
     expect(threads[0].userMsg.files).toEqual([]);
   });
 
+  it("moves a stale copy off the wrong sibling onto the tool_call_id owner (codex round 2)", () => {
+    // Codex round-2 P2: the richer-envelope reducers
+    // (`tryPromotePendingFromPersisted`, etc.) MAY have already
+    // attached the same path to the "latest sibling" bubble. When
+    // `file/attached` then arrives with the authoritative
+    // `tool_call_id`, the same artefact MUST NOT render on two
+    // sibling bubbles. Pre-fix the stale copy stayed put and the
+    // owner-slot got a second copy → duplicate render.
+    const cmid = "cmid-cross-slot";
+    const ownerToolCallId = "call_pptx_owner";
+    const stalePath = "/decks/from-message-persisted.pptx";
+
+    seedThread(cmid, "ask");
+    // First assistant row owns the tool call.
+    ThreadStore.appendAssistantToken(cmid, "First.");
+    ThreadStore.finalizeAssistant(cmid, { committedSeq: 2 });
+    handleToolStarted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: ownerToolCallId,
+        tool_name: "mofa_slides",
+      },
+    );
+
+    // Add a second sibling row via spawn_complete and PRE-LOAD the
+    // file there to simulate `appendAssistantFile` landing on the
+    // wrong "latest" sibling.
+    handleSpawnComplete(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        thread_id: cmid,
+        task_id: "task_unrelated",
+        response_to_client_message_id: cmid,
+        seq: 4,
+        message_id: "msg-sibling",
+        source: "background",
+        cursor: { stream: SESSION, seq: 4 },
+        persisted_at: "2026-05-04T00:00:00Z",
+        content: "Sibling.",
+      },
+    );
+    // Force a stale file onto the latest sibling — the exact bug shape
+    // codex pointed at (richer-envelope reducer mis-routed).
+    ThreadStore.appendAssistantFile(cmid, {
+      filename: "from-message-persisted.pptx",
+      path: stalePath,
+      caption: "",
+    });
+
+    // Sanity: the file is on response[1] (latest), not response[0].
+    const before = ThreadStore.getThreads(SESSION)[0];
+    expect(before.responses[0].files.map((f) => f.path)).toEqual([]);
+    expect(before.responses[1].files.map((f) => f.path)).toEqual([stalePath]);
+
+    // `file/attached` envelope corrects placement: owner is
+    // response[0] (carries `ownerToolCallId`).
+    handleFileAttached(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        tool_call_id: ownerToolCallId,
+        path: stalePath,
+      },
+    );
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    // File moved: owner gets it, sibling no longer has it.
+    expect(thread.responses[0].files.map((f) => f.path)).toEqual([stalePath]);
+    expect(thread.responses[1].files.map((f) => f.path)).toEqual([]);
+  });
+
   it("attaches the file to a still-pending assistant when the tool call hangs off pendingAssistant", () => {
     // Edge: a tool call registered on the still-in-flight
     // pendingAssistant (foreground turn with a spawn_only nested

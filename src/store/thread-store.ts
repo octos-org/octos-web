@@ -1614,8 +1614,21 @@ export function appendAssistantFile(
  * Lookup order matches `findThreadIdForToolCall`: pending in-flight
  * assistant first (the spawn_only tool call may still be running), then
  * `responses` most-recent-first (the foreground bubble already
- * finalised). Path-deduplicated like `appendAssistantFile` so repeated
- * envelopes are no-ops.
+ * finalised).
+ *
+ * Cross-slot dedupe (codex round 2, 2026-05-25): the richer-envelope
+ * reducers (`tryPromotePendingFromPersisted`,
+ * `appendCompletionBubble` via the legacy `appendAssistantFile`
+ * fallback) MAY have already attached the same `path` to a DIFFERENT
+ * assistant slot in the thread (the "latest sibling" placement that
+ * `file/attached` exists to correct). This handler treats the
+ * `tool_call_id` envelope as the AUTHORITATIVE placement signal —
+ * remove a stale copy from any other assistant slot first, then attach
+ * to the owner. Without this, the same artefact would render on two
+ * sibling bubbles after the safety net runs (codex 2026-05-25 round 2).
+ *
+ * Path-deduplicated within the owner slot so repeated envelopes are
+ * no-ops.
  *
  * Returns `true` when the file landed on (or was already attached to)
  * the owning bubble, `false` when no assistant message in the thread
@@ -1649,15 +1662,40 @@ export function appendAssistantFileToToolCall(
   }
   if (!slot) return false;
 
-  // Path dedupe: a redundant replay of the same envelope (or the same
-  // path arriving via both the richer `message/persisted` reducer and
-  // this envelope) is a no-op.
-  if (slot.files.some((f) => f.path === file.path)) return true;
-  slot.files = [...slot.files, file];
-  notify();
+  // Cross-slot dedupe: walk every other assistant slot in the thread
+  // and strip a stale copy of the same path. The `tool_call_id`
+  // envelope's placement wins; any earlier "latest sibling"
+  // attribution by `appendAssistantFile` is corrected here. Tracks
+  // whether anything moved so we know to `notify()` even when the
+  // owner already had the file (idempotent move + concurrent
+  // duplicate cleanup).
+  let mutated = false;
+  const stripFromSlot = (other: ThreadMessage): void => {
+    if (other === slot) return;
+    if (other.role !== "assistant") return;
+    const idx = other.files.findIndex((f) => f.path === file.path);
+    if (idx === -1) return;
+    other.files = other.files.filter((_, i) => i !== idx);
+    mutated = true;
+  };
+  if (thread.pendingAssistant) stripFromSlot(thread.pendingAssistant);
+  for (const r of thread.responses) stripFromSlot(r);
 
-  // M9-γ-3 dual-write parity with `appendAssistantFile`.
-  if (isProjectionV1Enabled()) {
+  // Path dedupe on the owner slot: a redundant replay of the same
+  // envelope is a no-op (still notify when we cleaned up a sibling
+  // above so the UI repaints the removal).
+  const ownerHasPath = slot.files.some((f) => f.path === file.path);
+  if (!ownerHasPath) {
+    slot.files = [...slot.files, file];
+    mutated = true;
+  }
+  if (mutated) notify();
+
+  // M9-γ-3 dual-write parity with `appendAssistantFile`. Only emit
+  // when we actually attached (cross-slot cleanup alone doesn't
+  // create a new envelope — the projection treats `file_attached` as
+  // additive).
+  if (!ownerHasPath && isProjectionV1Enabled()) {
     const key = shimResolveKey(threadId);
     if (key) {
       shimIngest(key, threadId, {
