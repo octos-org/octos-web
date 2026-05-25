@@ -1520,6 +1520,230 @@ describe.each(FLAG_STATES)("thread-store [$label]", ({ projectionV1 }) => {
     ).toHaveLength(1);
   });
 
+  // WEB-NEW-17: seq-based dedup across hydration + live events.
+  // mini3 repro (2026-05-23): JSONL has 6 unique assistant rows, the
+  // SPA renders each one twice — the live `message/persisted` WS event
+  // and the `session/messages_page` hydration both reach
+  // `appendPersistedMessage` / `replayHistory` without an authoritative
+  // cross-path dedup. The per-thread `r.historySeq === incomingSeq`
+  // walk misses because `replayHistory` rebuilds the thread state and
+  // server's legacy `MessageInfo` strips `seq` from polled rows
+  // (handlers.rs:810), so the rebuilt responses lose their seq.
+  it("dedups_when_hydration_precedes_live_message_persisted_with_same_seq", () => {
+    // Step 1 — hydrate the store from `session/messages_page`. Three
+    // unique assistant rows committed under the same user prompt. The
+    // hydration path carries `seq` (matching the live wire) so the
+    // per-session seenSeqs cache is primed.
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 0,
+        role: "user",
+        content: "Q",
+        client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-05-23T10:00:00Z",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "A1",
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-05-23T10:00:01Z",
+      },
+      {
+        seq: 2,
+        role: "assistant",
+        content: "A2",
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-05-23T10:00:02Z",
+      },
+      {
+        seq: 3,
+        role: "assistant",
+        content: "A3",
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-05-23T10:00:03Z",
+      },
+    ]);
+
+    // Step 2 — the live `message/persisted` WS event re-fires for the
+    // same three committed rows (covers the reconnect / hydrate replay
+    // case where the daemon re-emits durable rows). Same seqs, same
+    // content. Without WEB-NEW-17 each one appends a duplicate bubble.
+    for (let i = 1; i <= 3; i += 1) {
+      ThreadStore.appendPersistedMessage(SESSION, undefined, {
+        seq: i,
+        role: "assistant",
+        content: `A${i}`,
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        // Drift the timestamp like a re-emission would (Date.now() at
+        // append time != server `persisted_at`) so a content+timestamp
+        // fallback alone cannot rescue the dedup.
+        timestamp: "2026-05-23T10:05:30Z",
+      });
+    }
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const assistants = thread.responses.filter((r) => r.role === "assistant");
+    expect(
+      assistants,
+      "hydration-then-live overlap must dedup on seq, not double-render",
+    ).toHaveLength(3);
+    expect(assistants.map((r) => r.text)).toEqual(["A1", "A2", "A3"]);
+  });
+
+  it("dedups_when_live_message_persisted_precedes_hydration_with_same_seq", () => {
+    // Inverse path: live wire delivers first (the typical reload-mid-
+    // stream scenario), then hydration arrives carrying the same seqs.
+    // The store must end with one row per seq.
+    makeUser("Q", "cm-1");
+    for (let i = 1; i <= 3; i += 1) {
+      ThreadStore.appendPersistedMessage(SESSION, undefined, {
+        seq: i,
+        role: "assistant",
+        content: `A${i}`,
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: `2026-05-23T10:00:0${i}Z`,
+      });
+    }
+
+    // Now `replayHistory` runs (e.g. `loadHistory(..., { force: true })`
+    // on a session switch). It wipes `thread.responses` and rebuilds
+    // from the JSONL. Without WEB-NEW-17 the live rows survive only as
+    // their JSONL siblings — but on the next post-rebuild live event
+    // for the same seq, the per-thread walk would miss (the rebuilt
+    // rows lost `historySeq` for `messages_page` polls that strip it).
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 0,
+        role: "user",
+        content: "Q",
+        client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-05-23T10:00:00Z",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "A1",
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-05-23T10:00:01Z",
+      },
+      {
+        seq: 2,
+        role: "assistant",
+        content: "A2",
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-05-23T10:00:02Z",
+      },
+      {
+        seq: 3,
+        role: "assistant",
+        content: "A3",
+        response_to_client_message_id: "cm-1",
+        thread_id: "cm-1",
+        timestamp: "2026-05-23T10:00:03Z",
+      },
+    ]);
+
+    // Post-rebuild live re-emit: another live `message/persisted` for
+    // an already-seen seq. The seenSeqs cache survives the rebuild and
+    // catches it at the gate.
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 2,
+      role: "assistant",
+      content: "A2",
+      response_to_client_message_id: "cm-1",
+      thread_id: "cm-1",
+      timestamp: "2026-05-23T10:10:00Z",
+    });
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const assistants = thread.responses.filter((r) => r.role === "assistant");
+    expect(
+      assistants,
+      "live-first-then-hydrate overlap must dedup on seq across the rebuild boundary",
+    ).toHaveLength(3);
+    expect(assistants.map((r) => r.text)).toEqual(["A1", "A2", "A3"]);
+  });
+
+  it("clearSession_resets_seenSeqs_so_a_re_streamed_seq_renders_again", () => {
+    // Edge case: after a session is cleared (delete or topic flip) the
+    // seq cache must NOT persist — a fresh send under the same
+    // session/topic with a re-cycled seq must render.
+    makeUser("Q", "cm-1");
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 5,
+      role: "assistant",
+      content: "First answer.",
+      response_to_client_message_id: "cm-1",
+      thread_id: "cm-1",
+      timestamp: "2026-05-23T10:00:00Z",
+    });
+    ThreadStore.clearSession(SESSION);
+
+    // Fresh send post-clear under a brand-new thread; the same seq
+    // value must NOT be suppressed.
+    makeUser("Q-new", "cm-2");
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 5,
+      role: "assistant",
+      content: "Second answer.",
+      response_to_client_message_id: "cm-2",
+      thread_id: "cm-2",
+      timestamp: "2026-05-23T11:00:00Z",
+    });
+
+    const threads = ThreadStore.getThreads(SESSION);
+    const allAssistantRows = threads.flatMap((t) =>
+      t.responses.filter((r) => r.role === "assistant"),
+    );
+    expect(
+      allAssistantRows.map((r) => r.text),
+      "clearSession must release the seenSeqs cache",
+    ).toEqual(["Second answer."]);
+  });
+
+  it("seenSeqs_are_per_session_so_the_same_seq_renders_in_a_different_session", () => {
+    // Edge case: seq=N in session A must NOT block seq=N in session B
+    // — the cache is keyed per `(sessionId, topic)`.
+    const SESS_A = "sess-A";
+    const SESS_B = "sess-B";
+    ThreadStore.addUserMessage(SESS_A, { text: "QA", clientMessageId: "cm-A" });
+    ThreadStore.addUserMessage(SESS_B, { text: "QB", clientMessageId: "cm-B" });
+
+    ThreadStore.appendPersistedMessage(SESS_A, undefined, {
+      seq: 7,
+      role: "assistant",
+      content: "Answer A",
+      response_to_client_message_id: "cm-A",
+      thread_id: "cm-A",
+      timestamp: "2026-05-23T10:00:00Z",
+    });
+    ThreadStore.appendPersistedMessage(SESS_B, undefined, {
+      seq: 7,
+      role: "assistant",
+      content: "Answer B",
+      response_to_client_message_id: "cm-B",
+      thread_id: "cm-B",
+      timestamp: "2026-05-23T10:00:00Z",
+    });
+
+    const [tA] = ThreadStore.getThreads(SESS_A);
+    const [tB] = ThreadStore.getThreads(SESS_B);
+    expect(tA.responses.filter((r) => r.role === "assistant")).toHaveLength(1);
+    expect(tB.responses.filter((r) => r.role === "assistant")).toHaveLength(1);
+    expect(tA.responses[0].text).toBe("Answer A");
+    expect(tB.responses[0].text).toBe("Answer B");
+  });
+
   it("appendPersistedMessage_falls_back_to_legacy_thread_id_when_thread_id_missing", () => {
     // Legacy daemon: server omits thread_id. Helper must derive it from
     // client_message_id / response_to_client_message_id and find the
