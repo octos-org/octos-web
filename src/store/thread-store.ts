@@ -145,6 +145,48 @@ let version = 0;
 const snapshotCache = new Map<string, { version: number; data: Thread[] }>();
 
 /**
+ * WEB-NEW-17 — per-session set of server-side `seq` values seen by
+ * `appendPersistedMessage` (live `message/persisted` events) and
+ * `replayHistory` (hydration from `session/messages_page`).
+ *
+ * Why a top-level set instead of relying on the per-thread
+ * `r.historySeq === incomingSeq` walk inside `appendPersistedMessage`:
+ *   • `replayHistory` wipes `sessionsByKey[key]` and rebuilds — the
+ *     rebuilt rows lose `historySeq` for `messages_page` polls (server's
+ *     legacy `MessageInfo` struct strips `seq`, handlers.rs:810). After
+ *     the rebuild the per-thread seq dedup misses, so a re-emitted live
+ *     `message/persisted` carrying the same seq slips through.
+ *   • The per-session `seenSeqsByKey` set survives `replayHistory`
+ *     rebuilds (we only clear it on `clearSession`/`__resetForTests`),
+ *     so a live event whose seq was already covered by an earlier
+ *     live event OR by an earlier hydrate row is recognised as a
+ *     duplicate even when the rebuilt thread responses have no seq.
+ *
+ * Keyed by `storeKey(sessionId, topic)`. The set holds only well-typed
+ * non-negative integer seqs; rows without a seq (legacy daemons,
+ * stripped polled rows) bypass the set and fall back to the existing
+ * content+timestamp 5-min proximity dedupe.
+ *
+ * Memory: O(persisted-rows-per-session). Each entry is ~8 bytes; for a
+ * 10k-message session that's ~80KB — comparable to the thread state the
+ * set guards. `clearSession` releases it on session forget.
+ */
+const seenSeqsByKey = new Map<string, Set<number>>();
+
+function rememberSeq(key: string, seq: number): void {
+  let set = seenSeqsByKey.get(key);
+  if (!set) {
+    set = new Set();
+    seenSeqsByKey.set(key, set);
+  }
+  set.add(seq);
+}
+
+function hasSeenSeq(key: string, seq: number): boolean {
+  return seenSeqsByKey.get(key)?.has(seq) ?? false;
+}
+
+/**
  * M10 Phase 6.2 (Bug C): per-session WS `session/hydrate` snapshot
  * cached so that subsequent `replayHistory` calls (the forced retries
  * in chat-thread.tsx fire at 2s/5s/12s) can replay the dedup pass on
@@ -1337,6 +1379,22 @@ export function appendCompletionBubble(
   // we proceed to append a fresh row, which is the correct M10
   // separate-bubble semantic.
 
+  // WEB-NEW-17: track the host session key once so every early-return
+  // branch below can mark the completion's seq seen without re-walking
+  // `sessionsByKey`. Falls back to `(sessionId, topic)` if the host
+  // wasn't found via the sessionsByKey walk (orphan-host paths above).
+  const hostKey: string | null = (() => {
+    for (const [k, s] of sessionsByKey.entries()) {
+      if (s === host.state) return k;
+    }
+    return opts.sessionId ? storeKey(opts.sessionId, opts.topic) : null;
+  })();
+  const markCompletionSeqSeen = (): void => {
+    if (typeof opts.historySeq === "number" && hostKey) {
+      rememberSeq(hostKey, opts.historySeq);
+    }
+  };
+
   if (opts.messageId) {
     for (let i = 0; i < thread.responses.length; i += 1) {
       const r = thread.responses[i];
@@ -1345,14 +1403,17 @@ export function appendCompletionBubble(
       // Upgrade-in-place if it's a placeholder (the persisted-only
       // shape), no-op if it's already the full completion.
       if (r.text.length > 0) {
+        markCompletionSeqSeen();
         return true;
       }
       thread.responses[i] = upgradePlaceholderRow(r, opts, threadId);
       sortResponsesInThread(thread);
+      markCompletionSeqSeen();
       notify();
       return true;
     }
     if (thread.pendingAssistant?.id === opts.messageId) {
+      markCompletionSeqSeen();
       return true;
     }
   }
@@ -1375,16 +1436,19 @@ export function appendCompletionBubble(
       // text + same media list"; if that matches, treat as no-op.
       if (r.text.length > 0) {
         if (rowMatchesCompletionContent(r, opts)) {
+          markCompletionSeqSeen();
           return true;
         }
         continue; // (a): merged-ack row, not our target
       }
       thread.responses[i] = upgradePlaceholderRow(r, opts, threadId);
       sortResponsesInThread(thread);
+      markCompletionSeqSeen();
       notify();
       return true;
     }
     if (thread.pendingAssistant?.historySeq === opts.historySeq) {
+      markCompletionSeqSeen();
       return true;
     }
   }
@@ -1407,6 +1471,11 @@ export function appendCompletionBubble(
   };
   thread.responses.push(completion);
   sortResponsesInThread(thread);
+  // WEB-NEW-17: mark the completion's seq so a follow-up
+  // `message/persisted` carrying the same seq (the legacy companion row
+  // the server's `event.spawn_complete.v1` suppression doesn't always
+  // cover for older daemons) is suppressed at the dedup gate.
+  markCompletionSeqSeen();
   notify();
 
   // M9-γ-3 dual-write: completion bubble → assistant_persisted envelope.
@@ -1702,6 +1771,20 @@ export function finalizeAssistant(
     thread.responses.push(finalized);
     sortResponsesInThread(thread);
     thread.pendingAssistant = null;
+    // WEB-NEW-17: mark the finalised row's seq so a follow-up
+    // `message/persisted` with the same seq (re-emitted on reconnect or
+    // through `session/hydrate` replay) is suppressed at the dedup gate
+    // in `appendPersistedMessage`. We walk `sessionsByKey` to find the
+    // hosting key since this entry point takes only `threadId` and the
+    // legacy reducer keys by `(sessionId, topic)`.
+    if (typeof finalized.historySeq === "number") {
+      for (const [k, s] of sessionsByKey.entries()) {
+        if (s === state) {
+          rememberSeq(k, finalized.historySeq);
+          break;
+        }
+      }
+    }
     notify();
 
     // M9-γ-3 dual-write: finalize → turn_completed envelope (the
@@ -1955,6 +2038,16 @@ export function replayHistory(
   const ctx = { currentThreadId: null as string | null };
   for (const apiMessage of apiMessages) {
     if (apiMessage.role === "system") continue;
+    // WEB-NEW-17: every hydrated row whose server seq is present joins
+    // the per-session seenSeqs set. The post-replay live wire (and any
+    // re-emit of the same persisted row from a reconnect /
+    // `session/hydrate`) then short-circuits at the top of
+    // `appendPersistedMessage`, even though the rebuilt
+    // `thread.responses[]` may have lost `historySeq` for sibling rows
+    // delivered via `messages_page` (which strips seq).
+    if (typeof apiMessage.seq === "number") {
+      rememberSeq(key, apiMessage.seq);
+    }
     const threadId = deriveLegacyThreadId(apiMessage, ctx);
     let thread = state.byId.get(threadId);
 
@@ -2778,6 +2871,15 @@ export function appendPersistedMessage(
   // safe identity check when available.
   const incomingSeq = typeof message.seq === "number" ? message.seq : undefined;
   if (incomingSeq !== undefined) {
+    // WEB-NEW-17: per-session set guards against the live-after-hydrate
+    // (and hydrate-after-live) overlap. `replayHistory` wipes
+    // `thread.responses` and rebuilds, dropping `historySeq` on rows that
+    // came from `messages_page` (server strips seq). Without this set,
+    // a re-emitted live `message/persisted` carrying the same seq
+    // double-counts. The per-thread `r.historySeq === incomingSeq` walk
+    // below is retained as a redundant safety net for any future caller
+    // that bypasses this top-level gate.
+    if (hasSeenSeq(key, incomingSeq)) return;
     for (const r of thread.responses) {
       if (r.historySeq === incomingSeq) return;
     }
@@ -2849,6 +2951,10 @@ export function appendPersistedMessage(
     const dupIdx = findDuplicateAssistantWithFile(thread.responses, built);
     if (dupIdx !== -1) {
       mergeDuplicateAssistantFile(thread.responses[dupIdx], built);
+      // WEB-NEW-17: mark the seq seen even when the row merges into an
+      // existing file-bearing response — a re-delivery of the same seq
+      // must not double-merge.
+      if (incomingSeq !== undefined) rememberSeq(key, incomingSeq);
       notify();
       return;
     }
@@ -2856,6 +2962,11 @@ export function appendPersistedMessage(
 
   thread.responses.push(built);
   sortResponsesInThread(thread);
+  // WEB-NEW-17: record the seq so a subsequent live-or-hydrate replay
+  // of the same persisted row short-circuits at the top-level gate
+  // above, even after `replayHistory` rebuilds the thread state
+  // (legacy `messages_page` rows lose `historySeq`).
+  if (incomingSeq !== undefined) rememberSeq(key, incomingSeq);
   notify();
 
   // M9-γ-3 dual-write: a persisted assistant row corresponds to an
@@ -3066,6 +3177,7 @@ export function clearSession(sessionId: string, topic?: string): void {
     loadingPromises.delete(key);
     hydrateSnapshotByKey.delete(key);
     pendingClientMessageIds.delete(key);
+    seenSeqsByKey.delete(key);
   } else {
     for (const k of [...sessionsByKey.keys()]) {
       if (k === sessionId || k.startsWith(`${sessionId}#`)) {
@@ -3074,6 +3186,7 @@ export function clearSession(sessionId: string, topic?: string): void {
         loadingPromises.delete(k);
         hydrateSnapshotByKey.delete(k);
         pendingClientMessageIds.delete(k);
+        seenSeqsByKey.delete(k);
       }
     }
     // Codex round-5 P3: a hydrate snapshot may exist without a
@@ -3085,6 +3198,14 @@ export function clearSession(sessionId: string, topic?: string): void {
     for (const k of [...hydrateSnapshotByKey.keys()]) {
       if (k === sessionId || k.startsWith(`${sessionId}#`)) {
         hydrateSnapshotByKey.delete(k);
+      }
+    }
+    // WEB-NEW-17: same orphan-key concern for the seen-seqs cache —
+    // sweep it independently so a clear-then-stream sequence doesn't
+    // suppress a fresh re-fired live row.
+    for (const k of [...seenSeqsByKey.keys()]) {
+      if (k === sessionId || k.startsWith(`${sessionId}#`)) {
+        seenSeqsByKey.delete(k);
       }
     }
   }
@@ -3185,6 +3306,7 @@ export function __resetForTests(): void {
   snapshotCache.clear();
   hydrateSnapshotByKey.clear();
   pendingClientMessageIds.clear();
+  seenSeqsByKey.clear();
   version = 0;
   idCounter = 0;
 }
