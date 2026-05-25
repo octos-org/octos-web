@@ -26,6 +26,7 @@ import * as FileStore from "@/store/file-store";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { dispatchCrewFileEvent } from "./file-events";
 import { recordRuntimeCounter } from "./observability";
+import { rollupTasksByCall } from "./task-rollup";
 import type { BackgroundTaskInfo, MessageInfo } from "@/api/types";
 
 const POLL_INTERVAL_MS = 2500;
@@ -169,7 +170,13 @@ function dispatchBgTasksEvent(sessionId: string, topic: string | undefined): voi
 }
 
 function updateActiveIds(entry: WatchedSession, tasks: BackgroundTaskInfo[]): void {
-  entry.activeIds = new Set(tasks.filter(isTaskActive).map((task) => task.id));
+  // WEB-NEW-18: roll pipeline children up under the parent
+  // `run_pipeline` task so the count surfaced to `crew:bg_tasks`
+  // consumers matches what the dock renders. The "any active" boolean
+  // (`size > 0`) is unchanged, but downstream code reading
+  // `activeIds.size` now sees the deduped count.
+  const rolled = rollupTasksByCall(tasks.filter(isTaskActive));
+  entry.activeIds = new Set(rolled.map((task) => task.id));
   if (entry.activeIds.size > 0) {
     entry.terminalSince = null;
     dispatchBgTasksEvent(entry.sessionId, entry.topic);
@@ -297,6 +304,19 @@ export async function __pollSessionForTest(
   const entry = watchedSessions.get(watchKey(sessionId, topic));
   if (!entry) return;
   await pollSession(entry);
+}
+
+/**
+ * Test-only: read the watcher's internal `activeIds` set for a
+ * session/topic. Returns `null` if the session isn't being watched.
+ * The rolled-up count (post WEB-NEW-18) is `set.size`.
+ */
+export function __getActiveIdsForTest(
+  sessionId: string,
+  topic?: string,
+): ReadonlySet<string> | null {
+  const entry = watchedSessions.get(watchKey(sessionId, topic));
+  return entry ? entry.activeIds : null;
 }
 
 async function pollSession(entry: WatchedSession): Promise<void> {
