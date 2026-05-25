@@ -1662,31 +1662,57 @@ export function appendAssistantFileToToolCall(
   }
   if (!slot) return false;
 
-  // Cross-slot dedupe: walk every other assistant slot in the thread
-  // and strip a stale copy of the same path. The `tool_call_id`
-  // envelope's placement wins; any earlier "latest sibling"
-  // attribution by `appendAssistantFile` is corrected here. Tracks
-  // whether anything moved so we know to `notify()` even when the
-  // owner already had the file (idempotent move + concurrent
-  // duplicate cleanup).
+  // Cross-slot dedupe (codex round 2, 2026-05-25): the richer-envelope
+  // reducers (`tryPromotePendingFromPersisted`, etc.) MAY have already
+  // attached the same `path` to a "latest sibling" bubble via
+  // `appendAssistantFile` (the placement bug `file/attached` exists to
+  // correct). Without cleanup the same artefact renders on two sibling
+  // bubbles after the safety net runs.
+  //
+  // Codex round-3 narrowing (2026-05-25): only strip from siblings
+  // that have NO tool_calls of their own. A sibling carrying its own
+  // tool calls is itself the canonical owner of some artefact — when
+  // two distinct background completions legitimately share a media
+  // path, both owners must keep their copy. The router-level dedupe
+  // (`seenFileAttachments` keyed by `(threadId, tool_call_id, path)`)
+  // handles the redundant-replay case for each owner independently.
+  // The legacy `appendAssistantFile` mis-placement pattern lands on a
+  // "naive" slot — a media-only spawn-ack with no tool calls — so the
+  // narrow guard preserves correctness without over-deleting.
+  //
+  // Codex round-3 immutable-slot fix: `ThreadAssistantBubble` is
+  // wrapped in `React.memo`, so mutating `slot.files` in place leaves
+  // the memoized bubble holding a stale `message` reference and the
+  // repaint never happens. Use `replaceAssistantSlot` for every
+  // mutation so the slot reference changes and the bubble re-renders.
   let mutated = false;
   const stripFromSlot = (other: ThreadMessage): void => {
     if (other === slot) return;
     if (other.role !== "assistant") return;
+    if (other.toolCalls.length > 0) return; // codex round-3: preserve same-path on other tool-call owners
     const idx = other.files.findIndex((f) => f.path === file.path);
     if (idx === -1) return;
-    other.files = other.files.filter((_, i) => i !== idx);
+    const newFiles = other.files.filter((_, i) => i !== idx);
+    replaceAssistantSlot(thread, other, { ...other, files: newFiles });
     mutated = true;
   };
   if (thread.pendingAssistant) stripFromSlot(thread.pendingAssistant);
-  for (const r of thread.responses) stripFromSlot(r);
+  // Snapshot the responses array because `replaceAssistantSlot`
+  // mutates `thread.responses[idx]` in place — the references stay
+  // stable across the loop but the underlying message objects don't.
+  for (const r of [...thread.responses]) stripFromSlot(r);
 
-  // Path dedupe on the owner slot: a redundant replay of the same
-  // envelope is a no-op (still notify when we cleaned up a sibling
-  // above so the UI repaints the removal).
+  // `slot` may itself have been replaced if it equalled an earlier
+  // iteration's `other` — but we guard against that via the `other ===
+  // slot` short-circuit above. Re-fetch the live owner reference
+  // through `replaceAssistantSlot` for the add path so memoized
+  // ThreadAssistantBubble repaints.
   const ownerHasPath = slot.files.some((f) => f.path === file.path);
   if (!ownerHasPath) {
-    slot.files = [...slot.files, file];
+    replaceAssistantSlot(thread, slot, {
+      ...slot,
+      files: [...slot.files, file],
+    });
     mutated = true;
   }
   if (mutated) notify();
