@@ -306,6 +306,19 @@ export async function __pollSessionForTest(
   await pollSession(entry);
 }
 
+/**
+ * Test-only: read the watcher's internal `activeIds` set for a
+ * session/topic. Returns `null` if the session isn't being watched.
+ * The rolled-up count (post WEB-NEW-18) is `set.size`.
+ */
+export function __getActiveIdsForTest(
+  sessionId: string,
+  topic?: string,
+): ReadonlySet<string> | null {
+  const entry = watchedSessions.get(watchKey(sessionId, topic));
+  return entry ? entry.activeIds : null;
+}
+
 async function pollSession(entry: WatchedSession): Promise<void> {
   try {
     const key = watchKey(entry.sessionId, entry.topic);

@@ -2,7 +2,10 @@ import { useMemo, type ReactElement } from "react";
 import type { BackgroundTaskInfo as TaskInfo } from "@/api/types";
 import { useTasks } from "@/store/task-store";
 import { useSession } from "@/runtime/session-context";
-import { rollupTasksByCall } from "@/runtime/task-rollup";
+import {
+  displayLabelForRolled,
+  rollupTasksByCall,
+} from "@/runtime/task-rollup";
 
 // The tasks dock reads from `useTasks()`, which is fed by
 // `runtime/task-watcher.ts` polling through the `getSessionTasks`
@@ -15,8 +18,8 @@ function isTaskActive(task: TaskInfo): boolean {
   return task.status === "spawned" || task.status === "running";
 }
 
-function taskDisplayName(toolName: string): string {
-  switch (toolName) {
+function taskDisplayName(task: TaskInfo): string {
+  switch (task.tool_name) {
     case "podcast_generate":
       return "Podcast";
     case "fm_tts":
@@ -24,7 +27,9 @@ function taskDisplayName(toolName: string): string {
     case "voice_transcribe":
       return "Transcript";
     default:
-      return toolName.replace(/_/gu, " ");
+      // Pipeline-aware: orphan children (parent absent) become
+      // `Analyze` / `Synthesize` instead of `pipeline:analyze`.
+      return displayLabelForRolled(task);
   }
 }
 
@@ -46,7 +51,7 @@ function buildSummary(tasks: TaskInfo[]): IndicatorSummary | null {
     return {
       active,
       failed: null,
-      label: `${taskDisplayName(active[0].tool_name)} running`,
+      label: `${taskDisplayName(active[0])} running`,
       detail: "Background work continues independently of chat messages.",
       state: "active",
     };
@@ -56,7 +61,7 @@ function buildSummary(tasks: TaskInfo[]): IndicatorSummary | null {
       active,
       failed: null,
       label: `${active.length} tasks running`,
-      detail: active.map((task) => taskDisplayName(task.tool_name)).join(" · "),
+      detail: active.map((task) => taskDisplayName(task)).join(" · "),
       state: "active",
     };
   }
@@ -65,7 +70,7 @@ function buildSummary(tasks: TaskInfo[]): IndicatorSummary | null {
     return {
       active: [],
       failed,
-      label: `${taskDisplayName(failed.tool_name)} failed`,
+      label: `${taskDisplayName(failed)} failed`,
       detail: failed.error || "Background task needs attention.",
       state: "failed",
     };

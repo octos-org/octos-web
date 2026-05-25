@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { rollupTasksByCall } from "./task-rollup";
+import { displayLabelForRolled, rollupTasksByCall } from "./task-rollup";
 import type { BackgroundTaskInfo } from "@/api/types";
 
 function makeTask(
@@ -181,6 +181,49 @@ describe("rollupTasksByCall", () => {
     expect(twice).toEqual(once);
   });
 
+  it("does not collapse non-pipeline tasks that happen to share a tool_call_id", () => {
+    // Defensive: if the server ever fans out two unrelated non-
+    // pipeline tasks with the same `tool_call_id` we must not silently
+    // drop one. Only pipeline families (with a `run_pipeline` parent
+    // OR a `pipeline:*` child) collapse.
+    const tasks: BackgroundTaskInfo[] = [
+      makeTask({
+        id: "t_a",
+        tool_name: "podcast_generate",
+        tool_call_id: "shared_call",
+      }),
+      makeTask({
+        id: "t_b",
+        tool_name: "deep_research",
+        tool_call_id: "shared_call",
+      }),
+    ];
+    const rolled = rollupTasksByCall(tasks);
+    expect(rolled).toHaveLength(2);
+    expect(rolled.map((t) => t.id).sort()).toEqual(["t_a", "t_b"]);
+  });
+
+  it("does NOT collide a real tool_call_id of `no_call:<id>` with a null-tool_call_id task", () => {
+    // Codex review fence-post: keys are prefix-tagged (`call:` vs
+    // `no_call:`) so a literal `tool_call_id === "no_call:abc"` and a
+    // null-tool_call_id task with `id === "abc"` must remain distinct.
+    const tasks: BackgroundTaskInfo[] = [
+      makeTask({
+        id: "abc",
+        tool_name: "podcast_generate",
+        // tool_call_id intentionally omitted (null).
+      }),
+      makeTask({
+        id: "other",
+        tool_name: "deep_research",
+        tool_call_id: "no_call:abc",
+      }),
+    ];
+    const rolled = rollupTasksByCall(tasks);
+    expect(rolled).toHaveLength(2);
+    expect(rolled.map((t) => t.id).sort()).toEqual(["abc", "other"]);
+  });
+
   it("works even when the parent appears after children in the input order", () => {
     // Children first, parent last — server iteration order isn't
     // guaranteed to be parent-first.
@@ -205,5 +248,38 @@ describe("rollupTasksByCall", () => {
     const rolled = rollupTasksByCall(tasks);
     expect(rolled).toHaveLength(1);
     expect(rolled[0].id).toBe("t_parent");
+  });
+});
+
+describe("displayLabelForRolled", () => {
+  function t(tool_name: string): BackgroundTaskInfo {
+    return {
+      id: "t",
+      tool_name,
+      status: "running",
+      started_at: "2026-05-24T00:00:00Z",
+      error: null,
+    };
+  }
+
+  it("strips the `pipeline:` prefix and spaces underscores", () => {
+    expect(displayLabelForRolled(t("pipeline:analyze"))).toBe("analyze");
+    expect(displayLabelForRolled(t("pipeline:plan_and_search"))).toBe(
+      "plan and search",
+    );
+  });
+
+  it("falls back to `Pipeline` when `pipeline:` suffix is empty", () => {
+    // Defensive: a malformed `pipeline:` with no node name shouldn't
+    // render as an empty string.
+    expect(displayLabelForRolled(t("pipeline:"))).toBe("Pipeline");
+    expect(displayLabelForRolled(t("pipeline:   "))).toBe("Pipeline");
+  });
+
+  it("returns the tool_name with underscores spaced for non-pipeline tasks", () => {
+    expect(displayLabelForRolled(t("run_pipeline"))).toBe("run pipeline");
+    expect(displayLabelForRolled(t("podcast_generate"))).toBe(
+      "podcast generate",
+    );
   });
 });

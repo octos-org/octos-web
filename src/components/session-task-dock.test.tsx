@@ -367,13 +367,17 @@ describe("SessionTaskIndicator — pipeline child rollup (WEB-NEW-18)", () => {
     );
     expect(indicator).not.toBeNull();
     expect(indicator!.getAttribute("data-task-count")).toBe("1");
-    // Label degrades to a child's name (the parent is `completed` and
-    // therefore not in the active set). TaskStore sorts by started_at
-    // DESC so the exact child shown depends on the store's ordering —
-    // assert only that we render a pipeline child label, not the
-    // parent's `run_pipeline`. The count being correct is the load-
-    // bearing assertion.
-    expect(indicator!.textContent).toMatch(/pipeline:.* running/u);
+    // Label degrades to a prettified child name (the parent is
+    // `completed` and therefore not in the active set). TaskStore
+    // sorts by started_at DESC so the exact child shown depends on
+    // the store's ordering — assert only that we render an orphan
+    // pipeline label (no `pipeline:` prefix, no parent's
+    // `run_pipeline`). The count being correct is the load-bearing
+    // assertion.
+    expect(indicator!.textContent).toMatch(
+      /(analyze|synthesize|plan and search) running/u,
+    );
+    expect(indicator!.textContent).not.toContain("pipeline:");
     expect(indicator!.textContent).not.toContain("run pipeline running");
 
     harness.unmount();

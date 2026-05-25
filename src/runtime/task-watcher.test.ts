@@ -45,6 +45,7 @@ vi.mock("@/api/sessions", async () => {
 
 import * as TaskStore from "@/store/task-store";
 import {
+  __getActiveIdsForTest,
   __pollSessionForTest,
   unwatchSession,
   watchSession,
@@ -153,20 +154,15 @@ describe("pollSession empty-response defence (2026-05-15)", () => {
     const stored = TaskStore.getTasks(SESSION);
     expect(stored).toHaveLength(4);
 
-    // But the dock's count is driven through the rollup. We verify
-    // the watcher's `activeIds` (used downstream for the active-task
-    // signal) matches the rolled-up count by inspecting the public
-    // `crew:bg_tasks` dispatch shape — the most direct observable is
-    // that `__pollSessionForTest` returned without error and the
-    // TaskStore-rooted dock selector picks up the rollup. We assert
-    // the rolled count directly via the helper because `activeIds`
-    // is internal state on a private `WatchedSession` object.
-    const { rollupTasksByCall } = await import("./task-rollup");
-    const rolled = rollupTasksByCall(
-      stored.filter((t) => t.status === "running" || t.status === "spawned"),
-    );
-    expect(rolled).toHaveLength(1);
-    expect(rolled[0].id).toBe("parent-X");
+    // The watcher's internal `activeIds` MUST hold exactly the
+    // rolled-up representative (the parent) — not 4 entries. This
+    // assertion is on the actual private state via the test-only
+    // accessor, so it'll catch a regression where
+    // `updateActiveIds` stops calling the rollup helper.
+    const activeIds = __getActiveIdsForTest(SESSION);
+    expect(activeIds).not.toBeNull();
+    expect(activeIds!.size).toBe(1);
+    expect([...activeIds!]).toEqual(["parent-X"]);
   });
 
   it("non-empty response still calls replaceTasks and writes terminal state", async () => {
