@@ -331,12 +331,14 @@ function normalizeSlidesDir(dir: string): string {
 function resolveSlidesSlug(files: SlidesFileEntry[]): string | null {
   for (const file of files) {
     const normalizedPath = file.path.replace(/\\/g, "/");
-    const match = normalizedPath.match(/\/slides\/([^/]+)\//);
+    // Match either `…/slides/<slug>/…` (legacy) or
+    // `…/skill-output/slides/<slug>/…` (mofa-slides output).
+    const match = normalizedPath.match(/\/(?:skill-output\/)?slides\/([^/]+)\//);
     if (match?.[1]) {
       return match[1];
     }
     const normalizedGroup = normalizeSlidesDir(file.group);
-    const groupMatch = normalizedGroup.match(/^slides\/([^/]+)/);
+    const groupMatch = normalizedGroup.match(/^(?:skill-output\/)?slides\/([^/]+)/);
     if (groupMatch?.[1]) {
       return groupMatch[1];
     }
@@ -480,8 +482,12 @@ function resolveSlidesManifestPath(
 ): string | null {
   const normalizedSlug = normalizeSlidesDir(slug).split("/").pop() || slug;
   const projectGroup = `slides/${normalizedSlug}`;
+  // mofa-slides writes its output under `skill-output/slides/<slug>/`;
+  // legacy/manual runs wrote directly under `slides/<slug>/`. Accept
+  // both so hydration finds the manifest regardless of layout.
+  const skillOutputGroup = `skill-output/slides/${normalizedSlug}`;
 
-  // Find ALL manifest.json files under this project's output/ directory.
+  // Find ALL manifest.json files under either project output/ directory.
   // Pick the most recently modified one — handles cases like output/imgs/,
   // output/imgs_5pages/, etc.
   const manifests = files.filter((file) => {
@@ -489,7 +495,9 @@ function resolveSlidesManifestPath(
     const normalizedGroup = normalizeSlidesDir(file.group);
     return (
       normalizedGroup === `${projectGroup}/output/imgs` ||
-      normalizedGroup.startsWith(`${projectGroup}/output/`)
+      normalizedGroup.startsWith(`${projectGroup}/output/`) ||
+      normalizedGroup === `${skillOutputGroup}/output/imgs` ||
+      normalizedGroup.startsWith(`${skillOutputGroup}/output/`)
     );
   });
 
