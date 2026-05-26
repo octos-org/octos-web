@@ -48,9 +48,31 @@ export function SlidesChat({ sessionId, retryNonce = 0 }: Props) {
     }
   }, [retryNonce]);
 
-  // Load history for this session
+  // Load history for this session. `loadHistory` ultimately calls
+  // `callAuxWs(SESSION_MESSAGES_PAGE, …)` which throws synchronously if
+  // the v1 bridge has not yet reached `connectionState === "connected"`.
+  // The fire-and-forget shape used to mount-race the bridge handshake
+  // (which lands ~t+500-700 ms): the throw was swallowed in
+  // ThreadStore's catch, `loadedSessions` was cleared, but the effect
+  // deps `[sessionId, historyTopic]` never changed so no retry fired —
+  // the left chat panel stayed blank for the entire session lifetime
+  // (live mini3 regression 2026-05-18 on `/slides/slides-…-th18yr`).
+  //
+  // Mirror the SessionProvider pattern at
+  // `runtime/session-context.tsx:676`: listen for the
+  // `crew:bridge_connected` window event that
+  // `runtime/ui-protocol-runtime.ts:152` dispatches every time the
+  // bridge reaches `connected`, and re-issue `loadHistory` with
+  // `force: true` so the dedup guard does not short-circuit it.
   useEffect(() => {
     void ThreadStore.loadHistory(sessionId, historyTopic);
+    const onBridgeReady = () => {
+      void ThreadStore.loadHistory(sessionId, historyTopic, { force: true });
+    };
+    window.addEventListener("crew:bridge_connected", onBridgeReady);
+    return () => {
+      window.removeEventListener("crew:bridge_connected", onBridgeReady);
+    };
   }, [historyTopic, sessionId]);
 
   useEffect(() => {
