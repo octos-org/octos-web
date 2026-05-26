@@ -8,6 +8,7 @@ import { RouterModeSwitcher } from "@/components/router-mode-switcher";
 import { RouterFailoverBanner } from "@/components/router-failover-banner";
 import { SessionList } from "@/components/session-list";
 import { ContentBrowser } from "@/components/content-browser";
+import { SessionTitleEditor } from "@/components/session-title-editor";
 import { SessionTaskIndicator } from "@/components/session-task-dock";
 import { useSession } from "@/runtime/session-context";
 import { eventMatchesScope } from "@/runtime/event-scope";
@@ -163,9 +164,13 @@ export function ChatLayout({ children }: { children: ReactNode }) {
               <div className="flex items-start gap-4">
                 <div className="min-w-0 flex-1">
                   <div className="shell-kicker">Current Session</div>
-                  <div className="truncate pr-3 text-[1.24rem] font-semibold tracking-tight text-text-strong">
-                    {currentSessionTitle}
-                  </div>
+                  <SessionTitleEditor
+                    value={currentSessionTitle}
+                    onSave={(title) => renameSession(currentSessionId, title)}
+                    buttonClassName="mt-1 w-full pr-3 text-left text-[1.24rem] font-semibold tracking-tight text-text-strong transition hover:text-accent"
+                    inputClassName="mt-1 w-full rounded-[12px] border border-accent/40 bg-surface-container px-3 py-2 text-[1.08rem] font-semibold tracking-tight text-text outline-none"
+                    testId="chat-session-title"
+                  />
                 </div>
                 <SessionTaskIndicator />
                 <button
