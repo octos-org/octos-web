@@ -20,6 +20,7 @@ import type { ContentEntry } from "@/api/content";
 import { downloadContent } from "@/api/content";
 import { useFileStore, type FileEntry } from "@/store/file-store";
 import { AudioPlayer } from "@/components/viewers/audio-player";
+import { SessionTitleEditor } from "@/components/session-title-editor";
 
 interface ContentBrowserProps {
   open: boolean;
@@ -30,46 +31,6 @@ interface ContentBrowserProps {
   sessionId: string;
   sessionTitle: string;
   onRenameTitle?: (title: string) => void;
-}
-
-function EditableTitle({
-  value,
-  onSave,
-}: {
-  value: string;
-  onSave?: (value: string) => void;
-}) {
-  const [editing, setEditing] = useState(false);
-
-  if (editing && onSave) {
-    return (
-      <input
-        defaultValue={value}
-        className="mt-2 w-full rounded-[12px] border border-accent/40 bg-surface-container px-3 py-2.5 text-[1.08rem] font-semibold tracking-tight text-text outline-none"
-        autoFocus
-        onBlur={(e) => {
-          const next = e.target.value.trim();
-          if (next && next !== value) onSave(next);
-          setEditing(false);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") e.currentTarget.blur();
-          if (e.key === "Escape") setEditing(false);
-        }}
-      />
-    );
-  }
-
-  return (
-    <button
-      type="button"
-      className="mt-2 block w-full truncate text-left text-[1.24rem] font-semibold tracking-tight text-text-strong transition hover:text-accent"
-      title="Click to rename session"
-      onClick={() => onSave && setEditing(true)}
-    >
-      {value}
-    </button>
-  );
 }
 
 function inferCategory(filename: string): ContentEntry["category"] {
@@ -198,7 +159,13 @@ export function ContentBrowser({
           <div className="min-w-0 flex-1">
             <div className="min-w-0 flex-1">
               <div className="shell-kicker">Session Files</div>
-              <EditableTitle value={sessionTitle} onSave={onRenameTitle} />
+              <SessionTitleEditor
+                value={sessionTitle}
+                onSave={onRenameTitle}
+                buttonClassName="mt-2 w-full text-left text-[1.24rem] font-semibold tracking-tight text-text-strong transition hover:text-accent"
+                inputClassName="mt-2 w-full rounded-[12px] border border-accent/40 bg-surface-container px-3 py-2.5 text-[1.08rem] font-semibold tracking-tight text-text outline-none"
+                testId="content-session-title"
+              />
             </div>
           </div>
           <div className="flex items-center gap-2">
