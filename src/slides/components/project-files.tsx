@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -274,21 +274,90 @@ export function ProjectFiles({
   const [manifest, setManifest] = useState<SlidesRenderManifest | null>(null);
   const [contract, setContract] = useState<SlidesWorkspaceContract | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [refreshTick, setRefreshTick] = useState(0);
   const requestedDirs = useMemo(
     () => [`slides/${slug}`, "skill-output", "research", "sites"],
     [slug],
   );
 
+  // Self-driven poll loop. Pre-fix the effect depended on
+  // `refreshTick`, which the `crew:task_status` listener increments on
+  // every task-watcher poll (every 2.5 s, fanning out one event per
+  // stored task in the session). Each increment remounted the effect,
+  // wiped local `idleStreak` / `prevSignature` state, and fired an
+  // immediate `void load()` — so the polling rate stayed pinned at the
+  // task-watcher cadence regardless of any backoff logic.
+  //
+  // Architectural fix: poll loop runs independently of refreshTick.
+  // External refresh signals invoke `load` via a ref instead of
+  // remounting the effect.
+  const loadRef = useRef<(() => Promise<void>) | null>(null);
+  const lastRefreshAtRef = useRef(0);
+
   const triggerRefresh = useCallback(() => {
-    setRefreshTick((value) => value + 1);
+    const now = Date.now();
+    // Throttle: crew:task_status fires once per task per task-watcher
+    // poll. Without throttling each event would race for the
+    // single-flight slot. 3 s is well below any user-noticeable
+    // signal — real file changes surface on the next backoff tick.
+    if (now - lastRefreshAtRef.current < 3000) return;
+    lastRefreshAtRef.current = now;
+    void loadRef.current?.();
   }, []);
 
   useEffect(() => {
     let stopped = false;
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
+    let idleStreak = 0;
+    let prevSignature = "";
+    let inFlight = false;
+    let pendingRefresh = false;
+
+    function nextDelay(): number {
+      if (idleStreak < 3) return 2500;
+      if (idleStreak < 10) return 10_000;
+      return 30_000;
+    }
+
+    function signatureOf(
+      files: SlidesFileEntry[],
+      contract: SlidesWorkspaceContract | null,
+    ): string {
+      const fileSig = files
+        .map((f) => `${f.path}|${f.size}|${f.modified}`)
+        .sort()
+        .join("\n");
+      const contractSig = contract ? JSON.stringify(contract) : "";
+      return `${fileSig}\n--\n${contractSig}`;
+    }
+
+    function schedule() {
+      if (stopped) return;
+      if (pollTimer) clearTimeout(pollTimer);
+      pollTimer = setTimeout(() => {
+        if (typeof document !== "undefined" && document.hidden) {
+          schedule();
+          return;
+        }
+        void load();
+      }, nextDelay());
+    }
 
     async function load() {
+      if (stopped) return;
+      // If a load is already in flight, mark a pending refresh so we
+      // re-poll immediately on completion. Without this, a `crew:file`
+      // event landing mid-poll is silently dropped and freshness can
+      // slip up to the next backoff tick (~30 s once idle). Codex
+      // MINOR (PR #142).
+      if (inFlight) {
+        pendingRefresh = true;
+        return;
+      }
+      inFlight = true;
+      if (pollTimer) {
+        clearTimeout(pollTimer);
+        pollTimer = undefined;
+      }
       try {
         const [nextFiles, nextContract] = await Promise.all([
           listSlidesFiles(requestedDirs, { sessionId }),
@@ -296,9 +365,16 @@ export function ProjectFiles({
         ]);
         const nextManifest = await fetchSlidesManifest(slug, nextFiles);
         if (!stopped) {
-          setFiles(nextFiles);
-          setManifest(nextManifest);
-          setContract(nextContract);
+          const sig = signatureOf(nextFiles, nextContract);
+          if (sig === prevSignature) {
+            idleStreak += 1;
+          } else {
+            idleStreak = 0;
+            prevSignature = sig;
+            setFiles(nextFiles);
+            setManifest(nextManifest);
+            setContract(nextContract);
+          }
           setError(null);
         }
       } catch (err) {
@@ -306,17 +382,25 @@ export function ProjectFiles({
           setError(err instanceof Error ? err.message : "Failed to load files");
         }
       } finally {
-        if (!stopped) pollTimer = setTimeout(load, 2500);
+        inFlight = false;
+        if (pendingRefresh && !stopped) {
+          pendingRefresh = false;
+          void load();
+        } else {
+          schedule();
+        }
       }
     }
 
+    loadRef.current = load;
     void load();
 
     return () => {
       stopped = true;
       if (pollTimer) clearTimeout(pollTimer);
+      if (loadRef.current === load) loadRef.current = null;
     };
-  }, [refreshTick, requestedDirs, sessionId, slug]);
+  }, [requestedDirs, sessionId, slug]);
 
   useEffect(() => {
     function matchesSession(detail: unknown): boolean {
@@ -352,19 +436,26 @@ export function ProjectFiles({
       }
     }
 
+    // Only listen to `crew:file` — the genuine "new file landed in this
+    // session" signal dispatched by `task-watcher.emitNewFileEvents`.
+    // The other crew events fire on every task-watcher poll
+    // (`crew:task_status` fans out per-task per-cycle at 2.5 s,
+    // `crew:bg_tasks` per cycle while any task is alive,
+    // `crew:tool_progress` per progress chunk) and are nominally
+    // throttled to 3 s here — but 3 s aliases the 2.5 s watcher cadence
+    // into one accepted refresh every two cycles (~5 s), which
+    // bypasses the 10 s/30 s backoff ladder entirely. The file panel
+    // doesn't need those signals; the periodic poll already discovers
+    // file changes within at most 30 s of disk write, and `crew:file`
+    // surfaces fresh files immediately when the agent actually
+    // produces one.
     window.addEventListener("focus", triggerRefresh);
     window.addEventListener("crew:file", handleEvent);
-    window.addEventListener("crew:bg_tasks", handleEvent);
-    window.addEventListener("crew:task_status", handleEvent);
-    window.addEventListener("crew:tool_progress", handleEvent);
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       window.removeEventListener("focus", triggerRefresh);
       window.removeEventListener("crew:file", handleEvent);
-      window.removeEventListener("crew:bg_tasks", handleEvent);
-      window.removeEventListener("crew:task_status", handleEvent);
-      window.removeEventListener("crew:tool_progress", handleEvent);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [historyTopic, sessionId, triggerRefresh]);
