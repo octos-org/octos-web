@@ -78,7 +78,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
       {/* Sidebar */}
       <aside
         style={{ width: historyPanelWidth }}
-        className="sidebar-scope glass-panel flex shrink-0 flex-col overflow-hidden rounded-[16px]"
+        className="sidebar-scope glass-panel animate-shell-rise flex shrink-0 flex-col overflow-hidden rounded-[16px]"
       >
         {/* Header */}
         <div className="px-3 pt-3">
@@ -157,7 +157,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
 
       {/* Main + Media Panel */}
       <div className="flex flex-1 min-w-0 min-h-0 gap-3">
-        <main className="glass-panel flex flex-1 min-w-0 flex-col min-h-0 overflow-hidden rounded-[16px]">
+        <main className="glass-panel animate-shell-rise flex flex-1 min-w-0 flex-col min-h-0 overflow-hidden rounded-[16px]">
           {/* Top bar with title + cost + files toggle */}
           <div className="px-3 pt-3">
             <div className="glass-toolbar rounded-[14px] px-4 py-4">
@@ -223,7 +223,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
             />
             <div
               style={{ width: effectiveWidth }}
-              className="shrink-0 overflow-hidden"
+              className="animate-shell-rise shrink-0 overflow-hidden transition-[width,opacity,transform] duration-200 ease-out"
             >
               <ContentBrowser
                 open={mediaPanelOpen}
@@ -242,7 +242,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
 
       {/* Maximized content panel — covers entire window including sidebar */}
       {mediaPanelOpen && isMaximized && (
-        <div className="glass-backdrop fixed inset-0 z-40 p-3">
+        <div className="glass-backdrop animate-shell-rise fixed inset-0 z-40 p-3">
           <ContentBrowser
             open={mediaPanelOpen}
             onClose={() => { setMediaPanelOpen(false); toggleMaximize(); }}
