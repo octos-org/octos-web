@@ -55,6 +55,8 @@ export interface ThreadProgressEntry {
 export interface ThreadToolCall {
   id: string;
   name: string;
+  /** Raw arguments captured from the tool_start event. */
+  args?: unknown;
   status: "running" | "complete" | "error";
   progress: ThreadProgressEntry[];
   /** 0 for first call, 1 for first retry, etc. Tool retries with the same name
@@ -816,6 +818,7 @@ export function addToolCall(
   threadId: string,
   toolCallId: string,
   name: string,
+  args?: unknown,
 ): void {
   const found = ensureOrphanThread(threadId);
   if (!found) return;
@@ -856,9 +859,14 @@ export function addToolCall(
           existing.status === "complete" || existing.status === "error"
             ? existing.status
             : ("running" as const);
-        const newTcs = candidate.toolCalls.map((tc, i) =>
-          i === idx ? { ...tc, status: preservedStatus } : tc,
-        );
+        const newTcs = candidate.toolCalls.map((tc, i) => {
+          if (i !== idx) return tc;
+          return {
+            ...tc,
+            status: preservedStatus,
+            ...(args !== undefined ? { args } : {}),
+          };
+        });
         replaceAssistantSlot(found.thread, candidate, {
           ...candidate,
           toolCalls: newTcs,
@@ -887,9 +895,14 @@ export function addToolCall(
         existing.status === "complete" || existing.status === "error"
           ? existing.status
           : ("running" as const);
-      const newTcs = tcs.map((tc, i) =>
-        i === byId ? { ...tc, status: preservedStatus } : tc,
-      );
+      const newTcs = tcs.map((tc, i) => {
+        if (i !== byId) return tc;
+        return {
+          ...tc,
+          status: preservedStatus,
+          ...(args !== undefined ? { args } : {}),
+        };
+      });
       replaceAssistantSlot(found.thread, slot, {
         ...slot,
         toolCalls: newTcs,
@@ -905,6 +918,7 @@ export function addToolCall(
     const collapsed: ThreadToolCall = {
       ...last,
       id: toolCallId,
+      ...(args !== undefined ? { args } : {}),
       status: "running",
       retryCount: last.retryCount + 1,
       // Carry forward progress so the user keeps the running narration.
@@ -930,7 +944,11 @@ export function addToolCall(
       if (key) {
         shimIngest(key, threadId, {
           type: "tool_start",
-          data: { tool_call_id: toolCallId, name },
+          data: {
+            tool_call_id: toolCallId,
+            name,
+            ...(args !== undefined ? { arguments: args } : {}),
+          },
         });
       }
     }
@@ -942,6 +960,7 @@ export function addToolCall(
     {
       id: toolCallId,
       name,
+      ...(args !== undefined ? { args } : {}),
       status: "running" as const,
       progress: [],
       retryCount: 0,
@@ -963,7 +982,11 @@ export function addToolCall(
     if (key) {
       shimIngest(key, threadId, {
         type: "tool_start",
-        data: { tool_call_id: toolCallId, name },
+        data: {
+          tool_call_id: toolCallId,
+          name,
+          ...(args !== undefined ? { arguments: args } : {}),
+        },
       });
     }
   }

@@ -78,23 +78,119 @@ function visibleAttachmentCaption(caption?: string): string {
   return caption;
 }
 
+interface ToolArgumentSummary {
+  label: "command" | "path" | "query";
+  value: string;
+}
+
+function objectArgs(args: unknown): Record<string, unknown> | null {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return null;
+  return args as Record<string, unknown>;
+}
+
+function stringifyArg(value: unknown): string | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    const parts = value
+      .map((entry) => stringifyArg(entry))
+      .filter((entry): entry is string => Boolean(entry));
+    return parts.length > 0 ? parts.join(", ") : null;
+  }
+  return null;
+}
+
+function pickArg(
+  args: Record<string, unknown>,
+  keys: string[],
+): string | null {
+  for (const key of keys) {
+    const value = stringifyArg(args[key]);
+    if (value) return value;
+  }
+  return null;
+}
+
+function toolArgumentSummary(
+  toolCall: ThreadToolCall,
+): ToolArgumentSummary | null {
+  const args = objectArgs(toolCall.args);
+  if (!args) return null;
+  const name = toolCall.name.toLowerCase();
+  const shellCommand = pickArg(args, ["command", "cmd", "shell_command"]);
+  const filePath = pickArg(args, [
+    "path",
+    "file_path",
+    "file",
+    "filename",
+    "dir",
+    "directory",
+  ]);
+  const searchQuery = pickArg(args, [
+    "query",
+    "q",
+    "pattern",
+    "regex",
+    "search",
+    "needle",
+  ]);
+
+  if (
+    shellCommand &&
+    (name.includes("shell") ||
+      name.includes("bash") ||
+      name.includes("terminal") ||
+      name === "exec" ||
+      name === "run_command")
+  ) {
+    return { label: "command", value: shellCommand };
+  }
+  if (
+    filePath &&
+    (name.includes("file") ||
+      name.includes("read") ||
+      name.includes("write") ||
+      name.includes("edit") ||
+      name.includes("list_dir") ||
+      name.includes("glob"))
+  ) {
+    return { label: "path", value: filePath };
+  }
+  if (
+    searchQuery &&
+    (name.includes("search") || name.includes("grep") || name === "rg")
+  ) {
+    return { label: "query", value: searchQuery };
+  }
+
+  if (shellCommand) return { label: "command", value: shellCommand };
+  if (filePath) return { label: "path", value: filePath };
+  if (searchQuery) return { label: "query", value: searchQuery };
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // File attachment renderer
 // ---------------------------------------------------------------------------
 
 /** Fetch a file with auth and return an object URL. */
 function useBlobUrl(filePath: string): string | undefined {
-  const [blobUrl, setBlobUrl] = useState<string | undefined>(undefined);
+  const isExternal = filePath.startsWith("http");
+  const [blobState, setBlobState] = useState<{
+    filePath: string;
+    url?: string;
+  }>({ filePath: "" });
 
   useEffect(() => {
+    if (isExternal) return;
+
     let revoked = false;
     let url: string | undefined;
-
-    // External URLs don't need auth
-    if (filePath.startsWith("http")) {
-      setBlobUrl(filePath);
-      return;
-    }
 
     const token = getToken();
     const apiUrl = buildFileUrl(filePath);
@@ -108,7 +204,7 @@ function useBlobUrl(filePath: string): string | undefined {
       .then((blob) => {
         if (revoked) return;
         url = URL.createObjectURL(blob);
-        setBlobUrl(url);
+        setBlobState({ filePath, url });
       })
       .catch(() => {
         // Fallback: leave undefined, media element will show broken state
@@ -118,9 +214,10 @@ function useBlobUrl(filePath: string): string | undefined {
       revoked = true;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [filePath]);
+  }, [filePath, isExternal]);
 
-  return blobUrl;
+  if (isExternal) return filePath;
+  return blobState.filePath === filePath ? blobState.url : undefined;
 }
 
 function FileAttachment({ file }: { file: MessageFile }) {
@@ -506,32 +603,20 @@ function ToolCallBubble({
   // dominates the chat scrollback. Default these to collapsed so the
   // chat reads cleanly; user can still click to expand on demand.
   const isSpawnOnly = SPAWN_ONLY_TOOL_NAMES.has(toolCall.name);
-  const [expanded, setExpanded] = useState(
-    toolCall.status === "running" && !isSpawnOnly,
-  );
-  // Track whether the user has manually toggled — if so, respect their
-  // choice and skip the auto-collapse on the running -> settled
-  // transition. Without this, a user who hand-expands a completed bubble
-  // would see it stay expanded only until the next render.
-  const userOverrodeRef = useRef(false);
-  const prevStatusRef = useRef(toolCall.status);
-  useEffect(() => {
-    const wasRunning = prevStatusRef.current === "running";
-    const isSettled = toolCall.status !== "running";
-    if (wasRunning && isSettled && !userOverrodeRef.current) {
-      setExpanded(false);
-    }
-    prevStatusRef.current = toolCall.status;
-  }, [toolCall.status]);
+  const defaultExpanded = toolCall.status === "running" && !isSpawnOnly;
+  // `null` means the user has not chosen yet, so expansion follows the
+  // status-derived default and auto-collapses once the tool settles.
+  const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
+  const expanded = userExpanded ?? defaultExpanded;
 
   const handleToggle = useCallback(() => {
-    userOverrodeRef.current = true;
-    setExpanded((v) => !v);
-  }, []);
+    setUserExpanded((value) => !(value ?? defaultExpanded));
+  }, [defaultExpanded]);
 
   const progressCount = toolCall.progress.length;
   const latestProgress =
     progressCount > 0 ? toolCall.progress[progressCount - 1] : null;
+  const argSummary = toolArgumentSummary(toolCall);
   // Toggle only makes sense when there's more than one chip to hide.
   // For a single-chip list, the "collapsed" view would render the same
   // line as the expanded view, so we skip the chrome.
@@ -643,6 +728,17 @@ function ToolCallBubble({
           {retryBadge}
         </span>
       </span>
+      {argSummary && (
+        <span
+          data-testid="tool-call-args"
+          data-tool-call-args-kind={argSummary.label}
+          title={`${argSummary.label}: ${argSummary.value}`}
+          className="flex min-w-0 items-start gap-1 text-[9px] leading-4 opacity-85"
+        >
+          <span className="shrink-0 text-current/70">{argSummary.label}:</span>
+          <span className="min-w-0 break-all">{argSummary.value}</span>
+        </span>
+      )}
       {progressCount > 0 && (
         <>
           {showToggle && (
