@@ -71,6 +71,7 @@ export interface AssistantView {
 export interface ToolCallView {
   tool_call_id: string;
   name: string;
+  args?: unknown;
   progress: ReadonlyArray<string>;
   status: EnvelopeToolEndStatus | null;
   error: string | null;
@@ -188,6 +189,7 @@ function computeProjection(
   interface MutableToolCall {
     tool_call_id: string;
     name: string;
+    args?: unknown;
     progress: string[];
     status: EnvelopeToolEndStatus | null;
     error: string | null;
@@ -332,6 +334,7 @@ function computeProjection(
       return {
         tool_call_id: t.tool_call_id,
         name: t.name,
+        ...(t.args !== undefined ? { args: t.args } : {}),
         progress: t.progress.slice(),
         status: t.status,
         error: t.error,
@@ -408,6 +411,9 @@ function computeProjection(
         thread.tools.set(id, {
           tool_call_id: id,
           name: payload.data.name,
+          ...(payload.data.arguments !== undefined
+            ? { args: payload.data.arguments }
+            : {}),
           progress: [],
           status: null,
           error: null,
