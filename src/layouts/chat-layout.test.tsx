@@ -61,6 +61,14 @@ vi.mock("@/store/file-store", () => ({
   useFileStore: () => [],
 }));
 
+const bridgeMocks = vi.hoisted(() => ({
+  getActiveBridge: vi.fn(),
+}));
+
+vi.mock("@/runtime/ui-protocol-runtime", () => ({
+  getActiveBridge: bridgeMocks.getActiveBridge,
+}));
+
 import { ChatLayout } from "./chat-layout";
 import { SessionContext, type SessionContextValue } from "@/runtime/session-context";
 
@@ -162,6 +170,7 @@ afterEach(() => {
   resizableMocks.historyMouseDown.mockClear();
   resizableMocks.toggleMaximize.mockClear();
   resizableMocks.useResizablePanel.mockClear();
+  bridgeMocks.getActiveBridge.mockReset();
 });
 
 describe("ChatLayout panel layout", () => {
@@ -350,6 +359,137 @@ describe("ChatLayout session title editing", () => {
           `[data-testid='session-item-${SESSION_ID}']`,
         )?.textContent,
       ).toContain("Server title");
+    } finally {
+      harness.unmount();
+    }
+  });
+});
+
+describe("ChatLayout UI Protocol approvals", () => {
+  it("renders approval requests, previews diffs, and responds through the active bridge", async () => {
+    const respondToApproval = vi.fn().mockResolvedValue({
+      approval_id: "approval-1",
+      accepted: true,
+      status: "approved",
+    });
+    const callMethod = vi.fn().mockResolvedValue({
+      status: "ready",
+      preview: {
+        title: "Edit preview",
+        files: [
+          {
+            path: "src/app.ts",
+            status: "modified",
+            hunks: [
+              {
+                header: "@@ -1 +1 @@",
+                lines: [
+                  { kind: "removed", content: "old" },
+                  { kind: "added", content: "new" },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    });
+    bridgeMocks.getActiveBridge.mockReturnValue({
+      respondToApproval,
+      callMethod,
+    });
+
+    const harness = mount(vi.fn());
+    try {
+      act(() => {
+        window.dispatchEvent(
+          new CustomEvent("crew:approval_requested", {
+            detail: {
+              session_id: SESSION_ID,
+              approval_id: "approval-1",
+              turn_id: "turn-1",
+              tool_name: "apply_patch",
+              title: "Apply file edit?",
+              body: "Modify src/app.ts",
+              approval_scope: "turn",
+              typed_details: {
+                kind: "diff",
+                preview_id: "preview-1",
+                operation: "modify",
+                summary: "1 file changed",
+              },
+              render_hints: {
+                primary_label: "Apply",
+                secondary_label: "Reject",
+              },
+            },
+          }),
+        );
+      });
+
+      expect(
+        harness.container.querySelector("[role='dialog']")?.textContent,
+      ).toContain("Apply file edit?");
+      expect(
+        harness.container.querySelector("[role='dialog']")?.textContent,
+      ).toContain("1 file changed");
+
+      const previewButton = [...harness.container.querySelectorAll("button")].find(
+        (button) => button.textContent === "Preview diff",
+      ) as HTMLButtonElement;
+      expect(previewButton).toBeTruthy();
+      await act(async () => {
+        previewButton.click();
+      });
+
+      expect(callMethod).toHaveBeenCalledWith("diff/preview/get", {
+        session_id: SESSION_ID,
+        preview_id: "preview-1",
+      });
+      expect(
+        harness.container.querySelector("[role='dialog']")?.textContent,
+      ).toContain("src/app.ts");
+      expect(
+        harness.container.querySelector("[role='dialog']")?.textContent,
+      ).toContain("new");
+
+      const approveButton = [...harness.container.querySelectorAll("button")].find(
+        (button) => button.textContent === "Apply",
+      ) as HTMLButtonElement;
+      expect(approveButton).toBeTruthy();
+      await act(async () => {
+        approveButton.click();
+      });
+
+      expect(respondToApproval).toHaveBeenCalledWith(
+        "approval-1",
+        "approve",
+        "turn",
+      );
+      expect(harness.container.querySelector("[role='dialog']")).toBeNull();
+    } finally {
+      harness.unmount();
+    }
+  });
+
+  it("ignores approval requests for other sessions", () => {
+    const harness = mount(vi.fn());
+    try {
+      act(() => {
+        window.dispatchEvent(
+          new CustomEvent("crew:approval_requested", {
+            detail: {
+              session_id: "web-other",
+              approval_id: "approval-2",
+              turn_id: "turn-2",
+              tool_name: "shell",
+              title: "Run command?",
+              body: "cargo test",
+            },
+          }),
+        );
+      });
+
+      expect(harness.container.querySelector("[role='dialog']")).toBeNull();
     } finally {
       harness.unmount();
     }

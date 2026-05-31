@@ -10,8 +10,10 @@ import { SessionList } from "@/components/session-list";
 import { ContentBrowser } from "@/components/content-browser";
 import { SessionTitleEditor } from "@/components/session-title-editor";
 import { SessionTaskIndicator } from "@/components/session-task-dock";
+import { UiProtocolApprovalDialog } from "@/components/ui-protocol-approval-dialog";
 import { useSession } from "@/runtime/session-context";
 import { eventMatchesScope } from "@/runtime/event-scope";
+import type { ApprovalRequestedEvent } from "@/runtime/ui-protocol-types";
 import {
   useContentViewer,
   ContentViewerOverlay,
@@ -49,8 +51,28 @@ export function ChatLayout({ children }: { children: ReactNode }) {
 
   // Notification toast state
   const [toast, setToast] = useState<string | null>(null);
+  const [approval, setApproval] = useState<ApprovalRequestedEvent | null>(null);
+  const scopedApproval =
+    approval && eventMatchesScope(approval, currentSessionId, historyTopic)
+      ? approval
+      : null;
 
   const openPanel = useCallback(() => setMediaPanelOpen(true), []);
+
+  useEffect(() => {
+    function onApprovalRequested(e: Event) {
+      const detail = (e as CustomEvent).detail;
+      if (!eventMatchesScope(detail, currentSessionId, historyTopic)) return;
+      setApproval(detail as ApprovalRequestedEvent);
+    }
+    window.addEventListener("crew:approval_requested", onApprovalRequested);
+    return () => {
+      window.removeEventListener(
+        "crew:approval_requested",
+        onApprovalRequested,
+      );
+    };
+  }, [currentSessionId, historyTopic]);
 
   // Listen for crew:file to show toast (crew:file_notification is a secondary
   // event dispatched by the file-store itself, so listening to both caused
@@ -261,6 +283,12 @@ export function ChatLayout({ children }: { children: ReactNode }) {
         state={viewerState}
         onClose={closeViewer}
         onCloseAudio={closeAudio}
+      />
+      <UiProtocolApprovalDialog
+        approval={scopedApproval}
+        sessionId={currentSessionId}
+        topic={historyTopic}
+        onResolved={() => setApproval(null)}
       />
     </div>
   );
