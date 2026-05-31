@@ -1555,11 +1555,10 @@ export function handleApprovalRequested(
   cfg: RouterConfig,
   event: ApprovalRequestedEvent,
 ): void {
-  // No approval modal exists yet (Phase C-4 territory). For now we surface
-  // the typed event verbatim through a CustomEvent so a future modal can
-  // listen without us having to touch this router again. The modal API
-  // shape is the bridge's `ApprovalRequestedEvent` directly — the typed
-  // shape is the contract.
+  // ChatLayout consumes this typed CustomEvent to render the approval
+  // dialog and respond via `approval/respond`. Keep the event shape as
+  // the bridge's `ApprovalRequestedEvent` so the UI does not parse
+  // ad-hoc string payloads.
   dispatch(
     cfg,
     new CustomEvent("crew:approval_requested", { detail: event }),
