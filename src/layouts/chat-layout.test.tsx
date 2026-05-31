@@ -176,7 +176,9 @@ describe("ChatLayout panel layout", () => {
       expect(sidebar).not.toBeNull();
       expect(main).not.toBeNull();
       expect(sidebar.className).toContain("glass-panel");
+      expect(sidebar.className).toContain("animate-shell-rise");
       expect(main.className).toContain("glass-panel");
+      expect(main.className).toContain("animate-shell-rise");
       expect(sidebar.style.width).toBe("288px");
 
       const historyTitle = [...harness.container.querySelectorAll("div")].find(
@@ -210,6 +212,15 @@ describe("ChatLayout panel layout", () => {
       expect((contentPanelWrapper as HTMLElement | null)?.style.width).toBe(
         "320px",
       );
+      expect((contentPanelWrapper as HTMLElement | null)?.className).toContain(
+        "animate-shell-rise",
+      );
+      expect((contentPanelWrapper as HTMLElement | null)?.className).toContain(
+        "transition-[width,opacity,transform]",
+      );
+      expect(
+        harness.container.querySelectorAll(".glass-toolbar"),
+      ).toHaveLength(3);
       expect(resizableMocks.useResizablePanel).toHaveBeenCalledWith({
         minWidth: 240,
         maxWidth: 520,
