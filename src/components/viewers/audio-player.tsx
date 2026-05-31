@@ -17,6 +17,7 @@ export function AudioPlayer({ entry, onClose }: AudioPlayerProps) {
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [playbackRate, setPlaybackRate] = useState(1);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -49,12 +50,22 @@ export function AudioPlayer({ entry, onClose }: AudioPlayerProps) {
     setPlaying(false);
   };
 
-  const seek = (e: React.MouseEvent<HTMLDivElement>) => {
+  const seekToRatio = (ratio: number) => {
     const audio = audioRef.current;
     if (!audio || !duration) return;
+    audio.currentTime = Math.max(0, Math.min(1, ratio)) * duration;
+  };
+
+  const seek = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    const ratio = (e.clientX - rect.left) / rect.width;
-    audio.currentTime = ratio * duration;
+    seekToRatio((e.clientX - rect.left) / rect.width);
+  };
+
+  const changeSpeed = (rate: number) => {
+    setPlaybackRate(rate);
+    if (audioRef.current) {
+      audioRef.current.playbackRate = rate;
+    }
   };
 
   const formatTime = (s: number) => {
@@ -64,9 +75,13 @@ export function AudioPlayer({ entry, onClose }: AudioPlayerProps) {
   };
 
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
+  const waveform = [
+    26, 42, 58, 36, 70, 48, 62, 30, 74, 54, 46, 66, 38, 82, 56, 44,
+    68, 50, 76, 34, 60, 48, 72, 40, 64, 52, 86, 44, 58, 36, 70, 46,
+  ];
 
   return (
-    <div className="border-t border-border bg-surface-container px-3 py-2.5">
+    <div className="border-t border-border bg-surface-container px-3 py-3">
       <audio ref={audioRef} src={audioUrl(entry)} preload="none" />
 
       <div className="flex items-center gap-3">
@@ -87,31 +102,73 @@ export function AudioPlayer({ entry, onClose }: AudioPlayerProps) {
           )}
         </button>
 
-        {/* Info + progress */}
         <div className="min-w-0 flex-1">
           <p className="truncate text-xs font-medium text-text">
             {entry.filename}
           </p>
-          <div className="mt-1 flex items-center gap-2">
+          <div className="mt-2 flex items-center gap-2">
             <span className="text-[10px] text-muted w-8">
               {formatTime(currentTime)}
             </span>
             <div
-              className="flex-1 h-1.5 rounded-full bg-surface-container cursor-pointer"
+              className="flex h-7 flex-1 cursor-pointer items-end gap-0.5 rounded-md bg-surface-dark/50 px-1.5 py-1"
               onClick={seek}
+              role="slider"
+              aria-label="Seek audio"
+              aria-valuemin={0}
+              aria-valuemax={Math.max(1, duration)}
+              aria-valuenow={currentTime}
             >
-              <div
-                className="h-full rounded-full bg-accent transition-all"
-                style={{ width: `${progress}%` }}
-              />
+              {waveform.map((height, index) => {
+                const filled = (index / Math.max(1, waveform.length - 1)) * 100 <= progress;
+                return (
+                  <span
+                    key={index}
+                    className={`flex-1 rounded-sm ${
+                      filled ? "bg-accent" : "bg-border"
+                    }`}
+                    style={{ height: `${height}%` }}
+                  />
+                );
+              })}
             </div>
             <span className="text-[10px] text-muted w-8 text-right">
               {formatTime(duration)}
             </span>
           </div>
+          <input
+            className="sr-only"
+            type="range"
+            aria-label="Seek audio"
+            min={0}
+            max={Math.max(1, duration)}
+            step={0.1}
+            value={currentTime}
+            onChange={(event) => {
+              const next = Number(event.target.value);
+              if (Number.isFinite(next) && duration > 0) {
+                seekToRatio(next / duration);
+              }
+            }}
+          />
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            {[0.75, 1, 1.25, 1.5, 2].map((rate) => (
+              <button
+                key={rate}
+                type="button"
+                onClick={() => changeSpeed(rate)}
+                className={`rounded-md px-2 py-1 text-[10px] font-semibold ${
+                  playbackRate === rate
+                    ? "bg-accent text-white"
+                    : "bg-surface-light text-muted hover:text-text"
+                }`}
+              >
+                {rate}x
+              </button>
+            ))}
+          </div>
         </div>
 
-        {/* Close */}
         <button
           onClick={onClose}
           className="shrink-0 rounded-lg p-1.5 text-muted hover:bg-surface-container hover:text-text"
