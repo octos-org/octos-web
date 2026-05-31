@@ -841,7 +841,7 @@ interface AssistantPersistedPayload {
 
 interface ToolStartPayload {
   type: "tool_start";
-  data: { tool_call_id: string; name: string };
+  data: { tool_call_id: string; name: string; arguments?: unknown };
 }
 
 interface ToolProgressPayload {

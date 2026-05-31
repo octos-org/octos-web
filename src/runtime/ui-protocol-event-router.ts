@@ -1266,7 +1266,12 @@ export function handleToolStarted(
   // the pattern `handleTaskUpdated` uses for spawn_only / background
   // tasks. `addToolCall` is idempotent on `(turn_id, tool_call_id)`,
   // so a replayed `tool/started` is safe.
-  ThreadStore.addToolCall(event.turn_id, event.tool_call_id, event.tool_name);
+  ThreadStore.addToolCall(
+    event.turn_id,
+    event.tool_call_id,
+    event.tool_name,
+    event.arguments,
+  );
   dispatchToolProgressEvent(cfg, event.turn_id, event.tool_name, "running");
 }
 
