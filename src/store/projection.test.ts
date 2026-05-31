@@ -65,9 +65,13 @@ const aPersisted = (text: string, meta: MessageMeta = META): Payload => ({
   data: { text, meta },
 });
 
-const tStart = (id: string, name: string): Payload => ({
+const tStart = (id: string, name: string, args?: unknown): Payload => ({
   type: "tool_start",
-  data: { tool_call_id: id, name },
+  data: {
+    tool_call_id: id,
+    name,
+    ...(args !== undefined ? { arguments: args } : {}),
+  },
 });
 
 const tProgress = (id: string, message: string): Payload => ({
@@ -371,6 +375,16 @@ describe("project — tool_start adds a toolCall", () => {
         error: null,
       },
     ]);
+  });
+
+  it("preserves optional tool arguments", () => {
+    const log: Envelope[] = [
+      env("t1", 0, tStart("tc-1", "shell", { command: "cargo test" })),
+    ];
+    const view = project(log);
+    expect(view.threads[0].toolCalls[0].args).toEqual({
+      command: "cargo test",
+    });
   });
 });
 

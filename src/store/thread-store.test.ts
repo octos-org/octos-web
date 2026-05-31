@@ -142,6 +142,19 @@ describe.each(FLAG_STATES)("thread-store [$label]", ({ projectionV1 }) => {
     expect(tcs[1].progress.map((p) => p.message)).toEqual(["rendering audio"]);
   });
 
+  it("preserves_tool_start_arguments_on_tool_call_state", () => {
+    makeUser("run", "cmid-args");
+    ThreadStore.addToolCall("cmid-args", "tc-shell", "shell", {
+      command: "cargo test -p octos-web",
+    });
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const tc = thread.pendingAssistant?.toolCalls.find(
+      (entry) => entry.id === "tc-shell",
+    );
+    expect(tc?.args).toEqual({ command: "cargo test -p octos-web" });
+  });
+
   it("late_arrival_assistant_lands_in_correct_thread", () => {
     // User sends two questions back-to-back; the slow answer arrives later.
     makeUser("slow news Q", "cmid-slow");
