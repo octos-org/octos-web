@@ -93,23 +93,20 @@ export function SlidesChat({ sessionId, retryNonce = 0 }: Props) {
     }
 
     const slug = projectSlug || buildSlidesSlug(projectTitle, projectId);
+
+    // Persist the generated slug before the scaffold turn, then wait
+    // for the next render with a stable `projectSlug`. Otherwise the
+    // slug save changes this effect's deps while the turn is in flight;
+    // React can run the cleanup and remove the fast `crew:turn_error`
+    // listener before the bridge emits the server failure.
+    if (!projectSlug) {
+      save({ slug, scaffoldError: undefined });
+      return;
+    }
+
     scaffoldStartedRef.current = true;
     // New attempt: drop any error captured during the previous turn.
     bridgeScaffoldErrorRef.current = null;
-
-    // Codex round-2 BLOCK D: persist `slug` BEFORE issuing the
-    // scaffold turn. The embedded `ChatThread` reads
-    // `useThreads(sessionId, historyTopic)` and `historyTopic` is
-    // computed from `project.slug` — without the pre-save the
-    // rendered context stays root-topic while the scaffold turn (and
-    // any `turn/error` bubble) lands on `slides <slug>`, invisible
-    // to the user. Pre-saving the slug also lines up the storage
-    // with the topic the embedded chat already listens to once it
-    // re-renders for the slug change, so a failed scaffold's error
-    // bubble appears next to the retry affordance.
-    // We also clear any stale `scaffoldError` so retries don't
-    // surface the previous failure once the new turn is in flight.
-    save({ slug, scaffoldError: undefined });
 
     // Codex round-4 NIT: the bridge dispatches `crew:turn_error` for
     // this scaffold turn with the real server error. `onComplete`
