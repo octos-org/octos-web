@@ -59,6 +59,9 @@ vi.mock("@/components/content-viewer", () => ({
 
 vi.mock("@/store/file-store", () => ({
   useFileStore: () => [],
+  useAllFiles: () => [],
+  removeFile: vi.fn(),
+  renameFile: vi.fn(),
 }));
 
 const bridgeMocks = vi.hoisted(() => ({

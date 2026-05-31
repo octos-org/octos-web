@@ -117,6 +117,12 @@ export function updateFile(id: string, updates: Partial<FileEntry>) {
   }
 }
 
+export function renameFile(id: string, filename: string): void {
+  const trimmed = filename.trim();
+  if (!trimmed) return;
+  updateFile(id, { filename: trimmed });
+}
+
 export function removeFile(id: string): void {
   const idx = allFiles.findIndex((f) => f.id === id);
   if (idx !== -1) {

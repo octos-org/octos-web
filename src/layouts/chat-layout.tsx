@@ -1,4 +1,4 @@
-import { type ReactNode, useState, useEffect, useCallback } from "react";
+import { type ReactNode, useState, useEffect, useCallback, useMemo } from "react";
 import { useAuth } from "@/auth/auth-context";
 import { useOctosStatus } from "@/hooks/use-octos-status";
 import { useTheme } from "@/hooks/use-theme";
@@ -23,12 +23,19 @@ import { useFileStore } from "@/store/file-store";
 
 export function ChatLayout({ children }: { children: ReactNode }) {
   const { user, portal, logout } = useAuth();
-  const { currentSessionId, currentSessionTitle, historyTopic, renameSession } =
+  const { sessions, currentSessionId, currentSessionTitle, historyTopic, renameSession } =
     useSession();
   const status = useOctosStatus();
   const { theme, toggleTheme } = useTheme();
   const [mediaPanelOpen, setMediaPanelOpen] = useState(false);
   const sessionFiles = useFileStore(currentSessionId);
+  const sessionLabels = useMemo(
+    () =>
+      Object.fromEntries(
+        sessions.map((session) => [session.id, session.title || session.id]),
+      ),
+    [sessions],
+  );
   const {
     effectiveWidth,
     isMaximized,
@@ -255,6 +262,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
                 onOpenViewer={openViewer}
                 sessionId={currentSessionId}
                 sessionTitle={currentSessionTitle}
+                sessionLabels={sessionLabels}
                 onRenameTitle={(title) => renameSession(currentSessionId, title)}
               />
             </div>
@@ -273,6 +281,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
             onOpenViewer={openViewer}
             sessionId={currentSessionId}
             sessionTitle={currentSessionTitle}
+            sessionLabels={sessionLabels}
             onRenameTitle={(title) => renameSession(currentSessionId, title)}
           />
         </div>
