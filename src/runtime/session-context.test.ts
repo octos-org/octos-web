@@ -51,7 +51,9 @@ import {
   type SessionContextValue,
   type SessionWithTitle,
 } from "./session-context";
-import type { SessionInfo } from "@/api/types";
+import { SessionList } from "@/components/session-list";
+import * as TaskStore from "@/store/task-store";
+import type { BackgroundTaskInfo, SessionInfo } from "@/api/types";
 
 const NO_TITLES: Record<string, string> = {};
 const NO_DELETES = new Set<string>();
@@ -110,6 +112,39 @@ function mountSessionProvider(
       act(() => root.unmount());
       container.remove();
     },
+  };
+}
+
+function mountSessionList(): MountedHarness {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  act(() => {
+    root.render(
+      React.createElement(
+        SessionProvider,
+        null,
+        React.createElement(SessionList),
+      ),
+    );
+  });
+  return {
+    container,
+    root,
+    unmount: () => {
+      act(() => root.unmount());
+      container.remove();
+    },
+  };
+}
+
+function backgroundTask(id: string): BackgroundTaskInfo {
+  return {
+    id,
+    tool_name: "spawn_agent",
+    status: "running",
+    started_at: "2026-05-30T00:00:00.000Z",
+    error: null,
   };
 }
 
@@ -391,6 +426,45 @@ describe("SessionProvider title integration", () => {
       });
     } finally {
       harness.unmount();
+    }
+  });
+});
+
+describe("SessionProvider background task rehydration", () => {
+  it("rehydrates recent background tasks on reload so non-current sidebar rows show live", async () => {
+    const busySessionId = idAt(120, "busy");
+    const idleSessionId = idAt(240, "idle");
+    const busyTask = backgroundTask("task-running-after-reload");
+    apiMocks.listSessions.mockResolvedValue([
+      { id: busySessionId, message_count: 2, title: "busy chat" },
+      { id: idleSessionId, message_count: 2, title: "idle chat" },
+    ] satisfies SessionInfo[]);
+    apiMocks.getSessionTasks.mockImplementation(async (sessionId: string) =>
+      sessionId === busySessionId ? [busyTask] : [],
+    );
+
+    const harness = mountSessionList();
+    try {
+      await flushReactWork(16);
+
+      expect(apiMocks.getSessionTasks).toHaveBeenCalledWith(busySessionId);
+      expect(apiMocks.getSessionTasks).toHaveBeenCalledWith(idleSessionId);
+      expect(TaskStore.getTasks(busySessionId).map((task) => task.id)).toEqual([
+        busyTask.id,
+      ]);
+
+      const busyRow = harness.container.querySelector(
+        `[data-session-id="${busySessionId}"]`,
+      );
+      const idleRow = harness.container.querySelector(
+        `[data-session-id="${idleSessionId}"]`,
+      );
+      expect(busyRow?.textContent).toContain("Live session");
+      expect(idleRow?.textContent).toContain("Saved session");
+    } finally {
+      harness.unmount();
+      TaskStore.clearTasks(busySessionId);
+      TaskStore.clearTasks(idleSessionId);
     }
   });
 });

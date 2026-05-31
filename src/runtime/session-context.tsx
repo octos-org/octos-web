@@ -27,6 +27,7 @@ const SESSION_TOPIC_STORAGE_KEY = "octos_session_topics";
 const SESSION_SYNC_STORAGE_KEY = "octos_sessions_sync";
 const SESSION_DELETED_STORAGE_KEY = "octos_deleted_sessions";
 const MAX_DELETED_SESSION_TOMBSTONES = 200;
+const BACKGROUND_TASK_REHYDRATE_SESSION_CAP = 50;
 
 function isTaskActive(task: BackgroundTaskInfo): boolean {
   return task.status === "spawned" || task.status === "running";
@@ -298,6 +299,25 @@ function setSessionActiveFlag(
     delete next[sessionId];
   }
   return next;
+}
+
+async function rehydrateBackgroundTasksForSessions(
+  sessions: SessionInfo[],
+  onActiveChange: (sessionId: string, active: boolean) => void,
+): Promise<void> {
+  await Promise.all(
+    sessions
+      .slice(0, BACKGROUND_TASK_REHYDRATE_SESSION_CAP)
+      .map(async (session) => {
+        try {
+          const tasks = await getSessionTasks(session.id);
+          TaskStore.replaceTasks(session.id, tasks);
+          onActiveChange(session.id, tasks.some(isTaskActive));
+        } catch {
+          // A task probe failure should not block the sidebar session list.
+        }
+      }),
+  );
 }
 
 /** Extract a sortable timestamp from a session ID.
@@ -601,6 +621,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       // for the next 15s refresh tick.
       setSessions((prev) =>
         mergeSessionLists(prev, list, deletedIds, titleCache.current),
+      );
+      void rehydrateBackgroundTasksForSessions(
+        visibleCandidates,
+        (sessionId, active) => {
+          setServerTaskActiveBySession((prev) =>
+            setSessionActiveFlag(prev, sessionId, active),
+          );
+        },
       );
 
       // Codex NIT G: skip sessions whose fetch is already in flight or
