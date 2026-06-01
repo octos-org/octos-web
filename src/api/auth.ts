@@ -1,4 +1,4 @@
-import { request } from "./client";
+import { publicRequest, request } from "./client";
 import type {
   AuthMeResponse,
   AuthStatusResponse,
@@ -42,7 +42,9 @@ export async function logout(): Promise<void> {
 // to fall through to the create form. `soloCreate` onboards a local profile
 // and logs in atomically.
 export async function soloLogin(): Promise<SoloLoginResult> {
-  return request("/api/auth/solo", { method: "POST" });
+  // publicRequest: a solo 403/404 is a policy denial, not a dead session — do
+  // NOT let the /api/auth/* token reaper clear a signed-in user's tokens.
+  return publicRequest("/api/auth/solo", { method: "POST" });
 }
 
 export async function soloCreate(body: {
@@ -50,7 +52,7 @@ export async function soloCreate(body: {
   username: string;
   email: string;
 }): Promise<SoloCreateResult> {
-  return request("/api/auth/solo/create", {
+  return publicRequest("/api/auth/solo/create", {
     method: "POST",
     body: JSON.stringify(body),
   });
