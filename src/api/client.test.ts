@@ -21,7 +21,7 @@ import {
   vi,
 } from "vitest";
 
-import { request, getToken, setToken } from "@/api/client";
+import { publicRequest, request, getToken, setToken } from "@/api/client";
 import { TOKEN_KEY, ADMIN_TOKEN_KEY } from "@/lib/constants";
 
 // ---------------------------------------------------------------------------
@@ -313,6 +313,46 @@ describe("client.request — /api/auth/* prefix matching", () => {
 
     expect(localStorage.getItem(TOKEN_KEY)).toBeNull();
     expect(hrefWrites.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// publicRequest — the no-reaper path for solo (policy-gated) endpoints
+// ---------------------------------------------------------------------------
+
+describe("client.publicRequest — solo endpoints never reap tokens", () => {
+  it("403 from /api/auth/solo/create (policy denial) → throws but keeps tokens, no redirect", async () => {
+    // A solo 403 means "not opted in / proxied / non-loopback" — NOT that the
+    // signed-in user's existing token is dead. It must not log them out.
+    mockFetchStatus(403, "forbidden");
+
+    let caught: unknown;
+    try {
+      await publicRequest("/api/auth/solo/create", { method: "POST" });
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect(localStorage.getItem(TOKEN_KEY)).toBe("session-token");
+    expect(localStorage.getItem(ADMIN_TOKEN_KEY)).toBe("admin-token");
+    expect(hrefWrites.length).toBe(0);
+  });
+
+  it("404 from /api/auth/solo (no profile yet) → throws 'HTTP 404', tokens intact", async () => {
+    mockFetchStatus(404);
+
+    let caught: unknown;
+    try {
+      await publicRequest("/api/auth/solo", { method: "POST" });
+    } catch (e) {
+      caught = e;
+    }
+
+    // The login page keys the create-form fallback off this "404" message.
+    expect((caught as Error).message).toContain("404");
+    expect(localStorage.getItem(TOKEN_KEY)).toBe("session-token");
+    expect(hrefWrites.length).toBe(0);
   });
 });
 

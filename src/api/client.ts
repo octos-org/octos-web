@@ -194,3 +194,35 @@ export async function request<T>(
 
   return JSON.parse(text) as T;
 }
+
+/**
+ * Like {@link request} but WITHOUT the `/api/auth/*` 401/403 token reaper, and
+ * without attaching the session token / profile headers. Used for pre-auth,
+ * policy-gated endpoints — specifically the no-password solo login, where a
+ * 403 is a POLICY denial (not opted in, proxied, non-loopback), NOT proof that
+ * an existing session token is dead. Routing those through `request()` would
+ * clear the user's tokens and bounce them to `/login` (see solo-login codex
+ * review). 404 (no solo profile yet) and 403 simply throw, like `request`.
+ */
+export async function publicRequest<T>(
+  path: string,
+  options: RequestInit = {},
+): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(options.headers as Record<string, string>),
+  };
+  const resp = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(text || `HTTP ${resp.status}`);
+  }
+  if (resp.status === 204) {
+    return undefined as T;
+  }
+  const text = await resp.text();
+  if (!text.trim()) {
+    return undefined as T;
+  }
+  return JSON.parse(text) as T;
+}
