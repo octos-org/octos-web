@@ -119,7 +119,31 @@ export interface AuthStatusResponse {
   email_login_enabled: boolean;
   admin_token_login_enabled: boolean;
   allow_self_registration: boolean;
+  /** True when the host advertises the no-password solo login path
+   *  (`POST /api/auth/solo*`): a Local-mode deployment opted in via
+   *  `octos serve --solo`. The login page reads this to offer "Continue
+   *  without a password". The server still enforces a loopback,
+   *  non-proxied request at call time — see the backend `api::solo_auth`. */
+  local_solo_enabled?: boolean;
   scoped_profile?: ScopedAuthTarget | null;
+}
+
+/** `POST /api/auth/solo` — re-login for the existing local solo owner. */
+export interface SoloLoginResult {
+  token: string;
+  user: AuthUser;
+}
+
+/** `POST /api/auth/solo/create` — create the local profile AND log in. */
+export interface SoloCreateResult {
+  profile_id: string;
+  user_id: string;
+  name: string;
+  username: string;
+  email: string;
+  created: boolean;
+  runtime_mode: string;
+  token: string;
 }
 
 export interface AuthMeResponse {

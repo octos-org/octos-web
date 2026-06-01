@@ -24,6 +24,12 @@ interface AuthState {
   loading: boolean;
   login: (email: string, code: string) => Promise<void>;
   loginWithToken: (token: string) => Promise<void>;
+  /** No-password solo re-login for the existing local owner. Rejects with an
+   *  "HTTP 404" error when no solo profile exists yet — the caller then shows
+   *  the create form. */
+  soloLogin: () => Promise<void>;
+  /** Onboard a local profile AND log in (no password). */
+  soloCreate: (body: { name: string; username: string; email: string }) => Promise<void>;
   logout: () => Promise<void>;
   /** Re-validate the stored token against `/api/auth/me`. Call this from
    *  any code path that sees an authenticated request rejected (e.g. the
@@ -171,6 +177,49 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [syncMe]);
 
+  // No-password solo login. The server only honours these on a Local-mode
+  // host that opted in (`--solo`) when reached over a non-proxied loopback
+  // connection; otherwise they 403/404, so the SPA can never land a session
+  // it shouldn't. `setToken(_, false)` stores under the session-token slot.
+  const soloLogin = useCallback(async () => {
+    const resp = await authApi.soloLogin();
+    setToken(resp.token);
+    setTokenState(resp.token);
+    setUser(resp.user);
+    // Refine portal/profile from /me; the token already unblocks AuthGuard.
+    try {
+      await syncMe();
+    } catch {
+      // best-effort refine
+    }
+  }, [syncMe]);
+
+  const soloCreate = useCallback(
+    async (body: { name: string; username: string; email: string }) => {
+      const resp = await authApi.soloCreate(body);
+      setToken(resp.token);
+      setTokenState(resp.token);
+      // Establish the principal from the create result so the UI has a user
+      // even if /me fails. The local solo owner is created with the admin
+      // role server-side. (AuthGuard gates on the token, so the app loads
+      // regardless, but this keeps user-dependent chrome populated.)
+      setUser({
+        id: resp.user_id,
+        email: resp.email,
+        name: resp.name,
+        role: "admin",
+        created_at: new Date().toISOString(),
+        last_login_at: null,
+      });
+      try {
+        await syncMe();
+      } catch {
+        // best-effort refine
+      }
+    },
+    [syncMe],
+  );
+
   const logout = useCallback(async () => {
     try {
       await authApi.logout();
@@ -185,7 +234,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, portal, authStatus, token, loading, login, loginWithToken, logout, revalidate }}
+      value={{ user, portal, authStatus, token, loading, login, loginWithToken, soloLogin, soloCreate, logout, revalidate }}
     >
       {children}
     </AuthContext.Provider>

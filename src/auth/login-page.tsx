@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "./auth-context";
+import { SoloProfileForm } from "./solo-profile-form";
 import * as authApi from "@/api/auth";
 import type { AuthStatusResponse } from "@/api/types";
 
 export function LoginPage() {
-  const { login, loginWithToken, authStatus: initialAuthStatus } = useAuth();
+  const { login, loginWithToken, soloLogin, authStatus: initialAuthStatus } =
+    useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   // Validate redirect target — only allow same-origin paths to prevent open redirect
@@ -20,7 +22,7 @@ export function LoginPage() {
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
   const [adminToken, setAdminToken] = useState("");
-  const [step, setStep] = useState<"email" | "code">("email");
+  const [step, setStep] = useState<"email" | "code" | "solo">("email");
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
 
@@ -40,6 +42,7 @@ export function LoginPage() {
     [authStatus?.admin_token_login_enabled, scopedProfile],
   );
   const emailLoginEnabled = authStatus?.email_login_enabled ?? true;
+  const soloEnabled = authStatus?.local_solo_enabled ?? false;
 
   useEffect(() => {
     if (mode === "token" && !tokenModeEnabled) {
@@ -88,6 +91,26 @@ export function LoginPage() {
     }
   }
 
+  async function handleSoloContinue() {
+    setError("");
+    setSending(true);
+    try {
+      // Re-login the existing local owner. First run (no profile yet) comes
+      // back as an "HTTP 404" error → drop into the create form.
+      await soloLogin();
+      navigate(redirectTo || "/", { replace: true });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "";
+      if (msg.includes("404")) {
+        setStep("solo");
+      } else {
+        setError(msg || "Solo login failed");
+      }
+    } finally {
+      setSending(false);
+    }
+  }
+
   return (
     <div className="flex h-screen items-center justify-center bg-surface-dark">
       <div className="w-full max-w-sm rounded-xl bg-surface p-8">
@@ -107,7 +130,29 @@ export function LoginPage() {
               : "Use an allowed or registered email to sign in."}
         </p>
 
+        {soloEnabled && step !== "solo" && (
+          <div className="mb-6">
+            <button
+              data-testid="solo-continue"
+              onClick={handleSoloContinue}
+              disabled={sending}
+              className="w-full rounded-lg bg-accent py-3 font-medium text-surface-dark transition hover:bg-accent-dim disabled:opacity-50"
+            >
+              {sending ? "Continuing..." : "Continue without a password"}
+            </button>
+            <p className="mt-2 text-center text-xs text-muted">
+              Solo mode — local, single-user, stays on this machine.
+            </p>
+            <div className="my-4 flex items-center gap-3 text-xs text-muted">
+              <span className="h-px flex-1 bg-border" />
+              or sign in with email
+              <span className="h-px flex-1 bg-border" />
+            </div>
+          </div>
+        )}
+
         {/* Mode tabs */}
+        {step !== "solo" && (
         <div className="mb-6 flex gap-2">
           <button
             onClick={() => setMode("otp")}
@@ -132,6 +177,7 @@ export function LoginPage() {
             </button>
           )}
         </div>
+        )}
 
         {error && (
           <div data-testid="login-error" className="mb-4 rounded-lg bg-red-900/30 p-3 text-sm text-red-400">
@@ -147,7 +193,22 @@ export function LoginPage() {
           </div>
         )}
 
-        {mode === "otp" ? (
+        {step === "solo" ? (
+          <div className="space-y-4">
+            <SoloProfileForm
+              onDone={() => navigate(redirectTo || "/", { replace: true })}
+            />
+            <button
+              onClick={() => {
+                setStep("email");
+                setError("");
+              }}
+              className="w-full text-sm text-muted hover:text-text-strong"
+            >
+              Back
+            </button>
+          </div>
+        ) : mode === "otp" ? (
           step === "email" ? (
             <div className="space-y-4">
               <input
