@@ -534,6 +534,7 @@ export interface ApprovalTypedDetails {
 
 export interface ApprovalRequestedEvent {
   session_id: string;
+  topic?: string;
   approval_id: string;
   turn_id: string;
   tool_name: string;

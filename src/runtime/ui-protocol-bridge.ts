@@ -999,6 +999,10 @@ function guardApprovalRequested(p: unknown): ApprovalRequestedEvent | null {
       : undefined;
   return {
     session_id: p.session_id,
+    topic:
+      typeof p.topic === "string" && p.topic.trim()
+        ? p.topic.trim()
+        : undefined,
     approval_id: p.approval_id,
     turn_id: p.turn_id,
     tool_name: p.tool_name,
@@ -1664,7 +1668,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       );
     }
     const params: Record<string, unknown> = {
-      session_id: this.requireSessionId(),
+      session_id: this.requireScopedSessionId(),
       approval_id,
       decision,
     };
@@ -1788,6 +1792,12 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       throw new Error("ui-protocol-bridge: bridge not started");
     }
     return this.sessionId;
+  }
+
+  private requireScopedSessionId(): string {
+    const sessionId = this.requireSessionId();
+    if (!this.topicScope || sessionId.includes("#")) return sessionId;
+    return `${sessionId}#${this.topicScope}`;
   }
 
   private setState(next: ConnectionState): void {
