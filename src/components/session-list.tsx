@@ -24,6 +24,7 @@ import {
   Search,
   Mic,
   ArrowLeft,
+  Home,
 } from "lucide-react";
 
 /**
@@ -439,6 +440,7 @@ const TEMPLATE_ICONS: Record<SessionTemplateKind, typeof MessageSquare> = {
   slides: Presentation,
   research: Search,
   podcast: Mic,
+  "home-assistant": Home,
 };
 
 function formatSessionName(id: string): string {

@@ -751,3 +751,199 @@ button, a, input, textarea {
   border-radius: 10px;
   margin: 1.2em 0;
 }
+
+/* ── Home Assistant UI ──────────────────────────────── */
+
+/* Root — deep dark background, no gradient noise */
+.home-root {
+  background: #06080f;
+  color: #f0f4f8;
+  font-family: "SF Pro Display", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.home-layer {
+  will-change: opacity;
+}
+
+/* ── Standby view ─────────────────────────────────── */
+.home-standby {
+  background:
+    radial-gradient(ellipse 80% 60% at 50% 40%, rgba(59, 130, 246, 0.06), transparent 70%),
+    #06080f;
+}
+
+/* Clock — 8-10rem for arm's-length readability */
+.home-clock {
+  font-size: clamp(6rem, 18vw, 10rem);
+  font-weight: 200;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes colonBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.home-clock-colon {
+  animation: colonBlink 2s ease-in-out infinite;
+}
+
+/* Date */
+.home-date {
+  font-size: clamp(1rem, 3vw, 1.5rem);
+  font-weight: 400;
+  letter-spacing: 0.04em;
+}
+
+/* Weather strip */
+.home-weather-strip {
+  font-size: 1rem;
+}
+
+/* Quick-action cards */
+.home-quick-actions {
+  display: flex;
+  gap: 1.25rem;
+}
+
+.home-quick-card {
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+  outline: none;
+}
+
+.home-quick-card-icon {
+  width: 64px;
+  height: 64px;
+  min-width: 44px;
+  min-height: 44px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease,
+    transform 0.15s ease;
+}
+
+.home-quick-card:hover .home-quick-card-icon,
+.home-quick-card:focus-visible .home-quick-card-icon {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.16);
+  transform: translateY(-2px);
+}
+
+.home-quick-card:active .home-quick-card-icon {
+  transform: scale(0.95);
+}
+
+/* ── Conversation view ────────────────────────────── */
+.home-conversation {
+  background: #06080f;
+}
+
+.home-back-button {
+  width: 48px;
+  height: 48px;
+  min-width: 44px;
+  min-height: 44px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.home-back-button:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* Messages scroll area */
+.home-messages {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+/* Chat bubbles — large text for distance readability */
+.home-bubble {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.home-bubble-text {
+  font-size: 1.25rem;
+  line-height: 1.6;
+}
+
+.home-bubble-user {
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+}
+
+.home-bubble-assistant {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Composer */
+.home-composer {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.home-composer-input {
+  font-size: 1.125rem;
+  color: #f0f4f8;
+  line-height: 1.5;
+}
+
+.home-composer-input::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.home-send-button {
+  width: 52px;
+  height: 52px;
+  min-width: 44px;
+  min-height: 44px;
+  background: #3B82F6;
+  border: none;
+  cursor: pointer;
+  transition: background 0.2s ease, transform 0.1s ease;
+}
+
+.home-send-button:hover:not(:disabled) {
+  background: #2563EB;
+}
+
+.home-send-button:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+/* ── Responsive adjustments for small screens ────── */
+@media (max-width: 480px) {
+  .home-clock {
+    font-size: 5rem;
+  }
+  .home-quick-card-icon {
+    width: 52px;
+    height: 52px;
+  }
+  .home-bubble-text {
+    font-size: 1.1rem;
+  }
+}
+
+@media (min-width: 1280px) {
+  .home-quick-actions {
+    gap: 2rem;
+  }
+  .home-quick-card-icon {
+    width: 72px;
+    height: 72px;
+  }
+}

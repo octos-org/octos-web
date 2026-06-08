@@ -6,6 +6,7 @@ import { OctosRuntimeProvider } from "./runtime/runtime-provider";
 import { ChatLayout } from "./layouts/chat-layout";
 import { ChatThread } from "./components/chat-thread";
 import { HomePage } from "./pages/home-page";
+import { HomeAssistantPage } from "./home/home-assistant-page";
 import { AdminSettingsPage } from "./settings/settings-page";
 import { SlidesGalleryPage } from "./slides/pages/slides-gallery-page";
 import { SlidesEditorPage } from "./slides/pages/slides-editor-page";
@@ -36,6 +37,7 @@ export function App() {
           <Route path="/login" element={<LoginPage />} />
           <Route element={<AuthGuard />}>
             <Route path="/" element={<HomePage />} />
+            <Route path="/home" element={<HomeAssistantPage />} />
             <Route path="/chat/*" element={<ChatPage />} />
             {/* Stale Studio deep links → home. The Studio feature was
                 deprecated in M9-β-2 (atomic SSE delete left it as a
