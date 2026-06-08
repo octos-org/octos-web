@@ -30,7 +30,7 @@ export function HomeNav() {
       </button>
       {portal?.can_access_admin_portal && (
         <button
-          onClick={() => window.location.assign("/admin/my")}
+          onClick={() => navigate("/settings")}
           className="rounded-xl p-2.5 text-muted hover:bg-surface-container hover:text-text-strong"
           title="Settings"
         >
