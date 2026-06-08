@@ -200,65 +200,34 @@ describe("hydrateSiteProjectFromSession", () => {
     expect(globalThis.fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("falls back to an unscoped site file listing when session-scoped files are empty", async () => {
-    (globalThis.fetch as ReturnType<typeof vi.fn>)
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify([]), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify([
-            {
-              filename: "mofa-site-session.json",
-              path: "sites/physics-learning-studio/mofa-site-session.json",
-              size: 512,
-              modified: "2026-06-07T15:27:03Z",
-              category: "report",
-              group: "sites/physics-learning-studio",
-            },
-          ]),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            version: 1,
-            command: "/new site learning",
-            preset_key: "learning",
-            template: "quarto-lesson",
-            site_kind: "docs",
-            site_name: "Physics Learning Studio",
-            description: "",
-            accent: "",
-            reference: "",
-            reference_label: "",
-            site_slug: "physics-learning-studio",
-            preview_base_path: "",
-            preview_url:
-              "/api/preview/tenant-a/site-123/physics-learning-studio/index.html",
-            build_output_dir: "",
-            project_dir: "sites/physics-learning-studio",
-            pages: [],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      );
+  it("returns null without an unscoped listing when this session has no site", async () => {
+    // Regression (2026-06-08): the previous implementation fell back to
+    // an UNSCOPED `sites/` listing when the session-scoped listing was
+    // empty. Because the backend's unscoped `/api/files/list` returns
+    // `sites/` across every session of the profile, a brand-new session
+    // adopted the first foreign `physics-learning-studio` quarto-lesson
+    // it found — silently replacing the user's chosen template. A
+    // session must only hydrate from its own workspace; an empty
+    // session-scoped listing means "not scaffolded yet" → null.
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
 
     const project = await hydrateSiteProjectFromSession("site-123", "tenant-a");
 
-    expect(project?.slug).toBe("physics-learning-studio");
-    const firstUrl = String(
-      (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0],
+    expect(project).toBeNull();
+    const urls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map(
+      ([u]) => String(u),
     );
-    const secondUrl = String(
-      (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[1][0],
-    );
-    expect(firstUrl).toContain("session_id=site-123");
-    expect(secondUrl).not.toContain("session_id=");
+    expect(urls[0]).toContain("session_id=site-123");
+    expect(
+      urls.some(
+        (u) => u.includes("/api/files/list") && !u.includes("session_id="),
+      ),
+    ).toBe(false);
   });
 
   it("hydrates a site project when file.path is opaque and file.group carries the workspace directory", async () => {
