@@ -211,18 +211,21 @@ export async function hydrateSiteProjectFromSession(
   profileIdOverride?: string | null,
 ): Promise<SiteProject | null> {
   const profileId = profileIdOverride || (await ensureSelectedProfileId());
-  let files = await listSiteFiles("sites", {
+  // Scope strictly to THIS session's workspace. An earlier unscoped
+  // fallback (`listSiteFiles("sites", { profileId })` without a
+  // `sessionId`) made a brand-new session adopt an unrelated session's
+  // scaffolded site, because the backend's unscoped `/api/files/list`
+  // returns `sites/` across every session of the profile. That silently
+  // replaced the user's chosen template (e.g. react-vite) with the first
+  // foreign `physics-learning-studio` quarto-lesson it found. A session
+  // may only hydrate from its own workspace; finding nothing here means
+  // "not scaffolded yet" and the caller must scaffold fresh.
+  const files = await listSiteFiles("sites", {
     sessionId,
     profileId: profileId || undefined,
   });
 
-  let slug = resolveSiteSlug(files);
-  if (!slug) {
-    files = await listSiteFiles("sites", {
-      profileId: profileId || undefined,
-    });
-    slug = resolveSiteSlug(files);
-  }
+  const slug = resolveSiteSlug(files);
   if (!slug) return null;
 
   const session = await fetchSiteSession(slug, files, {
