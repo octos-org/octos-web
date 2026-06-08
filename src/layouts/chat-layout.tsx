@@ -19,10 +19,12 @@ import {
   ContentViewerOverlay,
 } from "@/components/content-viewer";
 import { LogOut, Sun, Moon, Settings, PanelRight } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { useFileStore } from "@/store/file-store";
 
 export function ChatLayout({ children }: { children: ReactNode }) {
   const { user, portal, logout } = useAuth();
+  const navigate = useNavigate();
   const { sessions, currentSessionId, currentSessionTitle, historyTopic, renameSession } =
     useSession();
   const status = useOctosStatus();
@@ -154,9 +156,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
                 <div className="flex items-center gap-2">
                   {portal?.can_access_admin_portal && (
                     <button
-                      onClick={() =>
-                        window.open("/admin/my", "_blank", "noopener,noreferrer")
-                      }
+                      onClick={() => navigate("/settings")}
                       className="glass-icon-button rounded-[10px] p-2"
                       title="Settings"
                       aria-label="Settings"

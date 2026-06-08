@@ -6,6 +6,7 @@ import { OctosRuntimeProvider } from "./runtime/runtime-provider";
 import { ChatLayout } from "./layouts/chat-layout";
 import { ChatThread } from "./components/chat-thread";
 import { HomePage } from "./pages/home-page";
+import { AdminSettingsPage } from "./settings/settings-page";
 import { SlidesGalleryPage } from "./slides/pages/slides-gallery-page";
 import { SlidesEditorPage } from "./slides/pages/slides-editor-page";
 import { SlidesPresentPage } from "./slides/pages/slides-present-page";
@@ -26,12 +27,6 @@ function ChatPage() {
   );
 }
 
-function RedirectToAdminSettings() {
-  if (typeof window !== "undefined") {
-    window.location.replace("/admin/my");
-  }
-  return null;
-}
 
 export function App() {
   return (
@@ -48,7 +43,7 @@ export function App() {
                 points); this redirect keeps any bookmarked
                 `/studio/...` URL from 404'ing. */}
             <Route path="/studio/*" element={<Navigate to="/" replace />} />
-            <Route path="/settings" element={<RedirectToAdminSettings />} />
+            <Route path="/settings" element={<AdminSettingsPage />} />
             <Route path="/slides" element={<SlidesGalleryPage />} />
             <Route path="/slides/:id/present" element={<SlidesPresentPage />} />
             <Route path="/slides/:id" element={<SlidesEditorPage />} />
