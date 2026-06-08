@@ -45,7 +45,7 @@ export function useWeather(): WeatherState {
     loading: true,
     error: null,
   });
-  const timerRef = useRef<ReturnType<typeof setInterval>>();
+  const timerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const coordsRef = useRef<{ lat: number; lon: number } | null>(null);
 
   useEffect(() => {

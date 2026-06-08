@@ -17,7 +17,7 @@ import {
 } from "react";
 import { ArrowLeft, SendHorizontal } from "lucide-react";
 import { useSession } from "@/runtime/session-context";
-import { useThreads, type Thread } from "@/store/thread-store";
+import { useThreads, type Thread, type ThreadMessage } from "@/store/thread-store";
 import { sendMessage as bridgeSend } from "@/runtime/ui-protocol-send";
 import { HOME_STRINGS } from "./constants";
 
@@ -35,13 +35,13 @@ function formatBubbleTime(ts: number): string {
 }
 
 export function ConversationView({ onBack }: ConversationViewProps) {
-  const { currentSessionId, historyTopic, refreshSessions } = useSession();
+  const { currentSessionId, historyTopic, refreshSessions, markSessionActive } = useSession();
   const threads = useThreads(currentSessionId, historyTopic);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const idleTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const composingRef = useRef(false);
 
   // ── Idle return ─────────────────────────────────────────────────
@@ -79,14 +79,15 @@ export function ConversationView({ onBack }: ConversationViewProps) {
       text: trimmed,
       requestText: trimmed,
       media: [],
+      onSessionActive: (firstMsg) => markSessionActive(firstMsg),
       onComplete: () => {
-        refreshSessions();
+        void refreshSessions();
       },
     });
 
     setText("");
     setSending(false);
-  }, [text, sending, currentSessionId, historyTopic, refreshSessions, resetIdle]);
+  }, [text, sending, currentSessionId, historyTopic, refreshSessions, markSessionActive, resetIdle]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -157,7 +158,7 @@ export function ConversationView({ onBack }: ConversationViewProps) {
               <div className="flex justify-end mb-2">
                 <div className="home-bubble home-bubble-user max-w-[80%] rounded-2xl px-5 py-3">
                   <div className="home-bubble-text text-white">
-                    {thread.userMsg.content}
+                    {thread.userMsg.text}
                   </div>
                   <div className="mt-1 text-right text-xs text-white/30 tabular-nums">
                     {formatBubbleTime(thread.userMsg.timestamp)}
@@ -166,12 +167,14 @@ export function ConversationView({ onBack }: ConversationViewProps) {
               </div>
             )}
 
-            {/* Assistant bubbles */}
-            {thread.assistantMsgs.map((msg) => (
+            {/* Assistant bubbles (completed responses) */}
+            {thread.responses
+              .filter((msg: ThreadMessage) => msg.role === "assistant")
+              .map((msg: ThreadMessage) => (
               <div key={msg.id} className="flex justify-start mb-2">
                 <div className="home-bubble home-bubble-assistant max-w-[80%] rounded-2xl px-5 py-3">
                   <div className="home-bubble-text text-white/90">
-                    {msg.content}
+                    {msg.text}
                   </div>
                   <div className="mt-1 text-xs text-white/30 tabular-nums">
                     {formatBubbleTime(msg.timestamp)}
@@ -182,11 +185,11 @@ export function ConversationView({ onBack }: ConversationViewProps) {
 
             {/* Pending streaming */}
             {thread.pendingAssistant &&
-              thread.pendingAssistant.content && (
+              thread.pendingAssistant.text && (
                 <div className="flex justify-start mb-2">
                   <div className="home-bubble home-bubble-assistant max-w-[80%] rounded-2xl px-5 py-3">
                     <div className="home-bubble-text text-white/90">
-                      {thread.pendingAssistant.content}
+                      {thread.pendingAssistant.text}
                     </div>
                   </div>
                 </div>
