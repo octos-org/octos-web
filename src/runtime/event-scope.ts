@@ -21,13 +21,26 @@ function parseSessionKey(value: unknown): {
   };
 }
 
+function parseScopedSessionId(value: string): {
+  sessionId?: string;
+  topic?: string;
+} {
+  const [sessionId, topic] = value.split("#", 2);
+  return {
+    sessionId: sessionId.trim() || undefined,
+    topic: normalizeTopic(topic),
+  };
+}
+
 export function eventSessionId(value: unknown): string | undefined {
   const record = asRecord(value);
   if (!record) return undefined;
 
   for (const key of ["sessionId", "session_id", "chatId", "chat_id"]) {
     const candidate = record[key];
-    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+    if (typeof candidate === "string" && candidate.trim()) {
+      return parseScopedSessionId(candidate).sessionId;
+    }
   }
 
   const fromSessionKey = parseSessionKey(record.session_key);
@@ -45,6 +58,14 @@ export function eventTopic(value: unknown): string | undefined {
   for (const key of ["topic", "historyTopic", "history_topic"]) {
     const candidate = normalizeTopic(record[key]);
     if (candidate) return candidate;
+  }
+
+  for (const key of ["sessionId", "session_id", "chatId", "chat_id"]) {
+    const candidate = record[key];
+    if (typeof candidate === "string" && candidate.trim()) {
+      const topic = parseScopedSessionId(candidate).topic;
+      if (topic) return topic;
+    }
   }
 
   const fromSessionKey = parseSessionKey(record.session_key);
@@ -67,4 +88,3 @@ export function eventMatchesScope(
   const currentTopic = normalizeTopic(topic);
   return scopedTopic === currentTopic;
 }
-

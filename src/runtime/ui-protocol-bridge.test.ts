@@ -622,6 +622,7 @@ describe("type guards (fail-closed)", () => {
   it("accepts approval/requested with valid scope and drops invalid scope", () => {
     const ok = guards.guardApprovalRequested({
       session_id: "s",
+      topic: "site learning",
       approval_id: "a",
       turn_id: "t",
       tool_name: "shell",
@@ -630,6 +631,7 @@ describe("type guards (fail-closed)", () => {
       approval_scope: "turn",
     });
     expect(ok?.approval_scope).toBe("turn");
+    expect(ok?.topic).toBe("site learning");
     const bogus = guards.guardApprovalRequested({
       session_id: "s",
       approval_id: "a",
@@ -984,6 +986,44 @@ describe("connection lifecycle", () => {
     });
     const out = await pending;
     expect(out.sessions).toEqual([{ id: "s-9" }]);
+    await bridge.stop();
+  });
+
+  it("respondToApproval targets the topic-scoped session key", async () => {
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    void bridge.start({ sessionId: "sess-c", topic: "site learning" });
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(ws, METHODS.SESSION_OPEN);
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      result: { opened: { session_id: "sess-c" } },
+    });
+    await Promise.resolve();
+
+    const pending = bridge.respondToApproval("approval-1", "approve", "turn");
+    await Promise.resolve();
+    const sent = findRequest(ws, METHODS.APPROVAL_RESPOND);
+
+    expect(sent.params).toMatchObject({
+      session_id: "sess-c#site learning",
+      approval_id: "approval-1",
+      decision: "approve",
+      approval_scope: "turn",
+    });
+
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: sent.id,
+      result: { approval_id: "approval-1", status: "accepted" },
+    });
+    await expect(pending).resolves.toMatchObject({
+      approval_id: "approval-1",
+      status: "accepted",
+    });
     await bridge.stop();
   });
 

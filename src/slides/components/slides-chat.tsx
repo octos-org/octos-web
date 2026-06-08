@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 
 import { ChatThread } from "@/components/chat-thread";
+import { UiProtocolApprovalHost } from "@/components/ui-protocol-approval-host";
 import { SessionContext, useModeState } from "@/runtime/session-context";
 import { ScopedRuntimeBridge } from "@/runtime/runtime-provider";
 import { sendMessage as bridgeSend } from "@/runtime/ui-protocol-send";
@@ -243,6 +244,7 @@ export function SlidesChat({ sessionId, retryNonce = 0 }: Props) {
             <ChatThread hideFileOnlyAssistantMessages />
           </div>
         </div>
+        <UiProtocolApprovalHost />
       </ScopedRuntimeBridge>
     </SessionContext.Provider>
   );
