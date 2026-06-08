@@ -1,6 +1,6 @@
 import { nextTopicForCommand } from "@/lib/slash-commands";
 
-export type SessionTemplateKind = "chat" | "slides" | "research" | "podcast";
+export type SessionTemplateKind = "chat" | "slides" | "research" | "podcast" | "home-assistant";
 
 export interface SessionTemplateRecord {
   kind: SessionTemplateKind;
@@ -77,6 +77,8 @@ export function templateDisplayName(kind: SessionTemplateKind): string {
       return "Research";
     case "podcast":
       return "Podcast Studio";
+    case "home-assistant":
+      return "Home Assistant";
     case "chat":
       return "General Chat";
   }
@@ -108,6 +110,13 @@ export function buildSessionTemplateStart(
     };
   }
 
+  if (kind === "home-assistant") {
+    return {
+      title,
+      text: `You are a home assistant. Help the user with: ${title}. Be concise and friendly.`,
+    };
+  }
+
   return {
     title,
     text: `Create a podcast episode about ${title}. Generate the audio deliverable and include a short episode summary in this session.`,
@@ -129,6 +138,7 @@ function isSessionTemplateKind(value: unknown): value is SessionTemplateKind {
     value === "chat" ||
     value === "slides" ||
     value === "research" ||
-    value === "podcast"
+    value === "podcast" ||
+    value === "home-assistant"
   );
 }
