@@ -253,3 +253,105 @@ export async function removeAllowedEmail(email: string): Promise<boolean> {
     return false;
   }
 }
+
+// ── Admin API types ──
+
+export interface BreakdownEntry {
+  count: number;
+  [key: string]: unknown;
+}
+
+export interface OperatorSource {
+  scope: string;
+  scrape_status: string;
+  available: boolean;
+  sample_count: number;
+  totals: Record<string, number>;
+}
+
+export interface OperatorSummary {
+  available: boolean;
+  collection: {
+    running_gateways: number;
+    gateways_with_api_port: number;
+    gateways_missing_api_port: number;
+    scrape_failures: number;
+    sources_observed: number;
+    sources_with_metrics: number;
+    sources_without_metrics: number;
+    partial: boolean;
+  };
+  totals: Record<string, number>;
+  breakdowns: Record<string, BreakdownEntry[]>;
+  sources: OperatorSource[];
+}
+
+export interface OperatorTask {
+  id: string;
+  profile_id: string;
+  tool_name: string;
+  status: "queued" | "running" | "verifying" | "ready" | "failed";
+  started_at: string;
+  completed_at?: string | null;
+  error?: string | null;
+}
+
+export interface OperatorTasksResponse {
+  generated_at: string;
+  stale_threshold_secs: number;
+  tasks: OperatorTask[];
+  totals_by_lifecycle: Record<string, number>;
+  stale_count: number;
+  missing_artifact_count: number;
+  validator_failed_count: number;
+  sources: unknown[];
+  partial: boolean;
+}
+
+// ── Admin API calls ──
+
+export async function fetchOperatorSummary(): Promise<OperatorSummary | null> {
+  try {
+    return await request<OperatorSummary>("/api/admin/operator/summary");
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchOperatorTasks(): Promise<OperatorTasksResponse | null> {
+  try {
+    return await request<OperatorTasksResponse>("/api/admin/operator/tasks");
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchAllProfiles(): Promise<Profile[]> {
+  try {
+    return await request<Profile[]>("/api/admin/profiles");
+  } catch {
+    return [];
+  }
+}
+
+export async function startProfile(profileId: string): Promise<string | null> {
+  try {
+    await request<unknown>(`/api/admin/profiles/${encodeURIComponent(profileId)}/start`, {
+      method: "POST",
+    });
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : "Failed to start";
+  }
+}
+
+export async function stopProfile(profileId: string): Promise<string | null> {
+  try {
+    await request<unknown>(`/api/admin/profiles/${encodeURIComponent(profileId)}/stop`, {
+      method: "POST",
+    });
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : "Failed to stop";
+  }
+}

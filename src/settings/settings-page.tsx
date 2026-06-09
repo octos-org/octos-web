@@ -13,6 +13,8 @@ import {
   Users,
   Shield,
   Wrench,
+  Activity,
+  Server,
   Loader2,
 } from "lucide-react";
 import { getMyProfile, type Profile } from "./settings-api";
@@ -23,8 +25,10 @@ import { ChannelsTab } from "./channels-tab";
 import { UsersTab } from "./users-tab";
 import { SandboxTab } from "./sandbox-tab";
 import { ToolsTab } from "./tools-tab";
+import { SystemTab } from "./system-tab";
+import { ServerTab } from "./server-tab";
 
-type TabId = "profile" | "llm" | "skills" | "channels" | "users" | "sandbox" | "tools";
+type TabId = "profile" | "llm" | "skills" | "channels" | "sandbox" | "tools" | "users" | "system" | "server";
 
 interface TabDef {
   id: TabId;
@@ -41,6 +45,8 @@ const TABS: TabDef[] = [
   { id: "sandbox", label: "Sandbox", icon: Shield },
   { id: "tools", label: "Tools", icon: Wrench },
   { id: "users", label: "Users", icon: Users, adminOnly: true },
+  { id: "system", label: "System", icon: Activity, adminOnly: true },
+  { id: "server", label: "Server", icon: Server, adminOnly: true },
 ];
 
 export function AdminSettingsPage() {
@@ -66,6 +72,8 @@ export function AdminSettingsPage() {
     });
     return () => { cancelled = true; };
   }, [selectedProfileId]);
+
+  const isAdminOnlyTab = activeTab === "system" || activeTab === "server" || activeTab === "users";
 
   return (
     <div className="flex h-screen flex-col bg-surface-dark">
@@ -121,7 +129,9 @@ export function AdminSettingsPage() {
         <div className="flex flex-1 min-h-0 overflow-hidden">
           <aside className="w-56 shrink-0 border-r border-border/50 px-3 py-4 overflow-y-auto">
             <div className="space-y-1">
-              {TABS.filter((t) => !t.adminOnly || portal?.can_access_admin_portal).map(({ id, label, icon: Icon }) => (
+              {TABS.filter(
+                (t) => !t.adminOnly || portal?.can_access_admin_portal,
+              ).map(({ id, label, icon: Icon, adminOnly }) => (
                 <button
                   key={id}
                   onClick={() => setActiveTab(id)}
@@ -133,14 +143,23 @@ export function AdminSettingsPage() {
                 >
                   <Icon size={16} />
                   {label}
+                  {adminOnly && (
+                    <span className="ml-auto rounded bg-accent/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-accent/70">
+                      Admin
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
           </aside>
 
           <main className="flex-1 min-w-0 overflow-y-auto px-8 py-6">
-            <div className="mx-auto max-w-2xl">
-              {profile ? (
+            <div className={`mx-auto ${isAdminOnlyTab ? "max-w-3xl" : "max-w-2xl"}`}>
+              {activeTab === "system" && portal?.can_access_admin_portal && <SystemTab />}
+              {activeTab === "server" && portal?.can_access_admin_portal && <ServerTab />}
+              {activeTab === "users" && portal?.can_access_admin_portal && <UsersTab />}
+
+              {!isAdminOnlyTab && profile ? (
                 <>
                   {activeTab === "profile" && (
                     <ProfileTab profile={profile} onProfileUpdated={setProfile} />
@@ -156,16 +175,15 @@ export function AdminSettingsPage() {
                   {activeTab === "tools" && (
                     <ToolsTab profile={profile} onProfileUpdated={setProfile} />
                   )}
-                  {activeTab === "users" && portal?.can_access_admin_portal && <UsersTab />}
                 </>
-              ) : (
+              ) : !isAdminOnlyTab ? (
                 <div className="flex flex-col items-center justify-center py-20">
                   <p className="text-sm text-muted">No profile available</p>
                   <p className="mt-1 text-xs text-muted/60">
                     Create a profile on the server to get started
                   </p>
                 </div>
-              )}
+              ) : null}
             </div>
           </main>
         </div>
