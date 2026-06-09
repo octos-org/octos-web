@@ -5,8 +5,9 @@
  * Reuses OctosRuntimeProvider + ThreadStore for message state, and
  * `bridgeSend` for the WS send path.
  *
- * Auto-returns to standby after `IDLE_RETURN_SECONDS` of inactivity
- * (no user input, no streaming).
+ * Auto-returns to standby after configurable idle seconds (from settings).
+ *
+ * Shows suggestion cards when the conversation is empty.
  */
 
 import {
@@ -21,15 +22,12 @@ import { ArrowLeft, SendHorizontal } from "lucide-react";
 import { useSession } from "@/runtime/session-context";
 import { useThreads, type Thread, type ThreadMessage } from "@/store/thread-store";
 import { sendMessage as bridgeSend } from "@/runtime/ui-protocol-send";
-import { HOME_STRINGS } from "./constants";
+import { useHomeSettings } from "./home-settings-context";
 
 interface ConversationViewProps {
   onBack: () => void;
   prefill?: string;
 }
-
-/** Idle-return timer duration in ms. */
-const IDLE_MS = HOME_STRINGS.idleReturnSeconds * 1000;
 
 function formatBubbleTime(ts: number): string {
   const d = new Date(ts);
@@ -60,11 +58,14 @@ export function ConversationView({ onBack, prefill }: ConversationViewProps) {
     }
   }, [prefill]);
 
+  const { strings, idleSeconds } = useHomeSettings();
+  const idleMs = idleSeconds * 1000;
+
   // ── Idle return ─────────────────────────────────────────────────
   const resetIdle = useCallback(() => {
     clearTimeout(idleTimerRef.current);
-    idleTimerRef.current = setTimeout(onBack, IDLE_MS);
-  }, [onBack]);
+    idleTimerRef.current = setTimeout(onBack, idleMs);
+  }, [onBack, idleMs]);
 
   useEffect(() => {
     resetIdle();
@@ -148,6 +149,32 @@ export function ConversationView({ onBack, prefill }: ConversationViewProps) {
     // clears it when the thread store reflects the new activity.
   }, [text, sending, threads, currentSessionId, historyTopic, refreshSessions, markSessionActive, resetIdle]);
 
+  // Fill input with a suggestion and send immediately
+  const handleSuggestion = useCallback(
+    (suggestion: string) => {
+      setText(suggestion);
+      // We need to send directly since setState is async
+      setSending(true);
+      resetIdle();
+
+      bridgeSend({
+        sessionId: currentSessionId,
+        historyTopic,
+        text: suggestion,
+        requestText: suggestion,
+        media: [],
+        onSessionActive: (firstMsg) => markSessionActive(firstMsg),
+        onComplete: () => {
+          void refreshSessions();
+        },
+      });
+
+      setText("");
+      setSending(false);
+    },
+    [currentSessionId, historyTopic, refreshSessions, markSessionActive, resetIdle],
+  );
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (composingRef.current || e.nativeEvent.isComposing || e.keyCode === 229) return;
@@ -176,6 +203,8 @@ export function ConversationView({ onBack, prefill }: ConversationViewProps) {
       t.pendingAssistant.status === "streaming",
   );
 
+  const isEmpty = threads.length === 0;
+
   return (
     <div className="home-conversation flex h-full w-full flex-col">
       {/* Header */}
@@ -183,7 +212,7 @@ export function ConversationView({ onBack, prefill }: ConversationViewProps) {
         <button
           onClick={onBack}
           className="home-back-button flex items-center justify-center rounded-xl"
-          aria-label={HOME_STRINGS.backToStandby}
+          aria-label={strings.backToStandby}
         >
           <ArrowLeft size={24} className="text-white/70" />
         </button>
@@ -203,11 +232,24 @@ export function ConversationView({ onBack, prefill }: ConversationViewProps) {
         onTouchStart={resetIdle}
         onMouseMove={resetIdle}
       >
-        {threads.length === 0 && (
-          <div className="flex h-full items-center justify-center">
+        {isEmpty && (
+          <div className="flex h-full flex-col items-center justify-center gap-8">
             <span className="text-xl text-white/30">
-              {HOME_STRINGS.inputPlaceholder}
+              {strings.inputPlaceholder}
             </span>
+
+            {/* Suggestion cards */}
+            <div className="home-suggestions grid w-full max-w-lg grid-cols-1 gap-3 sm:grid-cols-2">
+              {strings.suggestions.map((suggestion) => (
+                <button
+                  key={suggestion}
+                  onClick={() => handleSuggestion(suggestion)}
+                  className="home-suggestion-card rounded-2xl px-4 py-3 text-left text-base text-white/70 transition-all hover:text-white/90"
+                >
+                  {suggestion}
+                </button>
+              ))}
+            </div>
           </div>
         )}
         {threads.map((thread: Thread) => (
@@ -278,7 +320,7 @@ export function ConversationView({ onBack, prefill }: ConversationViewProps) {
             onCompositionEnd={() => {
               composingRef.current = false;
             }}
-            placeholder={HOME_STRINGS.inputPlaceholder}
+            placeholder={strings.inputPlaceholder}
             rows={1}
             className="home-composer-input flex-1 resize-none bg-transparent px-3 py-3 outline-none"
             autoFocus
@@ -287,7 +329,7 @@ export function ConversationView({ onBack, prefill }: ConversationViewProps) {
             onClick={() => void handleSend()}
             disabled={text.trim().length === 0 || sending}
             className="home-send-button flex shrink-0 items-center justify-center rounded-xl disabled:opacity-30"
-            aria-label={HOME_STRINGS.send}
+            aria-label={strings.send}
           >
             <SendHorizontal size={22} className="text-white" />
           </button>
