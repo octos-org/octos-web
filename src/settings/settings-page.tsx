@@ -141,7 +141,7 @@ export function AdminSettingsPage() {
                     <LlmTab profile={profile} onProfileUpdated={setProfile} />
                   )}
                   {activeTab === "skills" && <SkillsTab />}
-                  {activeTab === "channels" && <ChannelsTab profile={profile} />}
+                  {activeTab === "channels" && <ChannelsTab profile={profile} onProfileUpdated={setProfile} />}
                 </>
               ) : (
                 <div className="flex flex-col items-center justify-center py-20">

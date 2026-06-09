@@ -125,3 +125,26 @@ export async function restartMyGateway(): Promise<{ ok: boolean; message?: strin
     return null;
   }
 }
+
+export async function removeSkill(name: string): Promise<boolean> {
+  try {
+    await request<void>(`/api/my/profile/skills/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function installSkill(source: string): Promise<boolean> {
+  try {
+    await request<void>("/api/my/profile/skills/install", {
+      method: "POST",
+      body: JSON.stringify({ source }),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
