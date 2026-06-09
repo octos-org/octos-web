@@ -33,8 +33,6 @@ const LABELS = {
   profileId: "Profile ID",
   displayName: "Display Name",
   displayNamePlaceholder: "Enter display name",
-  loginEmail: "Login Email",
-  loginEmailPlaceholder: "Enter email for OTP login",
   autoStart: "Auto-start Gateway",
   autoStartDesc: "Automatically start gateway when server starts",
   adminMode: "Admin Mode",
@@ -123,7 +121,6 @@ interface EnvVarRow {
 export function ProfileTab({ profile, onProfileUpdated, onNavigateBack }: ProfileTabProps) {
   // Profile name + editable fields
   const [name, setName] = useState(profile.name);
-  const [email, setEmail] = useState(profile.config.email ?? "");
   const [autoStart, setAutoStart] = useState(profile.enabled);
   const [adminMode, setAdminMode] = useState(profile.config.admin_mode);
   const [saving, setSaving] = useState(false);
@@ -168,7 +165,6 @@ export function ProfileTab({ profile, onProfileUpdated, onNavigateBack }: Profil
       name: name.trim(),
       enabled: autoStart,
       config: {
-        email: email.trim() || null,
         admin_mode: adminMode,
       },
     });
@@ -340,20 +336,6 @@ export function ProfileTab({ profile, onProfileUpdated, onNavigateBack }: Profil
             />
           </div>
 
-          {/* Login Email (editable) */}
-          <div>
-            <label className="mb-1.5 block text-xs font-medium text-muted">
-              {LABELS.loginEmail}
-            </label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder={LABELS.loginEmailPlaceholder}
-              className="w-full rounded-xl bg-surface-container px-4 py-3 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition"
-            />
-          </div>
-
           {/* Auto-start Gateway (toggle) */}
           <div className="flex items-center justify-between rounded-xl bg-surface-container/60 px-4 py-3">
             <div>
@@ -427,7 +409,6 @@ export function ProfileTab({ profile, onProfileUpdated, onNavigateBack }: Profil
               saving ||
               !name.trim() ||
               (name.trim() === profile.name &&
-                email.trim() === (profile.config.email ?? "") &&
                 autoStart === profile.enabled &&
                 adminMode === profile.config.admin_mode)
             }
