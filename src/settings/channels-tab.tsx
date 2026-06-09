@@ -8,6 +8,7 @@ import {
   Check,
   X,
   ChevronDown,
+  Copy,
 } from "lucide-react";
 import { updateMyProfile, type Profile, type ProfileConfig } from "./settings-api";
 
@@ -21,6 +22,7 @@ interface ChannelsTabProps {
 const CHANNEL_TYPES = [
   "telegram",
   "discord",
+  "whatsapp",
   "email",
   "feishu",
   "line",
@@ -32,7 +34,7 @@ type ChannelType = (typeof CHANNEL_TYPES)[number];
 
 interface ChannelConfig {
   type: string;
-  mode?: "websocket" | "webhook";
+  mode?: "websocket" | "webhook" | "managed" | "external";
   enabled?: boolean;
   token_env?: string;
   webhook_port?: number;
@@ -52,6 +54,10 @@ interface ChannelConfig {
   from_address?: string;
   secret_env?: string;
   client_secret_env?: string;
+  // WhatsApp-specific
+  bridge_url?: string;
+  phone_number?: string;
+  api_token?: string;
 }
 
 // ── Default field values per channel type ──
@@ -62,6 +68,8 @@ function defaultsForType(type: ChannelType): Partial<ChannelConfig> {
       return { token_env: "TELEGRAM_BOT_TOKEN", allowed_senders: "" };
     case "discord":
       return { token_env: "DISCORD_BOT_TOKEN", allowed_senders: "" };
+    case "whatsapp":
+      return { mode: "managed", phone_number: "", api_token: "WHATSAPP_API_TOKEN", bridge_url: "" };
     case "email":
       return { smtp_host: "", smtp_port: 587, smtp_username: "", smtp_password_env: "", from_address: "" };
     case "feishu":
@@ -83,6 +91,7 @@ function channelLabel(type: string): string {
   const labels: Record<string, string> = {
     telegram: "Telegram",
     discord: "Discord",
+    whatsapp: "WhatsApp",
     email: "Email (SMTP)",
     feishu: "Feishu (Lark)",
     line: "LINE",
@@ -91,6 +100,21 @@ function channelLabel(type: string): string {
     "qq-bot": "QQ Bot",
   };
   return labels[type] ?? type;
+}
+
+// ── Webhook URL helpers ──
+
+/** Channel types that receive inbound events via webhook. */
+const WEBHOOK_CHANNEL_TYPES = new Set(["line", "feishu"]);
+
+function usesWebhook(channel: ChannelConfig): boolean {
+  if (channel.type === "feishu") return channel.mode === "webhook" || !channel.mode;
+  return WEBHOOK_CHANNEL_TYPES.has(channel.type);
+}
+
+function webhookUrl(channelType: string, channelId: string): string {
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  return `${origin}/api/channels/${channelType}/${channelId}/webhook`;
 }
 
 function parseChannels(raw: unknown[]): ChannelConfig[] {
@@ -102,12 +126,85 @@ function parseChannels(raw: unknown[]): ChannelConfig[] {
 
 // ── Sub-component: form fields for each channel type ──
 
+function WebhookUrlField({ channelType, channelId }: { channelType: string; channelId: string }) {
+  const [copied, setCopied] = useState(false);
+  const url = webhookUrl(channelType, channelId);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(url).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  return (
+    <div>
+      <label className="mb-1.5 block text-xs font-medium text-muted">Webhook URL</label>
+      <p className="mb-1.5 text-[11px] text-muted/70">
+        Paste this URL into your platform&apos;s webhook settings.
+      </p>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          readOnly
+          value={url}
+          className="flex-1 rounded-xl bg-surface-container px-4 py-2.5 text-sm text-text/70 outline-none border border-border/50 select-all"
+        />
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="flex shrink-0 items-center gap-1.5 rounded-xl border border-border px-3 py-2 text-xs text-muted hover:text-text-strong hover:border-accent/30 transition"
+        >
+          {copied ? <Check size={13} /> : <Copy size={13} />}
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function RequireMentionField({
+  value,
+  onChange,
+}: {
+  value: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-4 rounded-xl bg-surface-container/60 px-4 py-3">
+      <div>
+        <p className="text-sm font-medium text-text">Require @mention in groups</p>
+        <p className="mt-0.5 text-xs text-muted">Bot only responds when directly mentioned</p>
+      </div>
+      <button
+        type="button"
+        onClick={() => onChange(!value)}
+        className="shrink-0 mt-0.5"
+      >
+        <div
+          className={`relative h-6 w-11 rounded-full transition-colors ${
+            value ? "bg-accent" : "bg-surface-dark/80"
+          }`}
+        >
+          <div
+            className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+              value ? "translate-x-[22px]" : "translate-x-0.5"
+            }`}
+          />
+        </div>
+      </button>
+    </div>
+  );
+}
+
 function ChannelFormFields({
   draft,
   onChange,
+  channelId,
 }: {
   draft: ChannelConfig;
   onChange: (patch: Partial<ChannelConfig>) => void;
+  channelId?: string;
 }) {
   const field = (
     label: string,
@@ -139,8 +236,39 @@ function ChannelFormFields({
         <>
           {field("Token env var", "token_env", { placeholder: "DISCORD_BOT_TOKEN" })}
           {field("Allowed senders", "allowed_senders", { placeholder: "Comma-separated user IDs" })}
+          <RequireMentionField
+            value={draft.require_mention ?? false}
+            onChange={(v) => onChange({ require_mention: v })}
+          />
         </>
       );
+    case "whatsapp": {
+      const isExternal = draft.mode === "external";
+      return (
+        <>
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-muted">Mode</label>
+            <div className="relative">
+              <select
+                value={draft.mode ?? "managed"}
+                onChange={(e) => onChange({ mode: e.target.value as "managed" | "external" })}
+                className="w-full appearance-none rounded-xl bg-surface-container px-4 py-2.5 pr-10 text-sm text-text outline-none border border-transparent focus:border-accent/30 transition"
+              >
+                <option value="managed">Managed (auto-bridge)</option>
+                <option value="external">External</option>
+              </select>
+              <ChevronDown
+                size={14}
+                className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted"
+              />
+            </div>
+          </div>
+          {isExternal && field("Bridge URL", "bridge_url", { placeholder: "https://your-bridge.example.com" })}
+          {field("Phone number", "phone_number", { placeholder: "+1234567890" })}
+          {field("API token env var", "api_token", { placeholder: "WHATSAPP_API_TOKEN" })}
+        </>
+      );
+    }
     case "email":
       return (
         <>
@@ -160,15 +288,24 @@ function ChannelFormFields({
           {field("Encrypt key", "encrypt_key")}
           <div>
             <label className="mb-1.5 block text-xs font-medium text-muted">Region</label>
-            <select
-              value={draft.region ?? "china"}
-              onChange={(e) => onChange({ region: e.target.value as "china" | "global" })}
-              className="w-full rounded-xl bg-surface-container px-4 py-2.5 text-sm text-text outline-none border border-transparent focus:border-accent/30 transition"
-            >
-              <option value="china">China</option>
-              <option value="global">Global</option>
-            </select>
+            <div className="relative">
+              <select
+                value={draft.region ?? "china"}
+                onChange={(e) => onChange({ region: e.target.value as "china" | "global" })}
+                className="w-full appearance-none rounded-xl bg-surface-container px-4 py-2.5 pr-10 text-sm text-text outline-none border border-transparent focus:border-accent/30 transition"
+              >
+                <option value="china">China</option>
+                <option value="global">Global</option>
+              </select>
+              <ChevronDown
+                size={14}
+                className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted"
+              />
+            </div>
           </div>
+          {channelId && usesWebhook(draft) && (
+            <WebhookUrlField channelType="feishu" channelId={channelId} />
+          )}
         </>
       );
     case "line":
@@ -176,6 +313,13 @@ function ChannelFormFields({
         <>
           {field("Channel secret env var", "channel_secret_env", { placeholder: "LINE_CHANNEL_SECRET" })}
           {field("Channel access token env var", "channel_access_token_env", { placeholder: "LINE_CHANNEL_ACCESS_TOKEN" })}
+          <RequireMentionField
+            value={draft.require_mention ?? false}
+            onChange={(v) => onChange({ require_mention: v })}
+          />
+          {channelId && (
+            <WebhookUrlField channelType="line" channelId={channelId} />
+          )}
         </>
       );
     case "wechat":
@@ -313,56 +457,62 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
           <div className="space-y-2">
             {channels.map((channel, idx) => {
               const enabled = channel.enabled ?? true;
+              const channelId = `${profile.id}-${idx}`;
               return (
-                <div
-                  key={idx}
-                  className="flex items-center gap-4 rounded-xl bg-surface-container/60 px-4 py-3.5 border border-transparent hover:border-border transition"
-                >
-                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-surface-dark/60 text-xs font-bold uppercase text-muted">
-                    {channel.type.charAt(0).toUpperCase()}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-text-strong truncate">
-                        {channelLabel(channel.type)}
-                      </span>
-                      <span className="shrink-0 rounded-md bg-surface-dark/60 px-1.5 py-0.5 text-[10px] font-medium text-muted uppercase tracking-wider">
-                        {channel.type}
-                      </span>
+                <div key={idx} className="space-y-2">
+                  <div className="flex items-center gap-4 rounded-xl bg-surface-container/60 px-4 py-3.5 border border-transparent hover:border-border transition">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-surface-dark/60 text-xs font-bold uppercase text-muted">
+                      {channel.type.charAt(0).toUpperCase()}
                     </div>
-                  </div>
-                  {/* Toggle */}
-                  <button
-                    onClick={() => handleToggle(idx)}
-                    disabled={saving}
-                    className="shrink-0"
-                    title={enabled ? "Disable channel" : "Enable channel"}
-                  >
-                    <div
-                      className={`relative h-6 w-11 rounded-full transition-colors ${
-                        enabled ? "bg-accent" : "bg-surface-dark/80"
-                      }`}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-text-strong truncate">
+                          {channelLabel(channel.type)}
+                        </span>
+                        <span className="shrink-0 rounded-md bg-surface-dark/60 px-1.5 py-0.5 text-[10px] font-medium text-muted uppercase tracking-wider">
+                          {channel.type}
+                        </span>
+                      </div>
+                    </div>
+                    {/* Toggle */}
+                    <button
+                      onClick={() => handleToggle(idx)}
+                      disabled={saving}
+                      className="shrink-0"
+                      title={enabled ? "Disable channel" : "Enable channel"}
                     >
                       <div
-                        className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
-                          enabled ? "translate-x-[22px]" : "translate-x-0.5"
+                        className={`relative h-6 w-11 rounded-full transition-colors ${
+                          enabled ? "bg-accent" : "bg-surface-dark/80"
                         }`}
-                      />
+                      >
+                        <div
+                          className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                            enabled ? "translate-x-[22px]" : "translate-x-0.5"
+                          }`}
+                        />
+                      </div>
+                    </button>
+                    {/* Delete */}
+                    <button
+                      onClick={() => handleRemove(idx)}
+                      disabled={saving}
+                      className="shrink-0 rounded-lg p-2 text-muted hover:text-red-400 hover:bg-red-500/10 disabled:opacity-40 transition"
+                      title="Remove channel"
+                    >
+                      {saving ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : (
+                        <Trash2 size={14} />
+                      )}
+                    </button>
+                  </div>
+                  {/* Webhook URL for applicable channels */}
+                  {usesWebhook(channel) && (
+                    <div className="ml-12 pr-1">
+                      <WebhookUrlField channelType={channel.type} channelId={channelId} />
                     </div>
-                  </button>
-                  {/* Delete */}
-                  <button
-                    onClick={() => handleRemove(idx)}
-                    disabled={saving}
-                    className="shrink-0 rounded-lg p-2 text-muted hover:text-red-400 hover:bg-red-500/10 disabled:opacity-40 transition"
-                    title="Remove channel"
-                  >
-                    {saving ? (
-                      <Loader2 size={14} className="animate-spin" />
-                    ) : (
-                      <Trash2 size={14} />
-                    )}
-                  </button>
+                  )}
                 </div>
               );
             })}
