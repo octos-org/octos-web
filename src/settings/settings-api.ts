@@ -116,6 +116,26 @@ export async function getMyProfileStatus(): Promise<ProfileStatus | null> {
   }
 }
 
+export async function startMyGateway(): Promise<{ ok: boolean; message?: string } | null> {
+  try {
+    return await request<{ ok: boolean; message?: string }>("/api/my/profile/start", {
+      method: "POST",
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function stopMyGateway(): Promise<{ ok: boolean; message?: string } | null> {
+  try {
+    return await request<{ ok: boolean; message?: string }>("/api/my/profile/stop", {
+      method: "POST",
+    });
+  } catch {
+    return null;
+  }
+}
+
 export async function restartMyGateway(): Promise<{ ok: boolean; message?: string } | null> {
   try {
     return await request<{ ok: boolean; message?: string }>("/api/my/profile/restart", {
