@@ -157,13 +157,20 @@ export async function removeSkill(name: string): Promise<boolean> {
   }
 }
 
+export interface InstallSkillResponse {
+  ok: boolean;
+  installed: string[];
+  skipped: string[];
+  deps_installed: string[];
+}
+
 export async function installSkill(source: string): Promise<boolean> {
   try {
-    await request<void>("/api/my/profile/skills/install", {
+    const resp = await request<InstallSkillResponse>("/api/my/profile/skills", {
       method: "POST",
-      body: JSON.stringify({ source }),
+      body: JSON.stringify({ repo: source }),
     });
-    return true;
+    return resp.ok;
   } catch {
     return false;
   }
