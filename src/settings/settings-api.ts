@@ -168,3 +168,88 @@ export async function installSkill(source: string): Promise<boolean> {
     return false;
   }
 }
+
+// ── Admin: Users management ──
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  created_at: string;
+  last_login: string | null;
+}
+
+export async function getAdminUsers(): Promise<AdminUser[]> {
+  try {
+    const resp = await request<AdminUser[] | { users: AdminUser[] }>("/api/admin/users");
+    return Array.isArray(resp) ? resp : (resp.users ?? []);
+  } catch {
+    return [];
+  }
+}
+
+export async function createAdminUser(body: {
+  email: string;
+  name: string;
+  user_id?: string;
+  note?: string;
+}): Promise<AdminUser | null> {
+  try {
+    return await request<AdminUser>("/api/admin/users", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function deleteAdminUser(id: string): Promise<boolean> {
+  try {
+    await request<void>(`/api/admin/users/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ── Admin: Allowed Emails ──
+
+export interface AllowedEmail {
+  email: string;
+}
+
+export async function getAllowedEmails(): Promise<AllowedEmail[]> {
+  try {
+    const resp = await request<AllowedEmail[] | { emails: AllowedEmail[] }>("/api/admin/allowed-emails");
+    return Array.isArray(resp) ? resp : (resp.emails ?? []);
+  } catch {
+    return [];
+  }
+}
+
+export async function addAllowedEmail(email: string): Promise<boolean> {
+  try {
+    await request<void>("/api/admin/allowed-emails", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function removeAllowedEmail(email: string): Promise<boolean> {
+  try {
+    await request<void>(`/api/admin/allowed-emails/${encodeURIComponent(email)}`, {
+      method: "DELETE",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}

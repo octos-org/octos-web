@@ -10,6 +10,7 @@ import {
   Cpu,
   Puzzle,
   Radio,
+  Users,
   Loader2,
 } from "lucide-react";
 import { getMyProfile, type Profile } from "./settings-api";
@@ -17,14 +18,23 @@ import { ProfileTab } from "./profile-tab";
 import { LlmTab } from "./llm-tab";
 import { SkillsTab } from "./skills-tab";
 import { ChannelsTab } from "./channels-tab";
+import { UsersTab } from "./users-tab";
 
-type TabId = "profile" | "llm" | "skills" | "channels";
+type TabId = "profile" | "llm" | "skills" | "channels" | "users";
 
-const TABS: { id: TabId; label: string; icon: typeof User }[] = [
+interface TabDef {
+  id: TabId;
+  label: string;
+  icon: typeof User;
+  adminOnly?: boolean;
+}
+
+const TABS: TabDef[] = [
   { id: "profile", label: "Profile", icon: User },
   { id: "llm", label: "LLM", icon: Cpu },
   { id: "skills", label: "Skills", icon: Puzzle },
   { id: "channels", label: "Channels", icon: Radio },
+  { id: "users", label: "Users", icon: Users, adminOnly: true },
 ];
 
 export function AdminSettingsPage() {
@@ -112,7 +122,7 @@ export function AdminSettingsPage() {
           {/* Tab rail */}
           <aside className="w-56 shrink-0 border-r border-border/50 px-3 py-4 overflow-y-auto">
             <div className="space-y-1">
-              {TABS.map(({ id, label, icon: Icon }) => (
+              {TABS.filter((t) => !t.adminOnly || portal?.can_access_admin_portal).map(({ id, label, icon: Icon }) => (
                 <button
                   key={id}
                   onClick={() => setActiveTab(id)}
@@ -142,6 +152,7 @@ export function AdminSettingsPage() {
                   )}
                   {activeTab === "skills" && <SkillsTab />}
                   {activeTab === "channels" && <ChannelsTab profile={profile} onProfileUpdated={setProfile} />}
+                  {activeTab === "users" && portal?.can_access_admin_portal && <UsersTab />}
                 </>
               ) : (
                 <div className="flex flex-col items-center justify-center py-20">
