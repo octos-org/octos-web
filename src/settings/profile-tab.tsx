@@ -12,6 +12,7 @@ import {
   Pencil,
   Trash2,
   KeyRound,
+  AlertTriangle,
 } from "lucide-react";
 import {
   updateMyProfile,
@@ -19,6 +20,7 @@ import {
   startMyGateway,
   stopMyGateway,
   restartMyGateway,
+  deleteAdminProfile,
   type Profile,
 } from "./settings-api";
 import { ConfirmDialog } from "./confirm-dialog";
@@ -31,6 +33,12 @@ const LABELS = {
   profileId: "Profile ID",
   displayName: "Display Name",
   displayNamePlaceholder: "Enter display name",
+  loginEmail: "Login Email",
+  loginEmailPlaceholder: "Enter email for OTP login",
+  autoStart: "Auto-start Gateway",
+  autoStartDesc: "Automatically start gateway when server starts",
+  adminMode: "Admin Mode",
+  adminModeDesc: "Admin-only tools, restricted shell/file/web access",
   created: "Created",
   saveChanges: "Save Changes",
   saved: "Saved",
@@ -69,6 +77,15 @@ const LABELS = {
   envSaveFailed: "Failed to save environment variables.",
   deleteVarTitle: "Delete Variable",
   deleteVarConfirm: "Delete",
+
+  dangerZone: "Danger Zone",
+  dangerZoneDesc: "Irreversible and destructive actions",
+  deleteProfile: "Delete Profile",
+  deleteProfileTitle: "Delete Profile",
+  deleteProfileBody:
+    "This will permanently delete the profile, user account, and all associated data. This action cannot be undone.",
+  deleteProfileConfirm: "Delete Profile",
+  deleteProfileFailed: "Failed to delete profile.",
 } as const;
 
 // ── Helpers ──
@@ -88,6 +105,7 @@ function formatUptime(secs: number | null): string {
 interface ProfileTabProps {
   profile: Profile;
   onProfileUpdated: (p: Profile) => void;
+  onNavigateBack?: () => void;
 }
 
 type GatewayAction = "start" | "stop" | "restart";
@@ -102,9 +120,12 @@ interface EnvVarRow {
 
 // ── Component ──
 
-export function ProfileTab({ profile, onProfileUpdated }: ProfileTabProps) {
-  // Profile name
+export function ProfileTab({ profile, onProfileUpdated, onNavigateBack }: ProfileTabProps) {
+  // Profile name + editable fields
   const [name, setName] = useState(profile.name);
+  const [email, setEmail] = useState(profile.config.email ?? "");
+  const [autoStart, setAutoStart] = useState(profile.enabled);
+  const [adminMode, setAdminMode] = useState(profile.config.admin_mode);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -133,13 +154,24 @@ export function ProfileTab({ profile, onProfileUpdated }: ProfileTabProps) {
   const [envError, setEnvError] = useState<string | null>(null);
   const [deleteIdx, setDeleteIdx] = useState<number | null>(null);
 
+  // Delete profile
+  const [deleteProfileOpen, setDeleteProfileOpen] = useState(false);
+  const [deleteProfileError, setDeleteProfileError] = useState<string | null>(null);
+
   // ── Profile save ──
 
   const handleSave = async () => {
     if (!name.trim()) return;
     setSaving(true);
     setError(null);
-    const result = await updateMyProfile({ name: name.trim() });
+    const result = await updateMyProfile({
+      name: name.trim(),
+      enabled: autoStart,
+      config: {
+        email: email.trim() || null,
+        admin_mode: adminMode,
+      },
+    });
     setSaving(false);
     if (result) {
       onProfileUpdated(result);
@@ -147,6 +179,16 @@ export function ProfileTab({ profile, onProfileUpdated }: ProfileTabProps) {
       setTimeout(() => setSaved(false), 2000);
     } else {
       setError(LABELS.saveFailed);
+    }
+  };
+
+  const handleDeleteProfile = async () => {
+    setDeleteProfileError(null);
+    const ok = await deleteAdminProfile(profile.id);
+    if (ok) {
+      onNavigateBack?.();
+    } else {
+      setDeleteProfileError(LABELS.deleteProfileFailed);
     }
   };
 
@@ -298,6 +340,68 @@ export function ProfileTab({ profile, onProfileUpdated }: ProfileTabProps) {
             />
           </div>
 
+          {/* Login Email (editable) */}
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-muted">
+              {LABELS.loginEmail}
+            </label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder={LABELS.loginEmailPlaceholder}
+              className="w-full rounded-xl bg-surface-container px-4 py-3 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition"
+            />
+          </div>
+
+          {/* Auto-start Gateway (toggle) */}
+          <div className="flex items-center justify-between rounded-xl bg-surface-container/60 px-4 py-3">
+            <div>
+              <p className="text-sm font-medium text-text-strong">
+                {LABELS.autoStart}
+              </p>
+              <p className="text-xs text-muted mt-0.5">{LABELS.autoStartDesc}</p>
+            </div>
+            <button
+              role="switch"
+              aria-checked={autoStart}
+              onClick={() => setAutoStart((v) => !v)}
+              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none ${
+                autoStart ? "bg-accent" : "bg-surface-dark"
+              }`}
+            >
+              <span
+                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                  autoStart ? "translate-x-5" : "translate-x-0"
+                }`}
+              />
+            </button>
+          </div>
+
+          {/* Admin Mode (toggle) */}
+          <div className="flex items-center justify-between rounded-xl bg-surface-container/60 px-4 py-3">
+            <div>
+              <p className="text-sm font-medium text-text-strong">
+                {LABELS.adminMode}
+              </p>
+              <p className="text-xs text-muted mt-0.5">{LABELS.adminModeDesc}</p>
+            </div>
+            <button
+              role="switch"
+              aria-checked={adminMode}
+              onClick={() => setAdminMode((v) => !v)}
+              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none ${
+                adminMode ? "bg-accent" : "bg-surface-dark"
+              }`}
+            >
+              <span
+                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                  adminMode ? "translate-x-5" : "translate-x-0"
+                }`}
+              />
+            </button>
+          </div>
+
           {/* Created at */}
           {profile.created_at && (
             <div>
@@ -319,7 +423,14 @@ export function ProfileTab({ profile, onProfileUpdated }: ProfileTabProps) {
         <div className="mt-6 flex items-center gap-3">
           <button
             onClick={handleSave}
-            disabled={saving || !name.trim() || name.trim() === profile.name}
+            disabled={
+              saving ||
+              !name.trim() ||
+              (name.trim() === profile.name &&
+                email.trim() === (profile.config.email ?? "") &&
+                autoStart === profile.enabled &&
+                adminMode === profile.config.admin_mode)
+            }
             className="flex items-center gap-2 rounded-xl bg-accent px-5 py-2.5 text-sm font-medium text-white hover:bg-accent-dim disabled:opacity-30 transition"
           >
             {saving ? (
@@ -552,6 +663,45 @@ export function ProfileTab({ profile, onProfileUpdated }: ProfileTabProps) {
         )}
       </div>
 
+      {/* ── Danger zone ── */}
+      <div className="mt-2 border-t border-border/40 pt-6">
+        <div className="rounded-2xl border border-red-500/30 bg-red-500/5 p-6">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-500/10 text-red-400">
+              <AlertTriangle size={20} />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-red-400">
+                {LABELS.dangerZone}
+              </h3>
+              <p className="text-xs text-muted">{LABELS.dangerZoneDesc}</p>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between rounded-xl bg-surface-container/40 px-4 py-3">
+            <div>
+              <p className="text-sm font-medium text-text-strong">
+                {LABELS.deleteProfile}
+              </p>
+              <p className="text-xs text-muted mt-0.5">
+                {LABELS.deleteProfileBody}
+              </p>
+            </div>
+            <button
+              onClick={() => setDeleteProfileOpen(true)}
+              className="ml-4 shrink-0 flex items-center gap-2 rounded-xl bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 transition"
+            >
+              <Trash2 size={14} />
+              {LABELS.deleteProfile}
+            </button>
+          </div>
+
+          {deleteProfileError && (
+            <p className="mt-3 text-xs text-red-400">{deleteProfileError}</p>
+          )}
+        </div>
+      </div>
+
       {/* ── Confirm dialogs ── */}
       <ConfirmDialog
         open={confirmAction === "stop"}
@@ -583,6 +733,15 @@ export function ProfileTab({ profile, onProfileUpdated }: ProfileTabProps) {
         variant="danger"
         onConfirm={handleDeleteVar}
         onCancel={() => setDeleteIdx(null)}
+      />
+      <ConfirmDialog
+        open={deleteProfileOpen}
+        title={LABELS.deleteProfileTitle}
+        body={LABELS.deleteProfileBody}
+        confirmLabel={LABELS.deleteProfileConfirm}
+        variant="danger"
+        onConfirm={handleDeleteProfile}
+        onCancel={() => setDeleteProfileOpen(false)}
       />
     </div>
   );
