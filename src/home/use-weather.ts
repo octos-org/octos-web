@@ -1,10 +1,11 @@
 /**
- * Weather hook — fetches current weather from Open-Meteo.
+ * Weather hook -- fetches current weather from Open-Meteo.
  *
  * Location resolution waterfall:
- *   1. Browser Geolocation API
- *   2. IP-based geolocation (ipapi.co)
- *   3. Hardcoded default (San Francisco)
+ *   1. City name from settings (geocoded via Open-Meteo Geocoding API)
+ *   2. Browser Geolocation API
+ *   3. IP-based geolocation (ipapi.co)
+ *   4. Hardcoded default (San Francisco)
  *
  * Refreshes every 15 minutes. Never shows "unavailable" — the
  * default-city fallback guarantees a result.
@@ -12,6 +13,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { WMO_WEATHER, DEFAULT_LOCATION } from "./constants";
+import { useHomeSettings } from "./home-settings-context";
 
 export interface WeatherState {
   temperature: number;
@@ -31,6 +33,23 @@ interface ResolvedLocation {
   city: string | null;
 }
 
+async function geocodeCity(
+  city: string,
+): Promise<{ lat: number; lon: number } | null> {
+  try {
+    const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      results?: { latitude: number; longitude: number }[];
+    };
+    if (!data.results?.length) return null;
+    return { lat: data.results[0].latitude, lon: data.results[0].longitude };
+  } catch {
+    return null;
+  }
+}
+
 async function fetchWeather(
   lat: number,
   lon: number,
@@ -47,7 +66,6 @@ async function fetchWeather(
   };
 }
 
-/** Attempt IP-based geolocation via ipapi.co. */
 async function fetchIpLocation(): Promise<ResolvedLocation> {
   const res = await fetch("https://ipapi.co/json/");
   if (!res.ok) throw new Error(`IP geolocation HTTP ${res.status}`);
@@ -63,6 +81,7 @@ async function fetchIpLocation(): Promise<ResolvedLocation> {
 }
 
 export function useWeather(): WeatherState {
+  const { city } = useHomeSettings();
   const [state, setState] = useState<WeatherState>({
     temperature: 0,
     weatherCode: 0,
@@ -106,7 +125,15 @@ export function useWeather(): WeatherState {
     }
 
     async function resolveLocation(): Promise<ResolvedLocation> {
-      // 1. Try browser geolocation
+      // 1. City from settings (geocoded)
+      if (city.trim()) {
+        const geo = await geocodeCity(city.trim());
+        if (geo) {
+          return { lat: geo.lat, lon: geo.lon, city: city.trim() };
+        }
+      }
+
+      // 2. Browser geolocation
       try {
         const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
           if (!navigator.geolocation) {
@@ -124,17 +151,17 @@ export function useWeather(): WeatherState {
           city: null,
         };
       } catch {
-        // Geolocation denied or unavailable — try IP fallback
+        // Geolocation denied or unavailable
       }
 
-      // 2. Try IP-based geolocation
+      // 3. IP-based geolocation
       try {
         return await fetchIpLocation();
       } catch {
-        // IP geolocation also failed — use default
+        // IP geolocation also failed
       }
 
-      // 3. Hardcoded default
+      // 4. Hardcoded default
       return {
         lat: DEFAULT_LOCATION.lat,
         lon: DEFAULT_LOCATION.lon,
@@ -159,7 +186,7 @@ export function useWeather(): WeatherState {
       cancelled = true;
       clearInterval(timerRef.current);
     };
-  }, []);
+  }, [city]);
 
   return state;
 }

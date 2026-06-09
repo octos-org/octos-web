@@ -1045,3 +1045,95 @@ button, a, input, textarea {
     height: 72px;
   }
 }
+
+/* ── Night mode ─────────────────────────────────────── */
+.home-night-mode {
+  filter: brightness(0.3) sepia(0.2);
+  transition: filter 1s ease-in-out;
+}
+
+.home-clock-night {
+  color: #8b2020;
+}
+
+/* ── Burn-in dimmed state ──────────────────────────── */
+.home-dimmed {
+  filter: brightness(0.5);
+  transition: filter 2s ease-in-out;
+}
+
+/* ── Settings gear button ──────────────────────────── */
+.home-settings-gear {
+  width: 44px;
+  height: 44px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background 0.2s ease;
+  border-radius: 12px;
+}
+
+.home-settings-gear:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* ── Settings panel ────────────────────────────────── */
+.home-settings-panel {
+  background: rgba(12, 14, 24, 0.92);
+  backdrop-filter: blur(32px) saturate(140%);
+  -webkit-backdrop-filter: blur(32px) saturate(140%);
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.home-settings-input {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.9rem;
+  color: #f0f4f8;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+
+.home-settings-input:focus {
+  border-color: rgba(59, 130, 246, 0.5);
+}
+
+.home-settings-input::placeholder {
+  color: rgba(255, 255, 255, 0.25);
+}
+
+.home-settings-segmented {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.home-settings-segmented button {
+  border: none;
+  cursor: pointer;
+}
+
+/* ── Suggestion cards ──────────────────────────────── */
+.home-suggestion-card {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease,
+    transform 0.15s ease;
+}
+
+.home-suggestion-card:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.14);
+  transform: translateY(-1px);
+}
+
+.home-suggestion-card:active {
+  transform: scale(0.98);
+}
