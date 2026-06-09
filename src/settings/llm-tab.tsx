@@ -10,9 +10,15 @@ import {
   AlertCircle,
   CheckCircle2,
   XCircle,
+  Plus,
+  Trash2,
+  ChevronUp,
+  ChevronDown,
+  Shuffle,
+  Info,
 } from "lucide-react";
 import { request } from "@/api/client";
-import { updateMyProfile, type Profile } from "./settings-api";
+import { updateMyProfile, type Profile, type LlmPrimary } from "./settings-api";
 import {
   LLM_PROVIDERS,
   findProvider,
@@ -29,6 +35,11 @@ interface LlmTabProps {
 
 /* ─── Form State ─── */
 
+interface FallbackEntry {
+  family_id: string;
+  model_id: string;
+}
+
 interface LlmFormState {
   family_id: string;
   model_id: string;
@@ -41,6 +52,8 @@ interface LlmFormState {
   max_iterations: string;
   max_concurrent_sessions: string;
   browser_timeout_secs: string;
+  fallbacks: FallbackEntry[];
+  adaptive_routing_enabled: boolean;
 }
 
 type TestStatus = "idle" | "testing" | "connected" | "failed";
@@ -54,6 +67,12 @@ function resolveProviderFromProfile(familyId: string): LlmProvider | undefined {
 function profileToForm(profile: Profile): LlmFormState {
   const familyId = profile.config.llm.primary.family_id ?? "";
   const knownProvider = resolveProviderFromProfile(familyId);
+
+  const rawRouting = profile.config.adaptive_routing;
+  const adaptiveEnabled =
+    rawRouting != null &&
+    typeof rawRouting === "object" &&
+    (rawRouting as Record<string, unknown>).enabled === true;
 
   return {
     family_id: knownProvider ? familyId : familyId ? "__custom_family__" : "",
@@ -82,6 +101,13 @@ function profileToForm(profile: Profile): LlmFormState {
       profile.config.gateway.browser_timeout_secs != null
         ? String(profile.config.gateway.browser_timeout_secs)
         : "",
+    fallbacks: Array.isArray(profile.config.llm.fallbacks)
+      ? profile.config.llm.fallbacks.map((f: LlmPrimary) => ({
+          family_id: f.family_id ?? "",
+          model_id: f.model_id ?? "",
+        }))
+      : [],
+    adaptive_routing_enabled: adaptiveEnabled,
   };
 }
 
@@ -169,6 +195,10 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
     setSaving(true);
     setError(null);
 
+    const fallbacksPayload: LlmPrimary[] = form.fallbacks
+      .filter((f) => f.family_id.trim())
+      .map((f) => ({ family_id: f.family_id.trim(), model_id: f.model_id.trim() }));
+
     const result = await updateMyProfile({
       config: {
         llm: {
@@ -176,7 +206,7 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
             family_id: effectiveFamilyId,
             model_id: effectiveModelId,
           },
-          fallbacks: profile.config.llm.fallbacks,
+          fallbacks: fallbacksPayload,
         },
         gateway: {
           ...profile.config.gateway,
@@ -187,6 +217,7 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
           max_concurrent_sessions: optionalInt(form.max_concurrent_sessions),
           browser_timeout_secs: optionalInt(form.browser_timeout_secs),
         },
+        adaptive_routing: { enabled: form.adaptive_routing_enabled },
       },
     });
 
@@ -365,6 +396,250 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
                   Connection failed
                 </span>
               )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Fallback Models ── */}
+      <div className="glass-section rounded-2xl p-6">
+        <div className="flex items-center gap-3 mb-6">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
+            <Shuffle size={20} />
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-text-strong">
+              Fallback Models
+            </h3>
+            <p className="text-xs text-muted">
+              Ordered list of fallback providers tried if the primary fails
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          {form.fallbacks.length === 0 && (
+            <p className="text-xs text-muted py-2">
+              No fallbacks configured. Add one below.
+            </p>
+          )}
+
+          {form.fallbacks.map((entry, idx) => {
+            const fbProvider = findProvider(entry.family_id);
+            const fbModels = fbProvider?.models ?? [];
+            return (
+              <div
+                key={idx}
+                className="flex items-start gap-2 rounded-xl bg-surface-container p-3"
+              >
+                {/* Order badge */}
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-surface-dark text-xs font-semibold text-muted mt-0.5">
+                  {idx + 1}
+                </span>
+
+                {/* Provider + Model selects */}
+                <div className="flex flex-1 flex-col gap-2 sm:flex-row">
+                  <select
+                    value={entry.family_id}
+                    onChange={(e) => {
+                      const newFamilyId = e.target.value;
+                      const newProvider = findProvider(newFamilyId);
+                      setForm((f) => {
+                        const updated = [...f.fallbacks];
+                        updated[idx] = {
+                          family_id: newFamilyId,
+                          model_id: newProvider?.models[0]?.id ?? "",
+                        };
+                        return { ...f, fallbacks: updated };
+                      });
+                    }}
+                    className={selectClass}
+                  >
+                    <option value="">Select provider...</option>
+                    {LLM_PROVIDERS.filter(
+                      (p) => p.id !== "__custom_family__",
+                    ).map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+
+                  {fbModels.length > 0 ? (
+                    <select
+                      value={entry.model_id}
+                      onChange={(e) =>
+                        setForm((f) => {
+                          const updated = [...f.fallbacks];
+                          updated[idx] = {
+                            ...updated[idx],
+                            model_id: e.target.value,
+                          };
+                          return { ...f, fallbacks: updated };
+                        })
+                      }
+                      className={selectClass}
+                    >
+                      {fbModels.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={entry.model_id}
+                      onChange={(e) =>
+                        setForm((f) => {
+                          const updated = [...f.fallbacks];
+                          updated[idx] = {
+                            ...updated[idx],
+                            model_id: e.target.value,
+                          };
+                          return { ...f, fallbacks: updated };
+                        })
+                      }
+                      placeholder="Model ID..."
+                      className={inputClass}
+                    />
+                  )}
+                </div>
+
+                {/* Reorder + remove buttons */}
+                <div className="flex shrink-0 flex-col gap-1">
+                  <button
+                    onClick={() =>
+                      setForm((f) => {
+                        if (idx === 0) return f;
+                        const updated = [...f.fallbacks];
+                        [updated[idx - 1], updated[idx]] = [
+                          updated[idx],
+                          updated[idx - 1],
+                        ];
+                        return { ...f, fallbacks: updated };
+                      })
+                    }
+                    disabled={idx === 0}
+                    className="flex h-7 w-7 items-center justify-center rounded-lg border border-border text-muted hover:text-text-strong hover:border-accent/30 disabled:opacity-20 transition"
+                    title="Move up"
+                  >
+                    <ChevronUp size={13} />
+                  </button>
+                  <button
+                    onClick={() =>
+                      setForm((f) => {
+                        if (idx === f.fallbacks.length - 1) return f;
+                        const updated = [...f.fallbacks];
+                        [updated[idx], updated[idx + 1]] = [
+                          updated[idx + 1],
+                          updated[idx],
+                        ];
+                        return { ...f, fallbacks: updated };
+                      })
+                    }
+                    disabled={idx === form.fallbacks.length - 1}
+                    className="flex h-7 w-7 items-center justify-center rounded-lg border border-border text-muted hover:text-text-strong hover:border-accent/30 disabled:opacity-20 transition"
+                    title="Move down"
+                  >
+                    <ChevronDown size={13} />
+                  </button>
+                </div>
+
+                <button
+                  onClick={() =>
+                    setForm((f) => ({
+                      ...f,
+                      fallbacks: f.fallbacks.filter((_, i) => i !== idx),
+                    }))
+                  }
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-border text-muted hover:text-red-400 hover:border-red-400/30 transition mt-0.5"
+                  title="Remove fallback"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            );
+          })}
+
+          <button
+            onClick={() =>
+              setForm((f) => ({
+                ...f,
+                fallbacks: [
+                  ...f.fallbacks,
+                  { family_id: "", model_id: "" },
+                ],
+              }))
+            }
+            className="flex items-center gap-2 rounded-xl border border-dashed border-border px-4 py-2.5 text-sm text-muted hover:text-text-strong hover:border-accent/30 transition w-full justify-center"
+          >
+            <Plus size={14} />
+            Add Fallback
+          </button>
+        </div>
+      </div>
+
+      {/* ── Adaptive Routing ── */}
+      <div className="glass-section rounded-2xl p-6">
+        <div className="flex items-center gap-3 mb-6">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
+            <Settings2 size={20} />
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-text-strong">
+              Adaptive Routing
+            </h3>
+            <p className="text-xs text-muted">
+              Automatically route between primary and fallbacks based on latency and error rates
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          {/* Toggle row */}
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-text">Enable adaptive routing</span>
+            <button
+              role="switch"
+              aria-checked={form.adaptive_routing_enabled}
+              onClick={() =>
+                setForm((f) => ({
+                  ...f,
+                  adaptive_routing_enabled: !f.adaptive_routing_enabled,
+                }))
+              }
+              className={[
+                "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none",
+                form.adaptive_routing_enabled ? "bg-accent" : "bg-surface-dark",
+              ].join(" ")}
+            >
+              <span
+                className={[
+                  "pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform",
+                  form.adaptive_routing_enabled
+                    ? "translate-x-5"
+                    : "translate-x-0",
+                ].join(" ")}
+              />
+            </button>
+          </div>
+
+          {/* Info panel (shown when enabled) */}
+          {form.adaptive_routing_enabled && (
+            <div className="flex items-start gap-3 rounded-xl bg-accent/5 border border-accent/20 px-4 py-3">
+              <Info size={14} className="mt-0.5 shrink-0 text-accent" />
+              <div className="space-y-1">
+                <p className="text-xs font-medium text-text-strong">
+                  How adaptive routing works
+                </p>
+                <ul className="list-disc list-inside space-y-0.5 text-xs text-muted">
+                  <li>Tracks p50/p95 latency per model over a rolling window</li>
+                  <li>Automatically shifts traffic away from slow or erroring models</li>
+                  <li>Primary model is preferred when healthy; fallbacks are tried in order</li>
+                  <li>No manual intervention needed — weights adjust in real time</li>
+                </ul>
+              </div>
             </div>
           )}
         </div>
