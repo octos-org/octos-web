@@ -11,6 +11,8 @@ import {
   Puzzle,
   Radio,
   Users,
+  Shield,
+  Wrench,
   Loader2,
 } from "lucide-react";
 import { getMyProfile, type Profile } from "./settings-api";
@@ -19,8 +21,10 @@ import { LlmTab } from "./llm-tab";
 import { SkillsTab } from "./skills-tab";
 import { ChannelsTab } from "./channels-tab";
 import { UsersTab } from "./users-tab";
+import { SandboxTab } from "./sandbox-tab";
+import { ToolsTab } from "./tools-tab";
 
-type TabId = "profile" | "llm" | "skills" | "channels" | "users";
+type TabId = "profile" | "llm" | "skills" | "channels" | "users" | "sandbox" | "tools";
 
 interface TabDef {
   id: TabId;
@@ -34,6 +38,8 @@ const TABS: TabDef[] = [
   { id: "llm", label: "LLM", icon: Cpu },
   { id: "skills", label: "Skills", icon: Puzzle },
   { id: "channels", label: "Channels", icon: Radio },
+  { id: "sandbox", label: "Sandbox", icon: Shield },
+  { id: "tools", label: "Tools", icon: Wrench },
   { id: "users", label: "Users", icon: Users, adminOnly: true },
 ];
 
@@ -45,15 +51,11 @@ export function AdminSettingsPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Derive accessible profiles from portal context (no extra API call needed)
   const accessibleProfiles = portal?.accessible_profiles ?? [];
-  // Initialize selectedProfileId directly from portal (no effect needed)
   const [selectedProfileId, setSelectedProfileId] = useState<string>(
     () => portal?.home_profile_id ?? "",
   );
 
-  // Fetch the current profile via GET /api/my/profile.
-  // loading starts as true; after the first fetch it resets via the callback.
   useEffect(() => {
     let cancelled = false;
     getMyProfile().then((data) => {
@@ -67,7 +69,6 @@ export function AdminSettingsPage() {
 
   return (
     <div className="flex h-screen flex-col bg-surface-dark">
-      {/* Header */}
       <nav className="flex items-center gap-4 px-6 py-4 shrink-0">
         <button
           onClick={() => navigate(-1)}
@@ -89,7 +90,6 @@ export function AdminSettingsPage() {
 
         <div className="flex-1" />
 
-        {/* Profile selector (when multiple accessible profiles) */}
         {accessibleProfiles.length > 1 && (
           <select
             value={selectedProfileId}
@@ -119,7 +119,6 @@ export function AdminSettingsPage() {
         </div>
       ) : (
         <div className="flex flex-1 min-h-0 overflow-hidden">
-          {/* Tab rail */}
           <aside className="w-56 shrink-0 border-r border-border/50 px-3 py-4 overflow-y-auto">
             <div className="space-y-1">
               {TABS.filter((t) => !t.adminOnly || portal?.can_access_admin_portal).map(({ id, label, icon: Icon }) => (
@@ -139,7 +138,6 @@ export function AdminSettingsPage() {
             </div>
           </aside>
 
-          {/* Content area */}
           <main className="flex-1 min-w-0 overflow-y-auto px-8 py-6">
             <div className="mx-auto max-w-2xl">
               {profile ? (
@@ -152,6 +150,12 @@ export function AdminSettingsPage() {
                   )}
                   {activeTab === "skills" && <SkillsTab />}
                   {activeTab === "channels" && <ChannelsTab profile={profile} onProfileUpdated={setProfile} />}
+                  {activeTab === "sandbox" && (
+                    <SandboxTab profile={profile} onProfileUpdated={setProfile} />
+                  )}
+                  {activeTab === "tools" && (
+                    <ToolsTab profile={profile} onProfileUpdated={setProfile} />
+                  )}
                   {activeTab === "users" && portal?.can_access_admin_portal && <UsersTab />}
                 </>
               ) : (
