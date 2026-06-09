@@ -87,7 +87,7 @@ export async function getMyProfile(): Promise<Profile | null> {
 }
 
 export async function updateMyProfile(
-  patch: { name?: string; config?: Partial<ProfileConfig> },
+  patch: { name?: string; enabled?: boolean; config?: Partial<ProfileConfig> },
 ): Promise<Profile | null> {
   try {
     return await request<Profile>("/api/my/profile", {
@@ -384,5 +384,16 @@ export async function stopProfile(profileId: string): Promise<string | null> {
     return null;
   } catch (err) {
     return err instanceof Error ? err.message : "Failed to stop";
+  }
+}
+
+export async function deleteAdminProfile(profileId: string): Promise<boolean> {
+  try {
+    await request<void>(`/api/admin/profiles/${encodeURIComponent(profileId)}`, {
+      method: "DELETE",
+    });
+    return true;
+  } catch {
+    return false;
   }
 }
