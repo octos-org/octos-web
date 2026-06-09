@@ -176,6 +176,30 @@ export async function installSkill(source: string): Promise<boolean> {
   }
 }
 
+// ── Hub / Registry ──
+
+export interface HubPackage {
+  name: string;
+  repo: string;
+  description: string | null;
+  author: string | null;
+  license: string | null;
+  version: string | null;
+  provides_tools: boolean;
+  skills: string[];
+  tags: string[];
+  requires: string[];
+}
+
+export async function getSkillRegistry(): Promise<HubPackage[]> {
+  try {
+    const resp = await request<{ packages: HubPackage[] }>("/api/my/profile/skills/registry");
+    return resp.packages ?? [];
+  } catch {
+    return [];
+  }
+}
+
 // ── Admin: Users management ──
 
 export interface AdminUser {
