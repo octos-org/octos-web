@@ -763,7 +763,7 @@ button, a, input, textarea {
 }
 
 .home-layer {
-  will-change: opacity;
+  will-change: opacity, transform;
 }
 
 /* ── Standby view ─────────────────────────────────── */
@@ -771,6 +771,13 @@ button, a, input, textarea {
   background:
     radial-gradient(ellipse 80% 60% at 50% 40%, rgba(59, 130, 246, 0.06), transparent 70%),
     #06080f;
+  background-size: 100% 200%;
+  animation: gradientShift 20s ease-in-out infinite;
+}
+
+@keyframes gradientShift {
+  0%, 100% { background-position: 50% 40%; }
+  50% { background-position: 50% 60%; }
 }
 
 /* ── Top bar (greeting + settings) ───────────────── */
@@ -811,6 +818,20 @@ button, a, input, textarea {
   font-size: clamp(1rem, 3vw, 1.5rem);
   font-weight: 400;
   letter-spacing: 0.04em;
+}
+
+/* Clock subtle glow */
+.home-clock:not(.home-clock-night) {
+  text-shadow: 0 0 40px rgba(255, 255, 255, 0.08);
+}
+
+/* Greeting fade-in on standby return */
+.home-greeting-fadein {
+  animation: greetingFade 0.8s ease-out 0.2s both;
+}
+@keyframes greetingFade {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 /* ── Widget card base (glassmorphism) ────────────── */
@@ -937,6 +958,9 @@ button, a, input, textarea {
 
 .home-back-button:hover {
   background: rgba(255, 255, 255, 0.12);
+}
+.home-back-button:active {
+  transform: scale(0.95);
 }
 
 /* Messages scroll area */
@@ -1369,6 +1393,9 @@ button, a, input, textarea {
 
 .home-settings-gear:hover {
   background: rgba(255, 255, 255, 0.08);
+}
+.home-settings-gear:active {
+  transform: scale(0.95);
 }
 
 /* ── Settings panel ────────────────────────────────── */

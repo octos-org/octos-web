@@ -29,10 +29,16 @@ interface StandbyViewProps {
   nightActive: boolean;
 }
 
+/** Check if a widget is enabled in the current config. */
+function isWidgetOn(widgets: import("./widget-registry").WidgetConfig[], type: import("./widget-registry").WidgetType): boolean {
+  const w = widgets.find((w) => w.type === type);
+  return w ? w.enabled : true;
+}
+
 export function StandbyView({ onActivate, nightActive }: StandbyViewProps) {
   const clock = useClock();
   const weather = useWeather();
-  const { strings, tempUnit, clockFormat } = useHomeSettings();
+  const { strings, tempUnit, clockFormat, widgets } = useHomeSettings();
   const burnIn = useBurnInProtection();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -116,47 +122,51 @@ export function StandbyView({ onActivate, nightActive }: StandbyViewProps) {
     >
       {/* Top bar: greeting (left) + settings gear (right) */}
       <div className="home-top-bar absolute top-0 left-0 right-0 flex items-center justify-between px-6 pt-5 z-20">
-        {!nightActive && (
-          <span className="home-greeting text-2xl font-light text-white/40">
+        {!nightActive && isWidgetOn(widgets, "greeting") && (
+          <span className="home-greeting home-greeting-fadein text-2xl font-light text-white/40">
             {greeting}
           </span>
         )}
-        {nightActive && <span />}
+        {(nightActive || !isWidgetOn(widgets, "greeting")) && <span />}
         <SettingsGearButton onClick={() => setSettingsOpen(true)} />
       </div>
 
       {/* Clock — shifted by burn-in protection */}
-      <div
-        className={`home-clock tabular-nums ${nightActive ? "home-clock-night" : "text-white"}`}
-        aria-live="polite"
-        style={{
-          transform: `translate(${burnIn.offset.x}px, ${burnIn.offset.y}px)`,
-          transition: "transform 2s ease-in-out",
-        }}
-      >
-        <span>{displayHours}</span>
-        <span className="home-clock-colon">:</span>
-        <span>{clock.minutes}</span>
-        {ampm && (
-          <span className="home-clock-ampm ml-3 text-[0.3em] font-normal text-white/40">
-            {ampm}
-          </span>
-        )}
-      </div>
+      {isWidgetOn(widgets, "clock") && (
+        <>
+          <div
+            className={`home-clock tabular-nums ${nightActive ? "home-clock-night" : "text-white"}`}
+            aria-live="polite"
+            style={{
+              transform: `translate(${burnIn.offset.x}px, ${burnIn.offset.y}px)`,
+              transition: "transform 2s ease-in-out",
+            }}
+          >
+            <span>{displayHours}</span>
+            <span className="home-clock-colon">:</span>
+            <span>{clock.minutes}</span>
+            {ampm && (
+              <span className="home-clock-ampm ml-3 text-[0.3em] font-normal text-white/40">
+                {ampm}
+              </span>
+            )}
+          </div>
 
-      {/* Date — shifted with clock */}
-      <div
-        className="home-date mt-2 text-white/50"
-        style={{
-          transform: `translate(${burnIn.offset.x}px, ${burnIn.offset.y}px)`,
-          transition: "transform 2s ease-in-out",
-        }}
-      >
-        {dateStr}
-      </div>
+          {/* Date — shifted with clock */}
+          <div
+            className="home-date mt-2 text-white/50"
+            style={{
+              transform: `translate(${burnIn.offset.x}px, ${burnIn.offset.y}px)`,
+              transition: "transform 2s ease-in-out",
+            }}
+          >
+            {dateStr}
+          </div>
+        </>
+      )}
 
-      {/* Voice Orb — hidden in night mode */}
-      {!nightActive && (
+      {/* Voice Orb — hidden in night mode or when disabled */}
+      {!nightActive && isWidgetOn(widgets, "voice-orb") && (
         <div
           className="mt-6"
           style={{
@@ -173,8 +183,8 @@ export function StandbyView({ onActivate, nightActive }: StandbyViewProps) {
         </div>
       )}
 
-      {/* Weather widget card — hidden in night mode */}
-      {!nightActive && (
+      {/* Weather widget card — hidden in night mode or when disabled */}
+      {!nightActive && isWidgetOn(widgets, "weather") && (
         <div className="home-widget home-weather-widget mt-8 mx-4 px-6 py-4">
           {weather.loading ? (
             <div className="flex items-center gap-3">
@@ -225,8 +235,8 @@ export function StandbyView({ onActivate, nightActive }: StandbyViewProps) {
         </div>
       )}
 
-      {/* Quick actions — hidden in night mode */}
-      {!nightActive && (
+      {/* Quick actions — hidden in night mode or when disabled */}
+      {!nightActive && isWidgetOn(widgets, "quick-actions") && (
         <div className="home-quick-actions mt-8">
           {QUICK_ACTIONS.map(({ id, icon: Icon, label, color, prefill }) => (
             <button
