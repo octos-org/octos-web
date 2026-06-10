@@ -21,6 +21,8 @@ import { useWeather } from "./use-weather";
 import { useHomeSettings } from "./home-settings-context";
 import { useBurnInProtection } from "./use-burn-in-protection";
 import { SettingsGearButton, HomeSettingsPanel } from "./home-settings";
+import { VoiceOrb } from "./voice-orb";
+import { useVoiceInput } from "./use-voice-input";
 
 interface StandbyViewProps {
   onActivate: (prefill?: string) => void;
@@ -33,6 +35,24 @@ export function StandbyView({ onActivate, nightActive }: StandbyViewProps) {
   const { strings, tempUnit, clockFormat } = useHomeSettings();
   const burnIn = useBurnInProtection();
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  const voice = useVoiceInput({
+    onResult: (text) => onActivate(text),
+    lang: strings === (undefined as never) ? "en-US" : undefined,
+  });
+
+  const handleOrbClick = useCallback(() => {
+    if (!voice.isSupported) {
+      // Fallback: just activate conversation mode (keyboard input)
+      onActivate();
+      return;
+    }
+    if (voice.orbState === "listening") {
+      voice.stop();
+    } else if (voice.orbState === "idle") {
+      voice.start();
+    }
+  }, [voice, onActivate]);
 
   const dateStr = `${strings.weekdays[clock.date.getDay()]}, ${strings.months[clock.date.getMonth()]} ${clock.date.getDate()}`;
 
@@ -134,6 +154,24 @@ export function StandbyView({ onActivate, nightActive }: StandbyViewProps) {
       >
         {dateStr}
       </div>
+
+      {/* Voice Orb — hidden in night mode */}
+      {!nightActive && (
+        <div
+          className="mt-6"
+          style={{
+            transform: `translate(${burnIn.offset.x}px, ${burnIn.offset.y}px)`,
+            transition: "transform 2s ease-in-out",
+          }}
+        >
+          <VoiceOrb state={voice.orbState} onClick={handleOrbClick} />
+          {voice.orbState === "listening" && voice.transcript && (
+            <p className="mt-2 text-center text-sm text-white/40 max-w-[200px] truncate">
+              {voice.transcript}
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Weather widget card — hidden in night mode */}
       {!nightActive && (
