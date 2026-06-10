@@ -773,6 +773,21 @@ button, a, input, textarea {
     #06080f;
 }
 
+/* ── Top bar (greeting + settings) ───────────────── */
+.home-top-bar {
+  pointer-events: none;
+}
+.home-top-bar > * {
+  pointer-events: auto;
+}
+
+/* Greeting text */
+.home-greeting {
+  font-size: clamp(1.1rem, 2.5vw, 1.5rem);
+  font-weight: 300;
+  letter-spacing: 0.02em;
+}
+
 /* Clock — 8-10rem for arm's-length readability */
 .home-clock {
   font-size: clamp(6rem, 18vw, 10rem);
@@ -798,28 +813,91 @@ button, a, input, textarea {
   letter-spacing: 0.04em;
 }
 
-/* Weather strip */
-.home-weather-strip {
-  font-size: 1rem;
+/* ── Widget card base (glassmorphism) ────────────── */
+.home-widget {
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 20px;
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease,
+    transform 0.15s ease;
 }
 
-/* Quick-action cards */
+.home-widget:hover {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+/* ── Weather widget ──────────────────────────────── */
+.home-weather-widget {
+  max-width: 640px;
+  width: 100%;
+}
+
+.home-weather-layout {
+  flex-wrap: nowrap;
+}
+
+.home-weather-current {
+  min-width: 0;
+}
+
+.home-forecast-strip {
+  min-width: 0;
+  scrollbar-width: none;
+}
+
+.home-forecast-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.home-forecast-item {
+  min-width: 44px;
+}
+
+/* ── Quick-action cards ──────────────────────────── */
 .home-quick-actions {
-  display: flex;
-  gap: 1.25rem;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1rem;
+  max-width: 320px;
+  width: 100%;
+  padding: 0 1rem;
 }
 
 .home-quick-card {
   border: none;
-  background: none;
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
   cursor: pointer;
-  padding: 0;
+  padding: 1.25rem 0.75rem;
   outline: none;
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease,
+    transform 0.15s ease;
+}
+
+.home-quick-card:hover,
+.home-quick-card:focus-visible {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.16);
+  transform: translateY(-2px);
+}
+
+.home-quick-card:active {
+  transform: scale(0.97);
 }
 
 .home-quick-card-icon {
-  width: 64px;
-  height: 64px;
+  width: 56px;
+  height: 56px;
   min-width: 44px;
   min-height: 44px;
   background: rgba(255, 255, 255, 0.06);
@@ -834,7 +912,6 @@ button, a, input, textarea {
 .home-quick-card:focus-visible .home-quick-card-icon {
   background: rgba(255, 255, 255, 0.12);
   border-color: rgba(255, 255, 255, 0.16);
-  transform: translateY(-2px);
 }
 
 .home-quick-card:active .home-quick-card-icon {
@@ -1027,22 +1104,48 @@ button, a, input, textarea {
   .home-clock {
     font-size: 5rem;
   }
+  .home-quick-actions {
+    max-width: 260px;
+    gap: 0.75rem;
+  }
+  .home-quick-card {
+    padding: 1rem 0.5rem;
+  }
   .home-quick-card-icon {
-    width: 52px;
-    height: 52px;
+    width: 48px;
+    height: 48px;
+  }
+  .home-weather-widget {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+  .home-weather-layout {
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .home-weather-divider {
+    width: 100%;
+    height: 1px;
   }
   .home-bubble-text {
     font-size: 1.1rem;
+  }
+  .home-greeting {
+    font-size: 1rem;
   }
 }
 
 @media (min-width: 1280px) {
   .home-quick-actions {
-    gap: 2rem;
+    max-width: 400px;
+    gap: 1.25rem;
   }
   .home-quick-card-icon {
-    width: 72px;
-    height: 72px;
+    width: 64px;
+    height: 64px;
+  }
+  .home-weather-widget {
+    max-width: 720px;
   }
 }
 
