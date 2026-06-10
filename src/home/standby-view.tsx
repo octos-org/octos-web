@@ -25,6 +25,7 @@ import { VoiceOrb } from "./voice-orb";
 import { useVoiceInput } from "./use-voice-input";
 import { useNews, timeAgo } from "./use-news";
 import { useEvents } from "./use-events";
+import { TimerWidget } from "./timer-widget";
 
 interface StandbyViewProps {
   onActivate: (prefill?: string) => void;
@@ -356,6 +357,11 @@ export function StandbyView({ onActivate, nightActive }: StandbyViewProps) {
             </div>
           )}
         </div>
+      )}
+
+      {/* Timer widget — hidden in night mode or when disabled */}
+      {!nightActive && isWidgetOn(widgets, "timer") && (
+        <TimerWidget />
       )}
 
       {/* Settings panel */}

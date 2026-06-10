@@ -67,6 +67,7 @@ export interface HomeStrings {
   widgetGreeting: string;
   widgetNews: string;
   widgetCalendar: string;
+  widgetTimer: string;
   settingsWidgets: string;
 
   // News widget
@@ -158,6 +159,7 @@ export const HOME_I18N: Record<string, HomeStrings> = {
     widgetGreeting: "Greeting",
     widgetNews: "News",
     widgetCalendar: "Calendar",
+    widgetTimer: "Timer",
     settingsWidgets: "Widgets",
 
     newsHeadlines: "Headlines",
@@ -249,6 +251,7 @@ export const HOME_I18N: Record<string, HomeStrings> = {
     widgetGreeting: "\u95EE\u5019",
     widgetNews: "\u65B0\u95FB",
     widgetCalendar: "\u65E5\u5386",
+    widgetTimer: "\u8BA1\u65F6\u5668",
     settingsWidgets: "\u7EC4\u4EF6",
 
     newsHeadlines: "\u5934\u6761",

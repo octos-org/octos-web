@@ -1529,6 +1529,52 @@ button, a, input, textarea {
   padding-right: 28px;
 }
 
+/* ── Timer widget ────────────────────────────────── */
+.home-timer-widget {
+  max-width: 480px;
+  width: 100%;
+}
+
+.home-timer-preset {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 10px 20px;
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background 0.2s ease, transform 0.15s ease;
+  min-width: 56px;
+  min-height: 44px;
+}
+
+.home-timer-preset:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.home-timer-preset:active {
+  transform: scale(0.95);
+}
+
+.home-timer-control {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.home-timer-control:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
 /* ── Responsive: news + calendar on small screens ── */
 @media (max-width: 480px) {
   .home-news-widget,

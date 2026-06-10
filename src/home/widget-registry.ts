@@ -12,7 +12,8 @@ export type WidgetType =
   | "voice-orb"
   | "greeting"
   | "news"
-  | "calendar";
+  | "calendar"
+  | "timer";
 
 export interface WidgetConfig {
   type: WidgetType;
@@ -28,6 +29,7 @@ export const DEFAULT_WIDGETS: WidgetConfig[] = [
   { type: "quick-actions", enabled: true, order: 4 },
   { type: "news", enabled: true, order: 5 },
   { type: "calendar", enabled: true, order: 6 },
+  { type: "timer", enabled: true, order: 7 },
 ];
 
 const LS_KEY = "octos_home_widgets";
