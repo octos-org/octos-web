@@ -40,7 +40,7 @@ function isWidgetOn(widgets: import("./widget-registry").WidgetConfig[], type: i
 export function StandbyView({ onActivate, nightActive }: StandbyViewProps) {
   const clock = useClock();
   const weather = useWeather();
-  const { strings, tempUnit, clockFormat, widgets, newsFeedUrl } = useHomeSettings();
+  const { strings, tempUnit, clockFormat, widgets, newsFeedUrl, lang } = useHomeSettings();
   const burnIn = useBurnInProtection();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const news = useNews(newsFeedUrl);
@@ -48,7 +48,7 @@ export function StandbyView({ onActivate, nightActive }: StandbyViewProps) {
 
   const voice = useVoiceInput({
     onResult: (text) => onActivate(text),
-    lang: strings === (undefined as never) ? "en-US" : undefined,
+    lang: lang === "zh" ? "zh-CN" : "en-US",
   });
 
   const handleOrbClick = useCallback(() => {

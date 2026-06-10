@@ -976,7 +976,7 @@ button, a, input, textarea {
 }
 
 .home-bubble-text {
-  font-size: 1.25rem;
+  font-size: clamp(1.25rem, 3.5vw, 1.75rem);
   line-height: 1.6;
 }
 
@@ -1358,7 +1358,7 @@ button, a, input, textarea {
 
 /* ── Night mode ─────────────────────────────────────── */
 .home-night-mode {
-  filter: brightness(0.3) sepia(0.2);
+  filter: brightness(0.5) sepia(0.15);
   transition: filter 1s ease-in-out;
 }
 
