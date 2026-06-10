@@ -1235,23 +1235,23 @@ button, a, input, textarea {
   margin: 1em 0;
 }
 
-/* ── Voice Orb ───────────────────────────────────── */
+/* ── Voice Orb (Canvas aurora) ────────────────────── */
 .home-voice-orb {
   width: 100px;
   height: 100px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: transparent;
   border: 2px solid rgba(255, 255, 255, 0.12);
   cursor: pointer;
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.5s ease;
+  transition: border-color 0.5s ease, box-shadow 0.5s ease;
   outline: none;
   padding: 0;
+  overflow: hidden;
+  will-change: transform;
 }
 
 .home-voice-orb:disabled {
@@ -1259,55 +1259,47 @@ button, a, input, textarea {
   cursor: not-allowed;
 }
 
-/* State-based glow */
+/* State-based outer glow (CSS box-shadow, cheaper than Canvas shadow) */
 .home-voice-orb[data-state="idle"] {
-  box-shadow: 0 0 30px -5px rgba(255, 255, 255, 0.1);
-  animation: orbBreathe 4s ease-in-out infinite;
+  box-shadow: 0 0 30px -5px rgba(139, 184, 255, 0.15);
 }
 
 .home-voice-orb[data-state="listening"] {
   border-color: rgba(16, 185, 129, 0.5);
   box-shadow: 0 0 40px -5px rgba(16, 185, 129, 0.3);
-  animation: orbPulse 1.5s ease-in-out infinite;
 }
 
 .home-voice-orb[data-state="processing"] {
   border-color: rgba(139, 92, 246, 0.5);
   box-shadow: 0 0 40px -5px rgba(139, 92, 246, 0.3);
-  animation: orbSpin 2s linear infinite;
 }
 
 .home-voice-orb[data-state="speaking"] {
   border-color: rgba(245, 158, 11, 0.5);
   box-shadow: 0 0 40px -5px rgba(245, 158, 11, 0.3);
-  animation: orbPulse 2s ease-in-out infinite;
 }
 
 .home-voice-orb:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.25);
 }
 
 .home-voice-orb:active:not(:disabled) {
   transform: scale(0.95);
 }
 
-@keyframes orbBreathe {
-  0%, 100% { transform: scale(1); opacity: 0.9; }
-  50% { transform: scale(1.03); opacity: 1; }
+/* Canvas fills the orb; icon floats above */
+.home-aurora-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  pointer-events: none;
 }
 
-@keyframes orbPulse {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.08); }
-}
-
-@keyframes orbSpin {
-  0% { box-shadow: 6px 0 40px -5px rgba(139, 92, 246, 0.4); }
-  25% { box-shadow: 0 6px 40px -5px rgba(139, 92, 246, 0.4); }
-  50% { box-shadow: -6px 0 40px -5px rgba(139, 92, 246, 0.4); }
-  75% { box-shadow: 0 -6px 40px -5px rgba(139, 92, 246, 0.4); }
-  100% { box-shadow: 6px 0 40px -5px rgba(139, 92, 246, 0.4); }
+.home-voice-orb-icon {
+  position: relative;
+  z-index: 1;
 }
 
 /* ── Responsive adjustments for small screens ────── */
