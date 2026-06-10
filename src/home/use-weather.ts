@@ -15,12 +15,19 @@ import { useState, useEffect, useRef } from "react";
 import { WMO_WEATHER, DEFAULT_LOCATION } from "./constants";
 import { useHomeSettings } from "./home-settings-context";
 
+export interface HourlyForecastItem {
+  hour: string;
+  temp: number;
+  emoji: string;
+}
+
 export interface WeatherState {
   temperature: number;
   weatherCode: number;
   emoji: string;
   label: string;
   city: string | null;
+  hourly: HourlyForecastItem[];
   loading: boolean;
   error: string | null;
 }
@@ -53,16 +60,49 @@ async function geocodeCity(
 async function fetchWeather(
   lat: number,
   lon: number,
-): Promise<{ temperature: number; weatherCode: number }> {
-  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code&timezone=auto`;
+): Promise<{
+  temperature: number;
+  weatherCode: number;
+  hourly: HourlyForecastItem[];
+}> {
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code&hourly=temperature_2m,weather_code&forecast_hours=6&timezone=auto`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = (await res.json()) as {
     current: { temperature_2m: number; weather_code: number };
+    hourly?: {
+      time?: string[];
+      temperature_2m?: number[];
+      weather_code?: number[];
+    };
   };
+
+  const hourly: HourlyForecastItem[] = [];
+  if (data.hourly?.time && data.hourly.temperature_2m && data.hourly.weather_code) {
+    const len = Math.min(
+      data.hourly.time.length,
+      data.hourly.temperature_2m.length,
+      data.hourly.weather_code.length,
+      6,
+    );
+    for (let i = 0; i < len; i++) {
+      const dt = new Date(data.hourly.time[i]);
+      const wmo = WMO_WEATHER[data.hourly.weather_code[i]] ?? {
+        emoji: "\u2600\uFE0F",
+        label: "Unknown",
+      };
+      hourly.push({
+        hour: String(dt.getHours()).padStart(2, "0") + ":00",
+        temp: Math.round(data.hourly.temperature_2m[i]),
+        emoji: wmo.emoji,
+      });
+    }
+  }
+
   return {
     temperature: Math.round(data.current.temperature_2m),
     weatherCode: data.current.weather_code,
+    hourly,
   };
 }
 
@@ -88,6 +128,7 @@ export function useWeather(): WeatherState {
     emoji: "",
     label: "",
     city: null,
+    hourly: [],
     loading: true,
     error: null,
   });
@@ -111,6 +152,7 @@ export function useWeather(): WeatherState {
           emoji: wmo.emoji,
           label: wmo.label,
           city: loc.city,
+          hourly: w.hourly,
           loading: false,
           error: null,
         });

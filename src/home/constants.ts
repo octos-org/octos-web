@@ -24,6 +24,12 @@ export interface HomeStrings {
   cardMusicPrefill: string;
   cardHomePrefill: string;
 
+  // Greetings (time-of-day)
+  greetingMorning: string;
+  greetingAfternoon: string;
+  greetingEvening: string;
+  greetingNight: string;
+
   // Misc
   backToStandby: string;
   send: string;
@@ -88,6 +94,11 @@ export const HOME_I18N: Record<string, HomeStrings> = {
     cardMusicPrefill: "Play some music for me",
     cardHomePrefill: "What's the status of my home devices?",
 
+    greetingMorning: "Good morning",
+    greetingAfternoon: "Good afternoon",
+    greetingEvening: "Good evening",
+    greetingNight: "Good night",
+
     backToStandby: "Back",
     send: "Send",
     inputPlaceholder: "Say something...",
@@ -151,6 +162,11 @@ export const HOME_I18N: Record<string, HomeStrings> = {
     cardNewsPrefill: "\u4ECA\u5929\u6709\u4EC0\u4E48\u65B0\u95FB\uFF1F",
     cardMusicPrefill: "\u7ED9\u6211\u64AD\u653E\u97F3\u4E50",
     cardHomePrefill: "\u6211\u7684\u5BB6\u5C45\u8BBE\u5907\u72B6\u6001\u5982\u4F55\uFF1F",
+
+    greetingMorning: "\u65E9\u4E0A\u597D",
+    greetingAfternoon: "\u4E0B\u5348\u597D",
+    greetingEvening: "\u665A\u4E0A\u597D",
+    greetingNight: "\u665A\u5B89",
 
     backToStandby: "\u8FD4\u56DE",
     send: "\u53D1\u9001",
