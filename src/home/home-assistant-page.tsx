@@ -138,10 +138,10 @@ function HomeAssistantShell() {
     <div className={nightActive ? "home-night-mode" : ""}>
       {/* Standby layer */}
       <div
-        className={`home-layer absolute inset-0 transition-opacity duration-500 ease-in-out ${
+        className={`home-layer absolute inset-0 transition-all duration-500 ease-in-out ${
           mode === "standby"
-            ? "opacity-100 pointer-events-auto z-10"
-            : "opacity-0 pointer-events-none z-0"
+            ? "opacity-100 scale-100 pointer-events-auto z-10"
+            : "opacity-0 scale-[0.98] pointer-events-none z-0"
         }`}
       >
         <StandbyView onActivate={activate} nightActive={nightActive} />
@@ -149,10 +149,10 @@ function HomeAssistantShell() {
 
       {/* Conversation layer */}
       <div
-        className={`home-layer absolute inset-0 transition-opacity duration-500 ease-in-out ${
+        className={`home-layer absolute inset-0 transition-all duration-500 ease-in-out ${
           mode === "conversation"
-            ? "opacity-100 pointer-events-auto z-10"
-            : "opacity-0 pointer-events-none z-0"
+            ? "opacity-100 scale-100 pointer-events-auto z-10"
+            : "opacity-0 scale-[0.98] pointer-events-none z-0"
         }`}
       >
         <ConversationView onBack={deactivate} prefill={prefill} />

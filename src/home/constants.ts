@@ -59,6 +59,14 @@ export interface HomeStrings {
   voiceNotSupported: string;
   voiceError: string;
 
+  // Widget labels
+  widgetClock: string;
+  widgetWeather: string;
+  widgetQuickActions: string;
+  widgetVoiceOrb: string;
+  widgetGreeting: string;
+  settingsWidgets: string;
+
   // Suggestion prompts
   suggestions: readonly string[];
 }
@@ -128,6 +136,13 @@ export const HOME_I18N: Record<string, HomeStrings> = {
     voiceListening: "Listening...",
     voiceNotSupported: "Voice not supported",
     voiceError: "Voice error",
+
+    widgetClock: "Clock",
+    widgetWeather: "Weather",
+    widgetQuickActions: "Quick Actions",
+    widgetVoiceOrb: "Voice",
+    widgetGreeting: "Greeting",
+    settingsWidgets: "Widgets",
 
     suggestions: [
       "What's the weather like today?",
@@ -201,6 +216,13 @@ export const HOME_I18N: Record<string, HomeStrings> = {
     voiceListening: "\u6B63\u5728\u542C...",
     voiceNotSupported: "\u8BED\u97F3\u4E0D\u652F\u6301",
     voiceError: "\u8BED\u97F3\u9519\u8BEF",
+
+    widgetClock: "\u65F6\u949F",
+    widgetWeather: "\u5929\u6C14",
+    widgetQuickActions: "\u5FEB\u6377\u64CD\u4F5C",
+    widgetVoiceOrb: "\u8BED\u97F3",
+    widgetGreeting: "\u95EE\u5019",
+    settingsWidgets: "\u7EC4\u4EF6",
 
     suggestions: [
       "\u4ECA\u5929\u5929\u6C14\u600E\u4E48\u6837\uFF1F",

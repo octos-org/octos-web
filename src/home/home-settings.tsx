@@ -7,7 +7,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Settings, X } from "lucide-react";
+import { Settings, X, ChevronUp, ChevronDown, Clock, CloudSun, Zap, Mic, MessageCircle } from "lucide-react";
 import {
   useHomeSettings,
   type ClockFormat,
@@ -15,6 +15,7 @@ import {
   type NightMode,
   type TempUnit,
 } from "./home-settings-context";
+import type { WidgetType } from "./widget-registry";
 
 // ── Gear button (placed in standby view) ───────────────────────
 
@@ -178,6 +179,23 @@ export function HomeSettingsPanel({ open, onClose }: HomeSettingsPanelProps) {
               onChange={(v) => s.update({ lang: v })}
             />
           </SettingsField>
+
+          {/* Widgets */}
+          <SettingsField label={t.settingsWidgets}>
+            <div className="space-y-1">
+              {[...s.widgets].sort((a, b) => a.order - b.order).map((w) => (
+                <WidgetRow
+                  key={w.type}
+                  type={w.type}
+                  enabled={w.enabled}
+                  label={widgetLabel(w.type, t)}
+                  onToggle={() => s.toggleWidget(w.type)}
+                  onMoveUp={() => s.moveWidget(w.type, "up")}
+                  onMoveDown={() => s.moveWidget(w.type, "down")}
+                />
+              ))}
+            </div>
+          </SettingsField>
         </div>
       </div>
     </>
@@ -229,6 +247,78 @@ function SegmentedPicker<T extends string>({
           {labels?.[i] ?? opt}
         </button>
       ))}
+    </div>
+  );
+}
+
+// ── Widget helpers ─────────────────────────────────────
+
+const WIDGET_ICONS: Record<WidgetType, typeof Clock> = {
+  clock: Clock,
+  weather: CloudSun,
+  "quick-actions": Zap,
+  "voice-orb": Mic,
+  greeting: MessageCircle,
+};
+
+function widgetLabel(type: WidgetType, t: ReturnType<typeof useHomeSettings>["strings"]): string {
+  const map: Record<WidgetType, string> = {
+    clock: t.widgetClock,
+    weather: t.widgetWeather,
+    "quick-actions": t.widgetQuickActions,
+    "voice-orb": t.widgetVoiceOrb,
+    greeting: t.widgetGreeting,
+  };
+  return map[type];
+}
+
+function WidgetRow({
+  type,
+  enabled,
+  label,
+  onToggle,
+  onMoveUp,
+  onMoveDown,
+}: {
+  type: WidgetType;
+  enabled: boolean;
+  label: string;
+  onToggle: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+}) {
+  const Icon = WIDGET_ICONS[type];
+  return (
+    <div className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-white/5 transition-colors">
+      <Icon size={16} className="text-white/40 shrink-0" />
+      <span className="flex-1 text-sm text-white/70">{label}</span>
+      <button
+        onClick={onMoveUp}
+        className="p-1 rounded hover:bg-white/10 transition-colors active:scale-90"
+        aria-label="Move up"
+      >
+        <ChevronUp size={14} className="text-white/40" />
+      </button>
+      <button
+        onClick={onMoveDown}
+        className="p-1 rounded hover:bg-white/10 transition-colors active:scale-90"
+        aria-label="Move down"
+      >
+        <ChevronDown size={14} className="text-white/40" />
+      </button>
+      <button
+        onClick={onToggle}
+        className={`w-9 h-5 rounded-full transition-colors relative ${
+          enabled ? "bg-blue-500/60" : "bg-white/10"
+        }`}
+        aria-label={`Toggle ${label}`}
+      >
+        <span
+          className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
+            enabled ? "translate-x-4" : "translate-x-0"
+          }`}
+        />
+      </button>
     </div>
   );
 }

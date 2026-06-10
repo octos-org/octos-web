@@ -18,6 +18,12 @@ import {
   type ReactNode,
 } from "react";
 import { HOME_I18N, type HomeStrings } from "./constants";
+import {
+  readWidgets,
+  writeWidgets,
+  type WidgetConfig,
+  type WidgetType,
+} from "./widget-registry";
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -40,6 +46,14 @@ export interface HomeSettingsContextValue extends HomeSettings {
   strings: HomeStrings;
   /** Partially update settings (only changed keys). */
   update: (patch: Partial<HomeSettings>) => void;
+  /** Current widget configuration. */
+  widgets: WidgetConfig[];
+  /** Replace the entire widget config. */
+  setWidgets: (widgets: WidgetConfig[]) => void;
+  /** Toggle a single widget on/off. */
+  toggleWidget: (type: WidgetType) => void;
+  /** Move a widget up or down in order. */
+  moveWidget: (type: WidgetType, direction: "up" | "down") => void;
 }
 
 // ── Storage helpers ─────────────────────────────────────────────
@@ -87,6 +101,7 @@ const Ctx = createContext<HomeSettingsContextValue | null>(null);
 
 export function HomeSettingsProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<HomeSettings>(readLS);
+  const [widgets, setWidgetsRaw] = useState<WidgetConfig[]>(readWidgets);
 
   const update = useCallback((patch: Partial<HomeSettings>) => {
     setSettings((prev) => {
@@ -99,14 +114,47 @@ export function HomeSettingsProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const setWidgets = useCallback((next: WidgetConfig[]) => {
+    setWidgetsRaw(next);
+    writeWidgets(next);
+  }, []);
+
+  const toggleWidget = useCallback((type: WidgetType) => {
+    setWidgetsRaw((prev) => {
+      const next = prev.map((w) =>
+        w.type === type ? { ...w, enabled: !w.enabled } : w,
+      );
+      writeWidgets(next);
+      return next;
+    });
+  }, []);
+
+  const moveWidget = useCallback((type: WidgetType, direction: "up" | "down") => {
+    setWidgetsRaw((prev) => {
+      const sorted = [...prev].sort((a, b) => a.order - b.order);
+      const idx = sorted.findIndex((w) => w.type === type);
+      if (idx < 0) return prev;
+      const swapIdx = direction === "up" ? idx - 1 : idx + 1;
+      if (swapIdx < 0 || swapIdx >= sorted.length) return prev;
+      // Swap orders
+      const next = sorted.map((w, i) => {
+        if (i === idx) return { ...w, order: sorted[swapIdx].order };
+        if (i === swapIdx) return { ...w, order: sorted[idx].order };
+        return w;
+      });
+      writeWidgets(next);
+      return next;
+    });
+  }, []);
+
   const strings = useMemo(
     () => HOME_I18N[settings.lang] ?? HOME_I18N.en,
     [settings.lang],
   );
 
   const value = useMemo<HomeSettingsContextValue>(
-    () => ({ ...settings, strings, update }),
-    [settings, strings, update],
+    () => ({ ...settings, strings, update, widgets, setWidgets, toggleWidget, moveWidget }),
+    [settings, strings, update, widgets, setWidgets, toggleWidget, moveWidget],
   );
 
   return <Ctx value={value}>{children}</Ctx>;
