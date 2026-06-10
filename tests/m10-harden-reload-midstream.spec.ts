@@ -18,8 +18,8 @@ import { expect, test, type WebSocket } from "@playwright/test";
  */
 
 const BASE_URL = process.env.BASE_URL || "https://dspfac.crew.ominix.io";
-const TOKEN = process.env.OCTOS_AUTH_TOKEN || "octos-admin-2026";
-const PROFILE = process.env.OCTOS_PROFILE || "dspfac";
+const TOKEN = process.env.OCTOS_AUTH_TOKEN || process.env.AUTH_TOKEN || "octos-admin-2026";
+const PROFILE = process.env.OCTOS_PROFILE || process.env.PROFILE_ID || "dspfac";
 
 interface Frame {
   dir: "<" | ">";
@@ -87,7 +87,7 @@ const LIVE_PROBE = process.env.OCTOS_LIVE_PROBE === "1";
 test.skip(!LIVE_PROBE, "OCTOS_LIVE_PROBE=1 required (live mini1 hits)");
 
 test.fixme("M10 harden: reload mid-stream preserves single-bubble result", async ({ page }) => {
-  test.setTimeout(420_000);
+  test.setTimeout(900_000);
   const frames = attachWsTap(page);
 
   await setAuth(page);

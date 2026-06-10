@@ -379,6 +379,23 @@ export function handleMessagePersisted(
     if (eventMedia.length === 0 && eventContent.length === 0) {
       return;
     }
+    // turn/completed → message/persisted race dedup: when turn/completed
+    // finalises the assistant BEFORE this event, pendingAssistant is null
+    // (promotion fails above) and the finalized response has no
+    // historySeq. appendPersistedMessage's seq-based dedup misses,
+    // creating a duplicate bubble. Detect the already-rendered text here.
+    const threads = ThreadStore.getThreads(cfg.sessionId, cfg.topic);
+    const thread = threads.find((t) => t.id === event.thread_id);
+    if (thread) {
+      const needle = eventContent.slice(0, 200);
+      const alreadyRendered = thread.responses.some(
+        (r) =>
+          r.role === "assistant" &&
+          r.text.trim().slice(0, 200) === needle &&
+          needle.length > 0,
+      );
+      if (alreadyRendered) return;
+    }
   }
   ThreadStore.appendPersistedMessage(
     cfg.sessionId,
@@ -1427,6 +1444,12 @@ export function handleProgressUpdated(
         }),
       );
     }
+    return;
+  }
+  if (event.metadata.kind === "stream_end") {
+    // stream_end signals text deltas are done but must NOT finalise the
+    // assistant. message/persisted or turn/completed owns that lifecycle
+    // step. Premature finalisation orphans the pending, causing a duplicate.
     return;
   }
   if (event.metadata.kind !== "token_cost_update") return;

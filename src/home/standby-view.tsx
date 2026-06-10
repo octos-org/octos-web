@@ -20,7 +20,7 @@ import { useBurnInProtection } from "./use-burn-in-protection";
 import { SettingsGearButton, HomeSettingsPanel } from "./home-settings";
 
 interface StandbyViewProps {
-  onActivate: () => void;
+  onActivate: (prefill?: string) => void;
   nightActive: boolean;
 }
 
@@ -140,12 +140,12 @@ export function StandbyView({ onActivate, nightActive }: StandbyViewProps) {
       {/* Quick actions — hidden in night mode */}
       {!nightActive && (
         <div className="home-quick-actions mt-10 flex gap-4">
-          {QUICK_ACTIONS.map(({ id, icon: Icon, label, color }) => (
+          {QUICK_ACTIONS.map(({ id, icon: Icon, label, color, prefill }) => (
             <button
               key={id}
               onClick={(e) => {
                 e.stopPropagation();
-                onActivate();
+                onActivate(prefill || undefined);
               }}
               className="home-quick-card group flex flex-col items-center justify-center gap-2"
               aria-label={label}

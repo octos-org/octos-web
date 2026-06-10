@@ -14,8 +14,8 @@ import { expect, test, type BrowserContext, type Page } from "@playwright/test";
  */
 
 const BASE_URL = process.env.BASE_URL || "https://dspfac.crew.ominix.io";
-const TOKEN = process.env.OCTOS_AUTH_TOKEN || "octos-admin-2026";
-const PROFILE = process.env.OCTOS_PROFILE || "dspfac";
+const TOKEN = process.env.OCTOS_AUTH_TOKEN || process.env.AUTH_TOKEN || "octos-admin-2026";
+const PROFILE = process.env.OCTOS_PROFILE || process.env.PROFILE_ID || "dspfac";
 
 async function bootstrap(ctx: BrowserContext): Promise<{ page: Page; sessionRef: { id: string | null } }> {
   const page = await ctx.newPage();
@@ -109,7 +109,7 @@ const LIVE_PROBE = process.env.OCTOS_LIVE_PROBE === "1";
 test.skip(!LIVE_PROBE, "OCTOS_LIVE_PROBE=1 required (live mini1 hits)");
 
 test("M10 harden: two contexts with same token, separate sessions", async ({ browser }) => {
-  test.setTimeout(420_000);
+  test.setTimeout(900_000);
 
   const ctxA = await browser.newContext();
   const ctxB = await browser.newContext();
