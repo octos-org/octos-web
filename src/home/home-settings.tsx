@@ -7,15 +7,17 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Settings, X, ChevronUp, ChevronDown, Clock, CloudSun, Zap, Mic, MessageCircle } from "lucide-react";
+import { Settings, X, ChevronUp, ChevronDown, Clock, CloudSun, Zap, Mic, MessageCircle, Newspaper, CalendarDays, Trash2, Plus } from "lucide-react";
 import {
   useHomeSettings,
+  DEFAULT_FEED_URL,
   type ClockFormat,
   type Lang,
   type NightMode,
   type TempUnit,
 } from "./home-settings-context";
 import type { WidgetType } from "./widget-registry";
+import { useEvents, type CalendarEvent } from "./use-events";
 
 // ── Gear button (placed in standby view) ───────────────────────
 
@@ -48,11 +50,25 @@ interface HomeSettingsPanelProps {
 export function HomeSettingsPanel({ open, onClose }: HomeSettingsPanelProps) {
   const s = useHomeSettings();
   const panelRef = useRef<HTMLDivElement>(null);
-  // Reset draft each time the panel opens so it picks up the latest value.
+  const { allEvents, addEvent, removeEvent } = useEvents();
+
+  // Reset drafts each time the panel opens so they pick up latest values.
   const [cityDraft, setCityDraft] = useState(s.city);
+  const [feedDraft, setFeedDraft] = useState(s.newsFeedUrl);
   const [prevOpen, setPrevOpen] = useState(open);
+
+  // Event add form state
+  const [evTitle, setEvTitle] = useState("");
+  const [evTime, setEvTime] = useState("09:00");
+  const [evDate, setEvDate] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  });
+  const [evRecurring, setEvRecurring] = useState<CalendarEvent["recurring"]>(undefined);
+
   if (open && !prevOpen) {
     setCityDraft(s.city);
+    setFeedDraft(s.newsFeedUrl);
   }
   if (open !== prevOpen) {
     setPrevOpen(open);
@@ -75,6 +91,21 @@ export function HomeSettingsPanel({ open, onClose }: HomeSettingsPanelProps) {
       s.update({ city: trimmed });
     }
   }, [cityDraft, s]);
+
+  // Commit news feed URL on blur / Enter
+  const commitFeed = useCallback(() => {
+    const trimmed = feedDraft.trim();
+    if (trimmed !== s.newsFeedUrl) {
+      s.update({ newsFeedUrl: trimmed });
+    }
+  }, [feedDraft, s]);
+
+  const handleAddEvent = useCallback(() => {
+    const title = evTitle.trim();
+    if (!title) return;
+    addEvent({ title, time: evTime, date: evDate, recurring: evRecurring });
+    setEvTitle("");
+  }, [evTitle, evTime, evDate, evRecurring, addEvent]);
 
   const t = s.strings;
 
@@ -180,6 +211,108 @@ export function HomeSettingsPanel({ open, onClose }: HomeSettingsPanelProps) {
             />
           </SettingsField>
 
+          {/* News Feed URL */}
+          <SettingsField label={t.settingsNewsFeed}>
+            <input
+              type="text"
+              value={feedDraft}
+              onChange={(e) => setFeedDraft(e.target.value)}
+              onBlur={commitFeed}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitFeed();
+              }}
+              placeholder={DEFAULT_FEED_URL}
+              className="home-settings-input"
+            />
+          </SettingsField>
+
+          {/* Events */}
+          <SettingsField label={t.settingsEvents}>
+            <div className="space-y-2">
+              {/* Existing events list */}
+              {allEvents.length > 0 && (
+                <div className="space-y-1 max-h-40 overflow-y-auto">
+                  {allEvents.map((ev) => (
+                    <div
+                      key={ev.id}
+                      className="flex items-center gap-2 rounded-lg px-2 py-1.5 bg-white/5"
+                    >
+                      <span className="text-xs text-white/40 tabular-nums shrink-0">
+                        {ev.time}
+                      </span>
+                      <span className="flex-1 text-sm text-white/70 truncate">
+                        {ev.title}
+                      </span>
+                      {ev.recurring && (
+                        <span className="text-[10px] text-blue-400/70 shrink-0">
+                          {ev.recurring}
+                        </span>
+                      )}
+                      <button
+                        onClick={() => removeEvent(ev.id)}
+                        className="p-1 rounded hover:bg-white/10 transition-colors shrink-0"
+                        aria-label="Delete event"
+                      >
+                        <Trash2 size={13} className="text-white/30 hover:text-red-400" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Add event form */}
+              <div className="home-event-form space-y-2 pt-1">
+                <input
+                  type="text"
+                  value={evTitle}
+                  onChange={(e) => setEvTitle(e.target.value)}
+                  placeholder={t.settingsAddEvent}
+                  className="home-settings-input"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleAddEvent();
+                  }}
+                />
+                <div className="flex gap-2">
+                  <input
+                    type="time"
+                    value={evTime}
+                    onChange={(e) => setEvTime(e.target.value)}
+                    className="home-settings-input flex-1"
+                  />
+                  <input
+                    type="date"
+                    value={evDate}
+                    onChange={(e) => setEvDate(e.target.value)}
+                    className="home-settings-input flex-1"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <select
+                    value={evRecurring ?? ""}
+                    onChange={(e) =>
+                      setEvRecurring(
+                        e.target.value === "" ? undefined : (e.target.value as "daily" | "weekly"),
+                      )
+                    }
+                    className="home-settings-input flex-1"
+                  >
+                    <option value="">No repeat</option>
+                    <option value="daily">Daily</option>
+                    <option value="weekly">Weekly</option>
+                  </select>
+                  <button
+                    onClick={handleAddEvent}
+                    disabled={!evTitle.trim()}
+                    className="flex items-center justify-center gap-1 rounded-lg px-3 py-2 text-sm font-medium bg-blue-500/20 text-blue-300 hover:bg-blue-500/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    <Plus size={14} />
+                    {t.settingsAddEvent}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </SettingsField>
+
           {/* Widgets */}
           <SettingsField label={t.settingsWidgets}>
             <div className="space-y-1">
@@ -259,6 +392,8 @@ const WIDGET_ICONS: Record<WidgetType, typeof Clock> = {
   "quick-actions": Zap,
   "voice-orb": Mic,
   greeting: MessageCircle,
+  news: Newspaper,
+  calendar: CalendarDays,
 };
 
 function widgetLabel(type: WidgetType, t: ReturnType<typeof useHomeSettings>["strings"]): string {
@@ -268,6 +403,8 @@ function widgetLabel(type: WidgetType, t: ReturnType<typeof useHomeSettings>["st
     "quick-actions": t.widgetQuickActions,
     "voice-orb": t.widgetVoiceOrb,
     greeting: t.widgetGreeting,
+    news: t.widgetNews,
+    calendar: t.widgetCalendar,
   };
   return map[type];
 }

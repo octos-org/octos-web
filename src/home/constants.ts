@@ -65,7 +65,21 @@ export interface HomeStrings {
   widgetQuickActions: string;
   widgetVoiceOrb: string;
   widgetGreeting: string;
+  widgetNews: string;
+  widgetCalendar: string;
   settingsWidgets: string;
+
+  // News widget
+  newsHeadlines: string;
+
+  // Calendar widget
+  calendarToday: string;
+  calendarNoEvents: string;
+
+  // Settings — News & Events
+  settingsNewsFeed: string;
+  settingsEvents: string;
+  settingsAddEvent: string;
 
   // Suggestion prompts
   suggestions: readonly string[];
@@ -142,7 +156,18 @@ export const HOME_I18N: Record<string, HomeStrings> = {
     widgetQuickActions: "Quick Actions",
     widgetVoiceOrb: "Voice",
     widgetGreeting: "Greeting",
+    widgetNews: "News",
+    widgetCalendar: "Calendar",
     settingsWidgets: "Widgets",
+
+    newsHeadlines: "Headlines",
+
+    calendarToday: "Today",
+    calendarNoEvents: "No events today",
+
+    settingsNewsFeed: "News Feed URL",
+    settingsEvents: "Events",
+    settingsAddEvent: "Add Event",
 
     suggestions: [
       "What's the weather like today?",
@@ -222,7 +247,18 @@ export const HOME_I18N: Record<string, HomeStrings> = {
     widgetQuickActions: "\u5FEB\u6377\u64CD\u4F5C",
     widgetVoiceOrb: "\u8BED\u97F3",
     widgetGreeting: "\u95EE\u5019",
+    widgetNews: "\u65B0\u95FB",
+    widgetCalendar: "\u65E5\u5386",
     settingsWidgets: "\u7EC4\u4EF6",
+
+    newsHeadlines: "\u5934\u6761",
+
+    calendarToday: "\u4ECA\u5929",
+    calendarNoEvents: "\u4ECA\u5929\u6CA1\u6709\u65E5\u7A0B",
+
+    settingsNewsFeed: "\u65B0\u95FB\u6E90",
+    settingsEvents: "\u65E5\u7A0B",
+    settingsAddEvent: "\u6DFB\u52A0\u65E5\u7A0B",
 
     suggestions: [
       "\u4ECA\u5929\u5929\u6C14\u600E\u4E48\u6837\uFF1F",
