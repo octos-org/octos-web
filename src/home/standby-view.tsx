@@ -15,7 +15,7 @@
  */
 
 import { useCallback, useMemo, useState } from "react";
-import { MessageSquare, Newspaper, Music, Home } from "lucide-react";
+import { MessageSquare, Newspaper, Music, Home, CalendarDays } from "lucide-react";
 import { useClock } from "./use-clock";
 import { useWeather } from "./use-weather";
 import { useHomeSettings } from "./home-settings-context";
@@ -23,6 +23,8 @@ import { useBurnInProtection } from "./use-burn-in-protection";
 import { SettingsGearButton, HomeSettingsPanel } from "./home-settings";
 import { VoiceOrb } from "./voice-orb";
 import { useVoiceInput } from "./use-voice-input";
+import { useNews, timeAgo } from "./use-news";
+import { useEvents } from "./use-events";
 
 interface StandbyViewProps {
   onActivate: (prefill?: string) => void;
@@ -38,9 +40,11 @@ function isWidgetOn(widgets: import("./widget-registry").WidgetConfig[], type: i
 export function StandbyView({ onActivate, nightActive }: StandbyViewProps) {
   const clock = useClock();
   const weather = useWeather();
-  const { strings, tempUnit, clockFormat, widgets } = useHomeSettings();
+  const { strings, tempUnit, clockFormat, widgets, newsFeedUrl } = useHomeSettings();
   const burnIn = useBurnInProtection();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const news = useNews(newsFeedUrl);
+  const events = useEvents();
 
   const voice = useVoiceInput({
     onResult: (text) => onActivate(text),
@@ -256,6 +260,101 @@ export function StandbyView({ onActivate, nightActive }: StandbyViewProps) {
               </span>
             </button>
           ))}
+        </div>
+      )}
+
+      {/* News widget — hidden in night mode or when disabled */}
+      {!nightActive && isWidgetOn(widgets, "news") && (
+        <div className="home-widget home-news-widget mt-8 mx-4 px-5 py-4">
+          {/* Header */}
+          <div className="flex items-center gap-2 mb-3">
+            <Newspaper size={16} className="text-amber-400/70" />
+            <span className="text-sm font-medium text-white/50">
+              {strings.newsHeadlines}
+            </span>
+          </div>
+
+          {news.loading && news.items.length === 0 ? (
+            <div className="flex gap-4 overflow-hidden">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="home-news-card animate-pulse shrink-0">
+                  <div className="h-4 w-36 rounded bg-white/10 mb-2" />
+                  <div className="h-3 w-20 rounded bg-white/5" />
+                </div>
+              ))}
+            </div>
+          ) : news.error ? (
+            <span className="text-sm text-white/30">{news.error}</span>
+          ) : (
+            <div className="home-news-strip flex gap-3 overflow-x-auto pb-1">
+              {news.items.map((item, i) => (
+                <button
+                  key={i}
+                  className="home-news-card shrink-0"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onActivate(`Tell me more about: ${item.title}`);
+                  }}
+                  aria-label={item.title}
+                >
+                  <p className="home-news-title text-sm font-medium text-white/80 leading-snug">
+                    {item.title}
+                  </p>
+                  <span className="text-xs text-white/30 mt-auto pt-1">
+                    {timeAgo(item.pubDate)}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Calendar widget — hidden in night mode or when disabled */}
+      {!nightActive && isWidgetOn(widgets, "calendar") && (
+        <div className="home-widget home-calendar-widget mt-4 mx-4 px-5 py-4">
+          {/* Header */}
+          <div className="flex items-center gap-2 mb-3">
+            <CalendarDays size={16} className="text-blue-400/70" />
+            <span className="text-sm font-medium text-white/50">
+              {strings.calendarToday}
+            </span>
+          </div>
+
+          {events.todayEvents.length === 0 ? (
+            <span className="text-sm text-white/25">{strings.calendarNoEvents}</span>
+          ) : (
+            <div className="home-calendar-list space-y-1.5 max-h-[180px] overflow-y-auto">
+              {events.todayEvents.slice(0, 4).map((ev) => {
+                // Highlight upcoming events (within next 2 hours).
+                const [h, m] = ev.time.split(":").map(Number);
+                const evMin = h * 60 + m;
+                const nowMin = clock.date.getHours() * 60 + clock.date.getMinutes();
+                const isUpcoming = evMin >= nowMin && evMin - nowMin <= 120;
+                const isPast = evMin < nowMin;
+
+                return (
+                  <div
+                    key={ev.id}
+                    className={`home-event-item flex items-center gap-3 rounded-lg px-3 py-2 ${
+                      isUpcoming
+                        ? "bg-blue-500/10 border border-blue-500/20"
+                        : isPast
+                          ? "opacity-40"
+                          : "bg-white/[0.03]"
+                    }`}
+                  >
+                    <span className="text-sm tabular-nums text-white/50 font-medium shrink-0">
+                      {ev.time}
+                    </span>
+                    <span className="text-sm text-white/75 truncate">
+                      {ev.title}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
