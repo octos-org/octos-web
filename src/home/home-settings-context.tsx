@@ -39,6 +39,7 @@ export interface HomeSettings {
   idleSeconds: number;
   nightMode: NightMode;
   lang: Lang;
+  newsFeedUrl: string;
 }
 
 export interface HomeSettingsContextValue extends HomeSettings {
@@ -58,6 +59,8 @@ export interface HomeSettingsContextValue extends HomeSettings {
 
 // ── Storage helpers ─────────────────────────────────────────────
 
+export const DEFAULT_FEED_URL = "http://feeds.bbci.co.uk/news/rss.xml";
+
 const KEYS = {
   city: "octos_home_city",
   tempUnit: "octos_home_temp_unit",
@@ -65,6 +68,7 @@ const KEYS = {
   idleSeconds: "octos_home_idle_seconds",
   nightMode: "octos_home_night_mode",
   lang: "octos_home_lang",
+  newsFeedUrl: "octos_home_news_feed_url",
 } as const;
 
 function readLS(): HomeSettings {
@@ -79,6 +83,7 @@ function readLS(): HomeSettings {
     nightMode:
       (localStorage.getItem(KEYS.nightMode) as NightMode) || "auto",
     lang: (localStorage.getItem(KEYS.lang) as Lang) || "en",
+    newsFeedUrl: localStorage.getItem(KEYS.newsFeedUrl) ?? DEFAULT_FEED_URL,
   };
 }
 
@@ -89,6 +94,7 @@ function writeLS(s: HomeSettings) {
   localStorage.setItem(KEYS.idleSeconds, String(s.idleSeconds));
   localStorage.setItem(KEYS.nightMode, s.nightMode);
   localStorage.setItem(KEYS.lang, s.lang);
+  localStorage.setItem(KEYS.newsFeedUrl, s.newsFeedUrl);
 }
 
 function clampIdle(n: number): number {
