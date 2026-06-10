@@ -7,7 +7,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Settings, X, ChevronUp, ChevronDown, Clock, CloudSun, Zap, Mic, MessageCircle, Newspaper, CalendarDays, Trash2, Plus } from "lucide-react";
+import { Settings, X, ChevronUp, ChevronDown, Clock, CloudSun, Zap, Mic, MessageCircle, Newspaper, CalendarDays, Timer, ImageIcon, Trash2, Plus } from "lucide-react";
 import {
   useHomeSettings,
   DEFAULT_FEED_URL,
@@ -18,6 +18,7 @@ import {
 } from "./home-settings-context";
 import type { WidgetType } from "./widget-registry";
 import { useEvents, type CalendarEvent } from "./use-events";
+import { usePhotos } from "./use-photos";
 
 // ── Gear button (placed in standby view) ───────────────────────
 
@@ -51,6 +52,8 @@ export function HomeSettingsPanel({ open, onClose }: HomeSettingsPanelProps) {
   const s = useHomeSettings();
   const panelRef = useRef<HTMLDivElement>(null);
   const { allEvents, addEvent, removeEvent } = useEvents();
+  const { photos, addPhoto, removePhoto } = usePhotos();
+  const [photoUrl, setPhotoUrl] = useState("");
 
   // Reset drafts each time the panel opens so they pick up latest values.
   const [cityDraft, setCityDraft] = useState(s.city);
@@ -313,6 +316,51 @@ export function HomeSettingsPanel({ open, onClose }: HomeSettingsPanelProps) {
             </div>
           </SettingsField>
 
+          {/* Photo Frame URLs */}
+          <SettingsField label={t.settingsPhotos}>
+            <div className="space-y-2">
+              {photos.map((url) => (
+                <div key={url} className="flex items-center gap-2">
+                  <span className="flex-1 text-sm text-white/60 truncate">{url}</span>
+                  <button
+                    onClick={() => removePhoto(url)}
+                    className="shrink-0 p-1 rounded-lg text-red-400/60 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))}
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  value={photoUrl}
+                  onChange={(e) => setPhotoUrl(e.target.value)}
+                  placeholder={t.settingsPhotoPlaceholder}
+                  className="home-settings-input flex-1"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && photoUrl.trim()) {
+                      addPhoto(photoUrl.trim());
+                      setPhotoUrl("");
+                    }
+                  }}
+                />
+                <button
+                  onClick={() => {
+                    if (photoUrl.trim()) {
+                      addPhoto(photoUrl.trim());
+                      setPhotoUrl("");
+                    }
+                  }}
+                  disabled={!photoUrl.trim()}
+                  className="flex items-center justify-center gap-1 rounded-lg px-3 py-2 text-sm font-medium bg-blue-500/20 text-blue-300 hover:bg-blue-500/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                  <Plus size={14} />
+                  {t.settingsAddPhoto}
+                </button>
+              </div>
+            </div>
+          </SettingsField>
+
           {/* Widgets */}
           <SettingsField label={t.settingsWidgets}>
             <div className="space-y-1">
@@ -394,6 +442,8 @@ const WIDGET_ICONS: Record<WidgetType, typeof Clock> = {
   greeting: MessageCircle,
   news: Newspaper,
   calendar: CalendarDays,
+  timer: Timer,
+  "photo-frame": ImageIcon,
 };
 
 function widgetLabel(type: WidgetType, t: ReturnType<typeof useHomeSettings>["strings"]): string {
@@ -405,6 +455,8 @@ function widgetLabel(type: WidgetType, t: ReturnType<typeof useHomeSettings>["st
     greeting: t.widgetGreeting,
     news: t.widgetNews,
     calendar: t.widgetCalendar,
+    timer: t.widgetTimer,
+    "photo-frame": t.widgetPhotoFrame,
   };
   return map[type];
 }

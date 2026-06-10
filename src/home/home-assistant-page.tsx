@@ -5,18 +5,17 @@
  *   1. **Standby** -- large clock, weather, quick-action cards.
  *   2. **Conversation** -- large-font chat bubbles with auto-idle return.
  *
- * The page is always full-screen (no sidebar, no top nav). It wraps
- * OctosRuntimeProvider so the conversation view can read from
- * ThreadStore and send via the WS bridge.
+ * The page is always full-screen (no sidebar, no top nav).
+ *
+ * Session architecture follows the scoped pattern from Sites/Slides:
+ * manual `SessionContext.Provider` + `ScopedRuntimeBridge`, with a
+ * dedicated `historyTopic` ("home") to isolate home messages from the
+ * main chat. The WS bridge, task watcher, and file-store loaders are
+ * wired by `ScopedRuntimeBridge`; the session context is constructed
+ * here with stubs for methods the home surface doesn't use.
  *
  * Wake Lock is acquired while mounted to prevent screen-off on idle
  * touch devices.
- *
- * Session management: Home UI uses a single persistent session stored
- * in `localStorage` under `octos_home_session_id`. On mount the shell
- * either resumes that session or creates a fresh one titled
- * "Home Assistant", then switches the SessionContext to it so the WS
- * bridge connects to the right session.
  *
  * Night mode: dims display and hides non-essential UI between 22:00
  * and 06:00 (auto), or always/never based on user setting. Touch/mouse
@@ -24,8 +23,15 @@
  */
 
 import { useMemo, useCallback, useEffect, useRef, useState } from "react";
-import { OctosRuntimeProvider } from "@/runtime/runtime-provider";
-import { useSession } from "@/runtime/session-context";
+import { ScopedRuntimeBridge } from "@/runtime/runtime-provider";
+import {
+  SessionContext,
+  useModeState,
+  type QueueMode,
+  type AdaptiveMode,
+} from "@/runtime/session-context";
+import { UiProtocolApprovalHost } from "@/components/ui-protocol-approval-host";
+import * as ThreadStore from "@/store/thread-store";
 import { useWakeLock } from "./use-wake-lock";
 import { StandbyView } from "./standby-view";
 import { ConversationView } from "./conversation-view";
@@ -38,10 +44,14 @@ import { useClock } from "./use-clock";
 type Mode = "standby" | "conversation";
 
 const HOME_SESSION_KEY = "octos_home_session_id";
-const HOME_SESSION_TITLE = "Home Assistant";
+const HOME_HISTORY_TOPIC = "home";
 
 /** Duration in ms to temporarily suppress night mode on interaction. */
 const NIGHT_SUPPRESS_MS = 5000;
+
+function generateSessionId(): string {
+  return `web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 /**
  * Night-mode logic hook.
@@ -55,16 +65,13 @@ function useNightMode(): boolean {
     undefined,
   );
 
-  // Determine raw night state
   const rawNight = useMemo(() => {
     if (nightMode === "on") return true;
     if (nightMode === "off") return false;
-    // auto: 22:00 - 06:00
     const h = clock.date.getHours();
     return h >= 22 || h < 6;
   }, [nightMode, clock.date]);
 
-  // Suppress on user activity
   useEffect(() => {
     if (!rawNight) return;
 
@@ -90,39 +97,13 @@ function useNightMode(): boolean {
 }
 
 /**
- * Inner shell that lives inside OctosRuntimeProvider so it can access
- * the SessionContext. Handles session creation/restoration and the
- * standby/conversation mode toggle.
+ * Inner shell — owns the mode toggle and night-mode state.
+ * Lives inside the scoped SessionContext + ScopedRuntimeBridge.
  */
 function HomeAssistantShell() {
-  const { currentSessionId, createSession, switchSession } = useSession();
   const [mode, setMode] = useState<Mode>("standby");
   const [prefill, setPrefill] = useState<string | undefined>(undefined);
-  const initRef = useRef(false);
   const nightActive = useNightMode();
-
-  // Resolve the target home session id synchronously during render
-  // (no setState in an effect). `createSession` is safe to call during
-  // render because it only mutates context state + localStorage.
-  const homeSessionId = useMemo(() => {
-    const storedId = localStorage.getItem(HOME_SESSION_KEY);
-    if (storedId) return storedId;
-
-    const newId = createSession(HOME_SESSION_TITLE);
-    localStorage.setItem(HOME_SESSION_KEY, newId);
-    return newId;
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot init
-  }, []);
-
-  // Side-effect: switch to the home session if the context is pointing
-  // elsewhere. Runs once after mount (initRef guard).
-  useEffect(() => {
-    if (initRef.current) return;
-    initRef.current = true;
-    if (homeSessionId !== currentSessionId) {
-      switchSession(homeSessionId);
-    }
-  }, [homeSessionId, currentSessionId, switchSession]);
 
   const activate = useCallback((cardPrefill?: string) => {
     setPrefill(cardPrefill);
@@ -157,6 +138,8 @@ function HomeAssistantShell() {
       >
         <ConversationView onBack={deactivate} prefill={prefill} />
       </div>
+
+      <UiProtocolApprovalHost />
     </div>
   );
 }
@@ -164,12 +147,71 @@ function HomeAssistantShell() {
 export function HomeAssistantPage() {
   useWakeLock();
 
+  const homeSessionId = useMemo(() => {
+    const stored = localStorage.getItem(HOME_SESSION_KEY);
+    if (stored) return stored;
+    const id = generateSessionId();
+    localStorage.setItem(HOME_SESSION_KEY, id);
+    return id;
+  }, []);
+
+  const { queueMode, adaptiveMode } = useModeState(
+    homeSessionId,
+    HOME_HISTORY_TOPIC,
+  );
+
+  // Load conversation history on mount; retry when bridge reconnects.
+  useEffect(() => {
+    void ThreadStore.loadHistory(homeSessionId, HOME_HISTORY_TOPIC);
+    const onBridgeReady = () => {
+      void ThreadStore.loadHistory(homeSessionId, HOME_HISTORY_TOPIC, {
+        force: true,
+      });
+    };
+    window.addEventListener("crew:bridge_connected", onBridgeReady);
+    return () => {
+      window.removeEventListener("crew:bridge_connected", onBridgeReady);
+    };
+  }, [homeSessionId]);
+
+  const [activeTask, setActiveTask] = useState(false);
+  const setServerTaskActive = useCallback(
+    (_sessionId: string, active: boolean) => setActiveTask(active),
+    [],
+  );
+
+  const sessionValue = useMemo(
+    () => ({
+      sessions: [],
+      currentSessionId: homeSessionId,
+      historyTopic: HOME_HISTORY_TOPIC,
+      currentSessionTitle: "Home Assistant",
+      currentSessionStats: null,
+      initialMessages: [] as never[],
+      activeTaskOnServer: activeTask,
+      queueMode: queueMode as QueueMode,
+      adaptiveMode: adaptiveMode as AdaptiveMode,
+      setServerTaskActive,
+      renameSession: () => {},
+      updateSessionStats: () => {},
+      switchSession: () => {},
+      goBack: async () => false,
+      createSession: () => homeSessionId,
+      removeSession: async () => {},
+      refreshSessions: async () => {},
+      markSessionActive: () => {},
+    }),
+    [homeSessionId, activeTask, queueMode, adaptiveMode, setServerTaskActive],
+  );
+
   return (
     <div className="home-root relative h-screen w-screen overflow-hidden">
       <HomeSettingsProvider>
-        <OctosRuntimeProvider>
-          <HomeAssistantShell />
-        </OctosRuntimeProvider>
+        <SessionContext.Provider value={sessionValue}>
+          <ScopedRuntimeBridge>
+            <HomeAssistantShell />
+          </ScopedRuntimeBridge>
+        </SessionContext.Provider>
       </HomeSettingsProvider>
     </div>
   );

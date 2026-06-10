@@ -25,6 +25,8 @@ import { VoiceOrb } from "./voice-orb";
 import { useVoiceInput } from "./use-voice-input";
 import { useNews, timeAgo } from "./use-news";
 import { useEvents } from "./use-events";
+import { TimerWidget } from "./timer-widget";
+import { PhotoFrame } from "./photo-frame";
 
 interface StandbyViewProps {
   onActivate: (prefill?: string) => void;
@@ -40,7 +42,7 @@ function isWidgetOn(widgets: import("./widget-registry").WidgetConfig[], type: i
 export function StandbyView({ onActivate, nightActive }: StandbyViewProps) {
   const clock = useClock();
   const weather = useWeather();
-  const { strings, tempUnit, clockFormat, widgets, newsFeedUrl } = useHomeSettings();
+  const { strings, tempUnit, clockFormat, widgets, newsFeedUrl, lang } = useHomeSettings();
   const burnIn = useBurnInProtection();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const news = useNews(newsFeedUrl);
@@ -48,7 +50,7 @@ export function StandbyView({ onActivate, nightActive }: StandbyViewProps) {
 
   const voice = useVoiceInput({
     onResult: (text) => onActivate(text),
-    lang: strings === (undefined as never) ? "en-US" : undefined,
+    lang: lang === "zh" ? "zh-CN" : "en-US",
   });
 
   const handleOrbClick = useCallback(() => {
@@ -112,7 +114,7 @@ export function StandbyView({ onActivate, nightActive }: StandbyViewProps) {
 
   return (
     <div
-      className={`home-standby flex h-full w-full flex-col items-center justify-center select-none cursor-pointer ${
+      className={`home-standby flex h-full w-full flex-col items-center select-none cursor-pointer overflow-y-auto py-8 ${
         burnIn.dimmed ? "home-dimmed" : ""
       }`}
       onClick={handleClick}
@@ -356,6 +358,16 @@ export function StandbyView({ onActivate, nightActive }: StandbyViewProps) {
             </div>
           )}
         </div>
+      )}
+
+      {/* Timer widget — hidden in night mode or when disabled */}
+      {!nightActive && isWidgetOn(widgets, "timer") && (
+        <TimerWidget />
+      )}
+
+      {/* Photo frame — hidden in night mode or when disabled */}
+      {!nightActive && isWidgetOn(widgets, "photo-frame") && (
+        <PhotoFrame />
       )}
 
       {/* Settings panel */}

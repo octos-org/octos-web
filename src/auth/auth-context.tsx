@@ -69,7 +69,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [navigate, location.pathname]);
 
   const syncMe = useCallback(async () => {
-    const resp = await authApi.me();
+    let resp;
+    try {
+      resp = await authApi.me();
+    } catch (err) {
+      // /api/auth/me may not exist on older backends (returns 404).
+      // Don't treat a missing endpoint as an auth failure — keep the
+      // token alive. Genuine auth rejections (401/403) are already
+      // handled by the request() function's token reaper.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("404") || msg.includes("not_found")) {
+        return undefined;
+      }
+      throw err;
+    }
     setUser(resp.user);
     setPortal(resp.portal);
     const maybeProfileId = extractProfileIdFromPayload(resp);

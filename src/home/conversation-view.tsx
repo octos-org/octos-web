@@ -193,14 +193,31 @@ export function ConversationView({ onBack, prefill }: ConversationViewProps) {
   const [showScrollBtn, setShowScrollBtn] = useState(false);
 
   // ── Prefill from card action ────────────────────────────────────
+  // Non-empty prefill auto-sends (quick actions should fire immediately).
+  // Empty prefill just focuses the input.
   useEffect(() => {
-    if (prefill && prefill !== prefillAppliedRef.current) {
-      prefillAppliedRef.current = prefill;
-      setText(prefill);
-      requestAnimationFrame(() => {
-        textareaRef.current?.focus();
+    if (prefill === undefined || prefill === prefillAppliedRef.current) return;
+    prefillAppliedRef.current = prefill;
+
+    if (prefill) {
+      setSending(true);
+      prevThreadSnapshotRef.current = {
+        pendingCount: threads.filter((t: Thread) => t.pendingAssistant !== null).length,
+        responseCount: threads.reduce((sum: number, t: Thread) => sum + t.responses.length, 0),
+      };
+      bridgeSend({
+        sessionId: currentSessionId,
+        historyTopic,
+        text: prefill,
+        requestText: prefill,
+        media: [],
+        onSessionActive: (firstMsg) => markSessionActive(firstMsg),
+        onComplete: () => void refreshSessions(),
       });
+    } else {
+      requestAnimationFrame(() => textareaRef.current?.focus());
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot per prefill value
   }, [prefill]);
 
   const { strings, idleSeconds } = useHomeSettings();
@@ -222,14 +239,21 @@ export function ConversationView({ onBack, prefill }: ConversationViewProps) {
     resetIdle();
   }, [threads, resetIdle]);
 
-  // ── Fix #4: setSending(false) when thread state changes ─────────
+  // Detect thread changes to clear sending state; safety timeout
+  // ensures the send button recovers even if the bridge drops.
   const prevThreadSnapshotRef = useRef<{
     pendingCount: number;
     responseCount: number;
   }>({ pendingCount: 0, responseCount: 0 });
+  const sendTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
-    if (!sending) return;
+    if (!sending) {
+      clearTimeout(sendTimeoutRef.current);
+      return;
+    }
+
+    sendTimeoutRef.current = setTimeout(() => setSending(false), 15_000);
 
     const pendingCount = threads.filter(
       (t: Thread) => t.pendingAssistant !== null,
@@ -247,6 +271,7 @@ export function ConversationView({ onBack, prefill }: ConversationViewProps) {
       setSending(false);
     }
     prevThreadSnapshotRef.current = { pendingCount, responseCount };
+    return () => clearTimeout(sendTimeoutRef.current);
   }, [threads, sending]);
 
   // ── Scroll detection ────────────────────────────────────────────
