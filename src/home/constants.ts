@@ -54,6 +54,11 @@ export interface HomeStrings {
   settingsLanguage: string;
   settingsClose: string;
 
+  // Voice
+  voiceListening: string;
+  voiceNotSupported: string;
+  voiceError: string;
+
   // Suggestion prompts
   suggestions: readonly string[];
 }
@@ -119,6 +124,10 @@ export const HOME_I18N: Record<string, HomeStrings> = {
     settingsNightOff: "Off",
     settingsLanguage: "Language",
     settingsClose: "Close",
+
+    voiceListening: "Listening...",
+    voiceNotSupported: "Voice not supported",
+    voiceError: "Voice error",
 
     suggestions: [
       "What's the weather like today?",
@@ -188,6 +197,10 @@ export const HOME_I18N: Record<string, HomeStrings> = {
     settingsNightOff: "\u5173\u95ED",
     settingsLanguage: "\u8BED\u8A00",
     settingsClose: "\u5173\u95ED",
+
+    voiceListening: "\u6B63\u5728\u542C...",
+    voiceNotSupported: "\u8BED\u97F3\u4E0D\u652F\u6301",
+    voiceError: "\u8BED\u97F3\u9519\u8BEF",
 
     suggestions: [
       "\u4ECA\u5929\u5929\u6C14\u600E\u4E48\u6837\uFF1F",
