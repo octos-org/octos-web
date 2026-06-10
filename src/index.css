@@ -1001,6 +1001,118 @@ button, a, input, textarea {
   transform: scale(0.95);
 }
 
+/* ── Stop / Cancel button ────────────────────────── */
+.home-stop-button {
+  width: 52px;
+  height: 52px;
+  min-width: 44px;
+  min-height: 44px;
+  background: #dc2626;
+  border: none;
+  cursor: pointer;
+  border-radius: 12px;
+  transition: background 0.2s ease, transform 0.1s ease;
+}
+
+.home-stop-button:hover {
+  background: #b91c1c;
+}
+
+.home-stop-button:active {
+  transform: scale(0.95);
+}
+
+/* ── Thinking indicator (bouncing dots) ──────────── */
+@keyframes homeThinkingBounce {
+  0%, 80%, 100% {
+    transform: translateY(0) scale(0.7);
+    opacity: 0.35;
+  }
+  40% {
+    transform: translateY(-6px) scale(1);
+    opacity: 1;
+  }
+}
+
+.home-thinking-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.5);
+  animation: homeThinkingBounce 1.4s ease-in-out infinite;
+}
+
+/* ── Scroll-to-bottom button ─────────────────────── */
+.home-scroll-bottom {
+  position: sticky;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  z-index: 10;
+  transition: background 0.2s ease, transform 0.15s ease;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.home-scroll-bottom:hover {
+  background: rgba(255, 255, 255, 0.18);
+  transform: translateX(-50%) scale(1.05);
+}
+
+.home-scroll-bottom:active {
+  transform: translateX(-50%) scale(0.95);
+}
+
+/* ── File attachments ────────────────────────────── */
+.home-file-attachment {
+  max-width: 100%;
+}
+
+.home-audio-player {
+  max-width: 100%;
+  height: 44px;
+  border-radius: 10px;
+  filter: invert(1) hue-rotate(180deg);
+  opacity: 0.85;
+}
+
+.home-image-attachment {
+  max-height: 300px;
+  object-fit: contain;
+}
+
+.home-file-download {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.6);
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.home-file-download:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+/* ── Tool call indicator ─────────────────────────── */
+.home-tool-indicator {
+  padding: 2px 0;
+}
+
 /* ── Home bubble markdown (AI responses) ─────────── */
 /* Inherits .home-bubble-text sizing (1.25rem) and applies prose-like
    styling for readable markdown on the deep-dark home background. */
