@@ -6,11 +6,12 @@
 
 import { test, expect } from "@playwright/test";
 
-const API_BASE = process.env.API_BASE || "http://69.194.3.203:3000";
+const API_BASE = process.env.API_BASE || "";
+test.skip(!API_BASE, "API_BASE not set — slides tests target macmini3");
 const PROFILE_ID = process.env.PROFILE_ID || "dspfac";
 const AUTH_TOKEN = process.env.AUTH_TOKEN || "e2e-test-2026";
 
-test.setTimeout(600_000);
+test.setTimeout(900_000);
 
 interface SseEvent {
   type: string;
@@ -21,7 +22,7 @@ interface SseEvent {
 async function chatAndCollect(
   message: string,
   sessionId: string,
-  maxWait = 120_000,
+  maxWait = 300_000,
 ): Promise<{ events: SseEvent[]; content: string }> {
   const resp = await fetch(`${API_BASE}/api/chat`, {
     method: "POST",

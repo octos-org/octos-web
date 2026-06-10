@@ -565,6 +565,30 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+interface ProjectionEnvelope {
+  session_id?: string;
+  turn_id: string;
+  payload: {
+    type: string;
+    data: Record<string, unknown>;
+  };
+}
+
+function guardProjectionEnvelope(p: unknown): ProjectionEnvelope | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.turn_id)) return null;
+  if (!isPlainObject(p.payload)) return null;
+  if (typeof p.payload.type !== "string") return null;
+  return {
+    session_id: typeof p.session_id === "string" ? p.session_id : undefined,
+    turn_id: p.turn_id,
+    payload: {
+      type: p.payload.type,
+      data: isPlainObject(p.payload.data) ? p.payload.data : {},
+    },
+  };
+}
+
 function guardMessageDelta(p: unknown): MessageDeltaEvent | null {
   if (!isPlainObject(p)) return null;
   if (!isString(p.session_id) || !isString(p.turn_id)) return null;
@@ -1493,6 +1517,19 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     [METHODS.WARNING]: {
       guard: guardWarning,
       emit: (v) => this.subWarning.emit(v as WarningEvent),
+    },
+    "projection/envelope": {
+      guard: guardProjectionEnvelope,
+      emit: (v) => {
+        const env = v as ProjectionEnvelope;
+        if (env.payload?.type === "assistant_delta" && typeof env.payload.data?.text === "string") {
+          this.subMessageDelta.emit({
+            session_id: env.session_id ?? "",
+            turn_id: env.turn_id,
+            text: env.payload.data.text,
+          });
+        }
+      },
     },
     // Issue #113.2 (was M12 Phase D-3 TODO): the server emits
     // `session/title-updated` after a successful `session/title.set`,

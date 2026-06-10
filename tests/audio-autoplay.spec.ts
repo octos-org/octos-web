@@ -6,7 +6,7 @@
 
 import { test, expect } from "@playwright/test";
 
-const API_BASE = process.env.API_BASE || "https://crew.ominix.io";
+const API_BASE = process.env.BASE_URL || process.env.API_BASE || "https://crew.ominix.io";
 const AUTH_TOKEN = process.env.AUTH_TOKEN || "e2e-test-2026";
 
 test.setTimeout(300_000);

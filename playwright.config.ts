@@ -2,9 +2,9 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./tests",
-  timeout: 300_000, // 5 min per test (pipelines are slow)
+  timeout: 180_000,
   expect: { timeout: 30_000 },
-  fullyParallel: false, // tests share server state
+  fullyParallel: false,
   retries: 0,
   workers: 1,
   reporter: [["html", { open: "never" }], ["list"]],

@@ -1995,7 +1995,10 @@ export function finalizeAssistant(
 ): void {
   for (const state of sessionsByKey.values()) {
     const thread = state.byId.get(threadId);
-    if (!thread || !thread.pendingAssistant) continue;
+    if (!thread) continue;
+    if (!thread.pendingAssistant) {
+      continue;
+    }
 
     // Sweep any still-running tool calls to "complete" — the assistant
     // turn ended, so a tool whose explicit `tool_end` was suppressed or
