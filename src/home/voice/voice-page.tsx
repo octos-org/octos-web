@@ -23,7 +23,13 @@ import * as ThreadStore from "@/store/thread-store";
 import { VoiceView } from "./voice-view";
 
 const VOICE_SESSION_KEY = "octos_voice_session_id";
-const VOICE_HISTORY_TOPIC = "voice";
+// NB: intentionally NO history topic. Isolation comes from the dedicated
+// `voiceSessionId` alone. A topic would make the bridge subscribe on the
+// topic-suffixed key (`<id>#<topic>`), but the server broadcasts background
+// `file/attached` events (the streamed TTS reply audio) on the BASE session
+// key — so a topic-scoped subscription receives zero audio and the orb hangs
+// in "thinking". Staying topic-less keeps the subscription on the base key
+// where the reply audio is actually published.
 
 function generateSessionId(): string {
   return `voice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -41,16 +47,13 @@ export function VoicePage() {
     return id;
   }, []);
 
-  const { queueMode, adaptiveMode } = useModeState(
-    voiceSessionId,
-    VOICE_HISTORY_TOPIC,
-  );
+  const { queueMode, adaptiveMode } = useModeState(voiceSessionId);
 
   // Load this session's history on mount; retry when the bridge reconnects.
   useEffect(() => {
-    void ThreadStore.loadHistory(voiceSessionId, VOICE_HISTORY_TOPIC);
+    void ThreadStore.loadHistory(voiceSessionId);
     const onBridgeReady = () => {
-      void ThreadStore.loadHistory(voiceSessionId, VOICE_HISTORY_TOPIC, {
+      void ThreadStore.loadHistory(voiceSessionId, undefined, {
         force: true,
       });
     };
@@ -70,7 +73,7 @@ export function VoicePage() {
     () => ({
       sessions: [],
       currentSessionId: voiceSessionId,
-      historyTopic: VOICE_HISTORY_TOPIC,
+      historyTopic: "",
       currentSessionTitle: "Voice",
       currentSessionStats: null,
       initialMessages: [] as never[],
@@ -96,7 +99,6 @@ export function VoicePage() {
         <ScopedRuntimeBridge>
           <VoiceView
             sessionId={voiceSessionId}
-            historyTopic={VOICE_HISTORY_TOPIC}
             onBack={() => navigate("/")}
           />
         </ScopedRuntimeBridge>
