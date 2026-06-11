@@ -22,7 +22,7 @@ import { test, expect, type Page } from "@playwright/test";
 
 const BASE_URL = process.env.OCTOS_TEST_URL || "";
 const TOKEN = process.env.OCTOS_USER_TOKEN || "";
-const PROFILE = process.env.OCTOS_PROFILE || "dspfac";
+const PROFILE = process.env.OCTOS_PROFILE || "admin";
 
 test.describe("restore progress / cost / meta events", () => {
   test.skip(!BASE_URL || !TOKEN, "OCTOS_TEST_URL + OCTOS_USER_TOKEN required");

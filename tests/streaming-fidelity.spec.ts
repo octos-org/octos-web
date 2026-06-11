@@ -1,9 +1,10 @@
 import { test, expect } from "@playwright/test";
-import { login, sendAndWait, SEL } from "./helpers";
+import { login, sendAndWait, SEL, createNewSession } from "./helpers";
 
 test.describe("Streaming fidelity", () => {
   test.beforeEach(async ({ page }) => {
     await login(page);
+    await createNewSession(page);
   });
 
   test("response streams correctly and renders in assistant bubble", async ({ page }) => {
@@ -11,9 +12,8 @@ test.describe("Streaming fidelity", () => {
       label: "stream-test"
       });
 
-    if (result.timedOut || result.assistantBubbles === 0) return;
-    expect(result.responseLen).toBeGreaterThan(0);
     expect(result.assistantBubbles).toBe(1);
+    expect(result.responseLen).toBeGreaterThan(0);
     expect(result.userBubbles).toBe(1);
   });
 
@@ -24,8 +24,7 @@ test.describe("Streaming fidelity", () => {
       { label: "structure-test" },
     );
 
-    if (result.timedOut || result.assistantBubbles === 0) return;
-    expect(result.responseLen).toBeGreaterThan(0);
+    expect(result.assistantBubbles).toBeGreaterThan(0);
     expect(result.responseText.toLowerCase()).toContain("tokyo");
 
     const userBubbles = page.locator(SEL.userMessage);

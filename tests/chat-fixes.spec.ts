@@ -88,10 +88,7 @@ test("user messages appear after page reload", async ({ page }) => {
   const result = await sendAndWait(page, "hello, this is a test message", {
     label: "history-test"
   });
-  // GPT-5.5 reasoning can exceed 14 min; user message exists regardless
-  if (!result.timedOut) {
-    expect(result.assistantBubbles).toBeGreaterThan(0);
-  }
+  expect(result.assistantBubbles).toBeGreaterThan(0);
 
   const userCountBefore = await countUserBubbles(page);
   expect(userCountBefore).toBeGreaterThanOrEqual(1);
@@ -123,11 +120,8 @@ test("user messages appear after page reload", async ({ page }) => {
   const userCountAfter = await countUserBubbles(page);
   expect(userCountAfter).toBeGreaterThanOrEqual(1);
 
-  // Assistant messages should also be visible (if model responded before reload)
-  if (!result.timedOut) {
-    const assistantCountAfter = await countAssistantBubbles(page);
-    expect(assistantCountAfter).toBeGreaterThan(0);
-  }
+  const assistantCountAfter = await countAssistantBubbles(page);
+  expect(assistantCountAfter).toBeGreaterThan(0);
 });
 
 // ── File delivery merging ────────────────────────────────────────
@@ -141,10 +135,6 @@ test("file-only messages merge into preceding assistant bubble on reload", async
     "what is today's weather in San Francisco",
     { label: "file-merge" },
   );
-  if (result.timedOut) {
-    console.log("  [file-merge] GPT-5.5 thinking too long, skipping merge check");
-    return;
-  }
   expect(result.assistantBubbles).toBeGreaterThan(0);
 
   // Count bubbles before reload
@@ -180,6 +170,7 @@ test("file-only messages merge into preceding assistant bubble on reload", async
 // ── Background task with mofa_comic ──────────────────────────────
 
 test("background task shows status and delivers file", async ({ page }) => {
+  test.setTimeout(300_000);
   // Activate media tools first
   const result1 = await sendAndWait(
     page,
@@ -187,12 +178,9 @@ test("background task shows status and delivers file", async ({ page }) => {
     { label: "activate" },
   );
 
-  if (result1.timedOut || result1.assistantBubbles === 0) {
-    test.skip(true, "activate timed out or no response");
-    return;
-  }
+  expect(result1.assistantBubbles).toBeGreaterThan(0);
 
-  // Request a comic (xkcd style to avoid Gemini copyright blocks)
+  // Request a comic — this is a background task that may take minutes
   const input = getInput(page);
   const sendBtn = getSendButton(page);
   await input.fill(
@@ -200,19 +188,21 @@ test("background task shows status and delivers file", async ({ page }) => {
   );
   await sendBtn.click();
 
-  // Wait for agent to return (should be fast since mofa_comic is spawn_only)
-  await page.waitForTimeout(10_000);
-
-  // Agent should have completed with bg_tasks indicator
-  const assistantBubbles = await countAssistantBubbles(page);
-  if (assistantBubbles === 0) {
-    test.skip(true, "no assistant response for comic request");
-    return;
+  // Wait for agent to acknowledge the request (bg task spawned)
+  let acknowledged = false;
+  for (let i = 0; i < 30; i++) {
+    await page.waitForTimeout(5_000);
+    const bubbles = await countAssistantBubbles(page);
+    if (bubbles > 0) {
+      acknowledged = true;
+      break;
+    }
   }
+  expect(acknowledged).toBe(true);
 
-  // Wait up to 60s for file delivery (reduced from 180s to fit test timeout)
+  // Check for file delivery or task status (up to 120s)
   let fileFound = false;
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < 24; i++) {
     await page.waitForTimeout(5000);
 
     const imgs = await page.locator("img[alt]").count();
@@ -253,11 +243,6 @@ test("tool count should be 25 or fewer", async ({ page }) => {
   const result = await sendAndWait(page, "hello", {
     label: "tool-count"
   });
-  // Non-empty response proves tool count is manageable.
-  // Empty = GPT-5.5 thinking timeout or bridge drop — inconclusive, skip.
-  if (!result.timedOut && result.assistantBubbles > 0) {
-    expect(result.responseLen).toBeGreaterThan(0);
-  }
-  // If tool count is too high, models return empty responses
-  // A successful response means tool count is manageable
+  expect(result.assistantBubbles).toBeGreaterThan(0);
+  expect(result.responseLen).toBeGreaterThan(0);
 });

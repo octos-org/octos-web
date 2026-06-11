@@ -5,8 +5,8 @@ export default defineConfig({
   timeout: 180_000,
   expect: { timeout: 30_000 },
   fullyParallel: false,
-  retries: 0,
-  workers: 1,
+  retries: 1,
+  workers: 3,
   reporter: [["html", { open: "never" }], ["list"]],
   use: {
     baseURL: process.env.BASE_URL || "http://localhost:5174",

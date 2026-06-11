@@ -52,14 +52,15 @@ test.describe("Adaptive routing", () => {
     }
 
     await createNewSession(page);
-    const r = await sendAndWait(page, "What is the capital of France?", {
+    const r = await sendAndWait(page, "What is the capital of France? Answer in one word.", {
       label: "lane-msg",
       maxWait: 90_000
     });
-    if (!r.timedOut) {
-      expect(r.responseLen).toBeGreaterThan(0);
-      expect(r.responseText.toLowerCase()).toContain("paris");
-    }
+    expect(r.responseLen).toBeGreaterThan(0);
+    // LLM may use web_search tool — check all assistant bubble text combined
+    const allBubbles = await page.locator("[data-testid='assistant-message']").allTextContents();
+    const allText = allBubbles.join(" ").toLowerCase();
+    expect(allText).toContain("paris");
 
     if (!isDisabled) {
       const offRadio = page.locator("[role='radio']").filter({ hasText: "Off" });

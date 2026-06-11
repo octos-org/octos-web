@@ -26,12 +26,8 @@ test.describe("Deep research pipeline", () => {
     console.log(`  response length: ${result.responseLen} chars`);
     console.log(`  timed out: ${result.timedOut}`);
 
-    // Pipeline should produce some output — even on solo servers the LLM
-    // answers the question. We just verify content arrived.
-    // Bridge may drop during GPT-5.5 thinking — only assert if bubbles survived
-    if (result.assistantBubbles > 0) {
-      expect(result.responseLen).toBeGreaterThan(0);
-    }
+    expect(result.assistantBubbles).toBeGreaterThan(0);
+    expect(result.responseLen).toBeGreaterThan(0);
 
     await page.screenshot({
       path: "/tmp/octos-test-pipeline.png",

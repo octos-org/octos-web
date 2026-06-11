@@ -42,8 +42,8 @@ export function isThinkingContent(text: string): boolean {
 // ── Login ──────────────────────────────────────────────────────
 
 export async function login(page: Page) {
-  const profileId = process.env.PROFILE_ID || "dspfac";
-  const testEmail = process.env.TEST_EMAIL || "dspfac@gmail.com";
+  const profileId = process.env.PROFILE_ID || "admin";
+  const testEmail = process.env.TEST_EMAIL || "admin@localhost";
 
   // Obtain a real session token via static_tokens verify before seeding
   // localStorage. Session tokens work for both HTTP and WebSocket auth.
@@ -85,7 +85,7 @@ export async function login(page: Page) {
   // Check if we landed on chat
   const onChat = await page
     .locator(SEL.chatInput)
-    .isVisible({ timeout: 5_000 })
+    .isVisible({ timeout: 15_000 })
     .catch(() => false);
   if (onChat) return;
 
@@ -93,7 +93,7 @@ export async function login(page: Page) {
   await page.goto("/chat", { waitUntil: "networkidle" });
   const chatVisible = await page
     .locator(SEL.chatInput)
-    .isVisible({ timeout: 5_000 })
+    .isVisible({ timeout: 10_000 })
     .catch(() => false);
   if (chatVisible) return;
 
@@ -163,7 +163,7 @@ export async function login(page: Page) {
     await page.waitForTimeout(2000);
   }
 
-  await page.waitForSelector(SEL.chatInput, { timeout: 15_000 });
+  await page.waitForSelector(SEL.chatInput, { timeout: 30_000 });
 }
 
 // ── Input helpers ──────────────────────────────────────────────
@@ -262,7 +262,7 @@ export async function sendAndWait(
   message: string,
   opts: { maxWait?: number; label?: string; throwOnTimeout?: boolean } = {},
 ): Promise<SendResult> {
-  const { maxWait = 90_000, label = "", throwOnTimeout = false } = opts;
+  const { maxWait = 90_000, label = "", throwOnTimeout = true } = opts;
   const input = getInput(page);
   const sendBtn = getSendButton(page);
 
@@ -345,14 +345,6 @@ export async function sendAndWait(
   const lastBubble = page.locator(SEL.assistantMessage).last();
   const finalText =
     assistantBubbles > 0 ? await lastBubble.textContent() : "";
-
-  // Auto-skip on infrastructure failure (bridge drop or timeout)
-  if (!throwOnTimeout && (timedOut || assistantBubbles === 0)) {
-    const reason = timedOut
-      ? `Timed out (${(maxWait / 1000).toFixed(0)}s)`
-      : "WS bridge drop (0 bubbles)";
-    test.skip(true, `${reason} – "${message.slice(0, 60)}"`);
-  }
 
   return {
     totalBubbles: userBubbles + assistantBubbles,

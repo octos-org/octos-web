@@ -96,7 +96,7 @@ test.describe("TTS duplicate message detection", () => {
     const result = await sendAndWait(page, "用杨幂声音说：你好世界", {
       label: "tts-dup-test"
       });
-    test.skip(result.timedOut || result.assistantBubbles === 0, "Timeout or WS bridge drop");
+    expect(result.assistantBubbles).toBeGreaterThan(0);
     console.log(
       `  Response (${result.assistantBubbles} bubbles): "${result.responseText.slice(0, 80)}"`,
     );
@@ -177,7 +177,7 @@ test.describe("TTS duplicate message detection", () => {
     const ttsR = await sendAndWait(page, "用杨幂声音说：今天天气不错", {
       label: "tts-then-weather"
       });
-    test.skip(ttsR.timedOut || ttsR.assistantBubbles === 0, "Timeout or WS bridge drop");
+    expect(ttsR.assistantBubbles).toBeGreaterThan(0);
 
     // Wait a bit for background task to start
     await page.waitForTimeout(5000);
@@ -349,11 +349,7 @@ test.describe("TTS duplicate message detection", () => {
       };
     });
 
-    if (storeState.error) {
-      console.log(`  Store not accessible: ${storeState.error}`);
-      console.log("  (Skipping store-level duplicate check)");
-      test.skip(true, "Store not accessible for duplicate check");
-    }
+    expect(storeState.error).toBeUndefined();
 
     console.log(`  Session: ${storeState.sessionId}`);
     for (const m of storeState.messages) {
@@ -383,7 +379,6 @@ test.describe("TTS duplicate message detection", () => {
     if (assistantTexts.length !== uniqueTexts.size) {
       console.log("  DUPLICATE assistant texts found in store");
     }
-    // Allow file-delivery messages to share format, but flag exact duplicates
-    expect(assistantTexts.length).toBeLessThanOrEqual(uniqueTexts.size + 1);
+    expect(assistantTexts.length).toBe(uniqueTexts.size);
   });
 });

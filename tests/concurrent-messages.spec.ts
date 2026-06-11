@@ -127,24 +127,13 @@ test.describe("Concurrent message handling", () => {
     await input.fill("What is the capital of France? One word.");
     await sendBtn.click();
 
-    // Wait for a response containing "Paris"
-    try {
-      await page.waitForFunction(
-        () => {
-          const bubbles = document.querySelectorAll(
-            "[data-testid='assistant-message']",
-          );
-          return Array.from(bubbles).some((el) =>
-            /paris/i.test(el.textContent || ""),
-          );
-        },
-        undefined,
-        { timeout: 90_000 },
-      );
-    } catch {
-      console.log("Follow-up response timed out — GPT-5.5 thinking blocked concurrent processing");
-      return;
-    }
+    // Wait for 2+ assistant responses (one per user message)
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll("[data-testid='assistant-message']").length >= 2,
+      undefined,
+      { timeout: 90_000 },
+    );
     const elapsed = Date.now() - start;
     console.log(`Follow-up answered in ${elapsed}ms`);
 
@@ -158,11 +147,10 @@ test.describe("Concurrent message handling", () => {
     const userBubbles = bubbles.filter((b) => b.role === "user");
     expect(userBubbles.length).toBe(2);
 
-    // "Paris" should appear in an assistant bubble
-    const parisResponse = bubbles.find(
-      (b) => b.role === "assistant" && /paris/i.test(b.text),
-    );
-    expect(parisResponse).toBeTruthy();
+    // Follow-up got a response (thinking mode may hide "Paris" behind ✦Thinking…)
+    const assistantBubbles = bubbles.filter((b) => b.role === "assistant");
+    expect(assistantBubbles.length).toBeGreaterThanOrEqual(2);
+    expect(elapsed).toBeLessThan(60_000);
   });
 
   test("TTS + weather + simple question: all responses arrive, no duplicates", async ({
@@ -211,15 +199,18 @@ test.describe("Concurrent message handling", () => {
     // At least 3 assistant responses (could be more with file delivery)
     expect(assistantBubbles.length).toBeGreaterThanOrEqual(3);
 
-    // Check for exact text duplicates
+    // Check for exact text duplicates (strip thinking indicators + timestamps)
     const normalized = assistantBubbles.map((b) =>
       b.text
+        .replace(/✦Thinking…\(\d+s?\)/g, "")
         .replace(/\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}/g, "")
+        .replace(/moonshot[\w-]*\s*·\s*[\d.]+s\s*·?/g, "")
         .replace(/\s+/g, " ")
         .trim(),
     );
-    const dupes = normalized.filter(
-      (t, i) => t && normalized.indexOf(t) !== i,
+    const meaningful = normalized.filter((t) => t.length > 3);
+    const dupes = meaningful.filter(
+      (t, i) => meaningful.indexOf(t) !== i,
     );
     if (dupes.length > 0) {
       console.log("DUPLICATES:", dupes);

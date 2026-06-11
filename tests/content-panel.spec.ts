@@ -64,36 +64,16 @@ test("content panel opens and shows items", async ({ page }) => {
   await login(page);
   await page.waitForTimeout(3000);
 
-  // Click the panel toggle button
   const panelToggle = page.locator('button[title*="files panel"], button[title*="content"]');
-  const toggleVisible = await panelToggle.isVisible({ timeout: 5000 }).catch(() => false);
-  console.log("Panel toggle visible:", toggleVisible);
+  await expect(panelToggle).toBeVisible({ timeout: 5000 });
 
-  if (toggleVisible) {
-    await panelToggle.click();
-    await page.waitForTimeout(2000);
+  await panelToggle.click();
+  await page.waitForTimeout(2000);
 
-    // Check if content browser appeared
-    const contentHeader = page.locator('h2:has-text("Content")');
-    const headerVisible = await contentHeader.isVisible({ timeout: 3000 }).catch(() => false);
-    console.log("Content header visible:", headerVisible);
+  const contentHeader = page.locator('.shell-kicker:has-text("Session Files")');
+  await expect(contentHeader).toBeVisible({ timeout: 3000 });
 
-    // Check for loading spinner
-    const spinner = page.locator('.animate-spin');
-    const spinnerVisible = await spinner.isVisible({ timeout: 1000 }).catch(() => false);
-    console.log("Spinner visible:", spinnerVisible);
-
-    // Check for error message
-    const errorEl = page.locator('.text-red-400');
-    const errorVisible = await errorEl.isVisible({ timeout: 1000 }).catch(() => false);
-    if (errorVisible) {
-      const errorText = await errorEl.textContent();
-      console.log("ERROR displayed:", errorText);
-    }
-
-    // Check for content items
-    const items = page.locator('[class*="bg-surface-container"]');
-    const itemCount = await items.count();
-    console.log("Content items found:", itemCount);
-  }
+  const errorEl = page.locator('.text-red-400');
+  const errorVisible = await errorEl.isVisible({ timeout: 1000 }).catch(() => false);
+  expect(errorVisible).toBe(false);
 });

@@ -19,7 +19,7 @@ import { expect, test, type WebSocket } from "@playwright/test";
 
 const BASE_URL = process.env.BASE_URL || "https://dspfac.crew.ominix.io";
 const TOKEN = process.env.OCTOS_AUTH_TOKEN || process.env.AUTH_TOKEN || "octos-admin-2026";
-const PROFILE = process.env.OCTOS_PROFILE || process.env.PROFILE_ID || "dspfac";
+const PROFILE = process.env.OCTOS_PROFILE || process.env.PROFILE_ID || "admin";
 
 interface Frame {
   dir: "<" | ">";

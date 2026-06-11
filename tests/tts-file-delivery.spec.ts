@@ -49,8 +49,7 @@ test.describe("TTS file delivery", () => {
       });
 
     console.log(`Response: "${result.responseText.slice(0, 100)}"`);
-    if (result.timedOut || result.assistantBubbles === 0) return;
-    expect(result.responseLen).toBeGreaterThan(0);
+    expect(result.assistantBubbles).toBeGreaterThan(0);
 
     // Wait for background task to complete (up to 60s)
     console.log("Waiting for file delivery...");
@@ -105,8 +104,7 @@ test.describe("TTS file delivery", () => {
     const elapsed = Date.now() - start;
 
     console.log(`Response in ${elapsed}ms: "${result.responseText.slice(0, 100)}"`);
-    if (result.timedOut || result.assistantBubbles === 0) return;
-    expect(result.responseLen).toBeGreaterThan(0);
+    expect(result.assistantBubbles).toBeGreaterThan(0);
     // Should complete quickly (< 20s), not blocked by 120s SSE grace
     expect(elapsed).toBeLessThan(20_000);
   });

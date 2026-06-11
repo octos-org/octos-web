@@ -8,7 +8,7 @@ import { test, expect } from "@playwright/test";
 
 const API_BASE = process.env.API_BASE || "";
 test.skip(!API_BASE, "API_BASE not set — slides tests target macmini3");
-const PROFILE_ID = process.env.PROFILE_ID || "dspfac";
+const PROFILE_ID = process.env.PROFILE_ID || "admin";
 const AUTH_TOKEN = process.env.AUTH_TOKEN || "e2e-test-2026";
 
 test.setTimeout(900_000);
@@ -139,8 +139,8 @@ test("T2: agent writes script.js without generating", async () => {
   console.log("  [T2] mentions script:", mentions_script);
   console.log("  [T2] called mofa:", called_mofa);
 
-  // Design-first: wrote script, didn't generate
-  expect(content.length).toBeGreaterThan(50);
+  expect(mentions_script).toBe(true);
+  expect(called_mofa).toBe(false);
 });
 
 // ── Test 3: Explicit generate command triggers mofa_slides ──────

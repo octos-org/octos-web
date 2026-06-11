@@ -10,7 +10,7 @@ import { test, expect } from "@playwright/test";
 
 const API_BASE = process.env.API_BASE || "";
 test.skip(!API_BASE, "API_BASE not set — slides tests target macmini3");
-const PROFILE_ID = process.env.PROFILE_ID || "dspfac";
+const PROFILE_ID = process.env.PROFILE_ID || "admin";
 const AUTH_TOKEN = process.env.AUTH_TOKEN || "e2e-test-2026";
 
 test.setTimeout(1800_000); // 30 min — multiple LLM rounds

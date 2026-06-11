@@ -14,14 +14,19 @@ import {
   getSendButton,
   SEL,
   countUserBubbles,
-  countAssistantBubbles
+  countAssistantBubbles,
+  createNewSession
 } from "./helpers";
 
-// Use longer timeouts — slide generation takes minutes
-test.setTimeout(900_000); // 10 min per test
+// Skip if slides not available (same pattern as slides-api.spec.ts)
+const SLIDES_CMD = process.env.SLIDES_ENABLED === "1";
+test.skip(!SLIDES_CMD, "Slides /new command not available (set SLIDES_ENABLED=1)");
+
+test.setTimeout(120_000);
 
 test.beforeEach(async ({ page }) => {
   await login(page);
+  await createNewSession(page);
 });
 
 // ── Round 1: Create slides project ──────────────────────────────
@@ -29,66 +34,42 @@ test.beforeEach(async ({ page }) => {
 test("Round 1: /new slides creates project and agent follows design-first workflow", async ({
   page
 }) => {
-  // Step 1: Create slides project
-  const input = getInput(page);
-  await input.fill("/new slides ai-test-deck");
-  await page.keyboard.press("Enter");
-
-  // Wait for assistant to respond to /new command
-  try {
-    await page.waitForFunction(
-      () => document.querySelectorAll("[data-testid='assistant-message']").length > 0,
-      undefined,
-      { timeout: 90_000 },
-    );
-  } catch {
-    test.skip(true, "waitForFunction timed out — no assistant response");
+  // Step 1: Create slides project via /new command
+  const newResult = await sendAndWait(page, "/new slides ai-test-deck", {
+    label: "new-slides",
+    maxWait: 30_000,
+    throwOnTimeout: false,
+  });
+  // /new may produce a cmd-feedback or an assistant bubble
+  await page.waitForTimeout(3000);
+  const cmdFeedback = await page.locator(SEL.cmdFeedback).textContent().catch(() => "");
+  const assistantText = await page.locator(SEL.assistantMessage).last().textContent().catch(() => "");
+  const anyResponse = (cmdFeedback || "").length > 0 || (assistantText || "").length > 0;
+  console.log("  [slides] /new feedback:", (cmdFeedback || "").slice(0, 100));
+  console.log("  [slides] /new assistant:", (assistantText || "").slice(0, 100));
+  if (!anyResponse) {
+    test.skip(true, "/new slides command not supported on this server");
+    return;
   }
-  await page.waitForTimeout(2000);
-
-  const assistantBubbles = await countAssistantBubbles(page);
-  test.skip(!assistantBubbles, "No assistant bubbles — WS bridge drop");
-
-  const lastBubble = page.locator(SEL.assistantMessage).last();
-  const responseText = (await lastBubble.textContent()) || "";
-  console.log("  [slides] /new response:", responseText.slice(0, 200));
-
-  // /new command may produce empty or non-LLM response (timestamp, stub, etc.)
-  const hasKeywords =
-    responseText.toLowerCase().includes("slides") ||
-    responseText.toLowerCase().includes("project") ||
-    responseText.toLowerCase().includes("created");
-  test.skip(!hasKeywords, `/new response not meaningful LLM text: "${responseText.slice(0, 80)}"`);
-  expect(hasKeywords).toBe(true);
 
   // Step 2: Describe what we want — agent should write JS, NOT generate yet
   const result = await sendAndWait(
     page,
     "Make a 3-slide deck about AI in healthcare. Style: nb-pro. Slides: 1) Cover with title, 2) Key benefits, 3) Future outlook. Write the script.js first, do NOT generate yet.",
-    { label: "design" },
+    { label: "design", maxWait: 120_000 },
   );
-  test.skip(result.timedOut || result.assistantBubbles === 0, "Timeout or WS bridge drop");
+  expect(result.assistantBubbles).toBeGreaterThan(0);
 
   console.log("  [slides] design response length:", result.responseLen);
   console.log("  [slides] design response:", result.responseText.slice(0, 300));
 
-  // Agent should have written script.js (mentions write_file or script.js)
-  // and should NOT have called mofa_slides yet
-  const mentions_script = result.responseText.includes("script.js") ||
-    result.responseText.includes("write_file") ||
-    result.responseText.includes("JS");
-  const mentions_generate = result.responseText.includes("mofa_slides") ||
-    result.responseText.includes("generating") ||
-    result.responseText.includes("生成中");
-
-  console.log("  [slides] mentions script:", mentions_script);
-  console.log("  [slides] mentions generate:", mentions_generate);
-
-  // Design-first: should write script, should NOT generate.
-  // Skip if the LLM gave a stub response (DeepSeek sometimes
-  // returns a minimal ack before the real content arrives).
-  test.skip(result.responseLen < 50, "LLM stub response — too short to validate workflow");
-  expect(mentions_script || result.responseLen > 100).toBe(true);
+  // LLM should acknowledge the request — may mention script, write, file, etc.
+  const allBubbles = await page.locator("[data-testid='assistant-message']").allTextContents();
+  const allText = allBubbles.join(" ");
+  const mentions_workflow = allText.includes("script") ||
+    allText.includes("write") || allText.includes("file") ||
+    allText.includes("JS") || allText.includes("slide");
+  expect(mentions_workflow).toBe(true);
 });
 
 // ── Round 2: Review and modify before generating ────────────────
@@ -99,15 +80,11 @@ test("Round 2: modify slide content before generating", async ({ page }) => {
   const input = getInput(page);
   await input.fill("/new slides update-test");
   await page.keyboard.press("Enter");
-  try {
-    await page.waitForFunction(
-      () => document.querySelectorAll("[data-testid='assistant-message']").length > 0,
-      undefined,
-      { timeout: 90_000 },
-    );
-  } catch {
-    test.skip(true, "waitForFunction timed out — no assistant response");
-  }
+  await page.waitForFunction(
+    () => document.querySelectorAll("[data-testid='assistant-message']").length > 0,
+    undefined,
+    { timeout: 90_000 },
+  );
   await page.waitForTimeout(2000);
 
   // Create initial 3-slide deck
@@ -116,7 +93,7 @@ test("Round 2: modify slide content before generating", async ({ page }) => {
     "Make a 3-slide deck about quantum computing. Style: nb-pro. Write script.js only, do NOT generate.",
     { label: "create" },
   );
-  test.skip(result1.timedOut || result1.assistantBubbles === 0, "Timeout or WS bridge drop");
+  expect(result1.assistantBubbles).toBeGreaterThan(0);
   console.log("  [update] initial response:", result1.responseLen, "chars");
 
   // Now ask to modify slide 2
@@ -127,13 +104,13 @@ test("Round 2: modify slide content before generating", async ({ page }) => {
   );
   console.log("  [update] modify response:", result2.responseText.slice(0, 200));
 
-  // Should mention editing/updating, not recreating
-  const mentions_edit = result2.responseText.includes("edit") ||
-    result2.responseText.includes("update") ||
-    result2.responseText.includes("修改") ||
-    result2.responseText.includes("changed") ||
-    result2.responseText.includes("slide 2");
-  console.log("  [update] mentions edit:", mentions_edit);
+  const allText2 = (await page.locator("[data-testid='assistant-message']").allTextContents()).join(" ");
+  expect(
+    allText2.includes("edit") || allText2.includes("update") ||
+    allText2.includes("修改") || allText2.includes("changed") ||
+    allText2.includes("slide") || allText2.includes("script") ||
+    allText2.includes("quantum") || allText2.includes("write"),
+  ).toBe(true);
 });
 
 // ── Round 3: Generate PPTX ──────────────────────────────────────
@@ -142,15 +119,11 @@ test("Round 3: generate PPTX on explicit command", async ({ page }) => {
   const input = getInput(page);
   await input.fill("/new slides gen-test");
   await page.keyboard.press("Enter");
-  try {
-    await page.waitForFunction(
-      () => document.querySelectorAll("[data-testid='assistant-message']").length > 0,
-      undefined,
-      { timeout: 90_000 },
-    );
-  } catch {
-    test.skip(true, "waitForFunction timed out — no assistant response");
-  }
+  await page.waitForFunction(
+    () => document.querySelectorAll("[data-testid='assistant-message']").length > 0,
+    undefined,
+    { timeout: 90_000 },
+  );
   await page.waitForTimeout(2000);
 
   // Create a minimal 2-slide deck
@@ -166,12 +139,10 @@ test("Round 3: generate PPTX on explicit command", async ({ page }) => {
   await getSendButton(page).click();
 
   // Wait for mofa_slides to complete (spawn_only, background task)
-  // Look for task status indicator or file attachment
   let generated = false;
   for (let i = 0; i < 60; i++) {
     await page.waitForTimeout(5000);
 
-    // Check for file attachment (pptx link or download)
     const fileLinks = await page.locator("a[href*='api/files'], a[download]").count();
     if (fileLinks > 0) {
       generated = true;
@@ -179,13 +150,11 @@ test("Round 3: generate PPTX on explicit command", async ({ page }) => {
       break;
     }
 
-    // Check for task status
     const taskPill = await page.locator("text=mofa_slides").isVisible().catch(() => false);
     if (taskPill) {
       console.log(`  [gen] task status visible at ${i * 5}s`);
     }
 
-    // Check for completion message
     const lastBubble = page.locator(SEL.assistantMessage).last();
     const text = (await lastBubble.textContent()) || "";
     if (text.includes(".pptx") || text.includes("generated") || text.includes("完成")) {
@@ -195,8 +164,7 @@ test("Round 3: generate PPTX on explicit command", async ({ page }) => {
     }
   }
 
-  console.log(`  [gen] PPTX generated: ${generated}`);
-  // Note: may fail if GEMINI_API_KEY quota exceeded — that's expected
+  expect(generated).toBe(true);
 });
 
 // ── Round 4: Incremental update (delete PNG + regenerate) ───────
@@ -207,29 +175,25 @@ test("Round 4: incremental update deletes only changed slide PNG", async ({
   const input = getInput(page);
   await input.fill("/new slides delta-test");
   await page.keyboard.press("Enter");
-  try {
-    await page.waitForFunction(
-      () => document.querySelectorAll("[data-testid='assistant-message']").length > 0,
-      undefined,
-      { timeout: 90_000 },
-    );
-  } catch {
-    test.skip(true, "waitForFunction timed out — no assistant response");
-  }
+  await page.waitForFunction(
+    () => document.querySelectorAll("[data-testid='assistant-message']").length > 0,
+    undefined,
+    { timeout: 90_000 },
+  );
   await page.waitForTimeout(2000);
 
   // Create and generate a 2-slide deck
   await sendAndWait(
     page,
     "Make a 2-slide deck: 1) Title 'Delta Test', 2) Content 'Original'. Style nb-pro. Write script.js.",
-    { label: "create" },
+    { label: "create", maxWait: 120_000 },
   );
 
   // Generate initial PPTX
   const genResult = await sendAndWait(
     page,
     "generate pptx",
-    { label: "gen1" },
+    { label: "gen1", maxWait: 180_000, throwOnTimeout: false },
   );
   console.log("  [delta] initial gen:", genResult.responseText.slice(0, 100));
 
@@ -237,19 +201,15 @@ test("Round 4: incremental update deletes only changed slide PNG", async ({
   const updateResult = await sendAndWait(
     page,
     "Update slide 2 content to 'Updated Content 2026'. Delete only slide-02.png, then regenerate.",
-    { label: "update" },
+    { label: "update", maxWait: 180_000, throwOnTimeout: false },
   );
   console.log("  [delta] update response:", updateResult.responseText.slice(0, 200));
 
-  // Check that the response mentions:
-  // - editing script.js (not recreating)
-  // - deleting slide-02.png (not all PNGs)
-  // - regenerating (calling mofa_slides)
-  const text = updateResult.responseText.toLowerCase();
-  const correct_workflow =
-    (text.includes("slide-02") || text.includes("slide 2")) &&
-    (text.includes("rm") || text.includes("delete") || text.includes("删除"));
-  console.log("  [delta] follows incremental workflow:", correct_workflow);
+  const allUpdateText = (await page.locator("[data-testid='assistant-message']").allTextContents()).join(" ").toLowerCase();
+  const followsWorkflow =
+    (allUpdateText.includes("slide") || allUpdateText.includes("update") || allUpdateText.includes("change")) &&
+    allUpdateText.length > 20;
+  expect(followsWorkflow).toBe(true);
 });
 
 // ── Slash commands work ─────────────────────────────────────────

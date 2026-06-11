@@ -73,7 +73,7 @@ test.describe("Live long-task smoke", () => {
       label: "live-deep-research"
     });
 
-    if (result.timedOut || result.assistantBubbles === 0) return;
+    expect(result.assistantBubbles).toBeGreaterThan(0);
     expect(result.responseLen).toBeGreaterThan(0);
 
     await page.reload({ waitUntil: "networkidle" });
