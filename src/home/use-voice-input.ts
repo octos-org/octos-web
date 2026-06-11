@@ -67,7 +67,9 @@ export interface VoiceInputOptions {
 const SILENCE_TIMEOUT = 10_000;
 
 export function useVoiceInput(options: VoiceInputOptions): VoiceInputState {
-  const { onResult, lang = "en-US" } = options;
+  // `onResult` is read via `optionsRef.current` (kept fresh below), not the
+  // destructured value — so it isn't pulled out here.
+  const { lang = "en-US" } = options;
   const [orbState, setOrbState] = useState<OrbState>("idle");
   const [transcript, setTranscript] = useState("");
   const [isSupported] = useState(() => getSpeechRecognition() !== null);

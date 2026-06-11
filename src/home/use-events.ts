@@ -61,8 +61,32 @@ function subscribe(cb: () => void) {
   };
 }
 
+// Cache the snapshot by raw localStorage string so the returned reference is
+// stable across renders when the stored data hasn't changed. `readEvents()`
+// parses JSON into a fresh array every call; handing that straight to
+// `useSyncExternalStore` made `getSnapshot` return a new reference each render
+// → "getSnapshot should be cached" → infinite re-render loop (Maximum update
+// depth). Recompute only when the underlying raw string actually changes.
+let snapshotRaw: string | null | undefined;
+let snapshotValue: CalendarEvent[] = [];
+
 function getSnapshot(): CalendarEvent[] {
-  return readEvents();
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(LS_KEY);
+  } catch {
+    raw = null;
+  }
+  if (raw !== snapshotRaw) {
+    snapshotRaw = raw;
+    try {
+      const parsed = raw ? JSON.parse(raw) : [];
+      snapshotValue = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      snapshotValue = [];
+    }
+  }
+  return snapshotValue;
 }
 
 // ── Date helpers ────────────────────────────────────────────────
