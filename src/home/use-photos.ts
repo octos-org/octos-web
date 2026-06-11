@@ -32,6 +32,28 @@ function writePhotos(urls: string[]) {
   emit();
 }
 
+// Cache the snapshot by raw localStorage string so the returned reference is
+// stable across renders when the data hasn't changed. Passing `readPhotos`
+// (a fresh array every call) straight to `useSyncExternalStore` returned a new
+// reference each render → "getSnapshot should be cached" → infinite re-render
+// loop (Maximum update depth) → /home crash. Recompute only on real change.
+let snapshotRaw: string | null | undefined;
+let snapshotValue: string[] = [];
+
+function getPhotosSnapshot(): string[] {
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(LS_KEY);
+  } catch {
+    raw = null;
+  }
+  if (raw !== snapshotRaw) {
+    snapshotRaw = raw;
+    snapshotValue = readPhotos();
+  }
+  return snapshotValue;
+}
+
 function subscribe(cb: () => void) {
   listeners.push(cb);
   return () => {
@@ -40,7 +62,11 @@ function subscribe(cb: () => void) {
 }
 
 export function usePhotos() {
-  const photos = useSyncExternalStore(subscribe, readPhotos, readPhotos);
+  const photos = useSyncExternalStore(
+    subscribe,
+    getPhotosSnapshot,
+    getPhotosSnapshot,
+  );
   const [index, setIndex] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
