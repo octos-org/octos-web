@@ -84,6 +84,12 @@ export function useVoiceConversation(
   const captureError = capture.error;
   const [state, setState] = useState<VoiceState>("idle");
   const [lastAssistantText, setLastAssistantText] = useState("");
+  // True once the user has actually spoken a turn THIS session. Gates the
+  // on-screen question text so loaded history (which arrives asynchronously
+  // after mount) never surfaces the PREVIOUS session's last question on a
+  // fresh entry/refresh. A state (not a thread-count baseline) so it's immune
+  // to the history-load race.
+  const [spokeThisSession, setSpokeThisSession] = useState(false);
 
   const playedPathsRef = useRef<Set<string>>(new Set());
   const replyTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -92,9 +98,6 @@ export function useVoiceConversation(
   // Latest threads, for reading inside stable callbacks without churning deps.
   const threadsRef = useRef(threads);
   threadsRef.current = threads;
-  // Thread count when this voice session started; used to suppress showing the
-  // PREVIOUS turn's question/answer until a new turn happens this session.
-  const turnBaselineRef = useRef(0);
 
   // Sentence-streamed reply audio: a FIFO queue of workspace-relative paths to
   // play in order, a "currently playing" flag, and a grace timer used to wait
@@ -121,6 +124,8 @@ export function useVoiceConversation(
       if (stateRef.current !== "listening") return;
       captureStop();
       setState("thinking");
+      // The user has now spoken this session → their question may be shown.
+      setSpokeThisSession(true);
       void (async () => {
         try {
           const file = new File([wav], "utterance.wav", { type: "audio/wav" });
@@ -221,7 +226,7 @@ export function useVoiceConversation(
     playedPathsRef.current = new Set(
       collectFreshAudio(threadsRef.current, new Set()).map((a) => a.path),
     );
-    turnBaselineRef.current = threadsRef.current.length;
+    setSpokeThisSession(false);
     setLastAssistantText("");
     audioQueueRef.current = [];
     playingRef.current = false;
@@ -288,7 +293,7 @@ export function useVoiceConversation(
   useEffect(() => () => stopRef.current(), []);
 
   const lastUserText =
-    threads.length > turnBaselineRef.current
+    spokeThisSession && threads.length > 0
       ? (threads[threads.length - 1].userMsg?.text ?? "")
       : "";
 
