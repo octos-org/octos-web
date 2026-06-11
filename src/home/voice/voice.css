@@ -1,0 +1,24 @@
+.voice-orb { position: relative; width: 160px; height: 160px;
+  display: flex; align-items: center; justify-content: center; }
+.voice-orb-core { width: 120px; height: 120px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #8fd3ff, #4f7cff 45%, #7a4dff 80%);
+  box-shadow: 0 0 60px 6px rgba(90,120,255,.55), inset 0 0 30px rgba(255,255,255,.25);
+  transition: all .4s ease; }
+.voice-orb-ring { position: absolute; border-radius: 50%;
+  border: 2px solid rgba(120,150,255,.35); opacity: 0; }
+.voice-orb.is-idle .voice-orb-core { width: 90px; height: 90px;
+  filter: saturate(.6) brightness(.8); animation: vo-breathe 4s ease-in-out infinite; }
+.voice-orb.is-listening .voice-orb-core { animation: vo-breathe 1.4s ease-in-out infinite; }
+.voice-orb.is-listening .voice-orb-ring { animation: vo-ripple 1.6s ease-out infinite; }
+.voice-orb.is-listening .voice-orb-ring.r2 { animation-delay: .6s; }
+.voice-orb.is-thinking .voice-orb-core {
+  background: conic-gradient(from 0deg, #4f7cff, #7a4dff, #8fd3ff, #4f7cff);
+  animation: vo-spin 1.1s linear infinite, vo-breathe 2s ease-in-out infinite; }
+.voice-orb.is-speaking .voice-orb-core { animation: vo-talk .45s ease-in-out infinite; }
+.voice-orb.is-error .voice-orb-core {
+  background: radial-gradient(circle at 35% 30%, #ffb3b3, #ff5a5a 60%, #b02a2a);
+  box-shadow: 0 0 50px 4px rgba(255,80,80,.5); }
+@keyframes vo-breathe { 0%,100%{transform:scale(1)} 50%{transform:scale(1.08)} }
+@keyframes vo-talk { 0%,100%{transform:scale(1)} 25%{transform:scale(1.14)} 60%{transform:scale(.95)} }
+@keyframes vo-spin { to { transform: rotate(360deg) } }
+@keyframes vo-ripple { 0%{width:120px;height:120px;opacity:.55} 100%{width:230px;height:230px;opacity:0} }

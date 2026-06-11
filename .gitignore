@@ -32,3 +32,6 @@ research/
 !README.md
 !book/**/*.md
 book/build/
+
+# Generated VAD runtime assets (copy-vad-assets.mjs)
+public/vad/
