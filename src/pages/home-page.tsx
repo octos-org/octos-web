@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import { HomeNav } from "@/components/home-nav";
 import { MessageSquare, ArrowRight, Presentation, Globe, MonitorSmartphone, Mic } from "lucide-react";
+import { unlockAudio } from "@/home/voice/audio-playback";
 
 export function HomePage() {
   const navigate = useNavigate();
@@ -74,7 +75,13 @@ export function HomePage() {
           {/* Voice assistant promo */}
           <div className="mb-10">
             <button
-              onClick={() => navigate("/voice")}
+              onClick={() => {
+                // Unlock the Web Audio context INSIDE this click gesture so the
+                // voice reply (which arrives seconds later, off-gesture) can
+                // play — browser autoplay policy blocks a later resume().
+                unlockAudio();
+                navigate("/voice");
+              }}
               className="flex w-full items-center gap-4 rounded-2xl bg-surface-container p-6 text-left hover:bg-surface-elevated elevation-1 transition-all"
             >
               <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-sky-500/10 text-sky-500">

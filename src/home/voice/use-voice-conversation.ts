@@ -161,11 +161,17 @@ export function useVoiceConversation(
         const blob = await resp.blob();
         setState("speaking");
         // Play through the autoplay-unlocked AudioContext (see audio-playback.ts);
-        // resolve when playback ends (or fails to start).
+        // resolve when playback ends, fails to start, OR decode/start throws —
+        // otherwise a single bad clip wedges the queue in "speaking" forever.
         await new Promise<void>((resolve) => {
-          void playAudioBlob(blob, () => resolve()).then((started) => {
-            if (!started) resolve();
-          });
+          playAudioBlob(blob, () => resolve())
+            .then((started) => {
+              if (!started) resolve();
+            })
+            .catch((e) => {
+              console.error("[voice] reply playback failed", e);
+              resolve();
+            });
         });
       } catch (e) {
         console.error("[voice] reply playback failed", e);
