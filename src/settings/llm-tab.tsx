@@ -67,6 +67,7 @@ function resolveProviderFromProfile(familyId: string): LlmProvider | undefined {
 function profileToForm(profile: Profile): LlmFormState {
   const familyId = profile.config.llm.primary.family_id ?? "";
   const knownProvider = resolveProviderFromProfile(familyId);
+  const primaryRoute = profile.config.llm.primary.route;
 
   const rawRouting = profile.config.adaptive_routing;
   const adaptiveEnabled =
@@ -79,7 +80,7 @@ function profileToForm(profile: Profile): LlmFormState {
     model_id: knownProvider ? (profile.config.llm.primary.model_id ?? "") : "",
     custom_family_id: knownProvider ? "" : familyId,
     custom_model_id: knownProvider ? "" : (profile.config.llm.primary.model_id ?? ""),
-    base_url: "",
+    base_url: primaryRoute?.base_url ?? knownProvider?.defaultBaseUrl ?? "",
     system_prompt: profile.config.gateway.system_prompt ?? "",
     max_output_tokens:
       profile.config.gateway.max_output_tokens != null
@@ -137,6 +138,7 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [testStatus, setTestStatus] = useState<TestStatus>("idle");
+  const [testMessage, setTestMessage] = useState<string | null>(null);
 
   const isDirty = JSON.stringify(form) !== JSON.stringify(original);
   const isCustom = form.family_id === "__custom_family__";
@@ -172,22 +174,40 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
 
   /* ── Test Connection ── */
   const handleTestConnection = async () => {
-    if (!effectiveFamilyId) return;
+    if (!effectiveFamilyId || !effectiveModelId) return;
     setTestStatus("testing");
+    setTestMessage(null);
     try {
       const envKey = selectedProvider?.envKey || "";
-      await request<{ ok: boolean }>("/api/my/test-provider", {
+      const baseUrl = needsBaseUrl
+        ? form.base_url.trim()
+        : selectedProvider?.defaultBaseUrl;
+      const resp = await request<{ ok: boolean; message?: string; error?: string }>("/api/my/test-provider", {
         method: "POST",
         body: JSON.stringify({
           provider: effectiveFamilyId,
+          model: effectiveModelId,
           api_key_env: envKey || undefined,
+          api_key: envKey ? undefined : "not-required",
+          base_url: baseUrl || undefined,
+          profile_id: profile.id,
         }),
       });
-      setTestStatus("connected");
+      if (resp.ok) {
+        setTestStatus("connected");
+        setTestMessage(resp.message || "Connected");
+      } else {
+        setTestStatus("failed");
+        setTestMessage(resp.error || resp.message || "Connection failed");
+      }
     } catch {
       setTestStatus("failed");
+      setTestMessage("Connection test endpoint unavailable");
     }
-    setTimeout(() => setTestStatus("idle"), 4000);
+    setTimeout(() => {
+      setTestStatus("idle");
+      setTestMessage(null);
+    }, 4000);
   };
 
   /* ── Save ── */
@@ -198,6 +218,10 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
     const fallbacksPayload: LlmPrimary[] = form.fallbacks
       .filter((f) => f.family_id.trim())
       .map((f) => ({ family_id: f.family_id.trim(), model_id: f.model_id.trim() }));
+    const primaryRoute = {
+      api_key_env: selectedProvider?.envKey || null,
+      base_url: needsBaseUrl ? form.base_url.trim() || null : null,
+    };
 
     const result = await updateMyProfile({
       config: {
@@ -205,6 +229,7 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
           primary: {
             family_id: effectiveFamilyId,
             model_id: effectiveModelId,
+            route: primaryRoute.api_key_env || primaryRoute.base_url ? primaryRoute : null,
           },
           fallbacks: fallbacksPayload,
         },
@@ -387,13 +412,13 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
               {testStatus === "connected" && (
                 <span className="flex items-center gap-1.5 text-xs font-medium text-green-400">
                   <CheckCircle2 size={14} />
-                  Connected
+                  {testMessage || "Connected"}
                 </span>
               )}
               {testStatus === "failed" && (
                 <span className="flex items-center gap-1.5 text-xs font-medium text-red-400">
                   <XCircle size={14} />
-                  Connection failed
+                  {testMessage || "Connection failed"}
                 </span>
               )}
             </div>

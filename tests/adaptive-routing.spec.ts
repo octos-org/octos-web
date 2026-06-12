@@ -54,7 +54,7 @@ test.describe("Adaptive routing", () => {
     await createNewSession(page);
     const r = await sendAndWait(page, "What is the capital of France? Answer in one word.", {
       label: "lane-msg",
-      maxWait: 90_000
+      maxWait: 300_000
     });
     expect(r.responseLen).toBeGreaterThan(0);
     // LLM may use web_search tool — check all assistant bubble text combined

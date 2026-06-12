@@ -700,12 +700,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const onBridgeReady = () => {
       void refreshSessions();
+      void ThreadStore.loadHistory(currentSessionId, activeHistoryTopic, {
+        force: true,
+      });
     };
     window.addEventListener("crew:bridge_connected", onBridgeReady);
     return () => {
       window.removeEventListener("crew:bridge_connected", onBridgeReady);
     };
-  }, [refreshSessions]);
+  }, [
+    activeHistoryTopic,
+    currentSessionId,
+    refreshSessions,
+  ]);
 
   useEffect(() => {
     const refreshIfVisible = () => {

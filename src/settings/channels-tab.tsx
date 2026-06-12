@@ -25,7 +25,6 @@ const CHANNEL_TYPES = [
   "whatsapp",
   "email",
   "feishu",
-  "line",
   "wechat",
   "wecom-bot",
   "qq-bot",
@@ -40,24 +39,21 @@ interface ChannelConfig {
   webhook_port?: number;
   allowed_senders?: string;
   require_mention?: boolean;
-  app_id?: string;
+  app_id_env?: string;
   app_secret_env?: string;
-  verification_token?: string;
-  encrypt_key?: string;
+  verification_token_env?: string;
+  encrypt_key_env?: string;
   region?: "china" | "global";
-  channel_secret_env?: string;
-  channel_access_token_env?: string;
   smtp_host?: string;
   smtp_port?: number;
-  smtp_username?: string;
-  smtp_password_env?: string;
-  from_address?: string;
+  username_env?: string;
+  password_env?: string;
+  bot_id?: string;
+  app_id?: string;
   secret_env?: string;
   client_secret_env?: string;
-  // WhatsApp-specific
   bridge_url?: string;
-  phone_number?: string;
-  api_token?: string;
+  base_url?: string;
 }
 
 // ── Default field values per channel type ──
@@ -67,21 +63,26 @@ function defaultsForType(type: ChannelType): Partial<ChannelConfig> {
     case "telegram":
       return { token_env: "TELEGRAM_BOT_TOKEN", allowed_senders: "" };
     case "discord":
-      return { token_env: "DISCORD_BOT_TOKEN", allowed_senders: "" };
+      return { token_env: "DISCORD_BOT_TOKEN" };
     case "whatsapp":
-      return { mode: "managed", phone_number: "", api_token: "WHATSAPP_API_TOKEN", bridge_url: "" };
+      return { bridge_url: "" };
     case "email":
-      return { smtp_host: "", smtp_port: 587, smtp_username: "", smtp_password_env: "", from_address: "" };
+      return { smtp_host: "", smtp_port: 587, username_env: "EMAIL_USERNAME", password_env: "EMAIL_PASSWORD" };
     case "feishu":
-      return { app_id: "", app_secret_env: "", verification_token: "", encrypt_key: "", region: "china" };
-    case "line":
-      return { channel_secret_env: "", channel_access_token_env: "" };
+      return {
+        app_id_env: "FEISHU_APP_ID",
+        app_secret_env: "FEISHU_APP_SECRET",
+        verification_token_env: "",
+        encrypt_key_env: "",
+        mode: "webhook",
+        region: "china",
+      };
     case "wechat":
-      return { token_env: "WECHAT_BOT_TOKEN" };
+      return { token_env: "WECHAT_BOT_TOKEN", base_url: "https://api.weixin.qq.com/cgi-bin" };
     case "wecom-bot":
-      return { secret_env: "WECOM_BOT_SECRET" };
+      return { bot_id: "", secret_env: "WECOM_BOT_SECRET" };
     case "qq-bot":
-      return { client_secret_env: "QQ_BOT_CLIENT_SECRET" };
+      return { app_id: "", client_secret_env: "QQ_BOT_CLIENT_SECRET" };
   }
 }
 
@@ -94,7 +95,6 @@ function channelLabel(type: string): string {
     whatsapp: "WhatsApp",
     email: "Email (SMTP)",
     feishu: "Feishu (Lark)",
-    line: "LINE",
     wechat: "WeChat",
     "wecom-bot": "WeCom Bot",
     "qq-bot": "QQ Bot",
@@ -105,16 +105,16 @@ function channelLabel(type: string): string {
 // ── Webhook URL helpers ──
 
 /** Channel types that receive inbound events via webhook. */
-const WEBHOOK_CHANNEL_TYPES = new Set(["line", "feishu"]);
+const WEBHOOK_CHANNEL_TYPES = new Set(["feishu"]);
 
 function usesWebhook(channel: ChannelConfig): boolean {
   if (channel.type === "feishu") return channel.mode === "webhook" || !channel.mode;
   return WEBHOOK_CHANNEL_TYPES.has(channel.type);
 }
 
-function webhookUrl(channelType: string, channelId: string): string {
+function webhookUrl(channelType: string, profileId: string): string {
   const origin = typeof window !== "undefined" ? window.location.origin : "";
-  return `${origin}/api/channels/${channelType}/${channelId}/webhook`;
+  return `${origin}/webhook/${channelType}/${profileId}`;
 }
 
 function parseChannels(raw: unknown[]): ChannelConfig[] {
@@ -126,9 +126,9 @@ function parseChannels(raw: unknown[]): ChannelConfig[] {
 
 // ── Sub-component: form fields for each channel type ──
 
-function WebhookUrlField({ channelType, channelId }: { channelType: string; channelId: string }) {
+function WebhookUrlField({ channelType, profileId }: { channelType: string; profileId: string }) {
   const [copied, setCopied] = useState(false);
-  const url = webhookUrl(channelType, channelId);
+  const url = webhookUrl(channelType, profileId);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(url).then(() => {
@@ -159,40 +159,6 @@ function WebhookUrlField({ channelType, channelId }: { channelType: string; chan
           {copied ? "Copied" : "Copy"}
         </button>
       </div>
-    </div>
-  );
-}
-
-function RequireMentionField({
-  value,
-  onChange,
-}: {
-  value: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <div className="flex items-start justify-between gap-4 rounded-xl bg-surface-container/60 px-4 py-3">
-      <div>
-        <p className="text-sm font-medium text-text">Require @mention in groups</p>
-        <p className="mt-0.5 text-xs text-muted">Bot only responds when directly mentioned</p>
-      </div>
-      <button
-        type="button"
-        onClick={() => onChange(!value)}
-        className="shrink-0 mt-0.5"
-      >
-        <div
-          className={`relative h-6 w-11 rounded-full transition-colors ${
-            value ? "bg-accent" : "bg-surface-dark/80"
-          }`}
-        >
-          <div
-            className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
-              value ? "translate-x-[22px]" : "translate-x-0.5"
-            }`}
-          />
-        </div>
-      </button>
     </div>
   );
 }
@@ -233,40 +199,11 @@ function ChannelFormFields({
       );
     case "discord":
       return (
-        <>
-          {field("Token env var", "token_env", { placeholder: "DISCORD_BOT_TOKEN" })}
-          {field("Allowed senders", "allowed_senders", { placeholder: "Comma-separated user IDs" })}
-          <RequireMentionField
-            value={draft.require_mention ?? false}
-            onChange={(v) => onChange({ require_mention: v })}
-          />
-        </>
+        field("Token env var", "token_env", { placeholder: "DISCORD_BOT_TOKEN" })
       );
     case "whatsapp": {
-      const isExternal = draft.mode === "external";
       return (
-        <>
-          <div>
-            <label className="mb-1.5 block text-xs font-medium text-muted">Mode</label>
-            <div className="relative">
-              <select
-                value={draft.mode ?? "managed"}
-                onChange={(e) => onChange({ mode: e.target.value as "managed" | "external" })}
-                className="w-full appearance-none rounded-xl bg-surface-container px-4 py-2.5 pr-10 text-sm text-text outline-none border border-transparent focus:border-accent/30 transition"
-              >
-                <option value="managed">Managed (auto-bridge)</option>
-                <option value="external">External</option>
-              </select>
-              <ChevronDown
-                size={14}
-                className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted"
-              />
-            </div>
-          </div>
-          {isExternal && field("Bridge URL", "bridge_url", { placeholder: "https://your-bridge.example.com" })}
-          {field("Phone number", "phone_number", { placeholder: "+1234567890" })}
-          {field("API token env var", "api_token", { placeholder: "WHATSAPP_API_TOKEN" })}
-        </>
+        field("Bridge URL", "bridge_url", { placeholder: "https://your-bridge.example.com" })
       );
     }
     case "email":
@@ -274,18 +211,17 @@ function ChannelFormFields({
         <>
           {field("SMTP Host", "smtp_host", { placeholder: "smtp.example.com" })}
           {field("SMTP Port", "smtp_port", { placeholder: "587", type: "number" })}
-          {field("Username", "smtp_username", { placeholder: "user@example.com" })}
-          {field("Password env var", "smtp_password_env", { placeholder: "SMTP_PASSWORD" })}
-          {field("From address", "from_address", { placeholder: "noreply@example.com" })}
+          {field("Username env var", "username_env", { placeholder: "EMAIL_USERNAME" })}
+          {field("Password env var", "password_env", { placeholder: "EMAIL_PASSWORD" })}
         </>
       );
     case "feishu":
       return (
         <>
-          {field("App ID", "app_id", { placeholder: "cli_xxx" })}
+          {field("App ID env var", "app_id_env", { placeholder: "FEISHU_APP_ID" })}
           {field("App secret env var", "app_secret_env", { placeholder: "FEISHU_APP_SECRET" })}
-          {field("Verification token", "verification_token")}
-          {field("Encrypt key", "encrypt_key")}
+          {field("Verification token env var", "verification_token_env")}
+          {field("Encrypt key env var", "encrypt_key_env")}
           <div>
             <label className="mb-1.5 block text-xs font-medium text-muted">Region</label>
             <div className="relative">
@@ -304,30 +240,31 @@ function ChannelFormFields({
             </div>
           </div>
           {channelId && usesWebhook(draft) && (
-            <WebhookUrlField channelType="feishu" channelId={channelId} />
-          )}
-        </>
-      );
-    case "line":
-      return (
-        <>
-          {field("Channel secret env var", "channel_secret_env", { placeholder: "LINE_CHANNEL_SECRET" })}
-          {field("Channel access token env var", "channel_access_token_env", { placeholder: "LINE_CHANNEL_ACCESS_TOKEN" })}
-          <RequireMentionField
-            value={draft.require_mention ?? false}
-            onChange={(v) => onChange({ require_mention: v })}
-          />
-          {channelId && (
-            <WebhookUrlField channelType="line" channelId={channelId} />
+            <WebhookUrlField channelType="feishu" profileId={channelId} />
           )}
         </>
       );
     case "wechat":
-      return field("Token env var", "token_env", { placeholder: "WECHAT_BOT_TOKEN" });
+      return (
+        <>
+          {field("Token env var", "token_env", { placeholder: "WECHAT_BOT_TOKEN" })}
+          {field("Base URL", "base_url", { placeholder: "https://api.weixin.qq.com/cgi-bin" })}
+        </>
+      );
     case "wecom-bot":
-      return field("Secret env var", "secret_env", { placeholder: "WECOM_BOT_SECRET" });
+      return (
+        <>
+          {field("Bot ID", "bot_id")}
+          {field("Secret env var", "secret_env", { placeholder: "WECOM_BOT_SECRET" })}
+        </>
+      );
     case "qq-bot":
-      return field("Client secret env var", "client_secret_env", { placeholder: "QQ_BOT_CLIENT_SECRET" });
+      return (
+        <>
+          {field("App ID", "app_id")}
+          {field("Client secret env var", "client_secret_env", { placeholder: "QQ_BOT_CLIENT_SECRET" })}
+        </>
+      );
     default:
       return <p className="text-xs text-muted">No configurable fields for this channel type.</p>;
   }
@@ -457,7 +394,6 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
           <div className="space-y-2">
             {channels.map((channel, idx) => {
               const enabled = channel.enabled ?? true;
-              const channelId = `${profile.id}-${idx}`;
               return (
                 <div key={idx} className="space-y-2">
                   <div className="flex items-center gap-4 rounded-xl bg-surface-container/60 px-4 py-3.5 border border-transparent hover:border-border transition">
@@ -510,7 +446,7 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
                   {/* Webhook URL for applicable channels */}
                   {usesWebhook(channel) && (
                     <div className="ml-12 pr-1">
-                      <WebhookUrlField channelType={channel.type} channelId={channelId} />
+                      <WebhookUrlField channelType={channel.type} profileId={profile.id} />
                     </div>
                   )}
                 </div>

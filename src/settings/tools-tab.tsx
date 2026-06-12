@@ -9,7 +9,6 @@ import {
   Zap,
   Timer,
   Mail,
-  Send,
   ToggleLeft,
   ToggleRight,
 } from "lucide-react";
@@ -25,6 +24,7 @@ interface ToolsTabProps {
 
 interface SearchEngine {
   key: string;        // env var name
+  provider: string;   // backend /api/my/test-search provider id
   name: string;
   description: string;
   placeholder: string;
@@ -34,6 +34,7 @@ interface SearchEngine {
 const SEARCH_ENGINES: SearchEngine[] = [
   {
     key: "SERPER_API_KEY",
+    provider: "serper",
     name: "Serper (Google)",
     description: "Google Search via Serper.dev API",
     placeholder: "Enter Serper API key",
@@ -41,6 +42,7 @@ const SEARCH_ENGINES: SearchEngine[] = [
   },
   {
     key: "TAVILY_API_KEY",
+    provider: "tavily",
     name: "Tavily",
     description: "AI-optimized search engine",
     placeholder: "Enter Tavily API key",
@@ -48,6 +50,7 @@ const SEARCH_ENGINES: SearchEngine[] = [
   },
   {
     key: "PERPLEXITY_API_KEY",
+    provider: "perplexity",
     name: "Perplexity",
     description: "Perplexity AI search API",
     placeholder: "Enter Perplexity API key",
@@ -55,6 +58,7 @@ const SEARCH_ENGINES: SearchEngine[] = [
   },
   {
     key: "YDC_API_KEY",
+    provider: "you",
     name: "You.com",
     description: "You.com web search API",
     placeholder: "Enter You.com API key",
@@ -62,6 +66,7 @@ const SEARCH_ENGINES: SearchEngine[] = [
   },
   {
     key: "BRAVE_API_KEY",
+    provider: "brave",
     name: "Brave Search",
     description: "Privacy-focused web search via Brave",
     placeholder: "Enter Brave Search API key",
@@ -296,9 +301,6 @@ function EmailToolSection({
   config: EmailToolConfig;
   onChange: (next: EmailToolConfig) => void;
 }) {
-  const [testResult, setTestResult] = useState<TestResult>({ status: "idle" });
-  const [testEmail, setTestEmail] = useState("");
-
   const smtpConfigured =
     !!config.smtp_host.trim() &&
     !!config.smtp_port.trim() &&
@@ -307,23 +309,6 @@ function EmailToolSection({
     !!config.smtp_from.trim();
 
   const set = (patch: Partial<EmailToolConfig>) => onChange({ ...config, ...patch });
-
-  const handleTestEmail = async () => {
-    setTestResult({ status: "testing" });
-    try {
-      const resp = await request<{ ok: boolean; message?: string }>("/api/my/test-email", {
-        method: "POST",
-        body: JSON.stringify({ to: testEmail || "self" }),
-      });
-      if (resp && resp.ok) {
-        setTestResult({ status: "success", message: resp.message || "Test email sent successfully" });
-      } else {
-        setTestResult({ status: "error", message: (resp as { message?: string })?.message || "Failed to send test email" });
-      }
-    } catch {
-      setTestResult({ status: "error", message: "Test email endpoint not available" });
-    }
-  };
 
   return (
     <div className="space-y-4">
@@ -447,39 +432,9 @@ function EmailToolSection({
                 />
               </div>
 
-              {/* Test send */}
-              <div className="pt-1 border-t border-border/50">
-                <p className="mb-2 text-xs text-muted">Send Test Email</p>
-                <div className="flex gap-2">
-                  <input
-                    type="email"
-                    value={testEmail}
-                    onChange={(e) => setTestEmail(e.target.value)}
-                    placeholder="recipient@example.com (optional)"
-                    className="flex-1 rounded-xl bg-surface-dark/50 px-4 py-2.5 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition font-mono"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleTestEmail}
-                    disabled={!smtpConfigured || testResult.status === "testing"}
-                    className="shrink-0 flex items-center gap-1.5 rounded-xl px-3 py-2.5 text-xs font-medium border transition disabled:opacity-30
-                      bg-surface-dark/50 text-muted border-border hover:text-accent hover:border-accent/30"
-                  >
-                    {testResult.status === "testing" ? (
-                      <Loader2 size={12} className="animate-spin" />
-                    ) : (
-                      <Send size={12} />
-                    )}
-                    Send Test
-                  </button>
-                </div>
-                {testResult.status === "success" && (
-                  <p className="mt-2 text-xs text-green-400">{testResult.message}</p>
-                )}
-                {testResult.status === "error" && (
-                  <p className="mt-2 text-xs text-red-400">{testResult.message}</p>
-                )}
-              </div>
+              <p className="border-t border-border/50 pt-3 text-xs text-muted">
+                SMTP settings are saved to this profile and used by the agent email tool.
+              </p>
             </div>
           )}
 
@@ -530,31 +485,55 @@ export function ToolsTab({ profile, onProfileUpdated }: ToolsTabProps) {
     setOriginal(profileToForm(profile));
   };
 
-  const handleTestConnection = (engineKey: string) => {
-    // Mark as testing
+  const handleTestConnection = async (engine: SearchEngine) => {
+    const engineKey = engine.key;
     setTestResults((prev) => ({ ...prev, [engineKey]: { status: "testing" } }));
-
-    // Simulate a test - in a real scenario this would hit a backend /api/test-connection endpoint
-    // For now, we validate the key format is non-empty and looks plausible
     const value = form.env_vars[engineKey]?.trim();
-    setTimeout(() => {
-      if (!value) {
+
+    if (!value) {
+      setTestResults((prev) => ({
+        ...prev,
+        [engineKey]: { status: "error", message: "API key is empty" },
+      }));
+      return;
+    }
+
+    try {
+      const resp = await request<{ ok: boolean; message?: string; error?: string }>(
+        "/api/my/test-search",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            provider: engine.provider,
+            api_key: value,
+            api_key_env: engine.key,
+            profile_id: profile.id,
+          }),
+        },
+      );
+      if (resp.ok) {
         setTestResults((prev) => ({
           ...prev,
-          [engineKey]: { status: "error", message: "API key is empty" },
-        }));
-      } else if (value.length < 8) {
-        setTestResults((prev) => ({
-          ...prev,
-          [engineKey]: { status: "error", message: "API key appears too short" },
+          [engineKey]: {
+            status: "success",
+            message: resp.message || "Search API connected",
+          },
         }));
       } else {
         setTestResults((prev) => ({
           ...prev,
-          [engineKey]: { status: "success", message: "Key format looks valid (save to apply)" },
+          [engineKey]: {
+            status: "error",
+            message: resp.error || resp.message || "Search API rejected the key",
+          },
         }));
       }
-    }, 800);
+    } catch {
+      setTestResults((prev) => ({
+        ...prev,
+        [engineKey]: { status: "error", message: "Search test endpoint unavailable" },
+      }));
+    }
   };
 
   const updateEnvVar = (key: string, value: string) => {
@@ -588,7 +567,7 @@ export function ToolsTab({ profile, onProfileUpdated }: ToolsTabProps) {
               value={form.env_vars[engine.key] ?? ""}
               onChange={(val) => updateEnvVar(engine.key, val)}
               testResult={testResults[engine.key] ?? { status: "idle" }}
-              onTest={() => handleTestConnection(engine.key)}
+              onTest={() => void handleTestConnection(engine)}
             />
           ))}
         </div>

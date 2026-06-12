@@ -1,23 +1,473 @@
 import { test, expect } from "@playwright/test";
-import { login } from "./helpers";
 
 /**
  * Smoke tests for the /settings page.
  *
- * When the backend supports `/api/auth/me` and returns a full profile,
- * the sidebar shows all 9 tabs (including admin-only: Users, System,
- * Server) and each tab renders its settings content.
- *
- * When `/api/auth/me` returns 404 (older backends), the settings page
- * shows a "No profile available" placeholder with only 6 basic tabs.
- * Tests adapt to whichever state is present.
+ * These tests mock auth/profile/admin endpoints so they exercise the settings
+ * UI deterministically without depending on a live backend on localhost.
  */
 
 const TIMEOUT = 10_000;
 
+const mockProfile = {
+  id: "admin",
+  name: "Admin",
+  enabled: true,
+  data_dir: null,
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z",
+  status: {
+    running: true,
+    pid: 1234,
+    started_at: "2026-01-01T00:00:00Z",
+    uptime_secs: 3600,
+  },
+  config: {
+    llm: {
+      primary: { family_id: "openai", model_id: "gpt-5.4" },
+      fallbacks: [],
+    },
+    channels: [],
+    gateway: {
+      max_history: null,
+      max_iterations: null,
+      system_prompt: null,
+      max_concurrent_sessions: null,
+      browser_timeout_secs: null,
+      max_output_tokens: null,
+    },
+    env_vars: {},
+    hooks: [],
+    email: "admin@localhost",
+    api_type: null,
+    admin_mode: true,
+    sandbox: {
+      enabled: false,
+      mode: "off",
+      allow_network: false,
+      docker: {
+        image: "ubuntu:24.04",
+        cpu_limit: null,
+        memory_limit: null,
+        pids_limit: null,
+        mount_mode: "read_only",
+        extra_binds: [],
+      },
+      read_allow_paths: [],
+    },
+    adaptive_routing: null,
+    content_routing: null,
+    plugins: { require_signed: false },
+  },
+};
+
+async function installAdminSettingsMocks(page: import("@playwright/test").Page) {
+  let enableBody: unknown = null;
+
+  await page.route("**/api/auth/status", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        bootstrap_mode: false,
+        email_login_enabled: true,
+        admin_token_login_enabled: true,
+        allow_self_registration: false,
+      }),
+    }),
+  );
+
+  await page.route("**/api/auth/me", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        user: {
+          id: "admin",
+          email: "admin@localhost",
+          name: "Admin",
+          role: "admin",
+          created_at: "2026-01-01T00:00:00Z",
+          last_login_at: null,
+        },
+        profile: mockProfile,
+        portal: {
+          kind: "admin",
+          home_profile_id: "admin",
+          home_route: "/",
+          can_access_admin_portal: true,
+          can_manage_users: true,
+          sub_account_limit: 10,
+          accessible_profiles: [
+            {
+              id: "admin",
+              name: "Admin",
+              parent_id: null,
+              relationship: "self_profile",
+              api_scope: "admin",
+              route_base: "/",
+              can_manage_sub_accounts: true,
+            },
+          ],
+        },
+      }),
+    }),
+  );
+
+  await page.route("**/api/my/profile", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(mockProfile),
+    }),
+  );
+
+  await page.route("**/api/admin/platform-skills", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        platform_skills: [{ name: "voice", installed: true }],
+        skills_dir: "/Users/yao/.octos/platform-skills",
+        ominix_api: {
+          url: "http://localhost:8080",
+          healthy: true,
+          service_registered: true,
+        },
+        models: {
+          dir: "/Users/yao/.OminiX/models",
+          asr: ["qwen3-asr-1.7b"],
+          tts: ["qwen3-tts"],
+        },
+      }),
+    }),
+  );
+
+  await page.route("**/api/admin/platform-skills/ominix-api/models", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        models: [
+          {
+            id: "qwen3-asr-1.7b",
+            name: "Qwen3 ASR",
+            role: "asr",
+            status: "ready",
+            category: "speech",
+            storage: { total_size_display: "1.7 GB" },
+            runtime: { memory_required_mb: 4096 },
+          },
+        ],
+      }),
+    }),
+  );
+
+  await page.route("**/api/admin/platform-skills/ominix-api/models/available", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        models: [
+          {
+            id: "qwen3-asr-1.7b",
+            name: "Qwen3 ASR",
+            enabled_for_octos: true,
+            role: "asr",
+            status: "ready",
+            category: "speech",
+          },
+          {
+            id: "parakeet-asr",
+            name: "Parakeet ASR",
+            enabled_for_octos: false,
+            status: "not_downloaded",
+            category: "speech",
+          },
+        ],
+      }),
+    }),
+  );
+
+  await page.route("**/api/admin/platform-skills/ominix-api/logs?lines=80", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        log_path: "/Users/yao/.ominix/api.log",
+        total_lines: 2,
+        lines: ["ominix-api booted", "catalog loaded"],
+      }),
+    }),
+  );
+
+  await page.route("**/api/admin/platform-skills/ominix-api/models/enable", async (route) => {
+    enableBody = route.request().postDataJSON();
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, message: "enabled" }),
+    });
+  });
+
+  return {
+    getEnableBody: () => enableBody,
+  };
+}
+
+async function installServerSettingsMocks(page: import("@playwright/test").Page) {
+  const baseMocks = await installAdminSettingsMocks(page);
+  let watchdogBody: unknown = null;
+  let deploymentBody: unknown = null;
+  let rotateBody: unknown = null;
+  let createdSubAccountBody: unknown = null;
+  let testSearchBody: unknown = null;
+  let testProviderBody: unknown = null;
+
+  await page.route("**/api/admin/profiles", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify([mockProfile]),
+    }),
+  );
+
+  await page.route("**/api/admin/users", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        users: [
+          {
+            id: "admin",
+            email: "admin@localhost",
+            name: "Admin",
+            role: "admin",
+            created_at: "2026-01-01T00:00:00Z",
+            last_login_at: "2026-01-02T00:00:00Z",
+          },
+        ],
+      }),
+    }),
+  );
+
+  await page.route("**/api/admin/allowed-emails", async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({
+          email: "new@localhost",
+          created_at: "2026-01-01T00:00:00Z",
+          registered: false,
+        }),
+      });
+      return;
+    }
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        entries: [
+          {
+            email: "allowed@localhost",
+            created_at: "2026-01-01T00:00:00Z",
+            registered: false,
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route("**/api/admin/profiles/admin/accounts", async (route) => {
+    createdSubAccountBody = route.request().postDataJSON();
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        email: null,
+        profile: {
+          ...mockProfile,
+          id: "nana",
+          name: "Nana",
+          config: { ...mockProfile.config, email: "nana@example.com" },
+        },
+        status: {
+          running: false,
+          pid: null,
+          started_at: null,
+          uptime_secs: null,
+        },
+      }),
+    });
+  });
+
+  await page.route("**/api/my/test-search", async (route) => {
+    testSearchBody = route.request().postDataJSON();
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, message: "Search API connected" }),
+    });
+  });
+
+  await page.route("**/api/my/test-provider", async (route) => {
+    testProviderBody = route.request().postDataJSON();
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, message: "OK" }),
+    });
+  });
+
+  await page.route("**/api/admin/system/metrics", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        cpu: { usage_percent: 17.5 },
+        memory: {
+          total_bytes: 8 * 1024 * 1024 * 1024,
+          used_bytes: 3 * 1024 * 1024 * 1024,
+        },
+        platform: { uptime_secs: 3661 },
+      }),
+    }),
+  );
+
+  await page.route("**/api/admin/operator/summary", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        available: true,
+        collection: {
+          running_gateways: 1,
+          gateways_with_api_port: 1,
+          gateways_missing_api_port: 0,
+          scrape_failures: 0,
+          sources_observed: 1,
+          sources_with_metrics: 1,
+          sources_without_metrics: 0,
+          partial: false,
+        },
+        totals: {
+          session_persists: 4,
+          loop_errors: 0,
+          loop_retries: 0,
+          routing_decisions: 2,
+          credential_rotations: 0,
+          compaction_preservation_violations: 0,
+          workspace_validator_required_failures: 0,
+        },
+        breakdowns: {
+          routing_decisions: [{ tier: "cheap", count: 2 }],
+        },
+        sources: [
+          {
+            scope: "admin",
+            scrape_status: "ok",
+            available: true,
+            sample_count: 4,
+            totals: { session_persists: 4, loop_errors: 0 },
+          },
+        ],
+      }),
+    }),
+  );
+
+  await page.route("**/api/admin/operator/tasks", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        generated_at: "2026-01-01T00:00:00Z",
+        stale_threshold_secs: 300,
+        tasks: [],
+        totals_by_lifecycle: { queued: 0, running: 0, failed: 0 },
+        stale_count: 0,
+        missing_artifact_count: 0,
+        validator_failed_count: 0,
+        sources: [],
+        partial: false,
+      }),
+    }),
+  );
+
+  await page.route("**/health", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: "healthy",
+        service: "octos",
+        version: "0.1.1-test",
+      }),
+    }),
+  );
+
+  await page.route("**/api/admin/monitor/status", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        watchdog_enabled: true,
+        alerts_enabled: false,
+      }),
+    }),
+  );
+
+  await page.route("**/api/admin/monitor/watchdog", async (route) => {
+    watchdogBody = route.request().postDataJSON();
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, watchdog_enabled: false }),
+    });
+  });
+
+  await page.route("**/api/admin/monitor/alerts", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, alerts_enabled: true }),
+    }),
+  );
+
+  await page.route("**/api/admin/deployment-mode", async (route) => {
+    if (route.request().method() === "POST") {
+      deploymentBody = route.request().postDataJSON();
+      await route.fulfill({ status: 204, body: "" });
+      return;
+    }
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ mode: "local", explicit: false }),
+    });
+  });
+
+  await page.route("**/api/admin/deployment-mode/detect", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ detected: "tenant" }),
+    }),
+  );
+
+  await page.route("**/api/admin/token/status", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ rotated: false }),
+    }),
+  );
+
+  await page.route("**/api/admin/token/rotate", async (route) => {
+    rotateBody = route.request().postDataJSON();
+    await route.fulfill({ status: 204, body: "" });
+  });
+
+  return {
+    ...baseMocks,
+    getWatchdogBody: () => watchdogBody,
+    getDeploymentBody: () => deploymentBody,
+    getRotateBody: () => rotateBody,
+    getCreatedSubAccountBody: () => createdSubAccountBody,
+    getTestSearchBody: () => testSearchBody,
+    getTestProviderBody: () => testProviderBody,
+  };
+}
+
+async function seedAdminSession(page: import("@playwright/test").Page) {
+  await page.addInitScript(() => {
+    localStorage.setItem("octos_session_token", "admin-token");
+    localStorage.setItem("octos_auth_token", "admin-token");
+    localStorage.setItem("selected_profile", "admin");
+  });
+}
+
 /** Navigate to /settings after login. */
 async function goToSettings(page: import("@playwright/test").Page) {
-  await login(page);
+  await installServerSettingsMocks(page);
+  await seedAdminSession(page);
   await page.goto("/settings", { waitUntil: "networkidle" });
   await expect(page.locator(".animate-spin")).toBeHidden({ timeout: TIMEOUT });
 }
@@ -38,7 +488,7 @@ async function hasProfile(page: import("@playwright/test").Page): Promise<boolea
 // ── Tests ───────────────────────────────────────────────────────
 
 test.describe("Settings page — tab smoke tests", () => {
-  test("all 9 tab buttons are visible", async ({ page }) => {
+  test("settings tab buttons are visible", async ({ page }) => {
     await goToSettings(page);
 
     const baseTabs = ["Profile", "LLM", "Skills", "Channels", "Sandbox", "Tools"];
@@ -103,6 +553,28 @@ test.describe("Settings page — tab smoke tests", () => {
     ).toBeVisible({ timeout: TIMEOUT });
   });
 
+  test("LLM tab tests provider with selected model and route data", async ({
+    page,
+  }) => {
+    const mocks = await installServerSettingsMocks(page);
+    await seedAdminSession(page);
+
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: TIMEOUT });
+    await clickTab(page, "LLM");
+
+    await page.getByRole("button", { name: "Test Connection" }).click();
+    await expect.poll(() => mocks.getTestProviderBody()).toEqual({
+      provider: "openai",
+      model: "gpt-5.4",
+      api_key_env: "OPENAI_API_KEY",
+      profile_id: "admin",
+    });
+    await expect(page.getByText("OK", { exact: true })).toBeVisible({
+      timeout: TIMEOUT,
+    });
+  });
+
   test("Skills tab shows Installed Skills and Octos Hub", async ({
     page,
   }) => {
@@ -155,6 +627,30 @@ test.describe("Settings page — tab smoke tests", () => {
     ).toBeVisible({ timeout: TIMEOUT });
   });
 
+  test("Tools tab tests search keys through the real backend endpoint", async ({
+    page,
+  }) => {
+    const mocks = await installServerSettingsMocks(page);
+    await seedAdminSession(page);
+
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: TIMEOUT });
+    await clickTab(page, "Tools");
+
+    await page.getByPlaceholder("Enter Serper API key").fill("serper-key-valid");
+    await page.getByRole("button", { name: "Test" }).first().click();
+
+    await expect.poll(() => mocks.getTestSearchBody()).toEqual({
+      provider: "serper",
+      api_key: "serper-key-valid",
+      api_key_env: "SERPER_API_KEY",
+      profile_id: "admin",
+    });
+    await expect(page.getByText("Search API connected")).toBeVisible({
+      timeout: TIMEOUT,
+    });
+  });
+
   test("System tab shows Operator Overview (admin)", async ({ page }) => {
     await goToSettings(page);
     const profileLoaded = await hasProfile(page);
@@ -178,6 +674,95 @@ test.describe("Settings page — tab smoke tests", () => {
     await expect(
       page.locator("h3", { hasText: "Deployment Mode" }),
     ).toBeVisible({ timeout: TIMEOUT });
+  });
+
+  test("OminiX tab loads platform API data and sends model enable request", async ({
+    page,
+  }) => {
+    const mocks = await installAdminSettingsMocks(page);
+    await seedAdminSession(page);
+
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: TIMEOUT });
+    await clickTab(page, "OminiX");
+
+    await expect(
+      page.locator("h3", { hasText: "OminiX API" }),
+    ).toBeVisible({ timeout: TIMEOUT });
+    await expect(page.getByText("Healthy")).toBeVisible({ timeout: TIMEOUT });
+    await expect(page.getByText("LaunchAgent registered")).toBeVisible();
+    await expect(page.getByText("Qwen3 ASR").first()).toBeVisible();
+    await expect(page.getByText("ominix-api booted")).toBeVisible();
+
+    await page.getByRole("button", { name: "Enable ASR" }).click();
+    await expect.poll(() => mocks.getEnableBody()).toEqual({
+      model_id: "parakeet-asr",
+      role: "asr",
+    });
+
+    await page.getByRole("button", { name: "Restart" }).click();
+    await expect(
+      page.getByText("restart ominix-api service?"),
+    ).toBeVisible({ timeout: TIMEOUT });
+  });
+
+  test("Server tab uses real admin endpoints for settings and token rotation", async ({
+    page,
+  }) => {
+    const mocks = await installServerSettingsMocks(page);
+    await seedAdminSession(page);
+
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: TIMEOUT });
+    await clickTab(page, "Server");
+
+    await expect(page.getByText("0.1.1-test")).toBeVisible({ timeout: TIMEOUT });
+    await expect(page.getByText("Detected: tenant")).toBeVisible();
+    await expect(page.getByText("Bootstrap token has not been rotated")).toBeVisible();
+    await expect(page.getByText("GET /api/admin/server")).toHaveCount(0);
+    await expect(page.getByText("PATCH /api/admin/settings")).toHaveCount(0);
+
+    await page.getByRole("switch").first().click();
+    await expect.poll(() => mocks.getWatchdogBody()).toEqual({ enabled: false });
+
+    await page.locator('input[name="deployment_mode"][value="cloud"]').check();
+    await expect.poll(() => mocks.getDeploymentBody()).toEqual({ mode: "cloud" });
+
+    await page
+      .getByPlaceholder("New admin token, minimum 8 characters")
+      .fill("new-admin-token");
+    await page.getByRole("button", { name: "Rotate Token" }).click();
+    await page.getByRole("button", { name: "Confirm" }).click();
+    await expect.poll(() => mocks.getRotateBody()).toEqual({
+      new_token: "new-admin-token",
+    });
+  });
+
+  test("Users tab creates sub-account and reads allowlist entries", async ({
+    page,
+  }) => {
+    const mocks = await installServerSettingsMocks(page);
+    await seedAdminSession(page);
+
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: TIMEOUT });
+    await clickTab(page, "Users");
+
+    await expect(page.getByText("allowed@localhost")).toBeVisible({
+      timeout: TIMEOUT,
+    });
+    await page.getByRole("button", { name: "Create Sub-Account" }).click();
+    const subAccountForm = page.locator("form", { hasText: "New Sub-Account" });
+    await subAccountForm.getByPlaceholder("user@example.com").fill("nana@example.com");
+    await subAccountForm.getByPlaceholder("Display name").fill("Nana");
+    await subAccountForm.getByRole("button", { name: "Create" }).click();
+
+    await expect.poll(() => mocks.getCreatedSubAccountBody()).toEqual({
+      sub_account_id: "nana",
+      public_subdomain: "nana",
+      name: "Nana",
+      email: "nana@example.com",
+    });
   });
 
   test("tab switching changes content", async ({ page }) => {

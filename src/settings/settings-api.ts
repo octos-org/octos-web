@@ -5,6 +5,10 @@ import { request } from "@/api/client";
 export interface LlmPrimary {
   family_id: string;
   model_id: string;
+  route?: {
+    base_url?: string | null;
+    api_key_env?: string | null;
+  } | null;
 }
 
 export interface GatewayConfig {
@@ -211,26 +215,63 @@ export interface AdminUser {
   last_login: string | null;
 }
 
+interface AdminUserResponse {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  created_at: string;
+  last_login?: string | null;
+  last_login_at?: string | null;
+}
+
+interface ProfileResponseEnvelope {
+  email: string | null;
+  profile: Profile;
+  status: ProfileStatus;
+}
+
+function normalizeAdminUser(user: AdminUserResponse): AdminUser {
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    role: user.role,
+    created_at: user.created_at,
+    last_login: user.last_login ?? user.last_login_at ?? null,
+  };
+}
+
 export async function getAdminUsers(): Promise<AdminUser[]> {
   try {
-    const resp = await request<AdminUser[] | { users: AdminUser[] }>("/api/admin/users");
-    return Array.isArray(resp) ? resp : (resp.users ?? []);
+    const resp = await request<AdminUserResponse[] | { users: AdminUserResponse[] }>("/api/admin/users");
+    const users = Array.isArray(resp) ? resp : (resp.users ?? []);
+    return users.map(normalizeAdminUser);
   } catch {
     return [];
   }
 }
 
-export async function createAdminUser(body: {
+export async function createAdminUser(parentProfileId: string, body: {
   email: string;
   name: string;
-  user_id?: string;
+  sub_account_id: string;
+  public_subdomain: string;
   note?: string;
-}): Promise<AdminUser | null> {
+}): Promise<ProfileResponseEnvelope | null> {
   try {
-    return await request<AdminUser>("/api/admin/users", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
+    return await request<ProfileResponseEnvelope>(
+      `/api/admin/profiles/${encodeURIComponent(parentProfileId)}/accounts`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          sub_account_id: body.sub_account_id,
+          public_subdomain: body.public_subdomain,
+          name: body.name,
+          email: body.email,
+        }),
+      },
+    );
   } catch {
     return null;
   }
@@ -251,12 +292,20 @@ export async function deleteAdminUser(id: string): Promise<boolean> {
 
 export interface AllowedEmail {
   email: string;
+  note?: string | null;
+  created_at?: string;
+  claimed_user_id?: string | null;
+  claimed_at?: string | null;
+  registered?: boolean;
+  registered_user_id?: string | null;
+  registered_name?: string | null;
+  last_login_at?: string | null;
 }
 
 export async function getAllowedEmails(): Promise<AllowedEmail[]> {
   try {
-    const resp = await request<AllowedEmail[] | { emails: AllowedEmail[] }>("/api/admin/allowed-emails");
-    return Array.isArray(resp) ? resp : (resp.emails ?? []);
+    const resp = await request<AllowedEmail[] | { emails?: AllowedEmail[]; entries?: AllowedEmail[] }>("/api/admin/allowed-emails");
+    return Array.isArray(resp) ? resp : (resp.entries ?? resp.emails ?? []);
   } catch {
     return [];
   }
@@ -396,4 +445,154 @@ export async function deleteAdminProfile(profileId: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+// ── Admin: OminiX platform skills ──
+
+export interface PlatformSkillInfo {
+  name: string;
+  installed: boolean;
+}
+
+export interface OminixApiStatus {
+  url: string;
+  healthy: boolean;
+  service_registered: boolean;
+}
+
+export interface PlatformModelsStatus {
+  dir: string;
+  asr: string[];
+  tts: string[];
+}
+
+export interface PlatformSkillsStatus {
+  platform_skills: PlatformSkillInfo[];
+  skills_dir: string;
+  ominix_api: OminixApiStatus;
+  models: PlatformModelsStatus;
+}
+
+export interface OminixLogResponse {
+  log_path: string;
+  total_lines?: number;
+  lines: string[];
+  error?: string;
+}
+
+export interface OminixCatalogModel {
+  id: string;
+  name?: string;
+  description?: string;
+  category?: string;
+  tags?: string[];
+  status?: string;
+  role?: string;
+  enabled_for_octos?: boolean;
+  source?: {
+    primary_url?: string;
+    backup_urls?: string[];
+    source_type?: string;
+    repo_id?: string | null;
+    revision?: string;
+  };
+  storage?: {
+    local_path?: string;
+    total_size_bytes?: number | null;
+    total_size_display?: string | null;
+  };
+  runtime?: {
+    memory_required_mb?: number;
+    quantization?: string | null;
+    inference_engine?: string | null;
+  };
+}
+
+export interface OminixModelsResponse {
+  models: OminixCatalogModel[];
+}
+
+export interface AdminActionResponse {
+  ok: boolean;
+  message?: string;
+}
+
+export type OminixServiceAction = "start" | "stop" | "restart";
+
+const OMINIX_ADMIN_BASE = "/api/admin/platform-skills/ominix-api";
+
+export async function fetchPlatformSkillsStatus(): Promise<PlatformSkillsStatus> {
+  return await request<PlatformSkillsStatus>("/api/admin/platform-skills");
+}
+
+export async function fetchOminixLogs(lines = 80): Promise<OminixLogResponse> {
+  const safeLines = Math.max(1, Math.min(200, Math.round(lines)));
+  return await request<OminixLogResponse>(
+    `${OMINIX_ADMIN_BASE}/logs?lines=${safeLines}`,
+  );
+}
+
+export async function fetchOminixPlatformModels(): Promise<OminixCatalogModel[]> {
+  const resp = await request<OminixModelsResponse>(`${OMINIX_ADMIN_BASE}/models`);
+  return resp.models ?? [];
+}
+
+export async function fetchOminixAvailableModels(): Promise<OminixCatalogModel[]> {
+  const resp = await request<OminixModelsResponse>(
+    `${OMINIX_ADMIN_BASE}/models/available`,
+  );
+  return resp.models ?? [];
+}
+
+export async function runOminixServiceAction(
+  action: OminixServiceAction,
+): Promise<AdminActionResponse> {
+  return await request<AdminActionResponse>(`${OMINIX_ADMIN_BASE}/${action}`, {
+    method: "POST",
+  });
+}
+
+export async function installPlatformSkill(name: string): Promise<AdminActionResponse> {
+  return await request<AdminActionResponse>(
+    `/api/admin/platform-skills/${encodeURIComponent(name)}/install`,
+    { method: "POST" },
+  );
+}
+
+export async function removePlatformSkill(name: string): Promise<AdminActionResponse> {
+  return await request<AdminActionResponse>(
+    `/api/admin/platform-skills/${encodeURIComponent(name)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function downloadOminixModel(modelId: string): Promise<unknown> {
+  return await request<unknown>(`${OMINIX_ADMIN_BASE}/models/download`, {
+    method: "POST",
+    body: JSON.stringify({ model_id: modelId }),
+  });
+}
+
+export async function removeOminixModel(modelId: string): Promise<unknown> {
+  return await request<unknown>(`${OMINIX_ADMIN_BASE}/models/remove`, {
+    method: "POST",
+    body: JSON.stringify({ model_id: modelId }),
+  });
+}
+
+export async function enableOminixModel(
+  modelId: string,
+  role: "asr" | "tts",
+): Promise<AdminActionResponse> {
+  return await request<AdminActionResponse>(`${OMINIX_ADMIN_BASE}/models/enable`, {
+    method: "POST",
+    body: JSON.stringify({ model_id: modelId, role }),
+  });
+}
+
+export async function disableOminixModel(modelId: string): Promise<AdminActionResponse> {
+  return await request<AdminActionResponse>(`${OMINIX_ADMIN_BASE}/models/disable`, {
+    method: "POST",
+    body: JSON.stringify({ model_id: modelId }),
+  });
 }
