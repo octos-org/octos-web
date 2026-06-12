@@ -62,6 +62,7 @@ vi.mock("./ui-protocol-bridge", async () => {
 
 import * as ThreadStore from "@/store/thread-store";
 import {
+  interruptActiveTurn,
   sendMessage,
   __resetSendQueueForTest,
 } from "./ui-protocol-send";
@@ -799,6 +800,49 @@ describe("sendMessage", () => {
     // `enqueueSendV1`'s catch branch.
     expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
     expect(onComplete2).toHaveBeenCalledTimes(1);
+  });
+
+  it("interruptActiveTurn releases the FIFO so a replacement turn can start", async () => {
+    const bridge = makeBridge();
+    __setActiveBridgeForTest(SESSION, bridge);
+
+    sendMessage({
+      sessionId: SESSION,
+      text: "Q1",
+      media: [],
+      clientMessageId: "cmid-Q1",
+    });
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
+
+    sendMessage({
+      sessionId: SESSION,
+      text: "Q2",
+      media: [],
+      clientMessageId: "cmid-Q2",
+    });
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
+
+    await expect(
+      interruptActiveTurn({
+        sessionId: SESSION,
+        turnId: "cmid-Q1",
+        reason: "voice replacement",
+      }),
+    ).resolves.toBe(true);
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+
+    expect(bridge.interruptTurn).toHaveBeenCalledWith(
+      "cmid-Q1",
+      "voice replacement",
+    );
+    expect(bridge.sendTurn).toHaveBeenCalledTimes(2);
+    expect(bridge.sendTurn).toHaveBeenLastCalledWith(
+      "cmid-Q2",
+      [{ kind: "text", text: "Q2" }],
+      undefined,
+    );
   });
 });
 

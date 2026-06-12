@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { uploadFiles } from "@/api/chat";
-import { sendMessage } from "@/runtime/ui-protocol-send";
+import {
+  interruptActiveTurn,
+  sendMessage,
+} from "@/runtime/ui-protocol-send";
 import { getActiveBridge } from "@/runtime/ui-protocol-runtime";
 import { useThreads, type Thread, type ThreadMessage } from "@/store/thread-store";
 import { buildFileUrl } from "@/api/files";
@@ -27,6 +30,18 @@ const AUDIO_EXT = /\.(wav|mp3|ogg|m4a|flac)$/i;
  *  under memory pressure (tens of seconds each), so this is deliberately
  *  generous; cloud STT/TTS or more RAM would let us shrink it. */
 const REPLY_TIMEOUT_MS = 90000;
+const LISTENING_VAD_OPTIONS = {
+  positiveSpeechThreshold: 0.5,
+  negativeSpeechThreshold: 0.35,
+  minSpeechMs: 220,
+  redemptionMs: 700,
+};
+const THINKING_INTERRUPT_VAD_OPTIONS = {
+  positiveSpeechThreshold: 0.75,
+  negativeSpeechThreshold: 0.55,
+  minSpeechMs: 700,
+  redemptionMs: 650,
+};
 
 /** Find the most recent unplayed assistant audio from threads. Exported for unit tests. */
 export function pickFreshAudio(
@@ -134,8 +149,12 @@ export function useVoiceConversation(
       if (activeTurnIdRef.current === turnId) {
         activeTurnIdRef.current = null;
       }
-      const bridge = getActiveBridge(sessionId, historyTopic);
-      void bridge?.interruptTurn(turnId, reason).catch(() => {
+      void interruptActiveTurn({
+        sessionId,
+        historyTopic,
+        turnId,
+        reason,
+      }).catch(() => {
         // Best-effort: local state has already moved on.
       });
       return true;
@@ -193,10 +212,7 @@ export function useVoiceConversation(
         void sendUtteranceRef.current(wav);
       },
       {
-        positiveSpeechThreshold: 0.75,
-        negativeSpeechThreshold: 0.55,
-        minSpeechMs: 700,
-        redemptionMs: 650,
+        ...THINKING_INTERRUPT_VAD_OPTIONS,
         onSpeechRealStart: () => {
           if (
             speechInterruptArmedRef.current ||
@@ -219,12 +235,15 @@ export function useVoiceConversation(
   const beginListening = useCallback(async () => {
     stateRef.current = "listening";
     setState("listening");
-    await captureStart((wav: Blob) => {
-      // Ignore late utterances that land after we've left listening.
-      if (stateRef.current !== "listening") return;
-      captureStop();
-      void sendUtteranceRef.current(wav);
-    });
+    await captureStart(
+      (wav: Blob) => {
+        // Ignore late utterances that land after we've left listening.
+        if (stateRef.current !== "listening") return;
+        captureStop();
+        void sendUtteranceRef.current(wav);
+      },
+      LISTENING_VAD_OPTIONS,
+    );
   }, [captureStart, captureStop]);
 
   // Fetch + play ONE reply-audio file, resolving when playback ends. Does NOT

@@ -161,6 +161,13 @@ function buildTurnStartExtras(opts: SendOptions): TurnStartExtras | undefined {
 // by `sessionId` to match the server-side lock scope.
 
 const turnQueues = new Map<string, Promise<void>>();
+const activeTurnControlsBySession = new Map<
+  string,
+  {
+    turnId: string;
+    complete: () => void;
+  }
+>();
 
 // Per-session lock scope. Codex P2: the server's
 // `handle_turn_start` "one turn at a time" lock is keyed by `session_id`
@@ -243,6 +250,25 @@ function decrementQueueTotal(sessionId: string): void {
     queueTotalBySession.set(sessionId, next);
   }
   dispatchQueueState(sessionId);
+}
+
+export async function interruptActiveTurn(opts: {
+  sessionId: string;
+  historyTopic?: string;
+  turnId?: string;
+  reason?: string;
+}): Promise<boolean> {
+  const key = queueKey(opts.sessionId);
+  const control = activeTurnControlsBySession.get(key);
+  const turnId = opts.turnId ?? control?.turnId ?? queueHeadBySession.get(key);
+  const bridge = getActiveBridge(opts.sessionId, opts.historyTopic);
+  if (!bridge || !turnId) return false;
+
+  const result = await bridge.interruptTurn(turnId, opts.reason);
+  if (result.interrupted && control?.turnId === turnId) {
+    control.complete();
+  }
+  return result.interrupted;
 }
 
 async function enqueueSendV1(opts: SendOptions): Promise<void> {
@@ -400,6 +426,7 @@ export function __resetSendQueueForTest(): void {
   turnQueues.clear();
   queueTotalBySession.clear();
   queueHeadBySession.clear();
+  activeTurnControlsBySession.clear();
 }
 
 async function sendMessageV1(
@@ -481,6 +508,10 @@ async function sendMessageV1(
   const fireComplete = () => {
     if (completed) return;
     completed = true;
+    const key = queueKey(sessionId);
+    if (activeTurnControlsBySession.get(key)?.turnId === clientMessageId) {
+      activeTurnControlsBySession.delete(key);
+    }
     if (lifecycleSafetyTimer !== null) {
       clearTimeout(lifecycleSafetyTimer);
       lifecycleSafetyTimer = null;
@@ -508,6 +539,10 @@ async function sendMessageV1(
       releaseLifecycleGate();
     }
   };
+  activeTurnControlsBySession.set(queueKey(sessionId), {
+    turnId: clientMessageId,
+    complete: fireComplete,
+  });
   const off = bridge.onTurnLifecycle((e) => {
     if (e.turn_id !== clientMessageId) return;
     // The bridge emits all three lifecycle variants through one channel.

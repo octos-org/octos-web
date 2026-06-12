@@ -40,6 +40,7 @@ const VAD_ONNX_WASM_BASE_PATH =
   typeof window !== "undefined"
     ? `${window.location.origin}/vad/`
     : "/vad/";
+const noop = () => {};
 
 export function useVoiceCapture(): VoiceCapture {
   const vadRef = useRef<MicVAD | null>(null);
@@ -89,8 +90,12 @@ export function useVoiceCapture(): VoiceCapture {
         negativeSpeechThreshold: options.negativeSpeechThreshold ?? 0.4,
         minSpeechMs: options.minSpeechMs ?? 300,
         redemptionMs: options.redemptionMs ?? 700,
-        onSpeechRealStart: options.onSpeechRealStart,
+        onSpeechRealStart: () => {
+          if (gen !== startGenRef.current) return;
+          (options.onSpeechRealStart ?? noop)();
+        },
         onSpeechEnd: (audio: Float32Array) => {
+          if (gen !== startGenRef.current) return;
           onUtterance(encodeWav(audio, VAD_SAMPLE_RATE));
         },
       });
@@ -103,6 +108,10 @@ export function useVoiceCapture(): VoiceCapture {
       }
       vadRef.current = vad;
       await vad.start();
+      if (gen !== startGenRef.current) {
+        void vad.destroy();
+        return;
+      }
       setCapturing(true);
     } catch (e) {
       console.error("[voice] capture init failed", e);
