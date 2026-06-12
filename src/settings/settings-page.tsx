@@ -15,6 +15,7 @@ import {
   Wrench,
   Activity,
   Server,
+  Waves,
   Loader2,
 } from "lucide-react";
 import { getMyProfile, type Profile } from "./settings-api";
@@ -27,8 +28,9 @@ import { SandboxTab } from "./sandbox-tab";
 import { ToolsTab } from "./tools-tab";
 import { SystemTab } from "./system-tab";
 import { ServerTab } from "./server-tab";
+import { OminixTab } from "./ominix-tab";
 
-type TabId = "profile" | "llm" | "skills" | "channels" | "sandbox" | "tools" | "users" | "system" | "server";
+type TabId = "profile" | "llm" | "skills" | "channels" | "sandbox" | "tools" | "users" | "system" | "server" | "ominix";
 
 interface TabDef {
   id: TabId;
@@ -47,6 +49,7 @@ const TABS: TabDef[] = [
   { id: "users", label: "Users", icon: Users, adminOnly: true },
   { id: "system", label: "System", icon: Activity, adminOnly: true },
   { id: "server", label: "Server", icon: Server, adminOnly: true },
+  { id: "ominix", label: "OminiX", icon: Waves, adminOnly: true },
 ];
 
 export function AdminSettingsPage() {
@@ -73,7 +76,7 @@ export function AdminSettingsPage() {
     return () => { cancelled = true; };
   }, [selectedProfileId]);
 
-  const isAdminOnlyTab = activeTab === "system" || activeTab === "server" || activeTab === "users";
+  const isAdminOnlyTab = activeTab === "system" || activeTab === "server" || activeTab === "users" || activeTab === "ominix";
 
   return (
     <div className="flex h-screen flex-col bg-surface-dark">
@@ -157,7 +160,8 @@ export function AdminSettingsPage() {
             <div className={`mx-auto ${isAdminOnlyTab ? "max-w-3xl" : "max-w-2xl"}`}>
               {activeTab === "system" && portal?.can_access_admin_portal && <SystemTab />}
               {activeTab === "server" && portal?.can_access_admin_portal && <ServerTab />}
-              {activeTab === "users" && portal?.can_access_admin_portal && <UsersTab />}
+              {activeTab === "users" && portal?.can_access_admin_portal && profile && <UsersTab profile={profile} />}
+              {activeTab === "ominix" && portal?.can_access_admin_portal && <OminixTab />}
 
               {!isAdminOnlyTab && profile ? (
                 <>

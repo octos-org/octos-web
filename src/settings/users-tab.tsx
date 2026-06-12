@@ -18,11 +18,27 @@ import {
   removeAllowedEmail,
   type AdminUser,
   type AllowedEmail,
+  type Profile,
 } from "./settings-api";
 
 // ── Create Sub-Account form ──
 
-function CreateSubAccountForm({ onCreated }: { onCreated: () => void }) {
+function deriveSubAccountId(email: string): string {
+  const localPart = email.split("@")[0] ?? "user";
+  const cleaned = localPart
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return cleaned || `user-${Date.now()}`;
+}
+
+function CreateSubAccountForm({
+  parentProfileId,
+  onCreated,
+}: {
+  parentProfileId: string;
+  onCreated: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const [userId, setUserId] = useState("");
   const [email, setEmail] = useState("");
@@ -44,10 +60,12 @@ function CreateSubAccountForm({ onCreated }: { onCreated: () => void }) {
     if (!email.trim() || !displayName.trim()) return;
     setSaving(true);
     setError(null);
-    const result = await createAdminUser({
+    const subAccountId = userId.trim() || deriveSubAccountId(email.trim());
+    const result = await createAdminUser(parentProfileId, {
       email: email.trim(),
       name: displayName.trim(),
-      ...(userId.trim() ? { user_id: userId.trim() } : {}),
+      sub_account_id: subAccountId,
+      public_subdomain: subAccountId,
       ...(note.trim() ? { note: note.trim() } : {}),
     });
     setSaving(false);
@@ -91,7 +109,7 @@ function CreateSubAccountForm({ onCreated }: { onCreated: () => void }) {
           type="text"
           value={userId}
           onChange={(e) => setUserId(e.target.value)}
-          placeholder="Leave blank for auto-assignment"
+          placeholder="Leave blank to derive from email"
           className="w-full rounded-xl bg-surface-dark/50 px-4 py-2.5 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition"
         />
       </div>
@@ -281,7 +299,7 @@ function AllowedEmailsSection() {
 
 // ── Users Tab (main export) ──
 
-export function UsersTab() {
+export function UsersTab({ profile }: { profile: Profile }) {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -344,7 +362,7 @@ export function UsersTab() {
 
         {/* Create sub-account */}
         <div className="mb-5">
-          <CreateSubAccountForm onCreated={refresh} />
+          <CreateSubAccountForm parentProfileId={profile.id} onCreated={refresh} />
         </div>
 
         {loading ? (

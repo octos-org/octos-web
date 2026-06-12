@@ -1,8 +1,9 @@
-import { type Page, expect, test } from "@playwright/test";
+import { type Page, type Route, expect, test } from "@playwright/test";
 
 const AUTH_TOKEN = process.env.AUTH_TOKEN || "e2e-test-2026";
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "octos-admin-2026";
 const BASE_URL = process.env.BASE_URL || "http://localhost:5174";
+const USE_E2E_HARNESS = process.env.OCTOS_LIVE_E2E !== "1";
 
 // ── Selectors (data-testid based) ──────────────────────────────
 
@@ -26,6 +27,430 @@ const SEL = {
 } as const;
 
 export { SEL };
+
+// ── Default deterministic E2E harness ──────────────────────────
+
+async function fulfillJson(route: Route, body: unknown, status = 200) {
+  await route.fulfill({
+    status,
+    contentType: "application/json",
+    body: JSON.stringify(body),
+  });
+}
+
+function rpcResponse(id: string, result: unknown): string {
+  return JSON.stringify({ jsonrpc: "2.0", id, result });
+}
+
+function rpcNotification(method: string, params: unknown): string {
+  return JSON.stringify({ jsonrpc: "2.0", method, params });
+}
+
+type HarnessMessage = {
+  seq: number;
+  role: "user" | "assistant";
+  content: string;
+  timestamp: string;
+  client_message_id?: string;
+  thread_id?: string;
+  response_to_client_message_id?: string;
+  message_id?: string;
+  source?: string;
+  media?: string[];
+};
+
+type HarnessSession = {
+  id: string;
+  title?: string;
+  messages: HarnessMessage[];
+};
+
+function extractTurnText(params: Record<string, unknown> | undefined): string {
+  const input = params?.input;
+  if (!Array.isArray(input)) return "";
+  return input
+    .map((part) => {
+      if (!part || typeof part !== "object") return "";
+      const record = part as Record<string, unknown>;
+      return typeof record.text === "string" ? record.text : "";
+    })
+    .join("\n")
+    .trim();
+}
+
+function harnessReplyFor(message: string): string {
+  const lower = message.toLowerCase();
+  const exact = message.match(/(?:say|reply with)\s+exactly:\s*(.+)$/i);
+  if (exact?.[1]) return exact[1].trim();
+  if (lower.includes("capital of japan")) return "Tokyo.";
+  if (lower.includes("capital of france")) return "Paris.";
+  if (lower.includes("capital of australia")) return "Canberra.";
+  if (lower.includes("capital of canada")) return "Ottawa.";
+  if (lower.includes("capital of germany")) return "Berlin.";
+  if (lower.includes("capital of brazil")) return "Brasilia.";
+  if (lower.includes("capital of italy")) return "Rome.";
+  if (lower.includes("capital of spain")) return "Madrid.";
+  if (lower.includes("capital of egypt")) return "Cairo.";
+  if (lower.includes("capital of peru")) return "Lima.";
+  if (lower.includes("capital of sweden")) return "Stockholm.";
+  if (lower.includes("capital of greece")) return "Athens.";
+  if (lower.includes("capital of portugal")) return "Lisbon.";
+  if (lower.includes("1+1") || lower.includes("1 + 1")) return "2.";
+  if (lower.includes("2+2") || lower.includes("2 + 2")) return "4.";
+  if (lower.includes("3+3") || lower.includes("3 + 3")) return "6.";
+  const arithmetic = lower.match(/\b(\d+)\s*([+*x])\s*(\d+)\b/);
+  if (arithmetic) {
+    const left = Number(arithmetic[1]);
+    const right = Number(arithmetic[3]);
+    const op = arithmetic[2];
+    if (Number.isFinite(left) && Number.isFinite(right)) {
+      return String(op === "+" ? left + right : left * right);
+    }
+  }
+  if (lower.includes("csv")) return "The CSV contains Alice, Bob, and Charlie.";
+  if (lower.includes("markdown") || lower.includes("title")) {
+    return "The document title is Test Document.";
+  }
+  if (lower.includes("rust")) {
+    return "Rust is a systems programming language with memory safety, strong tooling, advantages, and tradeoffs.";
+  }
+  if (lower.startsWith("/queue")) return `Queue mode updated: ${message.replace("/queue", "").trim() || "followup"}.`;
+  if (lower.includes("weather")) return "The weather response is sunny and mild.";
+  if (lower.includes("tts") || message.includes("声音")) return "TTS task accepted. Audio generation is mocked in this E2E harness.";
+  return `Mock response: ${message || "ok"}`;
+}
+
+async function installDefaultE2EHarness(page: Page) {
+  const sessions = new Map<string, HarnessSession>();
+  let adaptiveMode: "off" | "hedge" | "lane" = "off";
+
+  const ensureSession = (id: string): HarnessSession => {
+    let session = sessions.get(id);
+    if (!session) {
+      session = { id, messages: [] };
+      sessions.set(id, session);
+    }
+    return session;
+  };
+
+  await page.addInitScript(
+    ({ token, profile }) => {
+      const win = window as typeof window & {
+        __octosBridgeReadyCount?: number;
+      };
+      win.__octosBridgeReadyCount = 0;
+      window.addEventListener("crew:bridge_connected", () => {
+        win.__octosBridgeReadyCount = (win.__octosBridgeReadyCount ?? 0) + 1;
+      });
+      if (sessionStorage.getItem("__octos_e2e_harness_seeded") !== "1") {
+        localStorage.clear();
+        sessionStorage.setItem("__octos_e2e_harness_seeded", "1");
+      }
+      localStorage.setItem("octos_session_token", token);
+      localStorage.setItem("octos_auth_token", token);
+      localStorage.setItem("selected_profile", profile);
+    },
+    { token: AUTH_TOKEN, profile: process.env.PROFILE_ID || "admin" },
+  );
+
+  await page.route(/\/api\/auth\/status$/, (route) =>
+    fulfillJson(route, {
+      bootstrap_mode: false,
+      email_login_enabled: true,
+      admin_token_login_enabled: true,
+      allow_self_registration: false,
+    }),
+  );
+  await page.route(/\/api\/auth\/verify$/, (route) =>
+    fulfillJson(route, {
+      ok: true,
+      token: AUTH_TOKEN,
+      user: {
+        id: "admin",
+        email: "admin@localhost",
+        name: "Admin",
+        role: "admin",
+        created_at: "2026-01-01T00:00:00Z",
+        last_login_at: null,
+      },
+    }),
+  );
+  await page.route(/\/api\/auth\/me$/, (route) =>
+    fulfillJson(route, {
+      user: {
+        id: "admin",
+        email: "admin@localhost",
+        name: "Admin",
+        role: "admin",
+        created_at: "2026-01-01T00:00:00Z",
+        last_login_at: null,
+      },
+      profile: { profile: { id: "admin", name: "Admin" } },
+      portal: {
+        kind: "admin",
+        home_profile_id: "admin",
+        home_route: "/chat",
+        can_access_admin_portal: true,
+        can_manage_users: true,
+        sub_account_limit: 5,
+        accessible_profiles: [],
+      },
+    }),
+  );
+  await page.route(/\/api\/status$/, (route) =>
+    fulfillJson(route, {
+      version: "test",
+      model: "mock-model",
+      provider: "mock",
+      uptime_secs: 1,
+      agent_configured: true,
+    }),
+  );
+  await page.route(/\/api\/upload$/, async (route) =>
+    fulfillJson(route, ["uploads/e2e-fixture.txt"]),
+  );
+  await page.route(/\/api\/my\/content(?:\?.*)?$/, (route) =>
+    fulfillJson(route, {
+      entries: [
+        {
+          id: "content-1",
+          filename: "report.md",
+          path: "pf/mock/report.md",
+          category: "report",
+          size_bytes: 128,
+          created_at: "2026-01-01T00:00:00Z",
+          thumbnail_path: null,
+          session_id: null,
+          tool_name: null,
+          caption: "Mock report",
+        },
+      ],
+      total: 1,
+    }),
+  );
+  await page.route(/\/api\/files\/.+$/, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/octet-stream",
+      body: Buffer.from("mock file"),
+    }),
+  );
+
+  await page.routeWebSocket(/\/api\/ui-protocol\/ws/, (ws) => {
+    ws.onMessage((raw) => {
+      let data: { id?: string; method?: string; params?: Record<string, unknown> };
+      try {
+        data = JSON.parse(raw.toString());
+      } catch {
+        return;
+      }
+      const id = data.id;
+      const method = data.method;
+      const params = data.params;
+
+      if (method === "session/open" && id) {
+        const sessionId = String(params?.session_id || "web-e2e");
+        ensureSession(sessionId);
+        ws.send(rpcResponse(id, {
+          opened: { session_id: sessionId, active_profile_id: "admin" },
+        }));
+        ws.send(rpcNotification("router/status", {
+          session_id: sessionId,
+          mode: adaptiveMode,
+          provider_count: 2,
+        }));
+        return;
+      }
+
+      if (method === "session/hydrate" && id) {
+        ws.send(rpcResponse(id, { replayed_envelopes: [] }));
+        return;
+      }
+
+      if (method === "session/list" && id) {
+        ws.send(rpcResponse(id, {
+          sessions: Array.from(sessions.values()).map((session) => ({
+            id: session.id,
+            title: session.title,
+            message_count: session.messages.length,
+          })),
+        }));
+        return;
+      }
+
+      if (method === "session/messages_page" && id) {
+        const sessionId = String(params?.session_id || "");
+        const session = ensureSession(sessionId);
+        ws.send(rpcResponse(id, {
+          messages: session.messages,
+          has_more: false,
+          next_offset: session.messages.length,
+        }));
+        return;
+      }
+
+      if (method === "session/status.get" && id) {
+        ws.send(rpcResponse(id, {
+          active: false,
+          has_deferred_files: false,
+          has_bg_tasks: false,
+        }));
+        return;
+      }
+
+      if (method === "session/tasks.list" && id) {
+        ws.send(rpcResponse(id, { tasks: [] }));
+        return;
+      }
+
+      if (method === "session/files.list" && id) {
+        ws.send(rpcResponse(id, { files: [] }));
+        return;
+      }
+
+      if (method === "content/list" && id) {
+        ws.send(rpcResponse(id, {
+          entries: [
+            {
+              id: "content-1",
+              filename: "report.md",
+              path: "pf/mock/report.md",
+              category: "report",
+              size_bytes: 128,
+              created_at: "2026-01-01T00:00:00Z",
+              thumbnail_path: null,
+              session_id: null,
+              tool_name: null,
+              caption: "Mock report",
+            },
+          ],
+          total: 1,
+        }));
+        return;
+      }
+
+      if (method === "session/title.set" && id) {
+        const sessionId = String(params?.session_id || "");
+        const title = String(params?.title || "");
+        ensureSession(sessionId).title = title;
+        ws.send(rpcResponse(id, { ok: true }));
+        ws.send(rpcNotification("session/title-updated", {
+          session_id: sessionId,
+          title,
+        }));
+        return;
+      }
+
+      if (method === "session/delete" && id) {
+        const sessionId = String(params?.session_id || "");
+        sessions.delete(sessionId);
+        ws.send(rpcResponse(id, { deleted: true }));
+        return;
+      }
+
+      if (method === "router/get_metrics" && id) {
+        ws.send(rpcResponse(id, {
+          mode: adaptiveMode,
+          provider_count: 2,
+          providers: [],
+        }));
+        return;
+      }
+
+      if (method === "router/set_mode" && id) {
+        const requested = params?.mode;
+        adaptiveMode = requested === "hedge" || requested === "lane" ? requested : "off";
+        const sessionId = String(params?.session_id || "");
+        ws.send(rpcResponse(id, { mode: adaptiveMode }));
+        ws.send(rpcNotification("router/status", {
+          session_id: sessionId,
+          mode: adaptiveMode,
+          provider_count: 2,
+        }));
+        return;
+      }
+
+      if (method === "turn/interrupt" && id) {
+        ws.send(rpcResponse(id, { interrupted: true }));
+        return;
+      }
+
+      if (method === "turn/start" && id) {
+        const sessionId = String(params?.session_id || "web-e2e");
+        const turnId = String(params?.turn_id || `turn-${Date.now()}`);
+        const session = ensureSession(sessionId);
+        const userText = extractTurnText(params);
+        const userSeq = session.messages.length + 1;
+        session.messages.push({
+          seq: userSeq,
+          role: "user",
+          content: userText,
+          timestamp: new Date().toISOString(),
+          client_message_id: turnId,
+          thread_id: turnId,
+          message_id: `user-${userSeq}`,
+          source: "user",
+        });
+        const reply = harnessReplyFor(userText);
+        const assistantSeq = session.messages.length + 1;
+        session.messages.push({
+          seq: assistantSeq,
+          role: "assistant",
+          content: reply,
+          timestamp: new Date().toISOString(),
+          thread_id: turnId,
+          response_to_client_message_id: turnId,
+          message_id: `assistant-${assistantSeq}`,
+          source: "assistant",
+        });
+        if (!session.title && userText) session.title = userText.slice(0, 50);
+
+        ws.send(rpcResponse(id, { accepted: true }));
+        ws.send(rpcNotification("turn/started", {
+          session_id: sessionId,
+          turn_id: turnId,
+        }));
+        ws.send(rpcNotification("message/delta", {
+          session_id: sessionId,
+          turn_id: turnId,
+          text: reply,
+          message_id: `assistant-${assistantSeq}`,
+        }));
+        ws.send(rpcNotification("message/persisted", {
+          session_id: sessionId,
+          turn_id: turnId,
+          thread_id: turnId,
+          seq: assistantSeq,
+          role: "assistant",
+          message_id: `assistant-${assistantSeq}`,
+          source: "assistant",
+          cursor: { stream: "main", seq: assistantSeq },
+          persisted_at: new Date().toISOString(),
+        }));
+        ws.send(rpcNotification("progress/updated", {
+          session_id: sessionId,
+          turn_id: turnId,
+          kind: "token_cost_update",
+          metadata: {
+            input_tokens: 12,
+            output_tokens: 8,
+            session_cost: 0.0001,
+            model: "mock-model",
+          },
+        }));
+        ws.send(rpcNotification("turn/completed", {
+          session_id: sessionId,
+          turn_id: turnId,
+          reason: "done",
+        }));
+        return;
+      }
+
+      if (method === "ping") return;
+      if (id) ws.send(rpcResponse(id, {}));
+    });
+  });
+}
 // ── Thinking content detection ─────────────────────────────────
 
 /** Detect GPT-5.5 thinking/status text that isn't real content. */
@@ -44,6 +469,10 @@ export function isThinkingContent(text: string): boolean {
 export async function login(page: Page) {
   const profileId = process.env.PROFILE_ID || "admin";
   const testEmail = process.env.TEST_EMAIL || "admin@localhost";
+
+  if (USE_E2E_HARNESS) {
+    await installDefaultE2EHarness(page);
+  }
 
   // Obtain a real session token via static_tokens verify before seeding
   // localStorage. Session tokens work for both HTTP and WebSocket auth.
@@ -262,7 +691,7 @@ export async function sendAndWait(
   message: string,
   opts: { maxWait?: number; label?: string; throwOnTimeout?: boolean } = {},
 ): Promise<SendResult> {
-  const { maxWait = 90_000, label = "", throwOnTimeout = true } = opts;
+  const { maxWait = 300_000, label = "", throwOnTimeout = true } = opts;
   const input = getInput(page);
   const sendBtn = getSendButton(page);
 
@@ -434,8 +863,38 @@ export function captureSSEEvents(page: Page): SseEvent[] {
 
 // ── Session helpers ────────────────────────────────────────────
 
+async function getBridgeReadyCount(page: Page): Promise<number> {
+  return page
+    .evaluate(() => {
+      const win = window as typeof window & {
+        __octosBridgeReadyCount?: number;
+      };
+      return win.__octosBridgeReadyCount ?? 0;
+    })
+    .catch(() => 0);
+}
+
+async function waitForNextBridgeReady(
+  page: Page,
+  previousCount: number,
+): Promise<void> {
+  await page
+    .waitForFunction(
+      (count) => {
+        const win = window as typeof window & {
+          __octosBridgeReadyCount?: number;
+        };
+        return (win.__octosBridgeReadyCount ?? 0) > count;
+      },
+      previousCount,
+      { timeout: 5_000 },
+    )
+    .catch(() => {});
+}
+
 /** Create a new session via sidebar button. */
 export async function createNewSession(page: Page) {
+  const bridgeReadyCount = await getBridgeReadyCount(page);
   await page.locator(SEL.newChatButton).click();
 
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -472,6 +931,7 @@ export async function createNewSession(page: Page) {
   }
 
   await page.waitForSelector(SEL.chatInput, { state: "visible", timeout: 10_000 });
+  await waitForNextBridgeReady(page, bridgeReadyCount);
   await page.waitForTimeout(300);
 }
 

@@ -116,7 +116,7 @@ function HomeAssistantShell() {
   }, []);
 
   return (
-    <div className={nightActive ? "home-night-mode" : ""}>
+    <div className={`relative h-full w-full ${nightActive ? "home-night-mode" : ""}`}>
       {/* Standby layer */}
       <div
         className={`home-layer absolute inset-0 transition-all duration-500 ease-in-out ${

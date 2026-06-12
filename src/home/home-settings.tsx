@@ -123,11 +123,15 @@ export function HomeSettingsPanel({ open, onClose }: HomeSettingsPanelProps) {
         }`}
         style={{ background: "rgba(0,0,0,0.5)" }}
         onClick={onClose}
+        aria-hidden={!open}
       />
 
       {/* Panel */}
       <div
         ref={panelRef}
+        role="dialog"
+        aria-modal={open}
+        aria-hidden={!open}
         className={`home-settings-panel fixed right-0 top-0 bottom-0 z-50 flex w-80 max-w-[85vw] flex-col transition-transform duration-300 ease-out ${
           open ? "translate-x-0" : "translate-x-full"
         }`}

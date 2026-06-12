@@ -10,10 +10,6 @@ import {
   Users,
   Shield,
   Activity,
-  Copy,
-  Check,
-  Eye,
-  EyeOff,
 } from "lucide-react";
 import {
   fetchAllProfiles,
@@ -25,12 +21,14 @@ import { request } from "@/api/client";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type DeploymentMode = "standalone" | "local" | "cloud" | "tenant";
+type DeploymentMode = "local" | "cloud" | "tenant";
 
 interface AdminSettings {
   watchdog_enabled: boolean;
   proactive_alerts: boolean;
   deployment_mode: DeploymentMode;
+  deployment_explicit: boolean;
+  deployment_detected: DeploymentMode | null;
 }
 
 interface ServerResources {
@@ -41,35 +39,95 @@ interface ServerResources {
   version: string;
 }
 
-interface RotateTokenResponse {
-  token: string;
+interface MonitorStatusResponse {
+  watchdog_enabled: boolean;
+  alerts_enabled: boolean;
 }
 
-// ── API helpers (TODO: implement these endpoints server-side) ─────────────────
+interface DeploymentModeResponse {
+  mode: string;
+  explicit?: boolean;
+}
+
+interface DeploymentModeDetectionResponse {
+  detected: string;
+}
+
+interface TokenStatusResponse {
+  rotated: boolean;
+}
+
+interface SystemMetricsResponse {
+  cpu?: {
+    usage_percent?: number;
+  };
+  memory?: {
+    total_bytes?: number;
+    used_bytes?: number;
+  };
+  platform?: {
+    uptime_secs?: number;
+  };
+}
+
+interface HealthResponse {
+  version?: string;
+}
+
+// ── API helpers ──────────────────────────────────────────────────────────────
+
+function asDeploymentMode(value: string | null | undefined): DeploymentMode {
+  if (value === "tenant" || value === "cloud") return value;
+  return "local";
+}
 
 async function fetchAdminSettings(): Promise<AdminSettings | null> {
-  // TODO: implement GET /api/admin/settings on the server
   try {
-    return await request<AdminSettings>("/api/admin/settings");
-  } catch {
-    // Return safe defaults when endpoint is not yet available
+    const [monitor, deployment, detected] = await Promise.all([
+      request<MonitorStatusResponse>("/api/admin/monitor/status"),
+      request<DeploymentModeResponse>("/api/admin/deployment-mode"),
+      request<DeploymentModeDetectionResponse>("/api/admin/deployment-mode/detect"),
+    ]);
     return {
-      watchdog_enabled: false,
-      proactive_alerts: false,
-      deployment_mode: "standalone",
+      watchdog_enabled: Boolean(monitor.watchdog_enabled),
+      proactive_alerts: Boolean(monitor.alerts_enabled),
+      deployment_mode: asDeploymentMode(deployment.mode),
+      deployment_explicit: Boolean(deployment.explicit),
+      deployment_detected: asDeploymentMode(detected.detected),
     };
+  } catch {
+    return null;
   }
 }
 
 async function patchAdminSettings(
   patch: Partial<AdminSettings>,
 ): Promise<boolean> {
-  // TODO: implement PATCH /api/admin/settings on the server
   try {
-    await request<AdminSettings>("/api/admin/settings", {
-      method: "PATCH",
-      body: JSON.stringify(patch),
-    });
+    if (patch.watchdog_enabled !== undefined) {
+      await request<{ ok: boolean; watchdog_enabled: boolean }>(
+        "/api/admin/monitor/watchdog",
+        {
+          method: "POST",
+          body: JSON.stringify({ enabled: patch.watchdog_enabled }),
+        },
+      );
+    }
+    if (patch.proactive_alerts !== undefined) {
+      await request<{ ok: boolean; alerts_enabled: boolean }>(
+        "/api/admin/monitor/alerts",
+        {
+          method: "POST",
+          body: JSON.stringify({ enabled: patch.proactive_alerts }),
+        },
+      );
+    }
+    if (patch.deployment_mode !== undefined) {
+      await request<void>("/api/admin/deployment-mode", {
+        method: "POST",
+        body: JSON.stringify({ mode: patch.deployment_mode }),
+      });
+    }
     return true;
   } catch {
     return false;
@@ -77,24 +135,40 @@ async function patchAdminSettings(
 }
 
 async function fetchServerResources(): Promise<ServerResources | null> {
-  // TODO: implement GET /api/admin/server on the server
   try {
-    return await request<ServerResources>("/api/admin/server");
+    const [metrics, health] = await Promise.all([
+      request<SystemMetricsResponse>("/api/admin/system/metrics"),
+      request<HealthResponse>("/health").catch((): HealthResponse => ({})),
+    ]);
+    return {
+      memory_used_mb: Math.round((metrics.memory?.used_bytes ?? 0) / 1024 / 1024),
+      memory_total_mb: Math.round((metrics.memory?.total_bytes ?? 0) / 1024 / 1024),
+      cpu_percent: metrics.cpu?.usage_percent ?? 0,
+      uptime_secs: metrics.platform?.uptime_secs ?? 0,
+      version: health.version ?? "unknown",
+    };
   } catch {
     return null;
   }
 }
 
-async function rotateAdminToken(): Promise<string | null> {
-  // TODO: implement POST /api/admin/token/rotate on the server
+async function fetchTokenStatus(): Promise<TokenStatusResponse | null> {
   try {
-    const resp = await request<RotateTokenResponse>(
-      "/api/admin/token/rotate",
-      { method: "POST" },
-    );
-    return resp.token ?? null;
+    return await request<TokenStatusResponse>("/api/admin/token/status");
   } catch {
     return null;
+  }
+}
+
+async function rotateAdminToken(newToken: string): Promise<boolean> {
+  try {
+    await request<void>("/api/admin/token/rotate", {
+      method: "POST",
+      body: JSON.stringify({ new_token: newToken }),
+    });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -108,11 +182,6 @@ function formatUptime(secs: number | null): string {
   if (h > 0) return `${h}h ${m}m ${s}s`;
   if (m > 0) return `${m}m ${s}s`;
   return `${s}s`;
-}
-
-function maskToken(token: string): string {
-  if (token.length <= 8) return "••••••••";
-  return token.slice(0, 4) + "••••••••••••••••" + token.slice(-4);
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -162,28 +231,31 @@ export function ServerTab() {
   const [adminSettings, setAdminSettings] = useState<AdminSettings>({
     watchdog_enabled: false,
     proactive_alerts: false,
-    deployment_mode: "standalone",
+    deployment_mode: "local",
+    deployment_explicit: false,
+    deployment_detected: null,
   });
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
 
   // Server resources state
   const [resources, setResources] = useState<ServerResources | null>(null);
   const [resourcesLoading, setResourcesLoading] = useState(true);
 
   // Token rotation state
-  const [tokenMasked, setTokenMasked] = useState(true);
-  const [currentToken] = useState("mofamofa"); // placeholder; real value comes from auth context
   const [confirmRotate, setConfirmRotate] = useState(false);
   const [rotating, setRotating] = useState(false);
-  const [newToken, setNewToken] = useState<string | null>(null);
-  const [tokenCopied, setTokenCopied] = useState(false);
+  const [tokenRotated, setTokenRotated] = useState<boolean | null>(null);
+  const [tokenInput, setTokenInput] = useState("");
+  const [tokenMessage, setTokenMessage] = useState<string | null>(null);
+  const [tokenError, setTokenError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
     const data = await fetchAllProfiles();
     setProfiles(data);
     setLoading(false);
-  }, [error]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     void load();
@@ -194,6 +266,7 @@ export function ServerTab() {
     void (async () => {
       const s = await fetchAdminSettings();
       if (s) setAdminSettings(s);
+      else setSettingsError("Admin monitor/deployment settings are unavailable.");
     })();
   }, []);
 
@@ -205,6 +278,12 @@ export function ServerTab() {
       setResources(r);
       setResourcesLoading(false);
     })();
+  }, []);
+
+  useEffect(() => {
+    void fetchTokenStatus().then((status) => {
+      if (status) setTokenRotated(status.rotated);
+    });
   }, []);
 
   // Handlers: profiles
@@ -253,30 +332,43 @@ export function ServerTab() {
 
   // Handlers: admin settings
   const updateSetting = async (patch: Partial<AdminSettings>) => {
+    const previous = adminSettings;
     const next = { ...adminSettings, ...patch };
     setAdminSettings(next);
     setSettingsSaving(true);
-    await patchAdminSettings(patch);
+    setSettingsError(null);
+    const ok = await patchAdminSettings(patch);
+    if (!ok) {
+      setAdminSettings(previous);
+      setSettingsError("Failed to save admin setting.");
+    }
     setSettingsSaving(false);
   };
 
   // Handlers: token rotation
   const handleRotate = async () => {
+    const value = tokenInput;
+    if (value.trim() !== value) {
+      setTokenError("Token must not have leading or trailing whitespace.");
+      return;
+    }
+    if (value.length < 8) {
+      setTokenError("Token must be at least 8 characters.");
+      return;
+    }
     setConfirmRotate(false);
     setRotating(true);
-    const token = await rotateAdminToken();
-    setNewToken(token);
-    setRotating(false);
-  };
-
-  const handleCopyToken = async (token: string) => {
-    try {
-      await navigator.clipboard.writeText(token);
-      setTokenCopied(true);
-      setTimeout(() => setTokenCopied(false), 2000);
-    } catch {
-      // clipboard not available
+    setTokenError(null);
+    setTokenMessage(null);
+    const ok = await rotateAdminToken(value);
+    if (ok) {
+      setTokenRotated(true);
+      setTokenInput("");
+      setTokenMessage("Admin token rotated. Use the new token for future admin-token login.");
+    } else {
+      setTokenError("Failed to rotate token. It may already be rotated or the token was rejected.");
     }
+    setRotating(false);
   };
 
   const runningCount = profiles.filter((p) => p.status.running).length;
@@ -290,8 +382,7 @@ export function ServerTab() {
   }
 
   const deploymentModes: { value: DeploymentMode; label: string; description: string }[] = [
-    { value: "standalone", label: "Standalone", description: "Single-node, all services on one machine" },
-    { value: "local", label: "Local", description: "Local network deployment" },
+    { value: "local", label: "Local", description: "Single-node or LAN-only deployment" },
     { value: "cloud", label: "Cloud", description: "Cloud-hosted with managed infrastructure" },
     { value: "tenant", label: "Tenant", description: "Multi-tenant with isolated namespaces" },
   ];
@@ -433,9 +524,7 @@ export function ServerTab() {
               Resource metrics unavailable
             </p>
             <p className="mt-0.5 text-[10px] text-muted/60">
-              {/* TODO: server-side: implement GET /api/admin/server returning memory_used_mb, memory_total_mb, cpu_percent, uptime_secs, version */}
-              Endpoint not yet available — implement{" "}
-              <code className="font-mono">GET /api/admin/server</code>
+              Could not read <code className="font-mono">GET /api/admin/system/metrics</code>
             </p>
           </div>
         )}
@@ -461,6 +550,11 @@ export function ServerTab() {
         </div>
 
         <div className="space-y-3">
+          {settingsError && (
+            <div className="rounded-xl border border-red-400/30 bg-red-400/5 px-4 py-3 text-xs text-red-300">
+              {settingsError}
+            </div>
+          )}
           {/* Watchdog toggle */}
           <div className="flex items-center justify-between rounded-xl bg-surface-container/60 border border-transparent hover:border-border/40 px-4 py-3.5 transition">
             <div>
@@ -497,10 +591,9 @@ export function ServerTab() {
         </div>
 
         <p className="mt-3 text-[10px] text-muted/50">
-          {/* TODO: server-side: implement PATCH /api/admin/settings accepting { watchdog_enabled, proactive_alerts } */}
-          Settings are persisted via{" "}
-          <code className="font-mono">PATCH /api/admin/settings</code> (stub
-          returns defaults until server-side implementation is complete).
+          Settings use <code className="font-mono">/api/admin/monitor/status</code>,{" "}
+          <code className="font-mono">/watchdog</code>, and{" "}
+          <code className="font-mono">/alerts</code>.
         </p>
       </div>
 
@@ -516,6 +609,14 @@ export function ServerTab() {
             </h3>
             <p className="text-xs text-muted">
               Select how this server is deployed
+              {adminSettings.deployment_detected && (
+                <span className="ml-2 text-muted/70">
+                  Detected: {adminSettings.deployment_detected}
+                </span>
+              )}
+              {!adminSettings.deployment_explicit && (
+                <span className="ml-2 text-yellow-400">Using default</span>
+              )}
               {settingsSaving && (
                 <span className="ml-2 text-accent">Saving…</span>
               )}
@@ -557,11 +658,8 @@ export function ServerTab() {
         </div>
 
         <p className="mt-3 text-[10px] text-muted/50">
-          {/* TODO: server-side: expose detected deployment mode via GET /api/admin/settings and accept PATCH */}
-          Mode is saved via{" "}
-          <code className="font-mono">PATCH /api/admin/settings</code>. Detected
-          mode is read from{" "}
-          <code className="font-mono">GET /api/admin/settings</code>.
+          Mode is read from <code className="font-mono">GET /api/admin/deployment-mode</code> and saved via{" "}
+          <code className="font-mono">POST /api/admin/deployment-mode</code>.
         </p>
       </div>
 
@@ -582,51 +680,56 @@ export function ServerTab() {
         {/* Current token row */}
         <div className="rounded-xl bg-surface-container/60 border border-border/30 px-4 py-3.5 mb-3">
           <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-xs text-muted mb-1">Current Admin Token</div>
-              <div className="font-mono text-sm text-text-strong truncate">
-                {tokenMasked ? maskToken(currentToken) : currentToken}
+            <div>
+              <div className="text-xs text-muted mb-1">Admin Token Status</div>
+              <div className="text-sm text-text-strong">
+                {tokenRotated === null
+                  ? "Unknown"
+                  : tokenRotated
+                    ? "Rotated token is active"
+                    : "Bootstrap token has not been rotated"}
               </div>
             </div>
-            <button
-              onClick={() => setTokenMasked((v) => !v)}
-              className="shrink-0 flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-muted hover:text-text-strong hover:bg-surface-dark/40 transition"
-              aria-label={tokenMasked ? "Show token" : "Hide token"}
-            >
-              {tokenMasked ? <Eye size={13} /> : <EyeOff size={13} />}
-            </button>
+            {tokenRotated !== null && (
+              <span
+                className={`rounded-md px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+                  tokenRotated
+                    ? "bg-green-400/15 text-green-400"
+                    : "bg-yellow-400/15 text-yellow-400"
+                }`}
+              >
+                {tokenRotated ? "Rotated" : "Bootstrap"}
+              </span>
+            )}
           </div>
         </div>
 
-        {/* New token display (shown after rotation) */}
-        {newToken && (
+        {tokenMessage && (
           <div className="mb-3 rounded-xl border border-green-400/30 bg-green-400/5 px-4 py-3">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-1.5 mb-1">
-                  <CheckCircle size={12} className="shrink-0 text-green-400" />
-                  <span className="text-xs font-medium text-green-400">
-                    New token — copy it now, it won't be shown again
-                  </span>
-                </div>
-                <div className="font-mono text-sm text-text-strong break-all">
-                  {newToken}
-                </div>
-              </div>
-              <button
-                onClick={() => void handleCopyToken(newToken)}
-                className="shrink-0 flex items-center gap-1.5 rounded-lg bg-green-500/15 px-2.5 py-1.5 text-xs font-medium text-green-400 hover:bg-green-500/25 transition"
-              >
-                {tokenCopied ? (
-                  <Check size={12} />
-                ) : (
-                  <Copy size={12} />
-                )}
-                {tokenCopied ? "Copied" : "Copy"}
-              </button>
+            <div className="flex items-center gap-1.5 text-xs font-medium text-green-400">
+              <CheckCircle size={12} className="shrink-0" />
+              {tokenMessage}
             </div>
           </div>
         )}
+
+        {tokenError && (
+          <div className="mb-3 rounded-xl border border-red-400/30 bg-red-400/5 px-4 py-3 text-xs text-red-300">
+            {tokenError}
+          </div>
+        )}
+
+        <input
+          type="password"
+          value={tokenInput}
+          onChange={(e) => {
+            setTokenInput(e.target.value);
+            setTokenError(null);
+          }}
+          placeholder="New admin token, minimum 8 characters"
+          autoComplete="new-password"
+          className="mb-3 w-full rounded-xl border border-transparent bg-surface-container px-4 py-3 font-mono text-sm text-text outline-none transition placeholder:text-muted/50 focus:border-accent/30"
+        />
 
         {/* Confirm rotation dialog */}
         {confirmRotate && (
@@ -653,10 +756,10 @@ export function ServerTab() {
 
         <button
           onClick={() => {
-            setNewToken(null);
+            setTokenMessage(null);
             setConfirmRotate(true);
           }}
-          disabled={rotating || confirmRotate}
+          disabled={rotating || confirmRotate || tokenInput.length === 0}
           className="flex items-center gap-2 rounded-xl border border-red-400/20 bg-red-500/5 px-4 py-2.5 text-xs font-medium text-red-400 hover:bg-red-500/10 disabled:opacity-40 transition"
         >
           {rotating ? (
@@ -664,14 +767,13 @@ export function ServerTab() {
           ) : (
             <Shield size={13} />
           )}
-          Generate New Token
+          Rotate Token
         </button>
 
         <p className="mt-3 text-[10px] text-muted/50">
-          {/* TODO: server-side: implement POST /api/admin/token/rotate returning { token: string } */}
-          Token rotation calls{" "}
-          <code className="font-mono">POST /api/admin/token/rotate</code>. The
-          new token is shown exactly once.
+          Token rotation sends your chosen value to{" "}
+          <code className="font-mono">POST /api/admin/token/rotate</code>; the server returns{" "}
+          <code className="font-mono">204</code> on success.
         </p>
       </div>
 

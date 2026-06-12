@@ -1364,12 +1364,12 @@ button, a, input, textarea {
 
 /* ── Night mode ─────────────────────────────────────── */
 .home-night-mode {
-  filter: brightness(0.5) sepia(0.15);
+  filter: brightness(0.65) sepia(0.1);
   transition: filter 1s ease-in-out;
 }
 
 .home-clock-night {
-  color: #8b2020;
+  color: #ff9070;
 }
 
 /* ── Burn-in dimmed state ──────────────────────────── */
@@ -1642,4 +1642,649 @@ button, a, input, textarea {
   .home-calendar-widget {
     max-width: 720px;
   }
+}
+
+/* ── Height-responsive: small touchscreen displays ── */
+
+/* Compact mode (≤850px height, e.g. 1280x800 landscape) */
+@media (max-height: 850px) {
+  .home-root .home-standby {
+    padding-top: 3.5rem;
+    padding-bottom: 0.75rem;
+  }
+  .home-clock {
+    font-size: clamp(4rem, 12vw, 6rem);
+  }
+  .home-date {
+    margin-top: 0.25rem;
+  }
+  .home-quick-actions {
+    grid-template-columns: repeat(4, 1fr);
+    max-width: 560px;
+    gap: 0.75rem;
+  }
+  .home-standby .home-quick-actions {
+    margin-top: 1.5rem;
+  }
+  .home-quick-card {
+    padding: 1rem 0.5rem;
+  }
+  .home-voice-orb {
+    width: 80px;
+    height: 80px;
+  }
+  .home-standby .home-voice-orb-wrapper {
+    margin-top: 0.75rem;
+  }
+  .home-standby .home-weather-widget {
+    margin-top: 1.5rem;
+    padding: 0.5rem 1rem;
+  }
+  .home-standby .home-news-widget {
+    margin-top: 1rem;
+    padding: 0.375rem 0.75rem;
+  }
+  .home-standby .home-calendar-widget {
+    margin-top: 0.5rem;
+    padding: 0.375rem 0.75rem;
+  }
+  .home-bubble-text {
+    font-size: clamp(1rem, 3vw, 1.5rem);
+  }
+  .home-composer {
+    padding: 0.375rem 0.5rem;
+  }
+}
+
+/* Ultra-compact mode (≤520px height, e.g. 800x480 landscape) */
+@media (max-height: 520px) {
+  .home-root .home-standby {
+    padding-top: 2.5rem;
+    padding-bottom: 0.5rem;
+  }
+  .home-top-bar {
+    padding-top: 0.375rem;
+  }
+  .home-greeting {
+    font-size: 0.85rem;
+  }
+  .home-settings-gear {
+    width: 36px;
+    height: 36px;
+  }
+  .home-clock {
+    font-size: clamp(2.5rem, 10vw, 3.5rem);
+  }
+  .home-date {
+    font-size: 0.8rem;
+    margin-top: 0;
+  }
+  .home-quick-actions {
+    max-width: 420px;
+    gap: 0.5rem;
+    padding: 0 0.5rem;
+  }
+  .home-standby .home-quick-actions {
+    margin-top: 0.75rem;
+  }
+  .home-quick-card {
+    padding: 0.625rem 0.375rem;
+    border-radius: 14px;
+  }
+  .home-quick-card-icon {
+    width: 40px;
+    height: 40px;
+    min-width: 40px;
+    min-height: 40px;
+    border-radius: 12px;
+  }
+  .home-standby .home-weather-widget {
+    margin-top: 0.75rem;
+    padding: 0.375rem 0.75rem;
+    border-radius: 14px;
+    max-width: 420px;
+  }
+  .home-weather-current .text-3xl {
+    font-size: 1.5rem;
+  }
+  .home-weather-current .text-4xl {
+    font-size: 1.75rem;
+  }
+  .home-widget {
+    border-radius: 14px;
+  }
+  .home-bubble-text {
+    font-size: 0.95rem;
+    line-height: 1.5;
+  }
+  .home-composer {
+    padding: 0.25rem 0.375rem;
+    border-radius: 1rem;
+  }
+  .home-composer-input {
+    font-size: 0.95rem;
+    padding: 0.25rem 0.5rem;
+  }
+  .home-back-button {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    min-height: 36px;
+  }
+  .home-send-button,
+  .home-stop-button {
+    width: 44px;
+    height: 44px;
+  }
+  .home-conversation > div:first-child {
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+  }
+  .home-messages {
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+    padding-bottom: 0.25rem;
+  }
+  .home-bubble-user,
+  .home-bubble-assistant {
+    padding: 0.375rem 0.75rem;
+  }
+  .home-conversation .shrink-0:last-child {
+    padding: 0.25rem 0.5rem 0.375rem;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════
+   Metro Tile Grid — Windows Phone inspired
+   ══════════════════════════════════════════════════════════ */
+
+.metro-grid-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.metro-grid-container::-webkit-scrollbar {
+  display: none;
+}
+
+/* ── Top bar ─── */
+.metro-top-bar {
+  position: fixed;
+  top: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  z-index: 50;
+  pointer-events: none;
+}
+.metro-top-bar > * {
+  pointer-events: auto;
+}
+.metro-top-bar .home-settings-gear {
+  position: static;
+  inset: auto;
+  z-index: auto;
+  flex-shrink: 0;
+}
+
+.metro-edit-toggle {
+  font-size: 0.8rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.metro-edit-toggle:hover {
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.1);
+}
+.metro-edit-active {
+  color: #D4956A;
+  border-color: rgba(212, 149, 106, 0.4);
+  background: rgba(212, 149, 106, 0.1);
+}
+
+/* ── CSS Grid layout ─── */
+.metro-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  grid-auto-rows: 90px;
+  gap: 4px;
+  padding: 48px 12px 24px;
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+@media (max-width: 600px) {
+  .metro-grid {
+    grid-template-columns: repeat(4, 1fr);
+    grid-auto-rows: 80px;
+    padding: 40px 8px 16px;
+    gap: 3px;
+  }
+}
+
+/* ── Tile base ─── */
+.metro-tile {
+  border-radius: 4px;
+  overflow: hidden;
+  transition: box-shadow 0.2s ease, transform 0.15s ease;
+  cursor: pointer;
+  position: relative;
+  touch-action: manipulation;
+}
+.metro-tile:hover {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.metro-tile:active {
+  transform: scale(0.985);
+}
+
+.metro-tile-content {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 12px;
+  position: relative;
+}
+
+/* ── Edit mode ─── */
+.metro-edit-mode .metro-tile {
+  cursor: grab;
+  box-shadow: inset 0 0 0 1px rgba(212, 149, 106, 0.25);
+  animation: metroWobble 1.5s ease-in-out infinite;
+}
+.metro-edit-mode .metro-tile:active {
+  cursor: grabbing;
+  transform: scale(1.02);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), inset 0 0 0 2px rgba(212, 149, 106, 0.5);
+  z-index: 100;
+}
+
+@keyframes metroWobble {
+  0%, 100% { transform: rotate(0deg); }
+  25% { transform: rotate(-0.3deg); }
+  75% { transform: rotate(0.3deg); }
+}
+
+.metro-tile-edit-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-start;
+  padding: 8px 10px;
+  background: linear-gradient(to top, rgba(0,0,0,0.5), transparent 60%);
+  pointer-events: none;
+}
+.metro-tile-edit-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+/* ── Resize handle (edit mode) ─── */
+.metro-resize-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 28px;
+  height: 28px;
+  cursor: nwse-resize;
+  z-index: 10;
+  touch-action: none;
+}
+.metro-resize-handle::after {
+  content: "";
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 10px;
+  height: 10px;
+  border-right: 2px solid rgba(212, 149, 106, 0.5);
+  border-bottom: 2px solid rgba(212, 149, 106, 0.5);
+}
+.metro-resize-handle:hover::after,
+.metro-resize-handle:active::after {
+  border-color: rgba(212, 149, 106, 0.9);
+}
+
+/* ── Clock tile ─── */
+.metro-tile-clock {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-end;
+  width: 100%;
+  height: 100%;
+  padding: 0 8px 4px;
+}
+
+.metro-clock-time {
+  font-size: clamp(3rem, 10vw, 6rem);
+  font-weight: 200;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  color: #F0E6DC;
+}
+
+.metro-clock-night {
+  color: #D4956A;
+}
+
+.metro-clock-colon {
+  animation: colonBlink 2s ease-in-out infinite;
+}
+
+.metro-clock-ampm {
+  font-size: 0.3em;
+  font-weight: 400;
+  color: rgba(240, 230, 220, 0.35);
+  margin-left: 0.3em;
+  vertical-align: top;
+}
+
+.metro-clock-date {
+  font-size: clamp(0.85rem, 2vw, 1.15rem);
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  color: rgba(240, 230, 220, 0.4);
+  margin-top: 4px;
+}
+
+/* ── Weather tile ─── */
+.metro-tile-weather {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  justify-content: center;
+  gap: 10px;
+}
+
+.metro-weather-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.metro-weather-emoji {
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.metro-weather-temp {
+  font-size: 1.75rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.92);
+  line-height: 1.1;
+}
+
+.metro-weather-label {
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.45);
+  margin-top: 2px;
+}
+
+.metro-weather-forecast {
+  display: flex;
+  gap: 12px;
+}
+
+.metro-forecast-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.metro-forecast-hour {
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.35);
+  font-variant-numeric: tabular-nums;
+}
+.metro-forecast-emoji { font-size: 1rem; }
+.metro-forecast-temp {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.6);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Quick action tile ─── */
+.metro-quick-action {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+.metro-quick-action:hover { opacity: 0.85; }
+.metro-quick-action:active { transform: scale(0.92); }
+
+.metro-quick-label {
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* ── News tile ─── */
+.metro-tile-news {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.metro-tile-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+
+.metro-news-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  flex: 1;
+  min-height: 0;
+}
+.metro-news-list::-webkit-scrollbar { display: none; }
+
+.metro-news-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  transition: background 0.15s ease;
+}
+.metro-news-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.metro-news-title {
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.75);
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  flex: 1;
+}
+.metro-news-time {
+  font-size: 0.6rem;
+  color: rgba(255, 255, 255, 0.25);
+  flex-shrink: 0;
+}
+
+/* ── Calendar tile ─── */
+.metro-tile-calendar {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.metro-calendar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  overflow-y: auto;
+  scrollbar-width: none;
+  min-height: 0;
+}
+.metro-calendar-list::-webkit-scrollbar { display: none; }
+
+.metro-calendar-event {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px;
+  border-radius: 3px;
+}
+.metro-event-upcoming {
+  background: rgba(212, 149, 106, 0.1);
+  border-left: 2px solid rgba(212, 149, 106, 0.5);
+}
+.metro-event-time {
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.45);
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.metro-event-title {
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.7);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Voice tile ─── */
+.metro-tile-voice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  gap: 8px;
+}
+
+.metro-tile-voice .home-voice-orb {
+  width: 72px;
+  height: 72px;
+}
+
+.metro-voice-transcript {
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.35);
+  text-align: center;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Utility ─── */
+.metro-tile-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+.metro-pulse {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  animation: metroPulse 1.5s ease-in-out infinite;
+}
+@keyframes metroPulse {
+  0%, 100% { opacity: 0.3; transform: scale(0.95); }
+  50% { opacity: 0.6; transform: scale(1.05); }
+}
+
+.metro-tile-muted {
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.25);
+}
+
+/* ── Timer/Photo inside tiles ─── */
+.metro-tile[data-tile-id="timer"] .home-timer-widget {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+.metro-tile[data-tile-id="timer"] .home-widget {
+  background: transparent;
+  border: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  padding: 0;
+  margin: 0;
+}
+
+.metro-tile[data-tile-id="photo"] .home-photo-frame-container {
+  max-width: none;
+  width: 100%;
+  height: 100%;
+  aspect-ratio: auto;
+  border: none;
+  border-radius: 0;
+  margin: 0;
+}
+.metro-tile[data-tile-id="photo"] .metro-tile-content {
+  padding: 0;
 }
