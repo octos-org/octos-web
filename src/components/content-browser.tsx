@@ -96,7 +96,7 @@ function renderFileIcon(entry: ContentEntry, size: number) {
 function categoryTone(category: ContentEntry["category"]): string {
   switch (category) {
     case "audio":
-      return "bg-purple-500/15 text-purple-300";
+      return "bg-link/12 text-link";
     case "video":
       return "bg-red-500/15 text-red-300";
     case "image":
@@ -104,7 +104,7 @@ function categoryTone(category: ContentEntry["category"]): string {
     case "slides":
       return "bg-amber-500/15 text-amber-300";
     case "report":
-      return "bg-sky-500/15 text-sky-300";
+      return "bg-accent/12 text-accent";
     default:
       return "bg-surface-light text-muted";
   }

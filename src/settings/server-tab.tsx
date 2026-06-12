@@ -390,7 +390,7 @@ export function ServerTab() {
   return (
     <div className="space-y-6">
       {/* ── Server Info card ─────────────────────────────────────────── */}
-      <div className="glass-section rounded-2xl p-6">
+      <div className="glass-section rounded-lg p-6">
         <div className="flex items-center gap-3 mb-5">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
             <Server size={20} />
@@ -432,7 +432,7 @@ export function ServerTab() {
       </div>
 
       {/* ── Server Resources panel ────────────────────────────────────── */}
-      <div className="glass-section rounded-2xl p-6">
+      <div className="glass-section rounded-lg p-6">
         <div className="flex items-center justify-between mb-5">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
@@ -531,7 +531,7 @@ export function ServerTab() {
       </div>
 
       {/* ── Reliability (Watchdog + Alerts) ──────────────────────────── */}
-      <div className="glass-section rounded-2xl p-6">
+      <div className="glass-section rounded-lg p-6">
         <div className="flex items-center gap-3 mb-5">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
             <RefreshCw size={20} />
@@ -598,7 +598,7 @@ export function ServerTab() {
       </div>
 
       {/* ── Deployment Mode selector ──────────────────────────────────── */}
-      <div className="glass-section rounded-2xl p-6">
+      <div className="glass-section rounded-lg p-6">
         <div className="flex items-center gap-3 mb-5">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
             <Server size={20} />
@@ -664,7 +664,7 @@ export function ServerTab() {
       </div>
 
       {/* ── Security: Rotate Admin Token ──────────────────────────────── */}
-      <div className="glass-section rounded-2xl p-6">
+      <div className="glass-section rounded-lg p-6">
         <div className="flex items-center gap-3 mb-5">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
             <Shield size={20} />
@@ -778,7 +778,7 @@ export function ServerTab() {
       </div>
 
       {/* ── Profiles management ───────────────────────────────────────── */}
-      <div className="glass-section rounded-2xl p-6">
+      <div className="glass-section rounded-lg p-6">
         <div className="flex items-center justify-between mb-5">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">

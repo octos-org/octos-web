@@ -79,12 +79,13 @@ export function AdminSettingsPage() {
   const isAdminOnlyTab = activeTab === "system" || activeTab === "server" || activeTab === "users" || activeTab === "ominix";
 
   return (
-    <div className="flex h-screen flex-col bg-surface-dark">
-      <nav className="flex shrink-0 items-center gap-4 px-6 py-4 max-md:px-3">
+    <div className="workbench-shell flex h-screen flex-col">
+      <nav className="workbench-topbar flex shrink-0 items-center gap-4 px-5 py-3 max-md:px-3">
         <button
           onClick={() => navigate(-1)}
-          className="rounded-xl p-2 text-muted hover:bg-surface-container hover:text-text-strong transition"
+          className="glass-icon-button p-2"
           title="Go back"
+          aria-label="Go back"
         >
           <ArrowLeft size={18} />
         </button>
@@ -94,7 +95,7 @@ export function AdminSettingsPage() {
             alt="Octos"
             className="h-6 w-auto select-none"
           />
-          <span className="text-lg font-semibold tracking-tight text-text-strong">
+          <span className="text-base font-semibold tracking-tight text-text-strong">
             Settings
           </span>
         </div>
@@ -105,7 +106,7 @@ export function AdminSettingsPage() {
           <select
             value={selectedProfileId}
             onChange={(e) => setSelectedProfileId(e.target.value)}
-            className="rounded-xl bg-surface-container px-3 py-2 text-sm text-text outline-none border border-transparent focus:border-accent/30 transition"
+            className="workbench-input px-3 py-2 text-sm"
           >
             {accessibleProfiles.map((p) => (
               <option key={p.id} value={p.id}>
@@ -117,8 +118,9 @@ export function AdminSettingsPage() {
 
         <button
           onClick={toggleTheme}
-          className="rounded-xl p-2.5 text-muted hover:bg-surface-container hover:text-text-strong transition"
+          className="glass-icon-button p-2.5"
           title={theme === "dark" ? "Light mode" : "Dark mode"}
+          aria-label={theme === "dark" ? "Light mode" : "Dark mode"}
         >
           {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
         </button>
@@ -130,7 +132,7 @@ export function AdminSettingsPage() {
         </div>
       ) : (
         <div className="flex min-h-0 flex-1 overflow-hidden max-md:flex-col">
-          <aside className="w-56 shrink-0 overflow-y-auto border-r border-border/50 px-3 py-4 max-md:w-full max-md:overflow-x-auto max-md:overflow-y-hidden max-md:border-b max-md:border-r-0 max-md:py-2">
+          <aside className="workbench-rail w-60 shrink-0 overflow-y-auto px-3 py-4 max-md:w-full max-md:overflow-x-auto max-md:overflow-y-hidden max-md:border-b max-md:border-r-0 max-md:py-2">
             <div className="space-y-1 max-md:flex max-md:min-w-max max-md:gap-2 max-md:space-y-0">
               {TABS.filter(
                 (t) => !t.adminOnly || portal?.can_access_admin_portal,
@@ -138,16 +140,16 @@ export function AdminSettingsPage() {
                 <button
                   key={id}
                   onClick={() => setActiveTab(id)}
-                  className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-medium transition max-md:w-auto max-md:shrink-0 max-md:px-3 ${
+                  className={`flex w-full items-center gap-3 rounded-lg border px-4 py-3 text-left text-sm font-medium transition max-md:w-auto max-md:shrink-0 max-md:px-3 ${
                     activeTab === id
-                      ? "bg-accent/12 text-accent border border-accent/20"
-                      : "text-muted hover:bg-surface-container hover:text-text-strong border border-transparent"
+                      ? "border-accent/40 bg-accent/10 text-accent"
+                      : "border-transparent text-muted hover:bg-surface-container hover:text-text-strong"
                   }`}
                 >
                   <Icon size={16} />
                   {label}
                   {adminOnly && (
-                    <span className="ml-auto rounded bg-accent/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-accent/70">
+                    <span className="workbench-badge ml-auto px-1.5 py-0.5 text-[9px] text-accent/80">
                       Admin
                     </span>
                   )}
@@ -157,7 +159,7 @@ export function AdminSettingsPage() {
           </aside>
 
           <main className="min-w-0 flex-1 overflow-y-auto px-8 py-6 max-md:px-4 max-md:py-4">
-            <div className={`mx-auto ${isAdminOnlyTab ? "max-w-3xl" : "max-w-2xl"}`}>
+            <div className={`mx-auto ${isAdminOnlyTab ? "max-w-4xl" : "max-w-3xl"}`}>
               {activeTab === "system" && portal?.can_access_admin_portal && <SystemTab />}
               {activeTab === "server" && portal?.can_access_admin_portal && <ServerTab />}
               {activeTab === "users" && portal?.can_access_admin_portal && profile && <UsersTab profile={profile} />}

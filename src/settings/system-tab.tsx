@@ -121,7 +121,7 @@ function CollapsibleSection({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="glass-section rounded-2xl overflow-hidden">
+    <div className="glass-section rounded-lg overflow-hidden">
       <button
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-3 p-6 text-left hover:bg-surface-container/30 transition"
@@ -320,7 +320,7 @@ function classifyLine(text: string): LogLine["level"] {
 }
 
 const LOG_LEVEL_COLOR: Record<LogLine["level"], string> = {
-  info: "text-blue-400",
+  info: "text-link",
   warn: "text-yellow-400",
   error: "text-red-400",
   debug: "text-muted",
@@ -541,7 +541,7 @@ export function SystemTab() {
   if (error && !summary) {
     return (
       <div className="space-y-6">
-        <div className="glass-section rounded-2xl p-6">
+        <div className="glass-section rounded-lg p-6">
           <div className="flex flex-col items-center justify-center py-10">
             <AlertCircle size={32} className="mb-3 text-red-400/60" />
             <p className="text-sm text-red-400">{error}</p>
@@ -600,7 +600,7 @@ export function SystemTab() {
 
       {/* Collection overview */}
       {collection && (
-        <div className="glass-section rounded-2xl p-6">
+        <div className="glass-section rounded-lg p-6">
           <div className="flex items-center gap-3 mb-5">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
               <BarChart3 size={20} />
@@ -678,7 +678,7 @@ export function SystemTab() {
       {/* Error / Warning breakdowns */}
       {((breakdowns.loop_errors?.length ?? 0) > 0 ||
         (breakdowns.loop_retries?.length ?? 0) > 0) && (
-        <div className="glass-section rounded-2xl p-6">
+        <div className="glass-section rounded-lg p-6">
           <div className="flex items-center gap-3 mb-5">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-400/10 text-red-400">
               <AlertTriangle size={20} />
@@ -752,8 +752,8 @@ export function SystemTab() {
       {/* ── NEW: Compaction Events ── */}
       <CollapsibleSection
         icon={<Package size={20} />}
-        iconBg="bg-purple-400/10"
-        iconColor="text-purple-400"
+        iconBg="bg-link/10"
+        iconColor="text-link"
         title="Compaction Events"
         subtitle="Context compaction activity and preservation violations"
         defaultOpen={(totals.compaction_preservation_violations ?? 0) > 0}
@@ -766,7 +766,7 @@ export function SystemTab() {
 
       {/* Gateway sources table */}
       {sources.length > 0 && (
-        <div className="glass-section rounded-2xl p-6">
+        <div className="glass-section rounded-lg p-6">
           <div className="flex items-center gap-3 mb-5">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
               <Activity size={20} />
@@ -845,7 +845,7 @@ export function SystemTab() {
       )}
 
       {/* Operator tasks */}
-      <div className="glass-section rounded-2xl p-6">
+      <div className="glass-section rounded-lg p-6">
         <div className="flex items-center justify-between mb-5">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">

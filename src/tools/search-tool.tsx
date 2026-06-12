@@ -69,7 +69,7 @@ export const WebSearchToolUI = makeAssistantToolUI<
       query={args?.query ?? "..."}
       result={result?.output}
       status={status}
-      color="text-purple-400"
+      color="text-link"
     />
   ),
 });

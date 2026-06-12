@@ -124,7 +124,7 @@ function Section({
   action?: ReactNode;
 }) {
   return (
-    <section className="glass-section rounded-2xl p-4 sm:p-6">
+    <section className="glass-section rounded-lg p-4 sm:p-6">
       <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">

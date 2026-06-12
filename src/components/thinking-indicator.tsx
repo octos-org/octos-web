@@ -115,7 +115,7 @@ export function ThinkingIndicator() {
   return (
     <div
       data-testid="thinking-indicator"
-      className="inline-flex items-center gap-2 my-1 px-3 py-2 rounded-2xl border border-accent/30 bg-accent-container text-sm shadow-sm"
+      className="inline-flex items-center gap-2 my-1 px-3 py-2 rounded-lg border border-accent/30 bg-accent-container text-sm shadow-sm"
       role="status"
       aria-live="polite"
     >

@@ -72,7 +72,7 @@ function isImageFile(file: MessageFile): boolean {
 function ThinkingBubble() {
   return (
     <div className="flex justify-start mb-2">
-      <div className="home-bubble home-bubble-assistant max-w-[80%] rounded-2xl px-5 py-3">
+      <div className="home-bubble home-bubble-assistant max-w-[80%] rounded-lg px-5 py-3">
         <div className="home-thinking-dots flex items-center gap-1.5">
           <span className="home-thinking-dot" style={{ animationDelay: "0ms" }} />
           <span className="home-thinking-dot" style={{ animationDelay: "160ms" }} />
@@ -156,7 +156,7 @@ function PendingBubble({ pending }: { pending: ThreadMessage }) {
 
   return (
     <div className="flex justify-start mb-2">
-      <div className="home-bubble home-bubble-assistant max-w-[80%] rounded-2xl px-5 py-3">
+      <div className="home-bubble home-bubble-assistant max-w-[80%] rounded-lg px-5 py-3">
         <div className="home-bubble-text home-bubble-markdown text-white/90">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>
             {smoothText}
@@ -449,7 +449,7 @@ export function ConversationView({ onBack, prefill }: ConversationViewProps) {
                 <button
                   key={suggestion}
                   onClick={() => handleSuggestion(suggestion)}
-                  className="home-suggestion-card rounded-2xl px-4 py-3 text-left text-base text-white/70 transition-all hover:text-white/90"
+                  className="home-suggestion-card rounded-lg px-4 py-3 text-left text-base text-white/70 transition-all hover:text-white/90"
                 >
                   {suggestion}
                 </button>
@@ -462,7 +462,7 @@ export function ConversationView({ onBack, prefill }: ConversationViewProps) {
             {/* User bubble — plain text */}
             {thread.userMsg && (
               <div className="flex justify-end mb-2">
-                <div className="home-bubble home-bubble-user max-w-[80%] rounded-2xl px-5 py-3">
+                <div className="home-bubble home-bubble-user max-w-[80%] rounded-lg px-5 py-3">
                   <div className="home-bubble-text text-white">
                     {thread.userMsg.text}
                   </div>
@@ -478,7 +478,7 @@ export function ConversationView({ onBack, prefill }: ConversationViewProps) {
               .filter((msg: ThreadMessage) => msg.role === "assistant")
               .map((msg: ThreadMessage) => (
               <div key={msg.id} className="flex justify-start mb-2">
-                <div className="home-bubble home-bubble-assistant max-w-[80%] rounded-2xl px-5 py-3">
+                <div className="home-bubble home-bubble-assistant max-w-[80%] rounded-lg px-5 py-3">
                   <div className="home-bubble-text home-bubble-markdown text-white/90">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
                       {msg.text}
@@ -529,7 +529,7 @@ export function ConversationView({ onBack, prefill }: ConversationViewProps) {
 
       {/* Input */}
       <div className="shrink-0 px-4 pb-4 pt-2">
-        <div className="home-composer flex items-end gap-3 rounded-2xl p-3">
+        <div className="home-composer flex items-end gap-3 rounded-lg p-3">
           <textarea
             ref={textareaRef}
             value={text}

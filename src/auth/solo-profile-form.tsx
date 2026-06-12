@@ -61,7 +61,7 @@ export function SoloProfileForm({ onDone }: { onDone?: () => void }) {
         onChange={(e) => setName(e.target.value)}
         disabled={submitting}
         autoFocus
-        className="w-full rounded-lg border border-border bg-surface-light px-4 py-3 text-text placeholder-muted outline-none focus:border-accent"
+        className="workbench-input w-full px-4 py-3 placeholder-muted"
       />
       <div>
         <input
@@ -71,7 +71,7 @@ export function SoloProfileForm({ onDone }: { onDone?: () => void }) {
           value={username}
           onChange={(e) => setUsername(e.target.value)}
           disabled={submitting}
-          className="w-full rounded-lg border border-border bg-surface-light px-4 py-3 font-mono text-text placeholder-muted outline-none focus:border-accent"
+          className="workbench-input w-full px-4 py-3 font-mono placeholder-muted"
         />
         <p className="mt-1 text-xs text-muted">
           Letters, digits, dot, hyphen or underscore.
@@ -84,7 +84,7 @@ export function SoloProfileForm({ onDone }: { onDone?: () => void }) {
         value={email}
         onChange={(e) => setEmail(e.target.value)}
         disabled={submitting}
-        className="w-full rounded-lg border border-border bg-surface-light px-4 py-3 text-text placeholder-muted outline-none focus:border-accent"
+        className="workbench-input w-full px-4 py-3 placeholder-muted"
       />
       {error && (
         <p data-testid="solo-error" className="text-sm text-red-400">
@@ -95,7 +95,7 @@ export function SoloProfileForm({ onDone }: { onDone?: () => void }) {
         data-testid="solo-submit"
         onClick={handleSubmit}
         disabled={!canSubmit}
-        className="w-full rounded-lg bg-accent py-3 font-medium text-surface-dark transition hover:bg-accent-dim disabled:opacity-50"
+        className="workbench-button workbench-button-primary w-full py-3 font-medium disabled:opacity-50"
       >
         {submitting ? "Creating…" : "Create profile & continue"}
       </button>

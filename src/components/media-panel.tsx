@@ -23,9 +23,9 @@ function isImage(filename: string) {
 }
 
 function fileIcon(filename: string) {
-  if (isAudio(filename)) return <Music size={16} className="text-purple-400" />;
-  if (isVideo(filename)) return <Film size={16} className="text-blue-400" />;
-  if (isImage(filename)) return <Image size={16} className="text-green-400" />;
+  if (isAudio(filename)) return <Music size={16} className="text-link" />;
+  if (isVideo(filename)) return <Film size={16} className="text-accent" />;
+  if (isImage(filename)) return <Image size={16} className="text-emerald-300" />;
   return <FileText size={16} className="text-muted" />;
 }
 

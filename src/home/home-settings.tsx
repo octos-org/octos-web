@@ -251,7 +251,7 @@ export function HomeSettingsPanel({ open, onClose }: HomeSettingsPanelProps) {
                         {ev.title}
                       </span>
                       {ev.recurring && (
-                        <span className="text-[10px] text-blue-400/70 shrink-0">
+                        <span className="shrink-0 text-[10px] text-accent/70">
                           {ev.recurring}
                         </span>
                       )}
@@ -310,7 +310,7 @@ export function HomeSettingsPanel({ open, onClose }: HomeSettingsPanelProps) {
                   <button
                     onClick={handleAddEvent}
                     disabled={!evTitle.trim()}
-                    className="flex items-center justify-center gap-1 rounded-lg px-3 py-2 text-sm font-medium bg-blue-500/20 text-blue-300 hover:bg-blue-500/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    className="flex items-center justify-center gap-1 rounded-lg bg-accent/20 px-3 py-2 text-sm font-medium text-accent transition-colors hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-30"
                   >
                     <Plus size={14} />
                     {t.settingsAddEvent}
@@ -356,7 +356,7 @@ export function HomeSettingsPanel({ open, onClose }: HomeSettingsPanelProps) {
                     }
                   }}
                   disabled={!photoUrl.trim()}
-                  className="flex items-center justify-center gap-1 rounded-lg px-3 py-2 text-sm font-medium bg-blue-500/20 text-blue-300 hover:bg-blue-500/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                  className="flex items-center justify-center gap-1 rounded-lg bg-accent/20 px-3 py-2 text-sm font-medium text-accent transition-colors hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-30"
                 >
                   <Plus size={14} />
                   {t.settingsAddPhoto}
@@ -425,7 +425,7 @@ function SegmentedPicker<T extends string>({
           onClick={() => onChange(opt)}
           className={`flex-1 px-3 py-2 text-sm font-medium transition-colors ${
             value === opt
-              ? "bg-blue-500/30 text-blue-300 border-blue-500/40"
+              ? "border-accent/40 bg-accent/25 text-accent"
               : "bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/70"
           }`}
         >
@@ -502,7 +502,7 @@ function WidgetRow({
       <button
         onClick={onToggle}
         className={`w-9 h-5 rounded-full transition-colors relative ${
-          enabled ? "bg-blue-500/60" : "bg-white/10"
+          enabled ? "bg-accent/70" : "bg-white/10"
         }`}
         aria-label={`Toggle ${label}`}
       >

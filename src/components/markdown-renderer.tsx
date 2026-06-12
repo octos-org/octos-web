@@ -30,8 +30,8 @@ function MermaidBlock({ content }: { content: string }) {
       })
       .catch(() => {});
   }, [content]);
-  if (!svg) return <pre className="my-3 rounded-2xl bg-code-block-bg p-4 text-xs text-code-text whitespace-pre-wrap">{content}</pre>;
-  return <div className="my-3 overflow-x-auto rounded-2xl bg-code-block-bg p-4" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } }) }} />;
+  if (!svg) return <pre className="my-3 rounded-lg bg-code-block-bg p-4 text-xs text-code-text whitespace-pre-wrap">{content}</pre>;
+  return <div className="my-3 overflow-x-auto rounded-lg bg-code-block-bg p-4" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } }) }} />;
 }
 
 function CodeBlock({ children, className }: { children?: ReactNode; className?: string }) {
@@ -59,7 +59,7 @@ function CodeBlock({ children, className }: { children?: ReactNode; className?: 
           </button>
         </div>
       )}
-      <pre className={`overflow-x-auto ${lang ? "rounded-b-2xl" : "rounded-2xl"} bg-code-block-bg p-4 text-xs leading-relaxed text-code-text`}>
+      <pre className={`overflow-x-auto ${lang ? "rounded-b-lg" : "rounded-lg"} bg-code-block-bg p-4 text-xs leading-relaxed text-code-text`}>
         <code ref={codeRef} className={className}>{children}</code>
       </pre>
     </div>
@@ -116,7 +116,7 @@ const mdComponents: Record<string, any> = {
     return <CodeBlock className={cn}>{children}</CodeBlock>;
   },
   table: ({ children }: any) => (
-    <div className="my-3 overflow-x-auto rounded-2xl bg-surface-container"><table className="min-w-full text-xs">{children}</table></div>
+    <div className="my-3 overflow-x-auto rounded-lg bg-surface-container"><table className="min-w-full text-xs">{children}</table></div>
   ),
   th: ({ children }: any) => <th className="border-b border-outline bg-surface-elevated px-4 py-2 text-left font-medium text-text-strong">{children}</th>,
   td: ({ children }: any) => <td className="border-b border-border px-4 py-2">{children}</td>,

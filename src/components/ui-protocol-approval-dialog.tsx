@@ -168,7 +168,7 @@ export function UiProtocolApprovalDialog({
       aria-modal="true"
       aria-labelledby="ui-protocol-approval-title"
     >
-      <div className="glass-panel max-h-[88vh] w-full max-w-3xl overflow-hidden rounded-[16px] shadow-2xl">
+      <div className="glass-panel max-h-[88vh] w-full max-w-3xl overflow-hidden rounded-[16px] shadow-lg">
         <div className="border-b border-border px-5 py-4">
           <div className="shell-kicker">Approval Requested</div>
           <h2

@@ -199,7 +199,7 @@ export function SandboxTab({ profile, onProfileUpdated }: SandboxTabProps) {
   return (
     <div className="space-y-6">
       {/* Main sandbox config card */}
-      <div className="glass-section rounded-2xl p-6">
+      <div className="glass-section rounded-lg p-6">
         <div className="flex items-center gap-3 mb-6">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
             <Shield size={20} />
@@ -269,9 +269,9 @@ export function SandboxTab({ profile, onProfileUpdated }: SandboxTabProps) {
 
       {/* Docker-specific config card */}
       {isDockerMode && (
-        <div className="glass-section rounded-2xl p-6">
+        <div className="glass-section rounded-lg p-6">
           <div className="flex items-center gap-3 mb-6">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-500/10 text-blue-400">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-link/10 text-link">
               <svg viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
                 <path d="M13.98 11.08h2.12a.19.19 0 0 0 .19-.19V9.01a.19.19 0 0 0-.19-.19h-2.12a.19.19 0 0 0-.19.19v1.88c0 .1.08.19.19.19m-2.95-5.43h2.12a.19.19 0 0 0 .19-.19V3.58a.19.19 0 0 0-.19-.19h-2.12a.19.19 0 0 0-.19.19v1.88c0 .1.09.19.19.19m0 2.71h2.12a.19.19 0 0 0 .19-.19V6.29a.19.19 0 0 0-.19-.19h-2.12a.19.19 0 0 0-.19.19v1.88c0 .11.09.19.19.19m-2.93 0h2.12a.19.19 0 0 0 .19-.19V6.29a.19.19 0 0 0-.19-.19H8.1a.19.19 0 0 0-.19.19v1.88c0 .11.08.19.19.19m-2.96 0h2.12a.19.19 0 0 0 .19-.19V6.29a.19.19 0 0 0-.19-.19H5.14a.19.19 0 0 0-.19.19v1.88c0 .11.09.19.19.19m5.89 2.72h2.12a.19.19 0 0 0 .19-.19V9.01a.19.19 0 0 0-.19-.19h-2.12a.19.19 0 0 0-.19.19v1.88c0 .1.09.19.19.19m-2.93 0h2.12a.19.19 0 0 0 .19-.19V9.01a.19.19 0 0 0-.19-.19H8.1a.19.19 0 0 0-.19.19v1.88c0 .1.08.19.19.19m-2.96 0h2.12a.19.19 0 0 0 .19-.19V9.01a.19.19 0 0 0-.19-.19H5.14a.19.19 0 0 0-.19.19v1.88c0 .1.09.19.19.19m-2.92 0h2.12a.19.19 0 0 0 .19-.19V9.01a.19.19 0 0 0-.19-.19H2.22a.19.19 0 0 0-.19.19v1.88c0 .1.08.19.19.19m21.54-1.19c-.06-.04-.42-.28-1.23-.28-.21 0-.43.02-.65.06-.29-1.96-1.82-2.91-1.89-2.95l-.38-.22-.24.36c-.3.47-.52.99-.65 1.53-.24 1.04-.09 2.02.41 2.86-.61.34-1.59.42-1.88.43H.99a.99.99 0 0 0-.99.99c.02 1.83.29 3.65.87 5.21.63 1.63 1.57 2.83 2.8 3.57 1.38.83 3.63 1.31 6.13 1.31.59 0 1.19-.04 1.79-.12 2.1-.25 4.1-.89 5.86-2.06 1.43-.96 2.72-2.26 3.64-3.88.92-1.63 1.32-3.1 1.55-4.31h.13c.81 0 1.31-.32 1.58-.59.19-.17.33-.39.44-.62l.06-.17z" />
               </svg>

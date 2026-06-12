@@ -86,12 +86,12 @@ export function SitesEditorPage() {
 
   if (!project) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-surface-dark px-6 text-center">
-        <div className="max-w-md rounded-2xl border border-border bg-surface p-6">
-          <div className="text-sm font-semibold uppercase tracking-[0.18em] text-muted">
+      <div className="workbench-shell flex min-h-screen items-center justify-center px-6 text-center">
+        <div className="workbench-panel max-w-md p-6">
+          <div className="text-sm font-semibold uppercase text-muted">
             Site Studio
           </div>
-          <div className="mt-4 text-base text-white">
+          <div className="mt-4 text-base text-text-strong">
             {hydrating ? "Loading site session..." : "Site session unavailable"}
           </div>
           <div className="mt-3 text-sm leading-6 text-muted">

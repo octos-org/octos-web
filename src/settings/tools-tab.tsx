@@ -548,7 +548,7 @@ export function ToolsTab({ profile, onProfileUpdated }: ToolsTabProps) {
   return (
     <div className="space-y-6">
       {/* Web Search APIs */}
-      <div className="glass-section rounded-2xl p-6">
+      <div className="glass-section rounded-lg p-6">
         <div className="flex items-center gap-3 mb-6">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
             <Globe size={20} />
@@ -574,7 +574,7 @@ export function ToolsTab({ profile, onProfileUpdated }: ToolsTabProps) {
       </div>
 
       {/* Email Tool */}
-      <div className="glass-section rounded-2xl p-6">
+      <div className="glass-section rounded-lg p-6">
         <div className="flex items-center gap-3 mb-6">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
             <Mail size={20} />
@@ -592,7 +592,7 @@ export function ToolsTab({ profile, onProfileUpdated }: ToolsTabProps) {
       </div>
 
       {/* Deep Crawl Config */}
-      <div className="glass-section rounded-2xl p-6">
+      <div className="glass-section rounded-lg p-6">
         <div className="flex items-center gap-3 mb-6">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
             <Search size={20} />
@@ -650,7 +650,7 @@ export function ToolsTab({ profile, onProfileUpdated }: ToolsTabProps) {
       </div>
 
       {/* Gateway Settings */}
-      <div className="glass-section rounded-2xl p-6">
+      <div className="glass-section rounded-lg p-6">
         <div className="flex items-center gap-3 mb-6">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
             <Timer size={20} />

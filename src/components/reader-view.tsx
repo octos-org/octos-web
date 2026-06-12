@@ -242,7 +242,7 @@ export function ReaderView({
         // floating above the app rather than a hard takeover.
         className={
           "reader-view-panel relative m-0 flex w-full max-w-[1100px] flex-col " +
-          "shadow-2xl sm:m-4 sm:rounded-2xl " +
+          "shadow-lg sm:m-4 sm:rounded-lg " +
           "transition-transform duration-150 ease-out " +
           (visible ? "translate-y-0" : "translate-y-2")
         }

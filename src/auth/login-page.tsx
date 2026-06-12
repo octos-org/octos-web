@@ -112,14 +112,14 @@ export function LoginPage() {
   }
 
   return (
-    <div className="flex h-screen items-center justify-center bg-surface-dark">
-      <div className="w-full max-w-sm rounded-xl bg-surface p-8">
+    <div className="workbench-shell flex h-screen items-center justify-center px-4">
+      <div className="workbench-panel w-full max-w-sm p-8">
         <img
           src="/images/octos-logo-color.svg"
           alt="Octos"
           className="mb-4 h-9 w-auto select-none"
         />
-        <h1 className="text-2xl font-bold text-text-strong">
+        <h1 className="text-2xl font-semibold tracking-tight text-text-strong">
           {scopedProfile ? `Sign in to ${scopedProfile.name}` : "octos"}
         </h1>
         <p className="mb-6 mt-2 text-sm text-muted">
@@ -136,7 +136,7 @@ export function LoginPage() {
               data-testid="solo-continue"
               onClick={handleSoloContinue}
               disabled={sending}
-              className="w-full rounded-lg bg-accent py-3 font-medium text-surface-dark transition hover:bg-accent-dim disabled:opacity-50"
+              className="workbench-button workbench-button-primary w-full py-3 font-medium disabled:opacity-50"
             >
               {sending ? "Continuing..." : "Continue without a password"}
             </button>
@@ -158,8 +158,8 @@ export function LoginPage() {
             onClick={() => setMode("otp")}
             className={`flex-1 rounded-lg py-2 text-sm font-medium transition ${
               mode === "otp"
-                ? "bg-accent text-surface-dark"
-                : "bg-surface-light text-muted hover:text-text-strong"
+                ? "bg-accent text-[#100d09]"
+                : "bg-surface-container text-muted hover:text-text-strong"
             }`}
           >
             Email OTP
@@ -169,8 +169,8 @@ export function LoginPage() {
               onClick={() => setMode("token")}
               className={`flex-1 rounded-lg py-2 text-sm font-medium transition ${
                 mode === "token"
-                  ? "bg-accent text-surface-dark"
-                  : "bg-surface-light text-muted hover:text-text-strong"
+                  ? "bg-accent text-[#100d09]"
+                  : "bg-surface-container text-muted hover:text-text-strong"
               }`}
             >
               Auth Token
@@ -180,13 +180,13 @@ export function LoginPage() {
         )}
 
         {error && (
-          <div data-testid="login-error" className="mb-4 rounded-lg bg-red-900/30 p-3 text-sm text-red-400">
+          <div data-testid="login-error" className="mb-4 rounded-lg border border-red-500/25 bg-red-500/10 p-3 text-sm text-red-300">
             {error}
           </div>
         )}
 
         {!emailLoginEnabled && (
-          <div className="mb-4 rounded-lg bg-amber-900/20 p-3 text-sm text-amber-300">
+          <div className="mb-4 rounded-lg border border-amber-500/25 bg-amber-500/10 p-3 text-sm text-amber-300">
             {scopedProfile
               ? "Email OTP login is not enabled for this account yet."
               : "Email OTP login is not enabled on this host."}
@@ -226,12 +226,12 @@ export function LoginPage() {
                   emailLoginEnabled &&
                   handleSendCode()
                 }
-                className="w-full rounded-lg border border-border bg-surface-light px-4 py-3 text-text placeholder-muted outline-none focus:border-accent"
+                className="workbench-input w-full px-4 py-3 placeholder-muted"
               />
               <button
                 onClick={handleSendCode}
                 disabled={!isValidEmail(email) || sending || !emailLoginEnabled}
-                className="w-full rounded-lg bg-accent py-3 font-medium text-surface-dark transition hover:bg-accent-dim disabled:opacity-50"
+                className="workbench-button workbench-button-primary w-full py-3 font-medium disabled:opacity-50"
               >
                 {sending ? "Sending..." : "Send Code"}
               </button>
@@ -248,12 +248,12 @@ export function LoginPage() {
                 onChange={(e) => setCode(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleVerify()}
                 maxLength={6}
-                className="w-full rounded-lg border border-border bg-surface-light px-4 py-3 text-center text-2xl tracking-widest text-text placeholder-muted outline-none focus:border-accent"
+                className="workbench-input w-full px-4 py-3 text-center text-2xl tracking-widest placeholder-muted"
               />
               <button
                 onClick={handleVerify}
                 disabled={code.length < 6 || sending}
-                className="w-full rounded-lg bg-accent py-3 font-medium text-surface-dark transition hover:bg-accent-dim disabled:opacity-50"
+                className="workbench-button workbench-button-primary w-full py-3 font-medium disabled:opacity-50"
               >
                 {sending ? "Verifying..." : "Verify"}
               </button>
@@ -277,13 +277,13 @@ export function LoginPage() {
               value={adminToken}
               onChange={(e) => setAdminToken(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleTokenLogin()}
-              className="w-full rounded-lg border border-border bg-surface-light px-4 py-3 text-text placeholder-muted outline-none focus:border-accent"
+              className="workbench-input w-full px-4 py-3 placeholder-muted"
             />
             <button
               data-testid="login-button"
               onClick={handleTokenLogin}
               disabled={!adminToken.trim()}
-              className="w-full rounded-lg bg-accent py-3 font-medium text-surface-dark transition hover:bg-accent-dim disabled:opacity-50"
+              className="workbench-button workbench-button-primary w-full py-3 font-medium disabled:opacity-50"
             >
               Login
             </button>

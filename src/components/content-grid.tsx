@@ -22,12 +22,12 @@ const CATEGORY_ICON: Record<string, typeof FileText> = {
 };
 
 const CATEGORY_COLOR: Record<string, string> = {
-  report: "bg-blue-500/20 text-blue-400",
-  audio: "bg-purple-500/20 text-purple-400",
-  slides: "bg-orange-500/20 text-orange-400",
-  image: "bg-green-500/20 text-green-400",
+  report: "bg-accent/12 text-accent",
+  audio: "bg-link/12 text-link",
+  slides: "bg-amber-500/15 text-amber-300",
+  image: "bg-emerald-500/15 text-emerald-300",
   video: "bg-red-500/20 text-red-400",
-  other: "bg-gray-500/20 text-gray-400",
+  other: "bg-surface-container text-muted",
 };
 
 function formatDate(iso: string): string {

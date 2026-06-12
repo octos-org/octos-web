@@ -267,7 +267,7 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
   return (
     <div className="space-y-6">
       {/* ── Model Selection ── */}
-      <div className="glass-section rounded-2xl p-6">
+      <div className="glass-section rounded-lg p-6">
         <div className="flex items-center gap-3 mb-6">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
             <Cpu size={20} />
@@ -427,7 +427,7 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
       </div>
 
       {/* ── Fallback Models ── */}
-      <div className="glass-section rounded-2xl p-6">
+      <div className="glass-section rounded-lg p-6">
         <div className="flex items-center gap-3 mb-6">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
             <Shuffle size={20} />
@@ -606,7 +606,7 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
       </div>
 
       {/* ── Adaptive Routing ── */}
-      <div className="glass-section rounded-2xl p-6">
+      <div className="glass-section rounded-lg p-6">
         <div className="flex items-center gap-3 mb-6">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
             <Settings2 size={20} />
@@ -671,7 +671,7 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
       </div>
 
       {/* ── Prompt & Output ── */}
-      <div className="glass-section rounded-2xl p-6">
+      <div className="glass-section rounded-lg p-6">
         <div className="flex items-center gap-3 mb-6">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
             <Settings2 size={20} />
@@ -721,7 +721,7 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
       </div>
 
       {/* ── Gateway Advanced ── */}
-      <div className="glass-section rounded-2xl p-6">
+      <div className="glass-section rounded-lg p-6">
         <div className="flex items-center gap-3 mb-6">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
             <Settings2 size={20} />

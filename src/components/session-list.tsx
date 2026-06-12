@@ -207,7 +207,7 @@ export function SessionList() {
           aria-modal="true"
           aria-labelledby="session-template-title"
         >
-          <div className="glass-panel w-full max-w-[440px] rounded-[16px] p-4 shadow-2xl">
+          <div className="glass-panel w-full max-w-[440px] rounded-[16px] p-4 shadow-lg">
             <div className="mb-4 flex items-start justify-between gap-3">
               <div>
                 <div className="shell-kicker">New Session</div>
@@ -387,7 +387,7 @@ export function SessionList() {
                           e.stopPropagation();
                           setConfirmingDelete(s.id);
                         }}
-                        className="glass-icon-button shrink-0 rounded-[10px] p-1.5 opacity-0 hover:text-red-400 group-hover:opacity-100"
+                        className="glass-icon-button shrink-0 rounded-[10px] p-1.5 opacity-60 hover:text-red-400 group-hover:opacity-100"
                       >
                         <Trash2 size={12} />
                       </button>
@@ -413,7 +413,7 @@ const TEMPLATE_OPTIONS: {
     kind: "chat",
     label: "Chat",
     caption: "General",
-    iconClassName: "text-sky-400",
+    iconClassName: "text-accent",
   },
   {
     kind: "slides",

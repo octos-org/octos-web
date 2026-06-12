@@ -53,7 +53,7 @@ export function ConfirmDialog({
       onClick={onCancel}
     >
       <div
-        className="glass-section w-full max-w-md rounded-2xl p-6 mx-4 shadow-2xl"
+        className="glass-section w-full max-w-md rounded-lg p-6 mx-4 shadow-lg"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}

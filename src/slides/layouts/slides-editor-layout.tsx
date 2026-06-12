@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   ArrowLeft,
   FolderOpen,
@@ -82,15 +82,15 @@ export function SlidesEditorLayout({
     [],
   );
 
-  const filesPanel = useMemo(() => {
-    if (!showFiles) return null;
+  let filesPanel: React.ReactNode = null;
+  if (showFiles) {
     // Codex round-3 BLOCK D.b: render scaffoldError + retry button
     // (Sites-symmetric) when the scaffold attempt failed. Pre-fix
     // the user saw only the generic "appear after scaffolded"
     // placeholder, with no way to tell the attempt had actually
     // failed and no way to retry.
     if (project?.scaffoldError) {
-      return (
+      filesPanel = (
         <div className="flex h-full flex-col items-center justify-center gap-3 px-4 text-center">
           <div className="text-sm font-medium text-text">
             Slides scaffold failed
@@ -109,51 +109,41 @@ export function SlidesEditorLayout({
           )}
         </div>
       );
-    }
-    if (!project?.slug || !project.scaffolded) {
-      return (
+    } else if (!project?.slug || !project.scaffolded) {
+      filesPanel = (
         <div className="flex h-full items-center justify-center px-4 text-center text-xs text-muted">
           Project files appear after the slides session has been scaffolded.
         </div>
       );
+    } else {
+      filesPanel = (
+        <ProjectFiles
+          slug={project.slug}
+          title={project.title}
+          sessionId={project.id}
+          historyTopic={`slides ${project.slug}`}
+          onOpenFile={openProjectFile}
+          onRename={(t) => save({ title: t })}
+        />
+      );
     }
-    return (
-      <ProjectFiles
-        slug={project.slug}
-        title={project.title}
-        sessionId={project.id}
-        historyTopic={`slides ${project.slug}`}
-        onOpenFile={openProjectFile}
-        onRename={(t) => save({ title: t })}
-      />
-    );
-  }, [
-    onRetryScaffold,
-    openProjectFile,
-    project?.id,
-    project?.scaffoldError,
-    project?.scaffolded,
-    project?.slug,
-    project?.title,
-    save,
-    showFiles,
-  ]);
+  }
 
   return (
-    <div className="chat-shell flex h-screen flex-col gap-3 p-3">
+    <div className="chat-shell workbench-shell flex h-screen flex-col gap-2 p-2">
       {/* Header */}
-      <div className="glass-panel rounded-[16px] p-3">
-        <div className="glass-toolbar flex items-center justify-between gap-4 rounded-[14px] px-4 py-4">
-          <div className="flex min-w-0 items-center gap-3">
+      <div className="glass-panel rounded-lg p-2">
+        <div className="glass-toolbar flex flex-wrap items-center justify-between gap-4 px-4 py-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
             <Link
               to="/slides"
-              className="glass-icon-button flex items-center gap-1.5 rounded-[10px] px-3 py-2 text-sm"
+              className="glass-icon-button flex items-center gap-1.5 px-3 py-2 text-sm"
             >
               <ArrowLeft size={16} />
               Back
             </Link>
-            <div className="glass-pill h-9 w-px self-stretch rounded-full px-0 py-0" />
-            <div className="glass-pill flex h-10 w-10 items-center justify-center rounded-[10px] text-accent">
+            <div className="h-8 w-px self-stretch bg-border" />
+            <div className="workbench-icon-tile flex h-10 w-10 items-center justify-center text-accent">
               <Presentation size={16} />
             </div>
             <div className="min-w-0">
@@ -162,7 +152,7 @@ export function SlidesEditorLayout({
                 <input
                   ref={titleInputRef}
                   defaultValue={project?.title || ""}
-                  className="mt-1 max-w-sm rounded-[12px] border border-accent/50 bg-surface-container px-3 py-2 text-lg font-semibold tracking-tight text-text outline-none"
+                  className="workbench-input mt-1 max-w-sm px-3 py-2 text-lg font-semibold tracking-tight"
                   autoFocus
                   onBlur={(e) => {
                     const v = e.target.value.trim();
@@ -185,7 +175,7 @@ export function SlidesEditorLayout({
               )}
             </div>
             {project && (
-              <span className="glass-pill rounded-[12px] px-3 py-1.5 text-xs text-muted">
+              <span className="workbench-badge px-3 py-1.5 text-xs">
                 {project.slides.length} slides
               </span>
             )}
@@ -193,14 +183,14 @@ export function SlidesEditorLayout({
           <div className="flex items-center gap-2">
             <button
               onClick={toggleTheme}
-              className="glass-icon-button rounded-[10px] p-2.5"
+              className="glass-icon-button p-2.5"
               title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
             >
               {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
             </button>
             <button
               onClick={() => setShowChat(!showChat)}
-              className={`glass-icon-button rounded-[10px] p-2.5 ${
+              className={`glass-icon-button p-2.5 ${
                 showChat ? "is-active" : ""
               }`}
               title="Toggle chat"
@@ -209,7 +199,7 @@ export function SlidesEditorLayout({
             </button>
             <button
               onClick={() => setShowFiles((value) => !value)}
-              className={`glass-icon-button rounded-[10px] p-2.5 ${
+              className={`glass-icon-button p-2.5 ${
                 showFiles ? "is-active" : ""
               }`}
               title="Toggle files"
@@ -221,13 +211,13 @@ export function SlidesEditorLayout({
       </div>
 
       {/* Layout: chat (left) + preview (center) + files (right) */}
-      <div className="flex flex-1 min-h-0 overflow-hidden gap-3">
+      <div className="flex flex-1 min-h-0 gap-2 overflow-hidden max-lg:flex-col max-lg:overflow-y-auto">
         {/* Left: Chat */}
         {showChat && (
           <>
             <div
               style={{ width: chatWidth }}
-              className="glass-panel shrink-0 overflow-hidden rounded-[16px]"
+              className="glass-panel shrink-0 overflow-hidden rounded-lg max-lg:!h-72 max-lg:!w-full"
             >
               {chatPanel || (
                 <div className="flex h-full items-center justify-center text-xs text-muted/50">
@@ -237,14 +227,14 @@ export function SlidesEditorLayout({
             </div>
             <div
               onMouseDown={onChatResizeStart}
-              className="panel-resize-handle"
+              className="panel-resize-handle max-lg:hidden"
               title="Resize chat panel"
             />
           </>
         )}
 
         {/* Right: Preview */}
-        <div className="glass-panel flex-1 min-w-0 overflow-hidden rounded-[16px]">
+        <div className="glass-panel min-h-0 flex-1 min-w-0 overflow-hidden rounded-lg max-lg:min-h-[28rem]">
           {previewPanel}
         </div>
 
@@ -252,12 +242,12 @@ export function SlidesEditorLayout({
           <>
             <div
               onMouseDown={onFilesResizeStart}
-              className="panel-resize-handle"
+              className="panel-resize-handle max-lg:hidden"
               title="Resize files panel"
             />
             <div
               style={{ width: filesWidth }}
-              className="shrink-0 overflow-hidden"
+              className="shrink-0 overflow-hidden max-lg:!h-80 max-lg:!w-full"
             >
               {filesPanel}
             </div>

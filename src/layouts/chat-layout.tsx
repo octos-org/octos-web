@@ -21,9 +21,23 @@ import { LogOut, Sun, Moon, Settings, PanelRight } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useFileStore } from "@/store/file-store";
 
+function SettingsNavButton() {
+  const navigate = useNavigate();
+
+  return (
+    <button
+      onClick={() => navigate("/settings")}
+      className="glass-icon-button p-2"
+      title="Settings"
+      aria-label="Settings"
+    >
+      <Settings size={14} />
+    </button>
+  );
+}
+
 export function ChatLayout({ children }: { children: ReactNode }) {
   const { user, portal, logout } = useAuth();
-  const navigate = useNavigate();
   const { sessions, currentSessionId, currentSessionTitle, historyTopic, renameSession } =
     useSession();
   const status = useOctosStatus();
@@ -84,15 +98,15 @@ export function ChatLayout({ children }: { children: ReactNode }) {
   }, [currentSessionId, historyTopic]);
 
   return (
-    <div className="chat-shell flex h-screen gap-3 p-3">
+    <div className="chat-shell workbench-shell flex h-screen gap-2 p-2">
       {/* Sidebar */}
       <aside
         style={{ width: historyPanelWidth }}
-        className="sidebar-scope glass-panel animate-shell-rise flex shrink-0 flex-col overflow-hidden rounded-[16px]"
+        className="sidebar-scope glass-panel animate-shell-rise flex shrink-0 flex-col overflow-hidden rounded-lg"
       >
         {/* Header */}
         <div className="px-3 pt-3">
-          <div className="glass-toolbar rounded-[14px] px-4 py-4">
+          <div className="glass-toolbar px-4 py-4">
             <div className="flex items-start gap-3">
               <div className="min-w-0 flex-1">
                 <div className="shell-kicker">Octos Workspace</div>
@@ -103,7 +117,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
               <div className="flex items-center gap-2">
                 <button
                   onClick={toggleTheme}
-                  className="glass-icon-button rounded-[12px] p-2.5"
+                  className="glass-icon-button p-2.5"
                   title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
                   aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
                 >
@@ -119,7 +133,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
 
         {/* Footer */}
         <div className="px-3 pb-3 pt-2">
-          <div className="glass-section rounded-[12px] px-4 py-3">
+          <div className="glass-section rounded-lg px-4 py-3">
             {status && status.model && status.model !== "none" && (
               <div className="mb-2 text-[11px] text-muted/75">
                 {status.provider !== "none" ? `${status.provider}/` : ""}{status.model}
@@ -134,18 +148,11 @@ export function ChatLayout({ children }: { children: ReactNode }) {
                 </div>
                 <div className="flex items-center gap-2">
                   {portal?.can_access_admin_portal && (
-                    <button
-                      onClick={() => navigate("/settings")}
-                      className="glass-icon-button rounded-[10px] p-2"
-                      title="Settings"
-                      aria-label="Settings"
-                    >
-                      <Settings size={14} />
-                    </button>
+                    <SettingsNavButton />
                   )}
                   <button
                     onClick={logout}
-                    className="glass-icon-button rounded-[10px] p-2"
+                    className="glass-icon-button p-2"
                     title="Log out"
                     aria-label="Log out"
                   >
@@ -164,11 +171,11 @@ export function ChatLayout({ children }: { children: ReactNode }) {
       />
 
       {/* Main + Media Panel */}
-      <div className="flex flex-1 min-w-0 min-h-0 gap-3">
-        <main className="glass-panel animate-shell-rise flex flex-1 min-w-0 flex-col min-h-0 overflow-hidden rounded-[16px]">
+      <div className="flex flex-1 min-w-0 min-h-0 gap-2">
+        <main className="glass-panel animate-shell-rise flex flex-1 min-w-0 flex-col min-h-0 overflow-hidden rounded-lg">
           {/* Top bar with title + cost + files toggle */}
           <div className="px-3 pt-3">
-            <div className="glass-toolbar rounded-[14px] px-4 py-4">
+            <div className="glass-toolbar px-4 py-4">
               <div className="flex items-start gap-4">
                 <div className="min-w-0 flex-1">
                   <div className="shell-kicker">Current Session</div>
@@ -176,14 +183,14 @@ export function ChatLayout({ children }: { children: ReactNode }) {
                     value={currentSessionTitle}
                     onSave={(title) => renameSession(currentSessionId, title)}
                     buttonClassName="mt-1 w-full pr-3 text-left text-[1.24rem] font-semibold tracking-tight text-text-strong transition hover:text-accent"
-                    inputClassName="mt-1 w-full rounded-[12px] border border-accent/40 bg-surface-container px-3 py-2 text-[1.08rem] font-semibold tracking-tight text-text outline-none"
+                    inputClassName="mt-1 w-full rounded-lg border border-accent/40 bg-surface-container px-3 py-2 text-[1.08rem] font-semibold tracking-tight text-text outline-none"
                     testId="chat-session-title"
                   />
                 </div>
                 <SessionTaskIndicator />
                 <button
                   onClick={() => setMediaPanelOpen((v) => !v)}
-                  className={`glass-icon-button relative rounded-[12px] p-2.5 ${
+                  className={`glass-icon-button relative p-2.5 ${
                     mediaPanelOpen ? "is-active" : ""
                   }`}
                   title={mediaPanelOpen ? "Close files panel" : "Open files panel"}
@@ -213,7 +220,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
             {toast && (
               <button
                 onClick={openPanel}
-                className="glass-pill absolute bottom-20 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-[12px] px-4 py-2.5 text-sm text-text shadow-lg hover:text-text-strong"
+                className="glass-pill absolute bottom-20 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-lg px-4 py-2.5 text-sm text-text shadow-lg hover:text-text-strong"
               >
                 <span>{toast}</span>
                 <span className="text-xs font-semibold uppercase tracking-[0.12em] text-accent">View</span>

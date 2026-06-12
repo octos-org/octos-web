@@ -86,7 +86,7 @@ export function AudioPlayer({ entry, onClose }: AudioPlayerProps) {
 
       <div className="flex items-center gap-3">
         {/* Icon */}
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-purple-500/20 text-purple-400">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-link/12 text-link">
           <Music className="h-5 w-5" />
         </div>
 

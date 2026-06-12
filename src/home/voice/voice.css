@@ -1,11 +1,11 @@
 .voice-orb { position: relative; width: 160px; height: 160px;
   display: flex; align-items: center; justify-content: center; }
 .voice-orb-core { width: 120px; height: 120px; border-radius: 50%;
-  background: radial-gradient(circle at 35% 30%, #8fd3ff, #4f7cff 45%, #7a4dff 80%);
-  box-shadow: 0 0 60px 6px rgba(90,120,255,.55), inset 0 0 30px rgba(255,255,255,.25);
+  background: radial-gradient(circle at 35% 30%, #e0b076, #c47445 48%, #4f6d4c 86%);
+  box-shadow: 0 0 54px 4px rgba(196,116,69,.32), inset 0 0 24px rgba(255,246,234,.18);
   transition: all .4s ease; }
 .voice-orb-ring { position: absolute; border-radius: 50%;
-  border: 2px solid rgba(120,150,255,.35); opacity: 0; }
+  border: 2px solid rgba(196,116,69,.35); opacity: 0; }
 .voice-orb.is-idle .voice-orb-core { width: 90px; height: 90px;
   filter: saturate(.6) brightness(.8); animation: vo-breathe 4s ease-in-out infinite; }
 .voice-orb.is-listening .voice-orb-core { animation: vo-breathe 1.4s ease-in-out infinite; }

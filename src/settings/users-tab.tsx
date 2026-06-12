@@ -228,7 +228,7 @@ function AllowedEmailsSection() {
   };
 
   return (
-    <div className="glass-section rounded-2xl p-6">
+    <div className="glass-section rounded-lg p-6">
       <div className="flex items-center gap-3 mb-4">
         <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
           <Shield size={20} />
@@ -343,7 +343,7 @@ export function UsersTab({ profile }: { profile: Profile }) {
   return (
     <div className="space-y-6">
       {/* Users list */}
-      <div className="glass-section rounded-2xl p-6">
+      <div className="glass-section rounded-lg p-6">
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">

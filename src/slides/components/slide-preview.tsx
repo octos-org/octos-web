@@ -78,7 +78,7 @@ export default function SlidePreview({
       {/* Slide area */}
       <div className="flex-1 flex items-center justify-center p-4 min-h-0">
         <div
-          className="relative w-full bg-black rounded-lg overflow-hidden shadow-2xl"
+          className="relative w-full bg-black rounded-lg overflow-hidden shadow-lg"
           style={{ maxHeight: "100%", aspectRatio: `${SLIDE_ASPECT_RATIO}` }}
         >
           {current?.thumbnailUrl && !imgError ? (

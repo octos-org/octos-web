@@ -27,12 +27,12 @@ const CATEGORY_ICON: Record<string, typeof FileText> = {
 };
 
 const CATEGORY_COLOR: Record<string, string> = {
-  report: "text-blue-400",
-  audio: "text-purple-400",
-  slides: "text-orange-400",
-  image: "text-green-400",
+  report: "text-accent",
+  audio: "text-link",
+  slides: "text-amber-300",
+  image: "text-emerald-300",
   video: "text-red-400",
-  other: "text-gray-400",
+  other: "text-muted",
 };
 
 function formatSize(bytes: number): string {
@@ -61,15 +61,6 @@ export function ContentList({
   onOpen,
   onDelete,
 }: ContentListProps) {
-  if (entries.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center py-16 text-muted">
-        <File className="mb-3 h-10 w-10 opacity-30" />
-        <p className="text-sm">No content yet</p>
-      </div>
-    );
-  }
-
   // Group entries by parent directory
   const grouped = useMemo(() => {
     const groups = new Map<string, ContentEntry[]>();
@@ -84,6 +75,15 @@ export function ContentList({
     }
     return groups;
   }, [entries]);
+
+  if (entries.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 text-muted">
+        <File className="mb-3 h-10 w-10 opacity-30" />
+        <p className="text-sm">No content yet</p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-2 px-3">

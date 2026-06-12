@@ -116,7 +116,7 @@ export function MarkdownViewer({ entry, onClose }: MarkdownViewerProps) {
 
   const cardClass = maximized
     ? "flex h-full w-full flex-col"
-    : "relative flex h-[85vh] w-[90vw] max-w-4xl flex-col rounded-2xl bg-surface-dark shadow-2xl";
+    : "relative flex h-[85vh] w-[90vw] max-w-4xl flex-col rounded-lg bg-surface-dark shadow-lg";
 
   return (
     <div className={panelClass} onClick={maximized ? undefined : onClose}>
@@ -161,7 +161,7 @@ export function MarkdownViewer({ entry, onClose }: MarkdownViewerProps) {
               className="prose prose-invert prose-sm max-w-none"
             />
           ) : (
-            <pre className="overflow-x-auto rounded-2xl border border-border bg-surface px-4 py-4 text-xs leading-6 text-text">
+            <pre className="overflow-x-auto rounded-lg border border-border bg-surface px-4 py-4 text-xs leading-6 text-text">
               <code>{content}</code>
             </pre>
           )}

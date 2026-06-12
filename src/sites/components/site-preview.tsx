@@ -371,7 +371,7 @@ export function SitePreview({
         </div>
       </div>
       <div className="min-h-0 flex-1 bg-surface-dark p-3">
-        <div className="h-full overflow-hidden rounded-2xl border border-border bg-white shadow-2xl">
+        <div className="h-full overflow-hidden rounded-lg border border-border bg-white shadow-lg">
           {signError ? (
             <div
               data-testid="site-preview-error"

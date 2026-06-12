@@ -54,17 +54,17 @@ const MOBILE_COLS = 4;
 const MOBILE_QUERY = "(max-width: 600px)";
 
 const TILE_DEFS: TileDef[] = [
-  { id: "clock", widgetType: "clock", label: "Clock", accent: "#1C1C1C", defaultLayout: { col: 1, row: 1, w: 4, h: 2 } },
-  { id: "weather", widgetType: "weather", label: "Weather", accent: "#2D4A3E", defaultLayout: { col: 5, row: 1, w: 2, h: 2 } },
-  { id: "quick-chat", widgetType: "quick-chat", label: "Chat", accent: "#B85C3A", defaultLayout: { col: 1, row: 3, w: 1, h: 1 } },
-  { id: "quick-news", widgetType: "quick-news", label: "News", accent: "#8B7355", defaultLayout: { col: 2, row: 3, w: 1, h: 1 } },
-  { id: "quick-music", widgetType: "quick-music", label: "Music", accent: "#3D6B3D", defaultLayout: { col: 3, row: 3, w: 1, h: 1 } },
-  { id: "quick-home", widgetType: "quick-home", label: "Home", accent: "#6B5B4D", defaultLayout: { col: 4, row: 3, w: 1, h: 1 } },
-  { id: "voice", widgetType: "voice-orb", label: "Voice", accent: "#3A3428", defaultLayout: { col: 5, row: 3, w: 2, h: 2 } },
-  { id: "news", widgetType: "news", label: "Headlines", accent: "#3A2E28", defaultLayout: { col: 1, row: 4, w: 4, h: 2 } },
-  { id: "calendar", widgetType: "calendar", label: "Calendar", accent: "#2E3640", defaultLayout: { col: 1, row: 6, w: 2, h: 2 } },
-  { id: "timer", widgetType: "timer", label: "Timer", accent: "#4A3D2E", defaultLayout: { col: 3, row: 6, w: 2, h: 1 } },
-  { id: "photo", widgetType: "photo-frame", label: "Photos", accent: "#2E2E2E", defaultLayout: { col: 5, row: 5, w: 2, h: 2 } },
+  { id: "clock", widgetType: "clock", label: "Clock", accent: "#16130f", defaultLayout: { col: 1, row: 1, w: 4, h: 2 } },
+  { id: "weather", widgetType: "weather", label: "Weather", accent: "#2f453b", defaultLayout: { col: 5, row: 1, w: 2, h: 2 } },
+  { id: "quick-chat", widgetType: "quick-chat", label: "Chat", accent: "#9f5a35", defaultLayout: { col: 1, row: 3, w: 1, h: 1 } },
+  { id: "quick-news", widgetType: "quick-news", label: "News", accent: "#7c6545", defaultLayout: { col: 2, row: 3, w: 1, h: 1 } },
+  { id: "quick-music", widgetType: "quick-music", label: "Music", accent: "#4f6d4c", defaultLayout: { col: 3, row: 3, w: 1, h: 1 } },
+  { id: "quick-home", widgetType: "quick-home", label: "Home", accent: "#5c5145", defaultLayout: { col: 4, row: 3, w: 1, h: 1 } },
+  { id: "voice", widgetType: "voice-orb", label: "Voice", accent: "#282119", defaultLayout: { col: 5, row: 3, w: 2, h: 2 } },
+  { id: "news", widgetType: "news", label: "Headlines", accent: "#241c16", defaultLayout: { col: 1, row: 4, w: 4, h: 2 } },
+  { id: "calendar", widgetType: "calendar", label: "Calendar", accent: "#26352f", defaultLayout: { col: 1, row: 6, w: 2, h: 2 } },
+  { id: "timer", widgetType: "timer", label: "Timer", accent: "#463521", defaultLayout: { col: 3, row: 6, w: 2, h: 1 } },
+  { id: "photo", widgetType: "photo-frame", label: "Photos", accent: "#201d18", defaultLayout: { col: 5, row: 5, w: 2, h: 2 } },
 ];
 
 function loadLayouts(): Record<string, TileLayout> {

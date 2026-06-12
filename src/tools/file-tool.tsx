@@ -69,7 +69,7 @@ export const ReadFileToolUI = makeAssistantToolUI<
       path={args?.path ?? "..."}
       content={result?.content}
       status={status}
-      color="text-blue-400"
+      color="text-accent"
     />
   ),
 });

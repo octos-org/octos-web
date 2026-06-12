@@ -298,7 +298,7 @@ export function ProfileTab({ profile, onProfileUpdated, onNavigateBack }: Profil
   return (
     <div className="space-y-6">
       {/* ── Profile info card ── */}
-      <div className="glass-section rounded-2xl p-6">
+      <div className="glass-section rounded-lg p-6">
         <div className="flex items-center gap-3 mb-6">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
             <User size={20} />
@@ -428,7 +428,7 @@ export function ProfileTab({ profile, onProfileUpdated, onNavigateBack }: Profil
       </div>
 
       {/* ── Gateway status + controls card ── */}
-      <div className="glass-section rounded-2xl p-6">
+      <div className="glass-section rounded-lg p-6">
         <div className="flex items-center gap-3 mb-4">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
             <Activity size={20} />
@@ -525,7 +525,7 @@ export function ProfileTab({ profile, onProfileUpdated, onNavigateBack }: Profil
       </div>
 
       {/* ── Environment Variables card ── */}
-      <div className="glass-section rounded-2xl p-6">
+      <div className="glass-section rounded-lg p-6">
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
@@ -646,7 +646,7 @@ export function ProfileTab({ profile, onProfileUpdated, onNavigateBack }: Profil
 
       {/* ── Danger zone ── */}
       <div className="mt-2 border-t border-border/40 pt-6">
-        <div className="rounded-2xl border border-red-500/30 bg-red-500/5 p-6">
+        <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-6">
           <div className="flex items-center gap-3 mb-4">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-500/10 text-red-400">
               <AlertTriangle size={20} />

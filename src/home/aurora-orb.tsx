@@ -121,7 +121,7 @@ export function AuroraOrb({ state, onClick, disabled }: AuroraOrbProps) {
     state === "listening"
       ? "text-emerald-400"
       : state === "processing"
-        ? "text-purple-400"
+        ? "text-accent"
         : state === "speaking"
           ? "text-amber-400"
           : "text-white/60";

@@ -160,7 +160,7 @@ function SlidesPresentContent() {
 
       <div className="flex flex-1 items-center justify-center p-6">
         <div
-          className="relative w-full overflow-hidden rounded-2xl bg-black shadow-2xl"
+          className="relative w-full overflow-hidden rounded-lg bg-black shadow-lg"
           style={{ maxHeight: "100%", aspectRatio: `${SLIDE_ASPECT_RATIO}` }}
         >
           {currentImageUrl ? (

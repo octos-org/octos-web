@@ -416,7 +416,7 @@ export function ProjectFiles({
       <div className="border-b border-border px-3 py-2">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
-            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">
+            <div className="text-xs font-semibold uppercase tracking-normal text-muted">
               Project Files
             </div>
             <EditableTitle value={title || slug} onSave={onRename} />

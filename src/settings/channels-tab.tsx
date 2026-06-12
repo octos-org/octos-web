@@ -345,7 +345,7 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
 
   return (
     <div className="space-y-6">
-      <div className="glass-section rounded-2xl p-6">
+      <div className="glass-section rounded-lg p-6">
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
@@ -458,7 +458,7 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
 
       {/* Add Channel Form */}
       {showAddForm && (
-        <div className="glass-section rounded-2xl p-6">
+        <div className="glass-section rounded-lg p-6">
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">

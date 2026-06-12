@@ -9,47 +9,58 @@ export function HomeNav() {
   const navigate = useNavigate();
 
   return (
-    <nav className="flex items-center gap-4 px-6 py-4">
-      <div className="flex items-center gap-2.5">
+    <nav className="workbench-topbar flex min-h-16 items-center gap-3 px-5 py-3 max-sm:px-3">
+      <button
+        type="button"
+        onClick={() => navigate("/")}
+        className="flex min-w-0 items-center gap-2.5 text-left"
+        aria-label="Octos home"
+      >
         <img
           src="/images/octos-logo-color.svg"
           alt="Octos"
-          className="h-7 w-auto select-none"
+          className="h-7 w-auto shrink-0 select-none"
         />
-        <span className="text-xl font-semibold tracking-tight text-text-strong">octos</span>
-      </div>
+        <span className="text-base font-semibold tracking-tight text-text-strong">Octos</span>
+      </button>
 
       <div className="flex-1" />
 
       <button
         onClick={() => navigate("/chat")}
-        className="flex items-center gap-2 rounded-xl bg-surface-container px-4 py-2.5 text-sm text-text hover:bg-surface-elevated"
+        className="workbench-button flex items-center gap-2 px-3 py-2 text-sm max-sm:px-2.5"
       >
         <MessageSquare size={16} />
-        Chat
+        <span className="max-sm:hidden">Chat</span>
       </button>
       {portal?.can_access_admin_portal && (
         <button
           onClick={() => navigate("/settings")}
-          className="rounded-xl p-2.5 text-muted hover:bg-surface-container hover:text-text-strong"
+          className="glass-icon-button p-2.5"
           title="Settings"
+          aria-label="Settings"
         >
           <Settings size={18} />
         </button>
       )}
       <button
         onClick={toggleTheme}
-        className="rounded-xl p-2.5 text-muted hover:bg-surface-container hover:text-text-strong"
+        className="glass-icon-button p-2.5"
         title={theme === "dark" ? "Light mode" : "Dark mode"}
+        aria-label={theme === "dark" ? "Light mode" : "Dark mode"}
       >
         {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
       </button>
       {user && (
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-muted">{user.email}</span>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="max-w-[18rem] truncate text-sm text-muted max-md:hidden">
+            {user.email}
+          </span>
           <button
             onClick={logout}
-            className="rounded-xl p-2 text-muted hover:bg-surface-container hover:text-text-strong"
+            className="glass-icon-button p-2"
+            aria-label="Log out"
+            title="Log out"
           >
             <LogOut size={16} />
           </button>

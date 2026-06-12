@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { ArrowLeft, FolderOpen, Globe, MessageSquare, Moon, Sun } from "lucide-react";
 import { Link } from "react-router-dom";
 
@@ -67,45 +67,35 @@ export function SitesEditorLayout({
     });
   }, []);
 
-  const filesPanel = useMemo(() => {
-    if (!showFiles) return null;
+  let filesPanel: React.ReactNode = null;
+  if (showFiles) {
     if (project?.scaffoldError) {
-      return (
+      filesPanel = (
         <div className="flex h-full flex-col justify-center px-4 text-center">
           <div className="text-sm font-medium text-text">Site scaffold failed</div>
           <div className="mt-2 text-xs leading-6 text-muted">{project.scaffoldError}</div>
         </div>
       );
-    }
-    if (!project?.slug || !project.scaffolded) {
-      return (
+    } else if (!project?.slug || !project.scaffolded) {
+      filesPanel = (
         <div className="flex h-full items-center justify-center px-4 text-center text-xs text-muted">
           Project files appear after the site session has been scaffolded.
         </div>
       );
+    } else {
+      filesPanel = (
+        <ProjectFiles
+          slug={project.slug}
+          title={project.title}
+          sessionId={project.id}
+          profileId={project.profileId}
+          template={project.template}
+          onOpenFile={openProjectFile}
+          onRename={(nextTitle) => save({ title: nextTitle })}
+        />
+      );
     }
-    return (
-      <ProjectFiles
-        slug={project.slug}
-        title={project.title}
-        sessionId={project.id}
-        profileId={project.profileId}
-        template={project.template}
-        onOpenFile={openProjectFile}
-        onRename={(nextTitle) => save({ title: nextTitle })}
-      />
-    );
-  }, [
-    openProjectFile,
-    project?.id,
-    project?.scaffoldError,
-    project?.scaffolded,
-    project?.slug,
-    project?.profileId,
-    project?.title,
-    save,
-    showFiles,
-  ]);
+  }
 
   const projectStatus = project?.scaffoldError
     ? { label: "Error", className: "bg-red-500/10 text-red-300" }
@@ -116,23 +106,25 @@ export function SitesEditorLayout({
         : { label: "Ready", className: "bg-surface-container text-muted" };
 
   return (
-    <div className="flex h-screen flex-col bg-surface-dark">
-      <div className="flex items-center justify-between border-b border-border bg-surface px-4 py-2">
-        <div className="flex items-center gap-3">
+    <div className="workbench-shell flex h-screen flex-col">
+      <div className="workbench-topbar flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
           <Link
             to="/sites"
-            className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm text-muted transition hover:bg-surface-container hover:text-white"
+            className="glass-icon-button flex items-center gap-1.5 px-3 py-2 text-sm"
           >
             <ArrowLeft size={16} />
             Back
           </Link>
           <div className="h-5 w-px bg-border" />
-          <Globe size={16} className="text-accent" />
+          <div className="workbench-icon-tile flex h-9 w-9 items-center justify-center">
+            <Globe size={16} />
+          </div>
           {editingTitle ? (
             <input
               ref={titleInputRef}
               defaultValue={project?.title || ""}
-              className="max-w-sm rounded border border-accent/50 bg-surface-container px-2 py-0.5 text-sm font-medium text-text outline-none"
+              className="workbench-input max-w-sm px-2 py-1 text-sm font-medium"
               autoFocus
               onBlur={(event) => {
                 const next = event.target.value.trim();
@@ -146,7 +138,7 @@ export function SitesEditorLayout({
             />
           ) : (
             <span
-              className="max-w-sm cursor-pointer truncate text-sm font-medium text-text transition hover:text-accent"
+              className="max-w-sm cursor-pointer truncate text-sm font-medium text-text-strong transition hover:text-accent"
               onClick={() => setEditingTitle(true)}
               title="Click to rename"
             >
@@ -154,12 +146,12 @@ export function SitesEditorLayout({
             </span>
           )}
           {project && (
-            <span className="rounded-full bg-surface-container px-2 py-0.5 text-xs text-muted">
+            <span className="workbench-badge px-2 py-0.5 text-xs">
               {project.template}
             </span>
           )}
           {project && (
-            <span className={`rounded-full px-2 py-0.5 text-xs ${projectStatus.className}`}>
+            <span className={`rounded-md px-2 py-0.5 text-xs ${projectStatus.className}`}>
               {projectStatus.label}
             </span>
           )}
@@ -175,15 +167,15 @@ export function SitesEditorLayout({
           <div className="flex items-center gap-1">
           <button
             onClick={toggleTheme}
-            className="rounded-lg p-2 text-muted transition hover:text-text"
+            className="glass-icon-button p-2"
             title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
           >
             {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
           </button>
           <button
             onClick={() => setShowChat((value) => !value)}
-            className={`rounded-lg p-2 transition ${
-              showChat ? "bg-surface-container text-accent" : "text-muted hover:text-text"
+            className={`glass-icon-button p-2 ${
+              showChat ? "is-active" : ""
             }`}
             title="Toggle chat"
           >
@@ -191,8 +183,8 @@ export function SitesEditorLayout({
           </button>
           <button
             onClick={() => setShowFiles((value) => !value)}
-            className={`rounded-lg p-2 transition ${
-              showFiles ? "bg-surface-container text-accent" : "text-muted hover:text-text"
+            className={`glass-icon-button p-2 ${
+              showFiles ? "is-active" : ""
             }`}
             title="Toggle files"
           >
@@ -202,35 +194,37 @@ export function SitesEditorLayout({
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1 gap-2 overflow-hidden p-2 max-lg:flex-col max-lg:overflow-y-auto">
         {showChat && (
           <>
             <div
               style={{ width: chatWidth }}
-              className="shrink-0 overflow-hidden border-r border-border bg-surface"
+              className="glass-panel shrink-0 overflow-hidden rounded-lg max-lg:!h-72 max-lg:!w-full"
             >
               {chatPanel}
             </div>
             <div
               onMouseDown={onChatResizeStart}
-              className="panel-resize-handle"
+              className="panel-resize-handle max-lg:hidden"
               title="Resize chat panel"
             />
           </>
         )}
 
-        <div className="min-w-0 flex-1 bg-surface-dark">{previewPanel}</div>
+        <div className="glass-panel min-h-0 min-w-0 flex-1 overflow-hidden rounded-lg max-lg:min-h-[28rem]">
+          {previewPanel}
+        </div>
 
         {showFiles && (
           <>
             <div
               onMouseDown={onFilesResizeStart}
-              className="panel-resize-handle"
+              className="panel-resize-handle max-lg:hidden"
               title="Resize files panel"
             />
             <div
               style={{ width: filesWidth }}
-              className="shrink-0 overflow-hidden border-l border-border bg-surface"
+              className="glass-panel shrink-0 overflow-hidden rounded-lg max-lg:!h-80 max-lg:!w-full"
             >
               {filesPanel}
             </div>
