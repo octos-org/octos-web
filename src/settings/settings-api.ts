@@ -1,5 +1,52 @@
 import { request } from "@/api/client";
 
+function stringFromUnknown(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function apiErrorMessageFromBody(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const record = body as Record<string, unknown>;
+  const direct =
+    stringFromUnknown(record.detail) ??
+    stringFromUnknown(record.message) ??
+    stringFromUnknown(record.error);
+  if (direct) return direct;
+
+  if (Array.isArray(record.detail)) {
+    const parts = record.detail
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (!item || typeof item !== "object") return null;
+        const entry = item as Record<string, unknown>;
+        return stringFromUnknown(entry.msg) ?? stringFromUnknown(entry.message);
+      })
+      .filter((item): item is string => Boolean(item));
+    if (parts.length > 0) return parts.join("; ");
+  }
+
+  return null;
+}
+
+export function formatSettingsError(
+  err: unknown,
+  fallback = "Request failed.",
+): string {
+  if (err instanceof Error) {
+    const trimmed = err.message.trim();
+    if (trimmed) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        return apiErrorMessageFromBody(parsed) ?? trimmed;
+      } catch {
+        return trimmed;
+      }
+    }
+  }
+  if (typeof err === "string" && err.trim()) return err.trim();
+  return fallback;
+}
+
 // ── Types (aligned with real /api/my/profile response) ──
 
 export interface LlmPrimary {
@@ -92,24 +139,16 @@ export async function getMyProfile(): Promise<Profile | null> {
 
 export async function updateMyProfile(
   patch: { name?: string; enabled?: boolean; config?: Partial<ProfileConfig> },
-): Promise<Profile | null> {
-  try {
-    return await request<Profile>("/api/my/profile", {
-      method: "PUT",
-      body: JSON.stringify(patch),
-    });
-  } catch {
-    return null;
-  }
+): Promise<Profile> {
+  return await request<Profile>("/api/my/profile", {
+    method: "PUT",
+    body: JSON.stringify(patch),
+  });
 }
 
 export async function getMyProfileSkills(): Promise<SkillInfo[]> {
-  try {
-    const resp = await request<{ skills: SkillInfo[] }>("/api/my/profile/skills");
-    return resp.skills ?? [];
-  } catch {
-    return [];
-  }
+  const resp = await request<{ skills: SkillInfo[] }>("/api/my/profile/skills");
+  return resp.skills ?? [];
 }
 
 export async function getMyProfileStatus(): Promise<ProfileStatus | null> {
@@ -120,45 +159,28 @@ export async function getMyProfileStatus(): Promise<ProfileStatus | null> {
   }
 }
 
-export async function startMyGateway(): Promise<{ ok: boolean; message?: string } | null> {
-  try {
-    return await request<{ ok: boolean; message?: string }>("/api/my/profile/start", {
-      method: "POST",
-    });
-  } catch {
-    return null;
-  }
+export async function startMyGateway(): Promise<{ ok: boolean; message?: string }> {
+  return await request<{ ok: boolean; message?: string }>("/api/my/profile/start", {
+    method: "POST",
+  });
 }
 
-export async function stopMyGateway(): Promise<{ ok: boolean; message?: string } | null> {
-  try {
-    return await request<{ ok: boolean; message?: string }>("/api/my/profile/stop", {
-      method: "POST",
-    });
-  } catch {
-    return null;
-  }
+export async function stopMyGateway(): Promise<{ ok: boolean; message?: string }> {
+  return await request<{ ok: boolean; message?: string }>("/api/my/profile/stop", {
+    method: "POST",
+  });
 }
 
-export async function restartMyGateway(): Promise<{ ok: boolean; message?: string } | null> {
-  try {
-    return await request<{ ok: boolean; message?: string }>("/api/my/profile/restart", {
-      method: "POST",
-    });
-  } catch {
-    return null;
-  }
+export async function restartMyGateway(): Promise<{ ok: boolean; message?: string }> {
+  return await request<{ ok: boolean; message?: string }>("/api/my/profile/restart", {
+    method: "POST",
+  });
 }
 
-export async function removeSkill(name: string): Promise<boolean> {
-  try {
-    await request<void>(`/api/my/profile/skills/${encodeURIComponent(name)}`, {
-      method: "DELETE",
-    });
-    return true;
-  } catch {
-    return false;
-  }
+export async function removeSkill(name: string): Promise<void> {
+  await request<void>(`/api/my/profile/skills/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
 }
 
 export interface InstallSkillResponse {
@@ -166,18 +188,16 @@ export interface InstallSkillResponse {
   installed: string[];
   skipped: string[];
   deps_installed: string[];
+  message?: string;
+  error?: string;
+  detail?: string;
 }
 
-export async function installSkill(source: string): Promise<boolean> {
-  try {
-    const resp = await request<InstallSkillResponse>("/api/my/profile/skills", {
-      method: "POST",
-      body: JSON.stringify({ repo: source }),
-    });
-    return resp.ok;
-  } catch {
-    return false;
-  }
+export async function installSkill(source: string): Promise<InstallSkillResponse> {
+  return await request<InstallSkillResponse>("/api/my/profile/skills", {
+    method: "POST",
+    body: JSON.stringify({ repo: source }),
+  });
 }
 
 // ── Hub / Registry ──
@@ -196,12 +216,8 @@ export interface HubPackage {
 }
 
 export async function getSkillRegistry(): Promise<HubPackage[]> {
-  try {
-    const resp = await request<{ packages: HubPackage[] }>("/api/my/profile/skills/registry");
-    return resp.packages ?? [];
-  } catch {
-    return [];
-  }
+  const resp = await request<{ packages: HubPackage[] }>("/api/my/profile/skills/registry");
+  return resp.packages ?? [];
 }
 
 // ── Admin: Users management ──
@@ -243,13 +259,9 @@ function normalizeAdminUser(user: AdminUserResponse): AdminUser {
 }
 
 export async function getAdminUsers(): Promise<AdminUser[]> {
-  try {
-    const resp = await request<AdminUserResponse[] | { users: AdminUserResponse[] }>("/api/admin/users");
-    const users = Array.isArray(resp) ? resp : (resp.users ?? []);
-    return users.map(normalizeAdminUser);
-  } catch {
-    return [];
-  }
+  const resp = await request<AdminUserResponse[] | { users: AdminUserResponse[] }>("/api/admin/users");
+  const users = Array.isArray(resp) ? resp : (resp.users ?? []);
+  return users.map(normalizeAdminUser);
 }
 
 export async function createAdminUser(parentProfileId: string, body: {
@@ -258,34 +270,25 @@ export async function createAdminUser(parentProfileId: string, body: {
   sub_account_id: string;
   public_subdomain: string;
   note?: string;
-}): Promise<ProfileResponseEnvelope | null> {
-  try {
-    return await request<ProfileResponseEnvelope>(
-      `/api/admin/profiles/${encodeURIComponent(parentProfileId)}/accounts`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          sub_account_id: body.sub_account_id,
-          public_subdomain: body.public_subdomain,
-          name: body.name,
-          email: body.email,
-        }),
-      },
-    );
-  } catch {
-    return null;
-  }
+}): Promise<ProfileResponseEnvelope> {
+  return await request<ProfileResponseEnvelope>(
+    `/api/admin/profiles/${encodeURIComponent(parentProfileId)}/accounts`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        sub_account_id: body.sub_account_id,
+        public_subdomain: body.public_subdomain,
+        name: body.name,
+        email: body.email,
+      }),
+    },
+  );
 }
 
-export async function deleteAdminUser(id: string): Promise<boolean> {
-  try {
-    await request<void>(`/api/admin/users/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    });
-    return true;
-  } catch {
-    return false;
-  }
+export async function deleteAdminUser(id: string): Promise<void> {
+  await request<void>(`/api/admin/users/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
 }
 
 // ── Admin: Allowed Emails ──
@@ -303,35 +306,21 @@ export interface AllowedEmail {
 }
 
 export async function getAllowedEmails(): Promise<AllowedEmail[]> {
-  try {
-    const resp = await request<AllowedEmail[] | { emails?: AllowedEmail[]; entries?: AllowedEmail[] }>("/api/admin/allowed-emails");
-    return Array.isArray(resp) ? resp : (resp.entries ?? resp.emails ?? []);
-  } catch {
-    return [];
-  }
+  const resp = await request<AllowedEmail[] | { emails?: AllowedEmail[]; entries?: AllowedEmail[] }>("/api/admin/allowed-emails");
+  return Array.isArray(resp) ? resp : (resp.entries ?? resp.emails ?? []);
 }
 
-export async function addAllowedEmail(email: string): Promise<boolean> {
-  try {
-    await request<void>("/api/admin/allowed-emails", {
-      method: "POST",
-      body: JSON.stringify({ email }),
-    });
-    return true;
-  } catch {
-    return false;
-  }
+export async function addAllowedEmail(email: string): Promise<void> {
+  await request<void>("/api/admin/allowed-emails", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
 }
 
-export async function removeAllowedEmail(email: string): Promise<boolean> {
-  try {
-    await request<void>(`/api/admin/allowed-emails/${encodeURIComponent(email)}`, {
-      method: "DELETE",
-    });
-    return true;
-  } catch {
-    return false;
-  }
+export async function removeAllowedEmail(email: string): Promise<void> {
+  await request<void>(`/api/admin/allowed-emails/${encodeURIComponent(email)}`, {
+    method: "DELETE",
+  });
 }
 
 // ── Admin API types ──
@@ -391,27 +380,15 @@ export interface OperatorTasksResponse {
 // ── Admin API calls ──
 
 export async function fetchOperatorSummary(): Promise<OperatorSummary | null> {
-  try {
-    return await request<OperatorSummary>("/api/admin/operator/summary");
-  } catch {
-    return null;
-  }
+  return await request<OperatorSummary>("/api/admin/operator/summary");
 }
 
 export async function fetchOperatorTasks(): Promise<OperatorTasksResponse | null> {
-  try {
-    return await request<OperatorTasksResponse>("/api/admin/operator/tasks");
-  } catch {
-    return null;
-  }
+  return await request<OperatorTasksResponse>("/api/admin/operator/tasks");
 }
 
 export async function fetchAllProfiles(): Promise<Profile[]> {
-  try {
-    return await request<Profile[]>("/api/admin/profiles");
-  } catch {
-    return [];
-  }
+  return await request<Profile[]>("/api/admin/profiles");
 }
 
 export async function startProfile(profileId: string): Promise<string | null> {
@@ -421,7 +398,7 @@ export async function startProfile(profileId: string): Promise<string | null> {
     });
     return null;
   } catch (err) {
-    return err instanceof Error ? err.message : "Failed to start";
+    return formatSettingsError(err, "Failed to start");
   }
 }
 
@@ -432,19 +409,14 @@ export async function stopProfile(profileId: string): Promise<string | null> {
     });
     return null;
   } catch (err) {
-    return err instanceof Error ? err.message : "Failed to stop";
+    return formatSettingsError(err, "Failed to stop");
   }
 }
 
-export async function deleteAdminProfile(profileId: string): Promise<boolean> {
-  try {
-    await request<void>(`/api/admin/profiles/${encodeURIComponent(profileId)}`, {
-      method: "DELETE",
-    });
-    return true;
-  } catch {
-    return false;
-  }
+export async function deleteAdminProfile(profileId: string): Promise<void> {
+  await request<void>(`/api/admin/profiles/${encodeURIComponent(profileId)}`, {
+    method: "DELETE",
+  });
 }
 
 // ── Admin: OminiX platform skills ──

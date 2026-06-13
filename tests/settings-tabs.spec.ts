@@ -9,6 +9,13 @@ import { test, expect } from "@playwright/test";
 
 const TIMEOUT = 10_000;
 
+interface SettingsMockOptions {
+  profileUpdateError?: { status: number; body: unknown };
+  allowedEmailDeleteError?: { status: number; body: unknown };
+  operatorTasksError?: { status: number; body: unknown };
+  ominixServiceActionErrors?: Partial<Record<"start" | "stop" | "restart", { status: number; body: unknown }>>;
+}
+
 const mockProfile = {
   id: "admin",
   name: "Admin",
@@ -61,7 +68,10 @@ const mockProfile = {
   },
 };
 
-async function installAdminSettingsMocks(page: import("@playwright/test").Page) {
+async function installAdminSettingsMocks(
+  page: import("@playwright/test").Page,
+  options: SettingsMockOptions = {},
+) {
   let enableBody: unknown = null;
   let disableBody: unknown = null;
   let downloadBody: unknown = null;
@@ -116,12 +126,20 @@ async function installAdminSettingsMocks(page: import("@playwright/test").Page) 
     }),
   );
 
-  await page.route("**/api/my/profile", (route) =>
-    route.fulfill({
+  await page.route("**/api/my/profile", async (route) => {
+    if (route.request().method() === "PUT" && options.profileUpdateError) {
+      await route.fulfill({
+        status: options.profileUpdateError.status,
+        contentType: "application/json",
+        body: JSON.stringify(options.profileUpdateError.body),
+      });
+      return;
+    }
+    await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify(mockProfile),
-    }),
-  );
+    });
+  });
 
   await page.route("**/api/admin/platform-skills", (route) =>
     route.fulfill({
@@ -250,6 +268,15 @@ async function installAdminSettingsMocks(page: import("@playwright/test").Page) 
   for (const action of ["start", "stop", "restart"]) {
     await page.route(`**/api/admin/platform-skills/ominix-api/${action}`, async (route) => {
       serviceActions.push(action);
+      const error = options.ominixServiceActionErrors?.[action as "start" | "stop" | "restart"];
+      if (error) {
+        await route.fulfill({
+          status: error.status,
+          contentType: "application/json",
+          body: JSON.stringify(error.body),
+        });
+        return;
+      }
       await route.fulfill({
         contentType: "application/json",
         body: JSON.stringify({ ok: true, message: `${action}ed` }),
@@ -266,8 +293,11 @@ async function installAdminSettingsMocks(page: import("@playwright/test").Page) 
   };
 }
 
-async function installServerSettingsMocks(page: import("@playwright/test").Page) {
-  const baseMocks = await installAdminSettingsMocks(page);
+async function installServerSettingsMocks(
+  page: import("@playwright/test").Page,
+  options: SettingsMockOptions = {},
+) {
+  const baseMocks = await installAdminSettingsMocks(page, options);
   let watchdogBody: unknown = null;
   let deploymentBody: unknown = null;
   let rotateBody: unknown = null;
@@ -325,6 +355,22 @@ async function installServerSettingsMocks(page: import("@playwright/test").Page)
         ],
       }),
     });
+  });
+
+  await page.route("**/api/admin/allowed-emails/*", async (route) => {
+    if (route.request().method() === "DELETE") {
+      if (options.allowedEmailDeleteError) {
+        await route.fulfill({
+          status: options.allowedEmailDeleteError.status,
+          contentType: "application/json",
+          body: JSON.stringify(options.allowedEmailDeleteError.body),
+        });
+        return;
+      }
+      await route.fulfill({ status: 204, body: "" });
+      return;
+    }
+    await route.fallback();
   });
 
   await page.route("**/api/admin/profiles/admin/accounts", async (route) => {
@@ -420,8 +466,15 @@ async function installServerSettingsMocks(page: import("@playwright/test").Page)
     }),
   );
 
-  await page.route("**/api/admin/operator/tasks", (route) =>
-    route.fulfill({
+  await page.route("**/api/admin/operator/tasks", (route) => {
+    if (options.operatorTasksError) {
+      return route.fulfill({
+        status: options.operatorTasksError.status,
+        contentType: "application/json",
+        body: JSON.stringify(options.operatorTasksError.body),
+      });
+    }
+    return route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
         generated_at: "2026-01-01T00:00:00Z",
@@ -434,8 +487,8 @@ async function installServerSettingsMocks(page: import("@playwright/test").Page)
         sources: [],
         partial: false,
       }),
-    }),
-  );
+    });
+  });
 
   await page.route("**/health", (route) =>
     route.fulfill({
@@ -593,6 +646,27 @@ test.describe("Settings page — tab smoke tests", () => {
     }
   });
 
+  test("Profile save surfaces backend validation errors", async ({ page }) => {
+    await installServerSettingsMocks(page, {
+      profileUpdateError: {
+        status: 400,
+        body: { detail: "Display name already exists" },
+      },
+    });
+    await seedAdminSession(page);
+
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: TIMEOUT });
+    await clickTab(page, "Profile");
+
+    await page.getByPlaceholder("Enter display name").fill("Admin Duplicate");
+    await page.getByRole("button", { name: "Save Changes" }).click();
+
+    await expect(page.getByText("Display name already exists")).toBeVisible({
+      timeout: TIMEOUT,
+    });
+  });
+
   test("LLM tab renders provider selector and fallback section", async ({
     page,
   }) => {
@@ -721,6 +795,27 @@ test.describe("Settings page — tab smoke tests", () => {
     ).toBeVisible({ timeout: TIMEOUT });
   });
 
+  test("System tab surfaces partial operator task load failures", async ({ page }) => {
+    await installServerSettingsMocks(page, {
+      operatorTasksError: {
+        status: 503,
+        body: { detail: "operator tasks unavailable" },
+      },
+    });
+    await seedAdminSession(page);
+
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: TIMEOUT });
+    await clickTab(page, "System");
+
+    await expect(
+      page.locator("h3", { hasText: "Operator Overview" }),
+    ).toBeVisible({ timeout: TIMEOUT });
+    await expect(page.getByText("operator tasks unavailable")).toBeVisible({
+      timeout: TIMEOUT,
+    });
+  });
+
   test("Server tab shows Deployment Mode (admin)", async ({ page }) => {
     await goToSettings(page);
     const profileLoaded = await hasProfile(page);
@@ -800,6 +895,30 @@ test.describe("Settings page — tab smoke tests", () => {
     await expect.poll(() => mocks.getServiceActions()).toEqual(["restart"]);
   });
 
+  test("OminiX service actions surface backend error details", async ({ page }) => {
+    await installAdminSettingsMocks(page, {
+      ominixServiceActionErrors: {
+        restart: {
+          status: 500,
+          body: { detail: "launchctl failed" },
+        },
+      },
+    });
+    await seedAdminSession(page);
+
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: TIMEOUT });
+    await clickTab(page, "OminiX");
+
+    await page.getByRole("button", { name: "Restart" }).click();
+    await page.getByRole("button", { name: "Confirm" }).click();
+
+    await expect(page.getByText("launchctl failed", { exact: true })).toBeVisible({
+      timeout: TIMEOUT,
+    });
+    await expect(page.locator("h3", { hasText: "OminiX API" })).toBeVisible();
+  });
+
   test("Server tab uses real admin endpoints for settings and token rotation", async ({
     page,
   }) => {
@@ -856,6 +975,33 @@ test.describe("Settings page — tab smoke tests", () => {
       public_subdomain: "nana",
       name: "Nana",
       email: "nana@example.com",
+    });
+  });
+
+  test("Users allowlist remove uses in-app confirmation and reports backend errors", async ({
+    page,
+  }) => {
+    await installServerSettingsMocks(page, {
+      allowedEmailDeleteError: {
+        status: 500,
+        body: { detail: "Allowlist delete failed" },
+      },
+    });
+    await seedAdminSession(page);
+
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: TIMEOUT });
+    await clickTab(page, "Users");
+
+    await page.getByTitle("Remove allowed@localhost").click();
+    await expect(page.getByRole("heading", { name: "Remove Allowed Email" })).toBeVisible({
+      timeout: TIMEOUT,
+    });
+    await expect(page.getByRole("button", { name: "Cancel" })).toBeFocused();
+    await page.getByRole("button", { name: "Remove Email" }).click();
+
+    await expect(page.getByText("Allowlist delete failed")).toBeVisible({
+      timeout: TIMEOUT,
     });
   });
 

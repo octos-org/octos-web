@@ -33,17 +33,22 @@ export function ConfirmDialog({
   onCancel,
 }: ConfirmDialogProps) {
   const confirmRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
 
-  // Focus the confirm button when opening; close on Escape.
+  // Focus the safer action for destructive dialogs; close on Escape.
   useEffect(() => {
     if (!open) return;
-    confirmRef.current?.focus();
+    if (variant === "danger") {
+      cancelRef.current?.focus();
+    } else {
+      confirmRef.current?.focus();
+    }
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCancel();
     };
     document.addEventListener("keydown", handleKey);
     return () => document.removeEventListener("keydown", handleKey);
-  }, [open, onCancel]);
+  }, [open, onCancel, variant]);
 
   if (!open) return null;
 
@@ -73,6 +78,7 @@ export function ConfirmDialog({
         {/* Actions */}
         <div className="flex items-center justify-end gap-3">
           <button
+            ref={cancelRef}
             onClick={onCancel}
             className="rounded-xl border border-border px-4 py-2 text-sm text-muted hover:text-text-strong hover:border-accent/30 transition"
           >

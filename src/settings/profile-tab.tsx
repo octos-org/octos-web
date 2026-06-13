@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import {
   updateMyProfile,
+  formatSettingsError,
   getMyProfile,
   startMyGateway,
   stopMyGateway,
@@ -161,30 +162,31 @@ export function ProfileTab({ profile, onProfileUpdated, onNavigateBack }: Profil
     if (!name.trim()) return;
     setSaving(true);
     setError(null);
-    const result = await updateMyProfile({
-      name: name.trim(),
-      enabled: autoStart,
-      config: {
-        admin_mode: adminMode,
-      },
-    });
-    setSaving(false);
-    if (result) {
+    try {
+      const result = await updateMyProfile({
+        name: name.trim(),
+        enabled: autoStart,
+        config: {
+          admin_mode: adminMode,
+        },
+      });
       onProfileUpdated(result);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-    } else {
-      setError(LABELS.saveFailed);
+    } catch (err) {
+      setError(formatSettingsError(err, LABELS.saveFailed));
+    } finally {
+      setSaving(false);
     }
   };
 
   const handleDeleteProfile = async () => {
     setDeleteProfileError(null);
-    const ok = await deleteAdminProfile(profile.id);
-    if (ok) {
+    try {
+      await deleteAdminProfile(profile.id);
       onNavigateBack?.();
-    } else {
-      setDeleteProfileError(LABELS.deleteProfileFailed);
+    } catch (err) {
+      setDeleteProfileError(formatSettingsError(err, LABELS.deleteProfileFailed));
     }
   };
 
@@ -205,12 +207,17 @@ export function ProfileTab({ profile, onProfileUpdated, onNavigateBack }: Profil
           : action === "stop"
             ? stopMyGateway
             : restartMyGateway;
-      const result = await fn();
-      if (!result?.ok) {
-        setGatewayError(result?.message ?? `Failed to ${action} gateway.`);
+      try {
+        const result = await fn();
+        if (!result.ok) {
+          setGatewayError(result.message ?? `Failed to ${action} gateway.`);
+        }
+      } catch (err) {
+        setGatewayError(formatSettingsError(err, `Failed to ${action} gateway.`));
+      } finally {
+        await refreshProfile();
+        setGatewayLoading(null);
       }
-      await refreshProfile();
-      setGatewayLoading(null);
     },
     [refreshProfile],
   );
@@ -273,10 +280,8 @@ export function ProfileTab({ profile, onProfileUpdated, onNavigateBack }: Profil
       }
     }
 
-    const result = await updateMyProfile({ config: { env_vars: envVars } });
-    setEnvSaving(false);
-
-    if (result) {
+    try {
+      const result = await updateMyProfile({ config: { env_vars: envVars } });
       onProfileUpdated(result);
       // Reset rows from fresh server data
       setEnvRows(
@@ -290,8 +295,10 @@ export function ProfileTab({ profile, onProfileUpdated, onNavigateBack }: Profil
       );
       setEnvSaved(true);
       setTimeout(() => setEnvSaved(false), 2000);
-    } else {
-      setEnvError(LABELS.envSaveFailed);
+    } catch (err) {
+      setEnvError(formatSettingsError(err, LABELS.envSaveFailed));
+    } finally {
+      setEnvSaving(false);
     }
   };
 

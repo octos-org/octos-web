@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import {
   fetchAllProfiles,
+  formatSettingsError,
   startProfile,
   stopProfile,
   type Profile,
@@ -252,13 +253,20 @@ export function ServerTab() {
 
   const load = useCallback(async () => {
     setError(null);
-    const data = await fetchAllProfiles();
-    setProfiles(data);
-    setLoading(false);
+    try {
+      const data = await fetchAllProfiles();
+      setProfiles(data);
+    } catch (err) {
+      setError(formatSettingsError(err, "Failed to load profiles."));
+      setProfiles([]);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
-    void load();
+    const id = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(id);
   }, [load]);
 
   // Load admin settings

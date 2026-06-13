@@ -10,7 +10,13 @@ import {
   ChevronDown,
   Copy,
 } from "lucide-react";
-import { updateMyProfile, type Profile, type ProfileConfig } from "./settings-api";
+import {
+  formatSettingsError,
+  updateMyProfile,
+  type Profile,
+  type ProfileConfig,
+} from "./settings-api";
+import { ConfirmDialog } from "./confirm-dialog";
 
 interface ChannelsTabProps {
   profile: Profile;
@@ -278,6 +284,7 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingRemoveIdx, setPendingRemoveIdx] = useState<number | null>(null);
 
   // Add-channel form state
   const [showAddForm, setShowAddForm] = useState(false);
@@ -297,18 +304,20 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
   const persistChannels = async (newChannels: ChannelConfig[]): Promise<boolean> => {
     setSaving(true);
     setError(null);
-    const result = await updateMyProfile({
-      config: { channels: newChannels } as Partial<ProfileConfig>,
-    });
-    setSaving(false);
-    if (result) {
+    try {
+      const result = await updateMyProfile({
+        config: { channels: newChannels } as Partial<ProfileConfig>,
+      });
       onProfileUpdated?.(result);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
       return true;
+    } catch (err) {
+      setError(formatSettingsError(err, "Failed to update channels."));
+      return false;
+    } finally {
+      setSaving(false);
     }
-    setError("Failed to update channels.");
-    return false;
   };
 
   const handleAdd = async () => {
@@ -328,10 +337,10 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
     }
   };
 
-  const handleRemove = async (idx: number) => {
-    const ch = channels[idx];
-    const label = channelLabel(ch?.type ?? "unknown");
-    if (!window.confirm(`Remove ${label} channel?`)) return;
+  const confirmRemove = async () => {
+    if (pendingRemoveIdx == null) return;
+    const idx = pendingRemoveIdx;
+    setPendingRemoveIdx(null);
     const updated = channels.filter((_, i) => i !== idx);
     await persistChannels(updated);
   };
@@ -431,7 +440,7 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
                     </button>
                     {/* Delete */}
                     <button
-                      onClick={() => handleRemove(idx)}
+                      onClick={() => setPendingRemoveIdx(idx)}
                       disabled={saving}
                       className="shrink-0 rounded-lg p-2 text-muted hover:text-red-400 hover:bg-red-500/10 disabled:opacity-40 transition"
                       title="Remove channel"
@@ -527,6 +536,19 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={pendingRemoveIdx != null}
+        title="Remove Channel"
+        body={
+          pendingRemoveIdx != null && channels[pendingRemoveIdx]
+            ? `Remove ${channelLabel(channels[pendingRemoveIdx].type)} channel?`
+            : "Remove this channel?"
+        }
+        confirmLabel="Remove Channel"
+        variant="danger"
+        onConfirm={() => void confirmRemove()}
+        onCancel={() => setPendingRemoveIdx(null)}
+      />
     </div>
   );
 }

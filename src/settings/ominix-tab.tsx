@@ -21,6 +21,7 @@ import {
   fetchOminixLogs,
   fetchOminixPlatformModels,
   fetchPlatformSkillsStatus,
+  formatSettingsError,
   installPlatformSkill,
   removeOminixModel,
   removePlatformSkill,
@@ -42,7 +43,7 @@ type PendingAction =
   | { kind: "remove-skill"; name: string };
 
 function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  return formatSettingsError(err, "OminiX action failed.");
 }
 
 function statusClass(ok: boolean) {
@@ -472,7 +473,8 @@ export function OminixTab() {
   }, []);
 
   useEffect(() => {
-    void load();
+    const id = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(id);
   }, [load]);
 
   const runningLabel = status?.ominix_api.healthy ? "Healthy" : "Unreachable";

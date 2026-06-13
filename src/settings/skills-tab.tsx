@@ -1,6 +1,30 @@
 import { useState, useEffect, useRef } from "react";
 import { Puzzle, Loader2, Wrench, RefreshCw, Trash2, Plus, Download, Package, Search, Check, Tag } from "lucide-react";
-import { getMyProfileSkills, removeSkill, installSkill, getSkillRegistry, type SkillInfo, type HubPackage } from "./settings-api";
+import {
+  formatSettingsError,
+  getMyProfileSkills,
+  removeSkill,
+  installSkill,
+  getSkillRegistry,
+  type SkillInfo,
+  type HubPackage,
+} from "./settings-api";
+import { ConfirmDialog } from "./confirm-dialog";
+
+function installFailureMessage(result: {
+  message?: string;
+  error?: string;
+  detail?: string;
+  skipped?: string[];
+}, fallback: string) {
+  if (result.message?.trim()) return result.message.trim();
+  if (result.error?.trim()) return result.error.trim();
+  if (result.detail?.trim()) return result.detail.trim();
+  if (result.skipped && result.skipped.length > 0) {
+    return `${fallback} Skipped: ${result.skipped.join(", ")}`;
+  }
+  return fallback;
+}
 
 export function SkillsTab() {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
@@ -15,6 +39,7 @@ export function SkillsTab() {
 
   // Track which skill is being removed
   const [removingSkill, setRemovingSkill] = useState<string | null>(null);
+  const [pendingRemoveSkill, setPendingRemoveSkill] = useState<string | null>(null);
 
   // Octos Hub state
   const [hubPackages, setHubPackages] = useState<HubPackage[]>([]);
@@ -24,38 +49,60 @@ export function SkillsTab() {
 
   const refreshSkills = async () => {
     setError(null);
-    const data = await getMyProfileSkills();
-    if (mountedRef.current) {
-      setSkills(data);
+    try {
+      const data = await getMyProfileSkills();
+      if (mountedRef.current) {
+        setSkills(data);
+      }
+    } catch (err) {
+      if (mountedRef.current) {
+        setError(formatSettingsError(err, "Failed to load installed skills."));
+      }
     }
   };
 
   useEffect(() => {
     mountedRef.current = true;
     let cancelled = false;
-    Promise.all([getMyProfileSkills(), getSkillRegistry()]).then(([skillData, registryData]) => {
-      if (!cancelled) {
-        setSkills(skillData);
+    Promise.allSettled([getMyProfileSkills(), getSkillRegistry()]).then(
+      ([skillResult, registryResult]) => {
+        if (cancelled) return;
+        const errors: string[] = [];
+        if (skillResult.status === "fulfilled") {
+          setSkills(skillResult.value);
+        } else {
+          errors.push(formatSettingsError(skillResult.reason, "Failed to load installed skills."));
+        }
+        if (registryResult.status === "fulfilled") {
+          setHubPackages(registryResult.value);
+        } else {
+          errors.push(formatSettingsError(registryResult.reason, "Failed to load Octos Hub registry."));
+        }
+        if (errors.length > 0) setError(errors.join("\n"));
         setLoading(false);
-        setHubPackages(registryData);
         setHubLoading(false);
-      }
-    });
+      },
+    );
     return () => { cancelled = true; mountedRef.current = false; };
   }, []);
 
-  const handleRemove = async (name: string) => {
-    if (!window.confirm(`Remove skill '${name}'?`)) return;
+  const confirmRemove = async () => {
+    const name = pendingRemoveSkill;
+    if (!name) return;
+    setPendingRemoveSkill(null);
     setRemovingSkill(name);
     setError(null);
-    const ok = await removeSkill(name);
-    if (mountedRef.current) {
-      setRemovingSkill(null);
-      if (ok) {
+    try {
+      await removeSkill(name);
+      if (mountedRef.current) {
         await refreshSkills();
-      } else {
-        setError(`Failed to remove skill '${name}'.`);
       }
+    } catch (err) {
+      if (mountedRef.current) {
+        setError(formatSettingsError(err, `Failed to remove skill '${name}'.`));
+      }
+    } finally {
+      if (mountedRef.current) setRemovingSkill(null);
     }
   };
 
@@ -65,16 +112,24 @@ export function SkillsTab() {
     setInstalling(true);
     setError(null);
     setInstallMessage(null);
-    const ok = await installSkill(source);
-    if (mountedRef.current) {
-      setInstalling(false);
-      if (ok) {
+    try {
+      const result = await installSkill(source);
+      if (!result.ok) {
+        throw new Error(
+          installFailureMessage(result, "Skill install was rejected by the server."),
+        );
+      }
+      if (mountedRef.current) {
         setInstallSource("");
         setInstallMessage("Skill installed. Restart gateway to load new skills.");
         await refreshSkills();
-      } else {
-        setError(`Failed to install skill from '${source}'.`);
       }
+    } catch (err) {
+      if (mountedRef.current) {
+        setError(formatSettingsError(err, `Failed to install skill from '${source}'.`));
+      }
+    } finally {
+      if (mountedRef.current) setInstalling(false);
     }
   };
 
@@ -82,15 +137,23 @@ export function SkillsTab() {
     setInstallingHub(pkg.name);
     setError(null);
     setInstallMessage(null);
-    const ok = await installSkill(pkg.repo);
-    if (mountedRef.current) {
-      setInstallingHub(null);
-      if (ok) {
+    try {
+      const result = await installSkill(pkg.repo);
+      if (!result.ok) {
+        throw new Error(
+          installFailureMessage(result, "Skill package install was rejected by the server."),
+        );
+      }
+      if (mountedRef.current) {
         setInstallMessage(`Skill package '${pkg.name}' installed. Restart gateway to load new skills.`);
         await refreshSkills();
-      } else {
-        setError(`Failed to install skill package '${pkg.name}'.`);
       }
+    } catch (err) {
+      if (mountedRef.current) {
+        setError(formatSettingsError(err, `Failed to install skill package '${pkg.name}'.`));
+      }
+    } finally {
+      if (mountedRef.current) setInstallingHub(null);
     }
   };
 
@@ -196,7 +259,7 @@ export function SkillsTab() {
                   <span>{skill.tool_count} tool{skill.tool_count === 1 ? "" : "s"}</span>
                 </div>
                 <button
-                  onClick={() => handleRemove(skill.name)}
+                  onClick={() => setPendingRemoveSkill(skill.name)}
                   disabled={removingSkill === skill.name}
                   className="shrink-0 rounded-lg p-2 text-muted hover:text-red-400 hover:bg-red-500/10 disabled:opacity-40 transition"
                   title={`Remove ${skill.name}`}
@@ -398,6 +461,15 @@ export function SkillsTab() {
           </div>
         )}
       </div>
+      <ConfirmDialog
+        open={pendingRemoveSkill != null}
+        title="Remove Skill"
+        body={pendingRemoveSkill ? `Remove skill '${pendingRemoveSkill}'?` : "Remove this skill?"}
+        confirmLabel="Remove Skill"
+        variant="danger"
+        onConfirm={() => void confirmRemove()}
+        onCancel={() => setPendingRemoveSkill(null)}
+      />
     </div>
   );
 }

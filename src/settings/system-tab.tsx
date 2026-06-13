@@ -21,6 +21,7 @@ import {
 import {
   fetchOperatorSummary,
   fetchOperatorTasks,
+  formatSettingsError,
   type OperatorSummary,
   type OperatorTasksResponse,
   type BreakdownEntry,
@@ -329,6 +330,7 @@ const LOG_LEVEL_COLOR: Record<LogLine["level"], string> = {
 
 function LiveLogsPanel() {
   const [lines, setLines] = useState<LogLine[]>([]);
+  const [bufferedCount, setBufferedCount] = useState(0);
   const [paused, setPaused] = useState(false);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -346,6 +348,7 @@ function LiveLogsPanel() {
       level: classifyLine(cleaned),
     };
     lineBufferRef.current = [...lineBufferRef.current, line].slice(-MAX_LOG_LINES);
+    setBufferedCount(lineBufferRef.current.length);
     if (!pausedRef.current) {
       setLines([...lineBufferRef.current]);
     }
@@ -389,8 +392,9 @@ function LiveLogsPanel() {
   }, [addLine]);
 
   useEffect(() => {
-    connect();
+    const id = window.setTimeout(connect, 0);
     return () => {
+      window.clearTimeout(id);
       esRef.current?.close();
       esRef.current = null;
     };
@@ -415,6 +419,7 @@ function LiveLogsPanel() {
 
   const handleClear = () => {
     lineBufferRef.current = [];
+    setBufferedCount(0);
     setLines([]);
   };
 
@@ -475,7 +480,7 @@ function LiveLogsPanel() {
         {paused && lines.length > 0 && (
           <div className="pointer-events-none sticky bottom-0 left-0 right-0 flex justify-center pb-1">
             <span className="rounded-full bg-zinc-800/90 px-3 py-1 text-[10px] text-yellow-400 border border-yellow-400/20">
-              Paused — {lineBufferRef.current.length} lines buffered
+              Paused — {bufferedCount} lines buffered
             </span>
           </div>
         )}
@@ -504,28 +509,36 @@ export function SystemTab() {
     else setRefreshing(true);
     setError(null);
 
-    try {
-      const [s, t] = await Promise.all([
-        fetchOperatorSummary(),
-        fetchOperatorTasks(),
-      ]);
-      if (!s) {
-        setError("Failed to fetch operator summary. The admin API may be unavailable.");
-      }
-      setSummary(s);
-      setTasks(t);
-    } catch {
-      setError("Network error while fetching operator data.");
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+    const [summaryResult, tasksResult] = await Promise.allSettled([
+      fetchOperatorSummary(),
+      fetchOperatorTasks(),
+    ]);
+    const errors: string[] = [];
+
+    if (summaryResult.status === "fulfilled") {
+      setSummary(summaryResult.value);
+    } else {
+      setSummary(null);
+      errors.push(formatSettingsError(summaryResult.reason, "Failed to fetch operator summary."));
     }
+
+    if (tasksResult.status === "fulfilled") {
+      setTasks(tasksResult.value);
+    } else {
+      setTasks(null);
+      errors.push(formatSettingsError(tasksResult.reason, "Failed to fetch operator tasks."));
+    }
+
+    setError(errors.length ? errors.join("\n") : null);
+    setLoading(false);
+    setRefreshing(false);
   }, []);
 
   useEffect(() => {
-    void load();
+    const id = window.setTimeout(() => void load(), 0);
     timerRef.current = setInterval(() => void load(true), AUTO_REFRESH_MS);
     return () => {
+      window.clearTimeout(id);
       if (timerRef.current) clearInterval(timerRef.current);
     };
   }, [load]);
@@ -597,6 +610,16 @@ export function SystemTab() {
           Refresh
         </button>
       </div>
+
+      {error && (
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-lg border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm text-red-300"
+        >
+          <AlertCircle size={16} className="mt-0.5 shrink-0" />
+          <span className="whitespace-pre-wrap">{error}</span>
+        </div>
+      )}
 
       {/* Collection overview */}
       {collection && (

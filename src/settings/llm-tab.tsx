@@ -18,7 +18,12 @@ import {
   Info,
 } from "lucide-react";
 import { request } from "@/api/client";
-import { updateMyProfile, type Profile, type LlmPrimary } from "./settings-api";
+import {
+  formatSettingsError,
+  updateMyProfile,
+  type Profile,
+  type LlmPrimary,
+} from "./settings-api";
 import {
   LLM_PROVIDERS,
   findProvider,
@@ -223,39 +228,39 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
       base_url: needsBaseUrl ? form.base_url.trim() || null : null,
     };
 
-    const result = await updateMyProfile({
-      config: {
-        llm: {
-          primary: {
-            family_id: effectiveFamilyId,
-            model_id: effectiveModelId,
-            route: primaryRoute.api_key_env || primaryRoute.base_url ? primaryRoute : null,
+    try {
+      const result = await updateMyProfile({
+        config: {
+          llm: {
+            primary: {
+              family_id: effectiveFamilyId,
+              model_id: effectiveModelId,
+              route: primaryRoute.api_key_env || primaryRoute.base_url ? primaryRoute : null,
+            },
+            fallbacks: fallbacksPayload,
           },
-          fallbacks: fallbacksPayload,
+          gateway: {
+            ...profile.config.gateway,
+            system_prompt: form.system_prompt.trim() || null,
+            max_output_tokens: optionalInt(form.max_output_tokens),
+            max_history: optionalInt(form.max_history),
+            max_iterations: optionalInt(form.max_iterations),
+            max_concurrent_sessions: optionalInt(form.max_concurrent_sessions),
+            browser_timeout_secs: optionalInt(form.browser_timeout_secs),
+          },
+          adaptive_routing: { enabled: form.adaptive_routing_enabled },
         },
-        gateway: {
-          ...profile.config.gateway,
-          system_prompt: form.system_prompt.trim() || null,
-          max_output_tokens: optionalInt(form.max_output_tokens),
-          max_history: optionalInt(form.max_history),
-          max_iterations: optionalInt(form.max_iterations),
-          max_concurrent_sessions: optionalInt(form.max_concurrent_sessions),
-          browser_timeout_secs: optionalInt(form.browser_timeout_secs),
-        },
-        adaptive_routing: { enabled: form.adaptive_routing_enabled },
-      },
-    });
-
-    setSaving(false);
-    if (result) {
+      });
       onProfileUpdated(result);
       const newForm = profileToForm(result);
       setForm(newForm);
       setOriginal(newForm);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-    } else {
-      setError("Failed to update LLM config.");
+    } catch (err) {
+      setError(formatSettingsError(err, "Failed to update LLM config."));
+    } finally {
+      setSaving(false);
     }
   };
 

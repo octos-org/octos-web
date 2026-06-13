@@ -8,7 +8,13 @@ import {
   Plus,
   X,
 } from "lucide-react";
-import { updateMyProfile, type Profile, type SandboxConfig, type SandboxDocker } from "./settings-api";
+import {
+  formatSettingsError,
+  updateMyProfile,
+  type Profile,
+  type SandboxConfig,
+  type SandboxDocker,
+} from "./settings-api";
 
 interface SandboxTabProps {
   profile: Profile;
@@ -178,19 +184,20 @@ export function SandboxTab({ profile, onProfileUpdated }: SandboxTabProps) {
   const handleSave = async () => {
     setSaving(true);
     setError(null);
-    const result = await updateMyProfile({
-      config: { sandbox: formToSandboxConfig(form) },
-    });
-    setSaving(false);
-    if (result) {
+    try {
+      const result = await updateMyProfile({
+        config: { sandbox: formToSandboxConfig(form) },
+      });
       onProfileUpdated(result);
       const newForm = profileToForm(result);
       setForm(newForm);
       setOriginal(newForm);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-    } else {
-      setError("Failed to update sandbox config.");
+    } catch (err) {
+      setError(formatSettingsError(err, "Failed to update sandbox config."));
+    } finally {
+      setSaving(false);
     }
   };
 

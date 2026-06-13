@@ -16,10 +16,12 @@ import {
   getAllowedEmails,
   addAllowedEmail,
   removeAllowedEmail,
+  formatSettingsError,
   type AdminUser,
   type AllowedEmail,
   type Profile,
 } from "./settings-api";
+import { ConfirmDialog } from "./confirm-dialog";
 
 // ── Create Sub-Account form ──
 
@@ -61,20 +63,21 @@ function CreateSubAccountForm({
     setSaving(true);
     setError(null);
     const subAccountId = userId.trim() || deriveSubAccountId(email.trim());
-    const result = await createAdminUser(parentProfileId, {
-      email: email.trim(),
-      name: displayName.trim(),
-      sub_account_id: subAccountId,
-      public_subdomain: subAccountId,
-      ...(note.trim() ? { note: note.trim() } : {}),
-    });
-    setSaving(false);
-    if (result) {
+    try {
+      await createAdminUser(parentProfileId, {
+        email: email.trim(),
+        name: displayName.trim(),
+        sub_account_id: subAccountId,
+        public_subdomain: subAccountId,
+        ...(note.trim() ? { note: note.trim() } : {}),
+      });
       reset();
       setOpen(false);
       onCreated();
-    } else {
-      setError("Failed to create sub-account. The server may have rejected the request.");
+    } catch (err) {
+      setError(formatSettingsError(err, "Failed to create sub-account. The server may have rejected the request."));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -184,22 +187,37 @@ function AllowedEmailsSection() {
   const [loading, setLoading] = useState(true);
   const [newEmail, setNewEmail] = useState("");
   const [adding, setAdding] = useState(false);
+  const [removingEmail, setRemovingEmail] = useState<string | null>(null);
+  const [pendingRemoveEmail, setPendingRemoveEmail] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    const data = await getAllowedEmails();
-    setEmails(data);
-    setLoading(false);
+    try {
+      const data = await getAllowedEmails();
+      setEmails(data);
+    } catch (err) {
+      setError(formatSettingsError(err, "Failed to load allowed emails."));
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
     let cancelled = false;
-    getAllowedEmails().then((data) => {
-      if (!cancelled) {
-        setEmails(data);
-        setLoading(false);
-      }
-    });
+    getAllowedEmails()
+      .then((data) => {
+        if (!cancelled) {
+          setEmails(data);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(formatSettingsError(err, "Failed to load allowed emails."));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
     return () => { cancelled = true; };
   }, []);
 
@@ -208,22 +226,30 @@ function AllowedEmailsSection() {
     if (!newEmail.trim()) return;
     setAdding(true);
     setError(null);
-    const ok = await addAllowedEmail(newEmail.trim());
-    setAdding(false);
-    if (ok) {
+    try {
+      await addAllowedEmail(newEmail.trim());
       setNewEmail("");
       await refresh();
-    } else {
-      setError("Failed to add email to the allowlist.");
+    } catch (err) {
+      setError(formatSettingsError(err, "Failed to add email to the allowlist."));
+    } finally {
+      setAdding(false);
     }
   };
 
-  const handleRemove = async (email: string) => {
-    const confirmed = window.confirm(`Remove '${email}' from the allowlist?`);
-    if (!confirmed) return;
-    const ok = await removeAllowedEmail(email);
-    if (ok) {
+  const confirmRemove = async () => {
+    const email = pendingRemoveEmail;
+    if (!email) return;
+    setPendingRemoveEmail(null);
+    setRemovingEmail(email);
+    setError(null);
+    try {
+      await removeAllowedEmail(email);
       await refresh();
+    } catch (err) {
+      setError(formatSettingsError(err, `Failed to remove '${email}' from the allowlist.`));
+    } finally {
+      setRemovingEmail(null);
     }
   };
 
@@ -283,16 +309,34 @@ function AllowedEmailsSection() {
                 <span className="text-sm text-text truncate">{entry.email}</span>
               </div>
               <button
-                onClick={() => handleRemove(entry.email)}
+                onClick={() => setPendingRemoveEmail(entry.email)}
+                disabled={removingEmail === entry.email}
                 className="shrink-0 rounded-lg p-1.5 text-muted hover:bg-red-500/10 hover:text-red-400 transition"
                 title={`Remove ${entry.email}`}
               >
-                <Trash2 size={14} />
+                {removingEmail === entry.email ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Trash2 size={14} />
+                )}
               </button>
             </div>
           ))}
         </div>
       )}
+      <ConfirmDialog
+        open={pendingRemoveEmail != null}
+        title="Remove Allowed Email"
+        body={
+          pendingRemoveEmail
+            ? `Remove '${pendingRemoveEmail}' from the allowlist?`
+            : "Remove this email from the allowlist?"
+        }
+        confirmLabel="Remove Email"
+        variant="danger"
+        onConfirm={() => void confirmRemove()}
+        onCancel={() => setPendingRemoveEmail(null)}
+      />
     </div>
   );
 }
@@ -302,32 +346,49 @@ function AllowedEmailsSection() {
 export function UsersTab({ profile }: { profile: Profile }) {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [pendingDeleteUser, setPendingDeleteUser] = useState<AdminUser | null>(null);
+  const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    const data = await getAdminUsers();
-    setUsers(data);
-    setLoading(false);
+    try {
+      const data = await getAdminUsers();
+      setUsers(data);
+    } catch (err) {
+      setError(formatSettingsError(err, "Failed to load users."));
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
     let cancelled = false;
-    getAdminUsers().then((data) => {
-      if (!cancelled) {
-        setUsers(data);
-        setLoading(false);
-      }
-    });
+    getAdminUsers()
+      .then((data) => {
+        if (!cancelled) setUsers(data);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(formatSettingsError(err, "Failed to load users."));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
     return () => { cancelled = true; };
   }, []);
 
-  const handleDelete = async (user: AdminUser) => {
-    const confirmed = window.confirm(
-      `Delete account '${user.email}'? This will also delete the profile and stop its gateway.`,
-    );
-    if (!confirmed) return;
-    const ok = await deleteAdminUser(user.id);
-    if (ok) {
+  const confirmDeleteUser = async () => {
+    const user = pendingDeleteUser;
+    if (!user) return;
+    setPendingDeleteUser(null);
+    setDeletingUserId(user.id);
+    setError(null);
+    try {
+      await deleteAdminUser(user.id);
       await refresh();
+    } catch (err) {
+      setError(formatSettingsError(err, `Failed to delete account '${user.email}'.`));
+    } finally {
+      setDeletingUserId(null);
     }
   };
 
@@ -364,6 +425,12 @@ export function UsersTab({ profile }: { profile: Profile }) {
         <div className="mb-5">
           <CreateSubAccountForm parentProfileId={profile.id} onCreated={refresh} />
         </div>
+
+        {error && (
+          <div className="mb-4 rounded-xl border border-red-400/30 bg-red-400/5 px-4 py-3 text-xs text-red-300">
+            {error}
+          </div>
+        )}
 
         {loading ? (
           <div className="flex justify-center py-10">
@@ -416,11 +483,16 @@ export function UsersTab({ profile }: { profile: Profile }) {
                 {/* Delete */}
                 <div className="flex justify-end">
                   <button
-                    onClick={() => handleDelete(u)}
-                    className="rounded-lg p-1.5 text-muted hover:bg-red-500/10 hover:text-red-400 transition"
+                    onClick={() => setPendingDeleteUser(u)}
+                    disabled={deletingUserId === u.id}
+                    className="rounded-lg p-1.5 text-muted hover:bg-red-500/10 hover:text-red-400 disabled:opacity-40 transition"
                     title={`Delete ${u.email}`}
                   >
-                    <Trash2 size={14} />
+                    {deletingUserId === u.id ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Trash2 size={14} />
+                    )}
                   </button>
                 </div>
               </div>
@@ -431,6 +503,19 @@ export function UsersTab({ profile }: { profile: Profile }) {
 
       {/* Allowed emails */}
       <AllowedEmailsSection />
+      <ConfirmDialog
+        open={pendingDeleteUser != null}
+        title="Delete Account"
+        body={
+          pendingDeleteUser
+            ? `Delete account '${pendingDeleteUser.email}'? This will also delete the profile and stop its gateway.`
+            : "Delete this account?"
+        }
+        confirmLabel="Delete Account"
+        variant="danger"
+        onConfirm={() => void confirmDeleteUser()}
+        onCancel={() => setPendingDeleteUser(null)}
+      />
     </div>
   );
 }
