@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { login, sendAndWait, createNewSession, SEL } from "./helpers";
+import { login, sendAndWait, createNewSession } from "./helpers";
 
 test.describe("Session deletion", () => {
   test("sidebar deletion removes the session across tabs and from the API", async ({
@@ -16,7 +16,7 @@ test.describe("Session deletion", () => {
     await page.waitForTimeout(2000);
 
     // Get the active session ID from the sidebar
-    const activeItem = page.locator("[data-active='true']").first();
+    const activeItem = page.locator("[data-active='true'][data-session-id]").first();
     const sessionId = await activeItem.getAttribute("data-session-id");
     expect(sessionId).toBeTruthy();
 

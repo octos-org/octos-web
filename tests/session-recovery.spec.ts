@@ -1,10 +1,8 @@
-import { test, expect, type Browser, type Page } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import {
   login,
   sendAndWait,
   createNewSession,
-  getInput,
-  getSendButton,
   SEL,
   countAssistantBubbles,
   countUserBubbles,
@@ -16,42 +14,6 @@ import {
 async function resetChat(page: Page) {
   await login(page);
   await createNewSession(page);
-}
-
-async function openAuthedChat(browser: Browser) {
-  const context = await browser.newContext();
-  const page = await context.newPage();
-  await resetChat(page);
-  return { context, page };
-}
-
-async function waitForRecoveredTurn(page: Page, timeoutMs = 90_000) {
-  const deadline = Date.now() + timeoutMs;
-
-  while (Date.now() < deadline) {
-    const assistantCount = await page.locator(SEL.assistantMessage).count();
-    const userCount = await page.locator(SEL.userMessage).count();
-    const streaming = await page
-      .locator(SEL.cancelButton)
-      .isVisible({ timeout: 1_000 })
-      .catch(() => false);
-    const text =
-      assistantCount > 0
-        ? ((await page
-            .locator(SEL.assistantMessage)
-            .last()
-            .textContent()
-            .catch(() => "")) || "").trim()
-        : "";
-
-    if (userCount === 1 && assistantCount === 1 && !streaming && text) {
-      return text;
-    }
-
-    await page.waitForTimeout(2_000);
-  }
-
-  return "";
 }
 
 async function waitForAudioRecovery(page: Page, timeoutMs = 180_000) {
@@ -88,7 +50,9 @@ test.describe("Session recovery", () => {
       if (await active.isVisible({ timeout: 5_000 }).catch(() => false)) {
         sessionId = await active.getAttribute("data-session-id");
       }
-    } catch {}
+    } catch {
+      // Session sidebar refresh is best-effort in this recovery smoke.
+    }
     console.log(`  [reload-twice] sessionId: ${sessionId}`);
 
     // Double reload
@@ -106,7 +70,9 @@ test.describe("Session recovery", () => {
         if (await target.isVisible({ timeout: 10_000 }).catch(() => false)) {
           await target.click();
         }
-      } catch {}
+      } catch {
+        // Reload recovery can pass even if the sidebar item is delayed.
+      }
     }
     // Wait for hydration
     for (let i = 0; i < 10; i++) {
@@ -140,7 +106,7 @@ test.describe("Session recovery", () => {
     await page.waitForTimeout(2_000);
 
     const firstSessionId = await page
-      .locator("[data-active='true']")
+      .locator("[data-active='true'][data-session-id]")
       .first()
       .getAttribute("data-session-id");
     expect(firstSessionId).toBeTruthy();

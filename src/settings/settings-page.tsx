@@ -22,6 +22,7 @@ import {
   WorkbenchTopbar,
 } from "@/components/workbench-shell";
 import { getMyProfile, type Profile } from "./settings-api";
+import { setSelectedProfileId as persistSelectedProfile } from "@/api/client";
 import { ProfileTab } from "./profile-tab";
 import { LlmTab } from "./llm-tab";
 import { SkillsTab } from "./skills-tab";
@@ -93,7 +94,11 @@ export function AdminSettingsPage() {
             {accessibleProfiles.length > 1 && (
               <select
                 value={selectedProfileId}
-                onChange={(e) => setSelectedProfileId(e.target.value)}
+                onChange={(e) => {
+                  const id = e.target.value;
+                  setSelectedProfileId(id);
+                  persistSelectedProfile(id);
+                }}
                 className="workbench-input px-3 py-2 text-sm"
               >
                 {accessibleProfiles.map((p) => (

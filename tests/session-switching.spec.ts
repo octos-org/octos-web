@@ -6,8 +6,6 @@ import {
   countAssistantBubbles,
   countUserBubbles,
   getSessionItems,
-  switchToSession,
-  SEL,
   getChatThreadText
 } from "./helpers";
 
@@ -83,7 +81,7 @@ test.describe("Session switching", () => {
 
     // Wait for session list to refresh and capture session 1's active element
     await page.waitForTimeout(2000);
-    const s1Element = page.locator("[data-active='true']").first();
+    const s1Element = page.locator("[data-active='true'][data-session-id]").first();
     const s1Id = await s1Element.getAttribute("data-session-id");
     expect(s1Id).toBeTruthy();
 

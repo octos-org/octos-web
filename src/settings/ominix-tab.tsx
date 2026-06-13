@@ -706,9 +706,7 @@ export function OminixTab() {
                   )
                 }
                 onDisable={(modelId) =>
-                  void performAction(`disable:${modelId}`, () =>
-                    disableOminixModel(modelId),
-                  )
+                  setPending({ kind: "disable-model", modelId })
                 }
                 onDownload={(modelId) =>
                   setPending({ kind: "download-model", modelId })

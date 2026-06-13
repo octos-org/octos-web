@@ -14,6 +14,17 @@ interface SettingsMockOptions {
   allowedEmailDeleteError?: { status: number; body: unknown };
   operatorTasksError?: { status: number; body: unknown };
   ominixServiceActionErrors?: Partial<Record<"start" | "stop" | "restart", { status: number; body: unknown }>>;
+  accessibleProfiles?: AccessibleProfileMock[];
+}
+
+interface AccessibleProfileMock {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  relationship: string;
+  api_scope: string;
+  route_base: string;
+  can_manage_sub_accounts: boolean;
 }
 
 const mockProfile = {
@@ -76,7 +87,19 @@ async function installAdminSettingsMocks(
   let disableBody: unknown = null;
   let downloadBody: unknown = null;
   let removeLocalBody: unknown = null;
+  const profileHeaders: Array<string | null> = [];
   const serviceActions: string[] = [];
+  const accessibleProfiles = options.accessibleProfiles ?? [
+    {
+      id: "admin",
+      name: "Admin",
+      parent_id: null,
+      relationship: "self_profile",
+      api_scope: "admin",
+      route_base: "/",
+      can_manage_sub_accounts: true,
+    },
+  ];
 
   await page.route("**/api/auth/status", (route) =>
     route.fulfill({
@@ -110,23 +133,14 @@ async function installAdminSettingsMocks(
           can_access_admin_portal: true,
           can_manage_users: true,
           sub_account_limit: 10,
-          accessible_profiles: [
-            {
-              id: "admin",
-              name: "Admin",
-              parent_id: null,
-              relationship: "self_profile",
-              api_scope: "admin",
-              route_base: "/",
-              can_manage_sub_accounts: true,
-            },
-          ],
+          accessible_profiles: accessibleProfiles,
         },
       }),
     }),
   );
 
   await page.route("**/api/my/profile", async (route) => {
+    profileHeaders.push(route.request().headers()["x-profile-id"] ?? null);
     if (route.request().method() === "PUT" && options.profileUpdateError) {
       await route.fulfill({
         status: options.profileUpdateError.status,
@@ -289,6 +303,7 @@ async function installAdminSettingsMocks(
     getDisableBody: () => disableBody,
     getDownloadBody: () => downloadBody,
     getRemoveLocalBody: () => removeLocalBody,
+    getProfileHeaders: () => profileHeaders,
     getServiceActions: () => serviceActions,
   };
 }
@@ -604,7 +619,7 @@ test.describe("Settings page — tab smoke tests", () => {
     await goToSettings(page);
 
     const baseTabs = ["Profile", "LLM", "Skills", "Channels", "Sandbox", "Tools"];
-    const adminTabs = ["Users", "System", "Server"];
+    const adminTabs = ["Users", "System", "Server", "OminiX"];
     const profileLoaded = await hasProfile(page);
 
     for (const label of baseTabs) {
@@ -620,6 +635,44 @@ test.describe("Settings page — tab smoke tests", () => {
         ).toBeVisible({ timeout: TIMEOUT });
       }
     }
+  });
+
+  test("profile switch persists and updates following API requests", async ({ page }) => {
+    const mocks = await installServerSettingsMocks(page, {
+      accessibleProfiles: [
+        {
+          id: "admin",
+          name: "Admin",
+          parent_id: null,
+          relationship: "self_profile",
+          api_scope: "admin",
+          route_base: "/",
+          can_manage_sub_accounts: true,
+        },
+        {
+          id: "ops",
+          name: "Ops",
+          parent_id: "admin",
+          relationship: "sub_account",
+          api_scope: "profile",
+          route_base: "/profiles/ops",
+          can_manage_sub_accounts: false,
+        },
+      ],
+    });
+    await seedAdminSession(page);
+
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: TIMEOUT });
+
+    await page.locator("select.workbench-input").selectOption("ops");
+
+    await expect
+      .poll(() => page.evaluate(() => localStorage.getItem("selected_profile")))
+      .toBe("ops");
+    await expect
+      .poll(() => mocks.getProfileHeaders().at(-1))
+      .toBe("ops");
   });
 
   test("Profile tab renders profile info and gateway status", async ({

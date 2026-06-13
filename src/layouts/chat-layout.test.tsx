@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { MemoryRouter } from "react-router-dom";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -116,11 +117,13 @@ function chatLayoutTree(
   sessionId = SESSION_ID,
 ) {
   return (
-    <SessionContext.Provider value={makeSessionCtx(renameSession, title, sessionId)}>
-      <ChatLayout>
-        <div data-testid="chat-body">thread</div>
-      </ChatLayout>
-    </SessionContext.Provider>
+    <MemoryRouter initialEntries={["/chat"]}>
+      <SessionContext.Provider value={makeSessionCtx(renameSession, title, sessionId)}>
+        <ChatLayout>
+          <div data-testid="chat-body">thread</div>
+        </ChatLayout>
+      </SessionContext.Provider>
+    </MemoryRouter>
   );
 }
 

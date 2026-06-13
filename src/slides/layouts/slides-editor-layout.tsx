@@ -129,7 +129,7 @@ export function SlidesEditorLayout({
   }
 
   return (
-    <div className="chat-shell workbench-shell flex h-screen flex-col gap-2 p-2">
+    <div className="workbench-shell flex h-screen flex-col gap-2 p-2">
       <WorkbenchTopbar
         backTo="/slides"
         icon={Presentation}

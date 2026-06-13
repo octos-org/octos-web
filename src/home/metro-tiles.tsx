@@ -51,6 +51,7 @@ interface TileDef {
 
 const COLS = 6;
 const MOBILE_COLS = 4;
+const MAX_ROWS = 12;
 const MOBILE_QUERY = "(max-width: 600px)";
 
 const TILE_DEFS: TileDef[] = [
@@ -68,17 +69,102 @@ const TILE_DEFS: TileDef[] = [
 ];
 
 function loadLayouts(): Record<string, TileLayout> {
+  const defaults = defaultLayouts();
   try {
     const raw = localStorage.getItem(LS_LAYOUT_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) return normalizeLayouts(JSON.parse(raw), defaults);
   } catch { /* ignore */ }
+  return defaults;
+}
+
+function defaultLayouts(): Record<string, TileLayout> {
   const out: Record<string, TileLayout> = {};
   for (const t of TILE_DEFS) out[t.id] = { ...t.defaultLayout };
   return out;
 }
 
+function normalizeLayouts(
+  raw: unknown,
+  defaults = defaultLayouts(),
+): Record<string, TileLayout> {
+  const record = raw && typeof raw === "object" ? raw as Record<string, Partial<TileLayout>> : {};
+  const numberOr = (value: unknown, fallback: number) =>
+    typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  const out: Record<string, TileLayout> = {};
+  for (const tile of TILE_DEFS) {
+    const saved = record[tile.id] ?? {};
+    out[tile.id] = {
+      col: numberOr(saved.col, defaults[tile.id].col),
+      row: numberOr(saved.row, defaults[tile.id].row),
+      w: numberOr(saved.w, defaults[tile.id].w),
+      h: numberOr(saved.h, defaults[tile.id].h),
+    };
+  }
+  return out;
+}
+
 function saveLayouts(layouts: Record<string, TileLayout>) {
-  localStorage.setItem(LS_LAYOUT_KEY, JSON.stringify(layouts));
+  try {
+    localStorage.setItem(LS_LAYOUT_KEY, JSON.stringify(layouts));
+  } catch { /* quota exceeded or unavailable */ }
+}
+
+function tilesOverlap(a: TileLayout, b: TileLayout): boolean {
+  return !(
+    a.col + a.w <= b.col ||
+    b.col + b.w <= a.col ||
+    a.row + a.h <= b.row ||
+    b.row + b.h <= a.row
+  );
+}
+
+function hasCollision(
+  id: string,
+  candidate: TileLayout,
+  allLayouts: Record<string, TileLayout>,
+  visibleIds: Set<string>,
+  cols: number,
+): boolean {
+  const clamped = clampLayoutForCols(candidate, cols);
+  for (const otherId of visibleIds) {
+    if (otherId === id) continue;
+    const other = allLayouts[otherId];
+    if (!other) continue;
+    if (tilesOverlap(clamped, clampLayoutForCols(other, cols))) return true;
+  }
+  return false;
+}
+
+function compactLayouts(
+  layouts: Record<string, TileLayout>,
+  visibleIds: Set<string>,
+  cols: number,
+): Record<string, TileLayout> {
+  const sorted = [...visibleIds]
+    .map(id => ({ id, layout: clampLayoutForCols(layouts[id] ?? { col: 1, row: 1, w: 1, h: 1 }, cols) }))
+    .sort((a, b) => a.layout.row - b.layout.row || a.layout.col - b.layout.col);
+
+  const result = { ...layouts };
+  for (const { id, layout } of sorted) {
+    let bestRow = 1;
+    for (let tryRow = 1; tryRow <= layout.row; tryRow++) {
+      const candidate = { ...layout, row: tryRow };
+      const occupied = new Set(visibleIds);
+      let fits = true;
+      for (const otherId of occupied) {
+        if (otherId === id) continue;
+        const other = result[otherId];
+        if (!other) continue;
+        if (tilesOverlap(candidate, clampLayoutForCols(other, cols))) {
+          fits = false;
+          break;
+        }
+      }
+      if (fits) { bestRow = tryRow; break; }
+    }
+    result[id] = { ...layout, row: bestRow };
+  }
+  return result;
 }
 
 function getGridMetrics(gridEl: HTMLElement) {
@@ -97,8 +183,10 @@ function getGridMetrics(gridEl: HTMLElement) {
 
 function clampLayoutForCols(layout: TileLayout, cols: number): TileLayout {
   const w = Math.max(1, Math.min(cols, layout.w));
+  const h = Math.max(1, Math.min(MAX_ROWS, layout.h));
   const col = Math.max(1, Math.min(cols - w + 1, layout.col));
-  return { ...layout, col, w };
+  const row = Math.max(1, Math.min(MAX_ROWS - h + 1, layout.row));
+  return { ...layout, col, w, row, h };
 }
 
 function useMetroGridColumns() {
@@ -283,10 +371,16 @@ function useTileDrag(
   layouts: Record<string, TileLayout>,
   setLayouts: (fn: (prev: Record<string, TileLayout>) => Record<string, TileLayout>) => void,
   editMode: boolean,
+  visibleIds: Set<string>,
 ) {
   const layoutsRef = useRef(layouts);
-  layoutsRef.current = layouts;
+  const visibleIdsRef = useRef(visibleIds);
   const dragRef = useRef<{ id: string; startCol: number; startRow: number; startX: number; startY: number; stepX: number; stepY: number; cols: number } | null>(null);
+
+  useEffect(() => {
+    layoutsRef.current = layouts;
+    visibleIdsRef.current = visibleIds;
+  }, [layouts, visibleIds]);
 
   const onPointerDown = useCallback((e: React.PointerEvent, tileId: string, gridEl: HTMLElement | null) => {
     if (!editMode || !gridEl) return;
@@ -305,8 +399,11 @@ function useTileDrag(
     const dx = Math.round((e.clientX - startX) / stepX);
     const dy = Math.round((e.clientY - startY) / stepY);
     const w = Math.min(cols, layoutsRef.current[id]?.w ?? 1);
+    const h = layoutsRef.current[id]?.h ?? 1;
     const newCol = Math.max(1, Math.min(cols - w + 1, startCol + dx));
-    const newRow = Math.max(1, startRow + dy);
+    const newRow = Math.max(1, Math.min(MAX_ROWS - h + 1, startRow + dy));
+    const candidate = { ...layoutsRef.current[id], col: newCol, row: newRow };
+    if (hasCollision(id, candidate, layoutsRef.current, visibleIdsRef.current, cols)) return;
     setLayouts(prev => ({ ...prev, [id]: { ...prev[id], col: newCol, row: newRow } }));
   }, [setLayouts]);
 
@@ -325,9 +422,10 @@ function useTileResize(
   layouts: Record<string, TileLayout>,
   setLayouts: (fn: (prev: Record<string, TileLayout>) => Record<string, TileLayout>) => void,
   editMode: boolean,
+  visibleIds: Set<string>,
 ) {
   const layoutsRef = useRef(layouts);
-  layoutsRef.current = layouts;
+  const visibleIdsRef = useRef(visibleIds);
   const resizeRef = useRef<{
     id: string;
     startW: number;
@@ -337,7 +435,13 @@ function useTileResize(
     stepX: number;
     stepY: number;
     maxW: number;
+    cols: number;
   } | null>(null);
+
+  useEffect(() => {
+    layoutsRef.current = layouts;
+    visibleIdsRef.current = visibleIds;
+  }, [layouts, visibleIds]);
 
   const onResizePointerDown = useCallback((e: React.PointerEvent, tileId: string, gridEl: HTMLElement | null) => {
     if (!editMode || !gridEl) return;
@@ -358,22 +462,27 @@ function useTileResize(
       stepX,
       stepY,
       maxW: cols - layout.col + 1,
+      cols,
     };
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   }, [editMode]);
 
   const onResizePointerMove = useCallback((e: React.PointerEvent) => {
     if (!resizeRef.current) return;
-    const { id, startW, startH, startX, startY, stepX, stepY, maxW } = resizeRef.current;
+    const { id, startW, startH, startX, startY, stepX, stepY, maxW, cols } = resizeRef.current;
     const dw = Math.round((e.clientX - startX) / stepX);
     const dh = Math.round((e.clientY - startY) / stepY);
+    const row = layoutsRef.current[id]?.row ?? 1;
+    const maxH = MAX_ROWS - row + 1;
     const newW = Math.max(1, Math.min(maxW, startW + dw));
-    const newH = Math.max(1, Math.min(4, startH + dh));
+    const newH = Math.max(1, Math.min(maxH, startH + dh));
     setLayouts(prev => {
       const cur = prev[id];
       if (!cur) return prev;
       if (cur.w === newW && cur.h === newH) return prev;
-      return { ...prev, [id]: { ...cur, w: newW, h: newH } };
+      const candidate = { ...cur, w: newW, h: newH };
+      if (hasCollision(id, candidate, prev, visibleIdsRef.current, cols)) return prev;
+      return { ...prev, [id]: candidate };
     });
   }, [setLayouts]);
 
@@ -384,7 +493,33 @@ function useTileResize(
     }
   }, []);
 
-  return { onResizePointerDown, onResizePointerMove, onResizePointerUp };
+  const onResizeKeyDown = useCallback((e: React.KeyboardEvent, tileId: string, gridEl: HTMLElement | null) => {
+    if (!editMode || !gridEl) return;
+    const delta = { w: 0, h: 0 };
+    if (e.key === "ArrowRight") delta.w = 1;
+    else if (e.key === "ArrowLeft") delta.w = -1;
+    else if (e.key === "ArrowDown") delta.h = 1;
+    else if (e.key === "ArrowUp") delta.h = -1;
+    else return;
+    e.preventDefault();
+    const { cols } = getGridMetrics(gridEl);
+    setLayouts(prev => {
+      const cur = prev[tileId];
+      if (!cur) return prev;
+      const maxW = cols - cur.col + 1;
+      const maxH = MAX_ROWS - cur.row + 1;
+      const newW = Math.max(1, Math.min(maxW, cur.w + delta.w));
+      const newH = Math.max(1, Math.min(maxH, cur.h + delta.h));
+      if (cur.w === newW && cur.h === newH) return prev;
+      const candidate = { ...cur, w: newW, h: newH };
+      if (hasCollision(tileId, candidate, prev, visibleIdsRef.current, cols)) return prev;
+      const next = { ...prev, [tileId]: candidate };
+      saveLayouts(next);
+      return next;
+    });
+  }, [editMode, setLayouts]);
+
+  return { onResizePointerDown, onResizePointerMove, onResizePointerUp, onResizeKeyDown };
 }
 
 /* ─── Main Metro Tile Grid ─── */
@@ -398,21 +533,26 @@ export function MetroTileGrid({ onActivate, nightActive }: MetroTileGridProps) {
   const gridRef = useRef<HTMLDivElement>(null);
   const gridCols = useMetroGridColumns();
 
-  const drag = useTileDrag(layouts, setLayouts, editMode);
-  const resize = useTileResize(layouts, setLayouts, editMode);
-
   const visibleTiles = useMemo(
     () => TILE_DEFS.filter(t => shouldShowTile(t, widgets, nightActive)),
     [widgets, nightActive],
   );
+  const visibleIds = useMemo(() => new Set(visibleTiles.map(t => t.id)), [visibleTiles]);
+
+  const effectiveLayouts = useMemo(
+    () => compactLayouts(layouts, visibleIds, gridCols),
+    [layouts, visibleIds, gridCols],
+  );
+
+  const drag = useTileDrag(effectiveLayouts, setLayouts, editMode, visibleIds);
+  const resize = useTileResize(effectiveLayouts, setLayouts, editMode, visibleIds);
 
   const handleClick = useCallback(() => {
     if (!settingsOpen && !editMode) onActivate();
   }, [onActivate, settingsOpen, editMode]);
 
   const resetLayout = useCallback(() => {
-    const fresh: Record<string, TileLayout> = {};
-    for (const t of TILE_DEFS) fresh[t.id] = { ...t.defaultLayout };
+    const fresh = defaultLayouts();
     setLayouts(fresh);
     saveLayouts(fresh);
   }, []);
@@ -466,7 +606,7 @@ export function MetroTileGrid({ onActivate, nightActive }: MetroTileGridProps) {
       >
         {visibleTiles.map(tile => {
           const layout = clampLayoutForCols(
-            layouts[tile.id] ?? tile.defaultLayout,
+            effectiveLayouts[tile.id] ?? tile.defaultLayout,
             gridCols,
           );
           return (
@@ -490,9 +630,13 @@ export function MetroTileGrid({ onActivate, nightActive }: MetroTileGridProps) {
                     <GripVertical size={14} className="opacity-40" />
                     <span className="metro-tile-edit-label">{tile.label}</span>
                   </div>
-                  <div
+                  <button
+                    type="button"
                     className="metro-resize-handle"
+                    aria-label={`Resize ${tile.label}`}
+                    tabIndex={0}
                     onPointerDown={(e) => resize.onResizePointerDown(e, tile.id, gridRef.current)}
+                    onKeyDown={(e) => resize.onResizeKeyDown(e, tile.id, gridRef.current)}
                   />
                 </>
               )}

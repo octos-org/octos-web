@@ -17,6 +17,7 @@ import {
   ContentViewerOverlay,
 } from "@/components/content-viewer";
 import {
+  WorkbenchRouteNav,
   WorkbenchStatusPill,
   WorkbenchThemeButton,
 } from "@/components/workbench-shell";
@@ -121,6 +122,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
                     Octos
                   </span>
                 </div>
+                <WorkbenchRouteNav compact />
                 <div className="shell-kicker mt-4">Session Stack</div>
                 <div className="mt-1 text-lg font-semibold tracking-tight text-text-strong">
                   Chat History
