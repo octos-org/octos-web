@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { X } from "lucide-react";
 import { useVoiceConversation, type VoiceState } from "./use-voice-conversation";
 import { VoiceOrb } from "./voice-orb";
+import { VoiceSelector } from "./voice-selector";
 import { unlockAudio } from "./audio-playback";
 import "./voice.css";
 
@@ -59,6 +60,11 @@ export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
         {conv.lastAssistantText && (
           <div className="text-lg leading-relaxed text-white/90">{conv.lastAssistantText}</div>
         )}
+      </div>
+
+      {/* Quick voice switcher — same store as the settings panel. */}
+      <div className="absolute inset-x-0 bottom-6 px-6">
+        <VoiceSelector />
       </div>
     </div>
   );
