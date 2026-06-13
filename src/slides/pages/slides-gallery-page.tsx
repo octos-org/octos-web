@@ -1,6 +1,14 @@
 import { useState, useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Presentation, Plus, Search } from "lucide-react";
+import {
+  Clock3,
+  Layers3,
+  Presentation,
+  Plus,
+  Search,
+  Sparkles,
+  type LucideIcon,
+} from "lucide-react";
 
 import { AuthenticatedFileImage } from "../components/authenticated-file-image";
 import { useSlidesProjects, searchSlidesProjects } from "../store";
@@ -11,6 +19,35 @@ import {
   WorkbenchStatusPill,
   WorkbenchTopbar,
 } from "@/components/workbench-shell";
+
+function formatShortDate(value: number): string {
+  return new Date(value).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function DeckStat({
+  icon: Icon,
+  label,
+  value,
+  tone = "default",
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: string | number;
+  tone?: "default" | "accent" | "link";
+}) {
+  const color =
+    tone === "accent" ? "text-accent" : tone === "link" ? "text-link" : "text-muted";
+  return (
+    <div className="rounded-lg border border-border bg-surface-container/70 p-4">
+      <Icon size={17} className={color} aria-hidden="true" />
+      <div className="mt-3 text-2xl font-semibold text-text-strong">{value}</div>
+      <div className="mt-1 text-xs text-muted">{label}</div>
+    </div>
+  );
+}
 
 export function SlidesGalleryPage() {
   const { projects, create } = useSlidesProjects();
@@ -30,6 +67,19 @@ export function SlidesGalleryPage() {
     }
     return results;
   }, [projects, search, filter, recentCutoff]);
+
+  const summary = useMemo(() => {
+    const totalSlides = projects.reduce((sum, project) => sum + project.slides.length, 0);
+    const recentCount = projects.filter((project) => project.updatedAt > recentCutoff).length;
+    const templateCount = new Set(projects.map((project) => project.template)).size;
+    const latest = projects[0]?.updatedAt;
+    return {
+      totalSlides,
+      recentCount,
+      templateCount,
+      latestLabel: latest ? formatShortDate(latest) : "No decks",
+    };
+  }, [projects, recentCutoff]);
 
   const handleNew = () => {
     const project = create("Untitled Deck");
@@ -66,7 +116,7 @@ export function SlidesGalleryPage() {
         }
         actions={
           <>
-            <div className="relative min-w-0 max-sm:w-full">
+            <div className="workbench-topbar-search relative min-w-0 max-sm:w-full">
               <Search
                 size={14}
                 className="absolute left-3 top-1/2 -translate-y-1/2 text-muted"
@@ -95,9 +145,82 @@ export function SlidesGalleryPage() {
         }
       />
 
-      {/* Filter bar */}
-      <div className="mx-auto max-w-6xl px-6 py-3 max-sm:px-3">
-        <div className="flex flex-wrap gap-2">
+      <main className="flex-1 overflow-y-auto">
+        <div className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-6 py-6 max-sm:px-3">
+          <section className="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.65fr)]">
+            <div className="workbench-panel p-5">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <p className="shell-kicker">Deck Operations</p>
+                  <h2 className="mt-2 text-xl font-semibold text-text-strong">
+                    Draft, generate, and return to local decks.
+                  </h2>
+                  <p className="mt-2 max-w-2xl text-sm leading-6 text-muted">
+                    Search across deck titles, tags, slide titles, and notes; filter by
+                    template when the library grows.
+                  </p>
+                </div>
+                <WorkbenchStatusPill tone="accent">
+                  {filtered.length} visible
+                </WorkbenchStatusPill>
+              </div>
+              <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-4">
+                <DeckStat
+                  icon={Presentation}
+                  label="Decks"
+                  value={projects.length}
+                  tone="accent"
+                />
+                <DeckStat
+                  icon={Layers3}
+                  label="Slides"
+                  value={summary.totalSlides}
+                />
+                <DeckStat
+                  icon={Sparkles}
+                  label="Templates used"
+                  value={summary.templateCount}
+                  tone="link"
+                />
+                <DeckStat
+                  icon={Clock3}
+                  label="Latest update"
+                  value={summary.latestLabel}
+                />
+              </div>
+            </div>
+
+            <div className="workbench-panel-muted p-5">
+              <p className="shell-kicker">Generation Lane</p>
+              <h2 className="mt-2 text-lg font-semibold text-text-strong">
+                Start with a blank deck or seed a demo.
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-muted">
+                The gallery stays local-first; generated outputs are persisted in the
+                browser library before you open the editor.
+              </p>
+              <div className="mt-5 grid gap-2">
+                <button
+                  type="button"
+                  onClick={handleNew}
+                  className="workbench-button workbench-button-primary flex items-center justify-between gap-3 px-4 py-3 text-left text-sm font-semibold"
+                >
+                  <span>New blank deck</span>
+                  <Plus size={16} aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDemo}
+                  className="workbench-button flex items-center justify-between gap-3 px-4 py-3 text-left text-sm font-semibold"
+                >
+                  <span>Seed business demo</span>
+                  <Sparkles size={16} aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <div className="workbench-panel-muted flex flex-wrap items-center gap-2 p-3">
           {[
             { value: "all", label: "All" },
             ...TEMPLATES,
@@ -105,83 +228,79 @@ export function SlidesGalleryPage() {
           ].map((t) => (
             <button
               key={t.value}
+              type="button"
               onClick={() => setFilter(t.value)}
-              className={`rounded-md border px-3 py-1 text-xs font-medium transition ${
-                filter === t.value
-                  ? "border-accent/40 bg-accent/10 text-accent"
-                  : "border-border bg-surface text-muted hover:bg-surface-container hover:text-text-strong"
-              }`}
+              data-active={filter === t.value ? "true" : undefined}
+              className="workbench-button px-3 text-xs font-medium"
             >
               {t.label}
             </button>
           ))}
-        </div>
-      </div>
+          </div>
 
-      {/* Grid */}
-      <div className="mx-auto max-w-6xl px-6 py-4 max-sm:px-3">
-        <WorkbenchSectionHeader
-          title="Library"
-          description="Recent decks, generated outputs, and local drafts"
-        />
-        {filtered.length === 0 ? (
-          <div className="workbench-panel-muted py-20 text-center text-muted">
-            <Presentation size={48} className="mx-auto mb-4 opacity-30" />
-            <p className="text-sm">
-              {search
-                ? "No slides match your search."
-                : "No slide decks yet. Create one to get started."}
-            </p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {filtered.map((p) => (
-              <Link
-                key={p.id}
-                to={`/slides/${p.id}`}
-                className="workbench-card group overflow-hidden"
-              >
-                {/* Thumbnail */}
-                <div className="flex aspect-video items-center justify-center bg-surface-dark">
-                  {p.slides[0]?.thumbnailUrl ? (
-                    <AuthenticatedFileImage
-                      filePath={p.slides[0].thumbnailUrl}
-                      alt={p.title}
-                      className="h-full w-full object-cover"
-                    />
-                  ) : (
-                    <Presentation
-                      size={32}
-                      className="text-muted/30 group-hover:text-muted/50 transition"
-                    />
-                  )}
-                </div>
-                {/* Info */}
-                <div className="p-3">
-                  <h3 className="truncate text-sm font-medium text-text-strong">
-                    {p.title}
-                  </h3>
-                  <div className="flex items-center gap-2 mt-1.5">
-                    <span
-                      className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
-                        TEMPLATE_COLORS[p.template] || "bg-gray-500/20 text-gray-400"
-                      }`}
-                    >
-                      {p.template}
-                    </span>
-                    <span className="text-[10px] text-muted">
-                      {p.slides.length} slides
-                    </span>
-                    <span className="text-[10px] text-muted">
-                      {new Date(p.updatedAt).toLocaleDateString()}
-                    </span>
-                  </div>
-                </div>
-              </Link>
-            ))}
-          </div>
-        )}
-      </div>
+          <section>
+            <WorkbenchSectionHeader
+              title="Library"
+              description="Recent decks, generated outputs, and local drafts"
+            />
+            {filtered.length === 0 ? (
+              <div className="workbench-panel-muted py-20 text-center text-muted">
+                <Presentation size={48} className="mx-auto mb-4 opacity-30" />
+                <p className="text-sm">
+                  {search
+                    ? "No slides match your search."
+                    : "No slide decks yet. Create one to get started."}
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                {filtered.map((p) => (
+                  <Link
+                    key={p.id}
+                    to={`/slides/${p.id}`}
+                    className="workbench-card group flex min-h-64 flex-col overflow-hidden"
+                  >
+                    <div className="flex aspect-video items-center justify-center bg-surface-dark">
+                      {p.slides[0]?.thumbnailUrl ? (
+                        <AuthenticatedFileImage
+                          filePath={p.slides[0].thumbnailUrl}
+                          alt={p.title}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <Presentation
+                          size={36}
+                          className="text-muted/30 transition group-hover:text-muted/50"
+                        />
+                      )}
+                    </div>
+                    <div className="flex flex-1 flex-col p-4">
+                      <h3 className="truncate text-base font-semibold text-text-strong">
+                        {p.title}
+                      </h3>
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <span
+                          className={`rounded px-2 py-1 text-[10px] font-bold ${
+                            TEMPLATE_COLORS[p.template] || "bg-gray-500/20 text-gray-400"
+                          }`}
+                        >
+                          {p.template}
+                        </span>
+                        <span className="text-xs text-muted">
+                          {p.slides.length} slide{p.slides.length === 1 ? "" : "s"}
+                        </span>
+                      </div>
+                      <div className="mt-auto pt-4 text-[11px] text-muted/70">
+                        Updated {formatShortDate(p.updatedAt)}
+                      </div>
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+      </main>
     </WorkbenchPage>
   );
 }

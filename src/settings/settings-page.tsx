@@ -119,19 +119,16 @@ export function AdminSettingsPage() {
         </div>
       ) : (
         <div className="flex min-h-0 flex-1 overflow-hidden max-md:flex-col">
-          <aside className="workbench-rail w-60 shrink-0 overflow-y-auto px-3 py-4 max-md:w-full max-md:overflow-x-auto max-md:overflow-y-hidden max-md:border-b max-md:border-r-0 max-md:py-2">
-            <div className="space-y-1 max-md:flex max-md:min-w-max max-md:gap-2 max-md:space-y-0">
+          <aside className="workbench-rail settings-rail w-60 shrink-0 overflow-y-auto px-3 py-4 max-md:w-full max-md:overflow-x-auto max-md:overflow-y-hidden max-md:border-b max-md:border-r-0 max-md:py-2">
+            <div className="settings-tab-strip space-y-1 max-md:flex max-md:min-w-max max-md:gap-2 max-md:space-y-0">
               {TABS.filter(
                 (t) => !t.adminOnly || portal?.can_access_admin_portal,
               ).map(({ id, label, icon: Icon, adminOnly }) => (
                 <button
                   key={id}
                   onClick={() => setActiveTab(id)}
-                  className={`flex w-full items-center gap-3 rounded-lg border px-4 py-3 text-left text-sm font-medium transition max-md:w-auto max-md:shrink-0 max-md:px-3 ${
-                    activeTab === id
-                      ? "border-accent/40 bg-accent/10 text-accent"
-                      : "border-transparent text-muted hover:bg-surface-container hover:text-text-strong"
-                  }`}
+                  data-active={activeTab === id ? "true" : undefined}
+                  className="settings-tab-button flex w-full items-center gap-3 rounded-lg border px-4 py-3 text-left text-sm font-medium transition max-md:w-auto max-md:shrink-0 max-md:px-3"
                 >
                   <Icon size={16} />
                   {label}

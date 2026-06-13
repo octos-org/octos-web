@@ -49,7 +49,7 @@ export function WorkbenchPage({
   className?: string;
 }) {
   return (
-    <div className={`workbench-shell flex h-screen flex-col ${className}`}>
+    <div className={`workbench-shell flex h-screen flex-col overflow-hidden ${className}`}>
       {children}
     </div>
   );
@@ -67,7 +67,7 @@ export function WorkbenchBrand() {
         alt="Octos"
         className="h-7 w-auto shrink-0 select-none"
       />
-      <span className="text-base font-semibold tracking-tight text-text-strong max-sm:hidden">
+      <span className="text-base font-semibold text-text-strong max-sm:hidden">
         Octos
       </span>
     </Link>
@@ -79,7 +79,7 @@ export function WorkbenchRouteNav({ compact = false }: { compact?: boolean }) {
   const location = useLocation();
 
   return (
-    <div className="workbench-route-nav flex min-w-0 items-center gap-1 overflow-x-auto">
+    <div className="workbench-route-nav flex min-w-0 items-center gap-1.5 overflow-x-auto">
       {routeItems
         .filter((item) => !item.adminOnly || portal?.can_access_admin_portal)
         .map(({ to, label, icon: Icon }) => {
@@ -88,7 +88,8 @@ export function WorkbenchRouteNav({ compact = false }: { compact?: boolean }) {
             <Link
               key={to}
               to={to}
-              className="workbench-route-link flex shrink-0 items-center gap-1.5 px-2.5 py-2 text-sm"
+              className="workbench-route-link flex shrink-0 items-center gap-1.5 px-3 py-2 text-sm"
+              aria-current={active ? "page" : undefined}
               data-active={active ? "true" : undefined}
             >
               <Icon size={15} />
@@ -165,12 +166,12 @@ export function WorkbenchTopbar({
   const navigate = useNavigate();
   const backButton = backTo || onBack;
   const titleClass =
-    "truncate text-lg font-semibold tracking-tight text-text-strong";
+    "truncate text-lg font-semibold text-text-strong";
   const titleIsPrimitive = typeof title === "string" || typeof title === "number";
 
   return (
     <nav className="workbench-topbar shrink-0">
-      <div className="workbench-topbar-inner flex min-h-16 items-center gap-3 px-5 py-3 max-sm:px-3">
+      <div className="workbench-topbar-inner flex min-h-16 items-center gap-3 px-5 py-3 max-sm:flex-wrap max-sm:px-3">
         {backButton && (
           <button
             type="button"
@@ -187,7 +188,7 @@ export function WorkbenchTopbar({
             <Icon size={18} />
           </div>
         )}
-        <div className="min-w-0 flex-1">
+        <div className="workbench-topbar-title min-w-0 flex-1">
           {context && <div className="shell-kicker">{context}</div>}
           <div className="flex min-w-0 items-center gap-2">
             {titleIsPrimitive ? (
@@ -205,7 +206,7 @@ export function WorkbenchTopbar({
           {afterTitle}
         </div>
         {actions && (
-          <div className="flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-2">
+          <div className="workbench-topbar-actions flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-2">
             {actions}
           </div>
         )}
@@ -224,7 +225,7 @@ export function WorkbenchSectionHeader({
   action?: ReactNode;
 }) {
   return (
-    <div className="mb-3 flex items-end justify-between gap-3">
+    <div className="workbench-section-header mb-3 flex items-end justify-between gap-3">
       <div className="min-w-0">
         <h2 className="text-sm font-semibold text-text-strong">{title}</h2>
         {description && (
@@ -278,7 +279,7 @@ export function WorkbenchRouteCard({
     <button
       type="button"
       onClick={handleClick}
-      className="workbench-card workbench-route-card flex min-h-28 items-center gap-4 p-5 text-left"
+      className="workbench-card workbench-route-card flex min-h-32 items-center gap-4 p-5 text-left"
     >
       <div className="workbench-icon-tile flex h-11 w-11 shrink-0 items-center justify-center">
         <Icon size={24} />
