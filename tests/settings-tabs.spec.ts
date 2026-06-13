@@ -14,6 +14,7 @@ interface SettingsMockOptions {
   allowedEmailDeleteError?: { status: number; body: unknown };
   operatorTasksError?: { status: number; body: unknown };
   ominixServiceActionErrors?: Partial<Record<"start" | "stop" | "restart", { status: number; body: unknown }>>;
+  ominixHealthError?: { status: number; body: unknown };
   accessibleProfiles?: AccessibleProfileMock[];
 }
 
@@ -89,6 +90,7 @@ async function installAdminSettingsMocks(
   let removeLocalBody: unknown = null;
   const profileHeaders: Array<string | null> = [];
   const serviceActions: string[] = [];
+  const logLineRequests: number[] = [];
   const accessibleProfiles = options.accessibleProfiles ?? [
     {
       id: "admin",
@@ -236,16 +238,42 @@ async function installAdminSettingsMocks(
     }),
   );
 
-  await page.route("**/api/admin/platform-skills/ominix-api/logs?lines=80", (route) =>
-    route.fulfill({
+  await page.route("**/api/admin/platform-skills/ominix-api/health", (route) => {
+    if (options.ominixHealthError) {
+      void route.fulfill({
+        status: options.ominixHealthError.status,
+        contentType: "application/json",
+        body: JSON.stringify(options.ominixHealthError.body),
+      });
+      return;
+    }
+    void route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        name: "ominix-api",
+        status: "healthy",
+        url: "http://localhost:8080",
+        detail: {
+          version: "0.4.2",
+          loaded_models: ["qwen3-asr-1.7b"],
+        },
+      }),
+    });
+  });
+
+  await page.route("**/api/admin/platform-skills/ominix-api/logs?lines=*", (route) => {
+    const url = new URL(route.request().url());
+    const lines = Number(url.searchParams.get("lines") ?? "80");
+    logLineRequests.push(lines);
+    void route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
         log_path: "/Users/yao/.ominix/api.log",
-        total_lines: 2,
-        lines: ["ominix-api booted", "catalog loaded"],
+        total_lines: lines,
+        lines: ["ominix-api booted", "catalog loaded", `${lines} log line request`],
       }),
-    }),
-  );
+    });
+  });
 
   await page.route("**/api/admin/platform-skills/ominix-api/models/enable", async (route) => {
     enableBody = route.request().postDataJSON();
@@ -305,6 +333,7 @@ async function installAdminSettingsMocks(
     getRemoveLocalBody: () => removeLocalBody,
     getProfileHeaders: () => profileHeaders,
     getServiceActions: () => serviceActions,
+    getLogLineRequests: () => logLineRequests,
   };
 }
 
@@ -970,6 +999,31 @@ test.describe("Settings page — tab smoke tests", () => {
       timeout: TIMEOUT,
     });
     await expect(page.locator("h3", { hasText: "OminiX API" })).toBeVisible();
+  });
+
+  test("OminiX tab exposes health probe, log depth, and catalog filtering", async ({
+    page,
+  }) => {
+    const mocks = await installAdminSettingsMocks(page);
+    await seedAdminSession(page);
+
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: TIMEOUT });
+    await clickTab(page, "OminiX");
+
+    await expect(page.getByText("Health probe")).toBeVisible({ timeout: TIMEOUT });
+    await expect(page.getByText("0.4.2")).toBeVisible();
+
+    await page.getByRole("button", { name: "200 lines" }).click();
+    await expect.poll(() => mocks.getLogLineRequests().at(-1)).toBe(200);
+    await expect(page.getByText("200 log line request")).toBeVisible({
+      timeout: TIMEOUT,
+    });
+
+    const catalog = page.locator("section", { hasText: "Available Catalog" });
+    await catalog.getByPlaceholder("Search catalog...").fill("parakeet");
+    await expect(catalog.getByText("Parakeet ASR")).toBeVisible();
+    await expect(catalog.getByText("Qwen3 TTS")).toHaveCount(0);
   });
 
   test("Server tab uses real admin endpoints for settings and token rotation", async ({

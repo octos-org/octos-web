@@ -452,6 +452,13 @@ export interface OminixLogResponse {
   error?: string;
 }
 
+export interface PlatformSkillHealth {
+  name: string;
+  status: string;
+  url: string;
+  detail?: unknown;
+}
+
 export interface OminixCatalogModel {
   id: string;
   name?: string;
@@ -495,6 +502,14 @@ const OMINIX_ADMIN_BASE = "/api/admin/platform-skills/ominix-api";
 
 export async function fetchPlatformSkillsStatus(): Promise<PlatformSkillsStatus> {
   return await request<PlatformSkillsStatus>("/api/admin/platform-skills");
+}
+
+export async function fetchPlatformSkillHealth(
+  name: string,
+): Promise<PlatformSkillHealth> {
+  return await request<PlatformSkillHealth>(
+    `/api/admin/platform-skills/${encodeURIComponent(name)}/health`,
+  );
 }
 
 export async function fetchOminixLogs(lines = 80): Promise<OminixLogResponse> {

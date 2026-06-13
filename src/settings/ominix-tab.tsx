@@ -20,6 +20,7 @@ import {
   fetchOminixAvailableModels,
   fetchOminixLogs,
   fetchOminixPlatformModels,
+  fetchPlatformSkillHealth,
   fetchPlatformSkillsStatus,
   formatSettingsError,
   installPlatformSkill,
@@ -29,6 +30,7 @@ import {
   type OminixCatalogModel,
   type OminixLogResponse,
   type OminixServiceAction,
+  type PlatformSkillHealth,
   type PlatformSkillInfo,
   type PlatformSkillsStatus,
 } from "./settings-api";
@@ -100,6 +102,30 @@ function resultMessage(result: unknown) {
   if (typeof value.detail === "string" && value.detail.trim()) return value.detail;
   if (typeof value.status === "string" && value.status.trim()) return value.status;
   return "Action completed";
+}
+
+function detailLines(detail: unknown): string[] {
+  if (detail == null) return [];
+  if (typeof detail === "string") return [detail];
+  if (typeof detail === "number" || typeof detail === "boolean") {
+    return [String(detail)];
+  }
+  if (Array.isArray(detail)) {
+    return detail.map((item) =>
+      typeof item === "string" ? item : JSON.stringify(item),
+    );
+  }
+  if (typeof detail === "object") {
+    return Object.entries(detail as Record<string, unknown>).map(([key, value]) => {
+      const rendered = Array.isArray(value)
+        ? value.join(", ")
+        : typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+          ? String(value)
+          : JSON.stringify(value);
+      return `${key}: ${rendered}`;
+    });
+  }
+  return [];
 }
 
 function assertActionOk(result: unknown) {
@@ -433,9 +459,12 @@ function ConfirmBar({
 
 export function OminixTab() {
   const [status, setStatus] = useState<PlatformSkillsStatus | null>(null);
+  const [health, setHealth] = useState<PlatformSkillHealth | null>(null);
   const [platformModels, setPlatformModels] = useState<OminixCatalogModel[]>([]);
   const [availableModels, setAvailableModels] = useState<OminixCatalogModel[]>([]);
   const [logs, setLogs] = useState<OminixLogResponse | null>(null);
+  const [logLines, setLogLines] = useState(80);
+  const [catalogSearch, setCatalogSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -446,18 +475,28 @@ export function OminixTab() {
     setLoading(true);
     setError(null);
 
-    const [statusResult, platformResult, availableResult, logsResult] =
+    const [
+      statusResult,
+      healthResult,
+      platformResult,
+      availableResult,
+      logsResult,
+    ] =
       await Promise.allSettled([
         fetchPlatformSkillsStatus(),
+        fetchPlatformSkillHealth("ominix-api"),
         fetchOminixPlatformModels(),
         fetchOminixAvailableModels(),
-        fetchOminixLogs(80),
+        fetchOminixLogs(logLines),
       ]);
 
     const errors: string[] = [];
 
     if (statusResult.status === "fulfilled") setStatus(statusResult.value);
     else errors.push(`status: ${errorMessage(statusResult.reason)}`);
+
+    if (healthResult.status === "fulfilled") setHealth(healthResult.value);
+    else errors.push(`health: ${errorMessage(healthResult.reason)}`);
 
     if (platformResult.status === "fulfilled") setPlatformModels(platformResult.value);
     else errors.push(`models: ${errorMessage(platformResult.reason)}`);
@@ -470,7 +509,7 @@ export function OminixTab() {
 
     setError(errors.length ? errors.join("\n") : null);
     setLoading(false);
-  }, []);
+  }, [logLines]);
 
   useEffect(() => {
     const id = window.setTimeout(() => void load(), 0);
@@ -493,6 +532,26 @@ export function OminixTab() {
         .concat(availableModels.filter((m) => platformModelIds.has(m.id))),
     [availableModels, platformModelIds],
   );
+  const filteredCatalogModels = useMemo(() => {
+    const query = catalogSearch.trim().toLowerCase();
+    if (!query) return catalogModels;
+    return catalogModels.filter((model) =>
+      [
+        model.id,
+        model.name,
+        model.description,
+        model.category,
+        model.role,
+        model.status,
+        ...(model.tags ?? []),
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(query),
+    );
+  }, [catalogModels, catalogSearch]);
+  const healthDetailLines = useMemo(() => detailLines(health?.detail), [health]);
 
   async function performAction(key: string, fn: () => Promise<unknown>) {
     setBusyKey(key);
@@ -611,6 +670,40 @@ export function OminixTab() {
               </div>
             </div>
 
+            <div className={`rounded-xl border px-4 py-3 ${statusClass(health?.status === "healthy")}`}>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="text-xs font-semibold uppercase text-muted">
+                    Health probe
+                  </div>
+                  <div className="mt-1 flex items-center gap-2 text-sm font-semibold">
+                    {health?.status === "healthy" ? (
+                      <CheckCircle size={14} />
+                    ) : (
+                      <AlertCircle size={14} />
+                    )}
+                    {health?.status === "healthy"
+                      ? "Probe OK"
+                      : compactText(health?.status, "unknown")}
+                  </div>
+                  <div className="mt-1 truncate font-mono text-[11px] opacity-80">
+                    {compactText(health?.url)}
+                  </div>
+                </div>
+                <div className="min-w-0 max-w-full text-right font-mono text-[11px] opacity-85 sm:max-w-[26rem]">
+                  {healthDetailLines.length > 0 ? (
+                    healthDetailLines.map((line) => (
+                      <div key={line} className="truncate">
+                        {line}
+                      </div>
+                    ))
+                  ) : (
+                    <div>No health detail</div>
+                  )}
+                </div>
+              </div>
+            </div>
+
             <div className="flex flex-wrap gap-2">
               <SmallButton
                 disabled={busy}
@@ -688,14 +781,30 @@ export function OminixTab() {
         </div>
       </Section>
 
-      <Section title="Available Catalog" icon={<CheckCircle size={20} />}>
+      <Section
+        title="Available Catalog"
+        icon={<CheckCircle size={20} />}
+        action={
+          <input
+            value={catalogSearch}
+            onChange={(e) => setCatalogSearch(e.target.value)}
+            placeholder="Search catalog..."
+            className="workbench-input w-64 px-3 py-1.5 text-xs placeholder-muted max-sm:w-full"
+          />
+        }
+      >
+        <div className="mb-3 text-xs text-muted">
+          {filteredCatalogModels.length} of {catalogModels.length} models visible
+        </div>
         <div className="max-h-[28rem] space-y-3 overflow-y-auto pr-1">
-          {catalogModels.length === 0 ? (
+          {filteredCatalogModels.length === 0 ? (
             <div className="rounded-xl bg-surface-container/50 px-4 py-6 text-center text-sm text-muted">
-              No catalog models returned
+              {catalogSearch.trim()
+                ? "No catalog models match the current search"
+                : "No catalog models returned"}
             </div>
           ) : (
-            catalogModels.map((model) => (
+            filteredCatalogModels.map((model) => (
               <AvailableModelRow
                 key={model.id}
                 model={model}
@@ -724,10 +833,22 @@ export function OminixTab() {
         title="Logs"
         icon={<Terminal size={20} />}
         action={
-          <SmallButton disabled={busy} onClick={() => void load()}>
-            <RefreshCw size={12} />
-            Reload
-          </SmallButton>
+          <div className="flex flex-wrap gap-2">
+            {[50, 80, 200].map((count) => (
+              <SmallButton
+                key={count}
+                disabled={busy}
+                tone={logLines === count ? "good" : "default"}
+                onClick={() => setLogLines(count)}
+              >
+                {count} lines
+              </SmallButton>
+            ))}
+            <SmallButton disabled={busy} onClick={() => void load()}>
+              <RefreshCw size={12} />
+              Reload
+            </SmallButton>
+          </div>
         }
       >
         <div className="mb-2 truncate font-mono text-[11px] text-muted">
