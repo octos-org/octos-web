@@ -519,7 +519,7 @@ export function ServerTab() {
             </div>
             {/* Version */}
             <div className="rounded-xl border border-border/30 px-4 py-3">
-              <div className="text-lg font-bold tabular-nums text-text-strong font-mono">
+              <div className="text-lg font-bold tabular-nums text-text-strong">
                 {resources.version || "—"}
               </div>
               <div className="mt-0.5 text-xs text-muted">Octos Version</div>
@@ -532,7 +532,7 @@ export function ServerTab() {
               Resource metrics unavailable
             </p>
             <p className="mt-0.5 text-[10px] text-muted/60">
-              Could not read <code className="font-mono">GET /api/admin/system/metrics</code>
+              Could not read system metrics.
             </p>
           </div>
         )}
@@ -599,9 +599,7 @@ export function ServerTab() {
         </div>
 
         <p className="mt-3 text-[10px] text-muted/50">
-          Settings use <code className="font-mono">/api/admin/monitor/status</code>,{" "}
-          <code className="font-mono">/watchdog</code>, and{" "}
-          <code className="font-mono">/alerts</code>.
+          Changes apply to gateway monitoring immediately.
         </p>
       </div>
 
@@ -666,8 +664,7 @@ export function ServerTab() {
         </div>
 
         <p className="mt-3 text-[10px] text-muted/50">
-          Mode is read from <code className="font-mono">GET /api/admin/deployment-mode</code> and saved via{" "}
-          <code className="font-mono">POST /api/admin/deployment-mode</code>.
+          This setting controls deployment-aware defaults across the dashboard.
         </p>
       </div>
 
@@ -779,9 +776,7 @@ export function ServerTab() {
         </button>
 
         <p className="mt-3 text-[10px] text-muted/50">
-          Token rotation sends your chosen value to{" "}
-          <code className="font-mono">POST /api/admin/token/rotate</code>; the server returns{" "}
-          <code className="font-mono">204</code> on success.
+          Token rotation applies immediately. Keep the new token somewhere private.
         </p>
       </div>
 

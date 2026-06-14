@@ -24,9 +24,9 @@ interface SandboxTabProps {
 const SANDBOX_MODES = [
   { value: "auto", label: "Auto", description: "Automatically select the best isolation method" },
   { value: "docker", label: "Docker", description: "Docker container isolation" },
-  { value: "sandbox-exec", label: "sandbox-exec", description: "macOS sandbox" },
-  { value: "bubblewrap", label: "Bubblewrap", description: "Linux namespace isolation" },
-  { value: "appcontainer", label: "AppContainer", description: "Windows AppContainer" },
+  { value: "sandbox-exec", label: "macOS Sandbox", description: "Use native macOS sandbox rules" },
+  { value: "bubblewrap", label: "Linux Sandbox", description: "Use Linux namespace isolation" },
+  { value: "appcontainer", label: "Windows Sandbox", description: "Use Windows AppContainer isolation" },
   { value: "host", label: "Host", description: "No isolation (runs directly on host)" },
 ] as const;
 
@@ -107,7 +107,7 @@ function StringListEditor({
             value={item}
             onChange={(e) => updateItem(idx, e.target.value)}
             placeholder={placeholder}
-            className="flex-1 rounded-xl bg-surface-container px-4 py-2.5 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition font-mono"
+            className="flex-1 rounded-xl bg-surface-container px-4 py-2.5 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition"
           />
           <button
             type="button"
@@ -315,7 +315,7 @@ export function SandboxTab({ profile, onProfileUpdated }: SandboxTabProps) {
                   value={form.docker_cpu_limit}
                   onChange={(e) => setForm((f) => ({ ...f, docker_cpu_limit: e.target.value }))}
                   placeholder="1.0"
-                  className="w-full rounded-xl bg-surface-container px-4 py-3 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition font-mono"
+                  className="w-full rounded-xl bg-surface-container px-4 py-3 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition tabular-nums"
                 />
               </div>
               <div>
@@ -327,7 +327,7 @@ export function SandboxTab({ profile, onProfileUpdated }: SandboxTabProps) {
                   value={form.docker_memory_limit}
                   onChange={(e) => setForm((f) => ({ ...f, docker_memory_limit: e.target.value }))}
                   placeholder="512m"
-                  className="w-full rounded-xl bg-surface-container px-4 py-3 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition font-mono"
+                  className="w-full rounded-xl bg-surface-container px-4 py-3 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition tabular-nums"
                 />
               </div>
               <div>
@@ -340,7 +340,7 @@ export function SandboxTab({ profile, onProfileUpdated }: SandboxTabProps) {
                   onChange={(e) => setForm((f) => ({ ...f, docker_pids_limit: e.target.value }))}
                   placeholder="256"
                   min={1}
-                  className="w-full rounded-xl bg-surface-container px-4 py-3 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition font-mono"
+                  className="w-full rounded-xl bg-surface-container px-4 py-3 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition tabular-nums"
                 />
               </div>
             </div>

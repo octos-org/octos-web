@@ -219,6 +219,120 @@ test.describe("live Settings and profile smoke", () => {
     await expectNoRuntimeOverlay(page);
   });
 
+  test("binds live LLM and Tools controls without the mocked harness", async ({ page }) => {
+    await ensureSoloSession(page);
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: LIVE_TIMEOUT });
+
+    await clickSettingsTab(page, "LLM");
+    const llmSection = page.locator(".glass-section", { hasText: "LLM Configuration" });
+    await expect(llmSection).toBeVisible({ timeout: LIVE_TIMEOUT });
+    const llmSelects = llmSection.locator("select");
+    const providerSelect = llmSelects.first();
+    await expect(providerSelect).toBeVisible({ timeout: LIVE_TIMEOUT });
+    expect(await providerSelect.locator("option").count()).toBeGreaterThan(1);
+    await providerSelect.selectOption("openai");
+    await expect(llmSection.getByText("Model", { exact: true })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    expect(await llmSelects.nth(1).locator("option").count()).toBeGreaterThan(1);
+    await expect(llmSection.getByText("OPENAI_API_KEY")).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expect(llmSection.getByRole("button", { name: "Test Connection" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expect(page.getByRole("heading", { name: "Fallback Models" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expectNoRuntimeOverlay(page);
+
+    await clickSettingsTab(page, "Tools");
+    for (const heading of [
+      "Web Search APIs",
+      "Email Tool",
+      "Deep Crawl",
+      "Gateway Settings",
+    ]) {
+      await expect(page.getByRole("heading", { name: heading })).toBeVisible({
+        timeout: LIVE_TIMEOUT,
+      });
+    }
+    for (const engine of [
+      "Serper (Google)",
+      "Tavily",
+      "Perplexity",
+      "You.com",
+      "Brave Search",
+    ]) {
+      await expect(page.getByRole("heading", { name: engine, exact: true })).toBeVisible({
+        timeout: LIVE_TIMEOUT,
+      });
+    }
+    await expectNoRuntimeOverlay(page);
+  });
+
+  test("binds live Profile, Skills, Channels, and Sandbox controls without writes", async ({ page }) => {
+    await ensureSoloSession(page);
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: LIVE_TIMEOUT });
+
+    await clickSettingsTab(page, "Profile");
+    await expect(page.getByPlaceholder("Enter display name")).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expect(page.getByText("Profile ID")).toBeVisible({ timeout: LIVE_TIMEOUT });
+    await expect(page.getByRole("heading", { name: "Environment Variables" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expect(page.getByRole("button", { name: "Add Variable" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expectNoRuntimeOverlay(page);
+
+    await clickSettingsTab(page, "Skills");
+    await expect(page.getByRole("heading", { name: "Install Skill" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expect(
+      page.getByPlaceholder("octos-org/system-skills, https://host/org/repo.git, or ./skills/my-skill"),
+    ).toBeVisible({ timeout: LIVE_TIMEOUT });
+    await expect(page.getByRole("button", { name: "Install" }).first()).toBeDisabled({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expectNoRuntimeOverlay(page);
+
+    await clickSettingsTab(page, "Channels");
+    await page.getByRole("button", { name: /^Add Channel$/ }).first().click();
+    const channelForm = page.locator(".glass-section", { hasText: "New Channel" });
+    await expect(channelForm).toBeVisible({ timeout: LIVE_TIMEOUT });
+    await channelForm.locator("select").selectOption("twilio");
+    await expect(channelForm.locator("input[readonly]")).toHaveValue(/\/webhook\/twilio\//, {
+      timeout: LIVE_TIMEOUT,
+    });
+    await expect(channelForm.getByPlaceholder("TWILIO_ACCOUNT_SID")).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expect(channelForm.getByRole("button", { name: /^Add Channel$/ })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await channelForm.getByText("Cancel", { exact: true }).click();
+    await expect(channelForm).toHaveCount(0);
+    await expectNoRuntimeOverlay(page);
+
+    await clickSettingsTab(page, "Sandbox");
+    const sandboxSection = page.locator(".glass-section", { hasText: "Sandbox Configuration" });
+    await sandboxSection.locator("select").first().selectOption("docker");
+    await expect(page.getByRole("heading", { name: "Docker Settings" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expect(page.getByPlaceholder("ubuntu:24.04")).toBeVisible({ timeout: LIVE_TIMEOUT });
+    await expect(page.getByRole("button", { name: "Save Changes" })).toBeEnabled({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expectNoRuntimeOverlay(page);
+  });
+
   test("loads admin Settings tabs and OminiX offline state without mocks", async ({ page }) => {
     await ensureSoloSession(page);
     await page.goto("/settings", { waitUntil: "networkidle" });
@@ -419,6 +533,33 @@ test.describe("live Settings and profile smoke", () => {
     await expectNoRuntimeOverlay(page);
   });
 
+  test("OminiX live log controls use the read-only logs endpoint", async ({ page }) => {
+    await ensureSoloSession(page);
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: LIVE_TIMEOUT });
+
+    await clickSettingsTab(page, "OminiX");
+    await expect(page.getByRole("heading", { name: "Logs" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+
+    const logsResponsePromise = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === "/api/admin/platform-skills/ominix-api/logs" &&
+        url.searchParams.get("lines") === "200"
+      );
+    }, { timeout: LIVE_TIMEOUT });
+
+    await page.getByRole("button", { name: "200 lines" }).click();
+    const logsResponse = await logsResponsePromise;
+    expect(logsResponse.status()).toBe(200);
+    const logsJson = await logsResponse.json();
+    expectObject(logsJson, "OminiX logs");
+    expect(Array.isArray(logsJson.lines)).toBe(true);
+    await expectNoRuntimeOverlay(page);
+  });
+
   test("read-only Settings APIs return live contract-shaped data", async ({ page }) => {
     await ensureSoloSession(page);
     await page.goto("/settings", { waitUntil: "networkidle" });
@@ -434,6 +575,12 @@ test.describe("live Settings and profile smoke", () => {
     const profileSkillsJson = profileSkills.json;
     expectObject(profileSkillsJson, "profile skills");
     expect(Array.isArray(profileSkillsJson.skills)).toBe(true);
+
+    const skillRegistry = await liveApiRaw(page, "/api/my/profile/skills/registry");
+    expect(skillRegistry.status).toBe(200);
+    const skillRegistryJson = skillRegistry.json;
+    expectObject(skillRegistryJson, "skill registry");
+    expect(Array.isArray(skillRegistryJson.packages)).toBe(true);
 
     const users = await liveApiRaw(page, "/api/admin/users");
     expect(users.status).toBe(200);

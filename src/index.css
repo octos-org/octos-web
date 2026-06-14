@@ -985,7 +985,7 @@ body {
 .prose pre {
   background: var(--color-code-block-bg);
   border: none;
-  border-radius: 12px;
+  border-radius: 8px;
   font-size: 0.8rem;
   color: var(--color-code-text);
   white-space: pre-wrap;
@@ -1022,7 +1022,7 @@ body {
   font-size: 0.85em;
   border-collapse: separate;
   border-spacing: 0;
-  border-radius: 12px;
+  border-radius: 8px;
   overflow: hidden;
 }
 .prose th {
@@ -1242,7 +1242,7 @@ button, a, input, textarea {
 }
 .reader-prose pre {
   background: var(--reader-code-block-bg) !important;
-  border-radius: 12px;
+  border-radius: 8px;
   padding: 1em 1.15em;
   font-size: 0.9rem;
   line-height: 1.55;
@@ -1254,7 +1254,7 @@ button, a, input, textarea {
   margin: 1.3em 0;
   border-collapse: separate;
   border-spacing: 0;
-  border-radius: 12px;
+  border-radius: 8px;
   overflow: hidden;
   font-size: 0.95em;
 }
@@ -1272,7 +1272,7 @@ button, a, input, textarea {
 .reader-prose img {
   max-width: 100%;
   height: auto;
-  border-radius: 10px;
+  border-radius: 8px;
   margin: 1.2em 0;
 }
 
@@ -1487,7 +1487,7 @@ button, a, input, textarea {
   min-height: 44px;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
+  border-radius: 8px;
   cursor: pointer;
   transition: background 0.2s ease;
 }
@@ -1570,7 +1570,7 @@ button, a, input, textarea {
   background: #dc2626;
   border: none;
   cursor: pointer;
-  border-radius: 12px;
+  border-radius: 8px;
   transition: background 0.2s ease, transform 0.1s ease;
 }
 
@@ -1646,7 +1646,7 @@ button, a, input, textarea {
 .home-audio-player {
   max-width: 100%;
   height: 44px;
-  border-radius: 10px;
+  border-radius: 8px;
   filter: invert(1) hue-rotate(180deg);
   opacity: 0.85;
 }
@@ -1708,7 +1708,7 @@ button, a, input, textarea {
 }
 .home-bubble-markdown pre {
   background: rgba(0, 0, 0, 0.3);
-  border-radius: 10px;
+  border-radius: 8px;
   padding: 0.75em 1em;
   margin: 0.6em 0;
   overflow-x: auto;
@@ -1916,7 +1916,7 @@ button, a, input, textarea {
   border: none;
   cursor: pointer;
   transition: background 0.2s ease;
-  border-radius: 12px;
+  border-radius: 8px;
 }
 
 .home-settings-gear:hover {
@@ -1942,7 +1942,7 @@ button, a, input, textarea {
   color: #f0f4f8;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 10px;
+  border-radius: 8px;
   outline: none;
   transition: border-color 0.2s ease;
 }
@@ -1957,7 +1957,7 @@ button, a, input, textarea {
 
 .home-settings-segmented {
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
+  border-radius: 8px;
   overflow: hidden;
 }
 
@@ -2012,7 +2012,7 @@ button, a, input, textarea {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 14px;
+  border-radius: 8px;
   cursor: pointer;
   text-align: left;
   outline: none;
@@ -2074,7 +2074,7 @@ button, a, input, textarea {
 .home-timer-preset {
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 12px;
+  border-radius: 8px;
   padding: 10px 20px;
   color: rgba(255, 255, 255, 0.75);
   font-size: 1rem;
@@ -2099,7 +2099,7 @@ button, a, input, textarea {
   justify-content: center;
   width: 44px;
   height: 44px;
-  border-radius: 12px;
+  border-radius: 8px;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.1);
   color: rgba(255, 255, 255, 0.7);
@@ -2117,7 +2117,7 @@ button, a, input, textarea {
   max-width: 480px;
   width: 100%;
   aspect-ratio: 16 / 9;
-  border-radius: 16px;
+  border-radius: 8px;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.03);
@@ -2129,7 +2129,7 @@ button, a, input, textarea {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  border-radius: 16px;
+  border-radius: 8px;
   transition: opacity 0.6s ease-in-out;
 }
 
@@ -2259,19 +2259,19 @@ button, a, input, textarea {
   }
   .home-quick-card {
     padding: 0.625rem 0.375rem;
-    border-radius: 14px;
+    border-radius: 8px;
   }
   .home-quick-card-icon {
     width: 40px;
     height: 40px;
     min-width: 40px;
     min-height: 40px;
-    border-radius: 12px;
+    border-radius: 8px;
   }
   .home-standby .home-weather-widget {
     margin-top: 0.75rem;
     padding: 0.375rem 0.75rem;
-    border-radius: 14px;
+    border-radius: 8px;
     max-width: 420px;
   }
   .home-weather-current .text-3xl {
@@ -2281,7 +2281,7 @@ button, a, input, textarea {
     font-size: 1.75rem;
   }
   .home-widget {
-    border-radius: 14px;
+    border-radius: 8px;
   }
   .home-bubble-text {
     font-size: 0.95rem;
@@ -2289,7 +2289,7 @@ button, a, input, textarea {
   }
   .home-composer {
     padding: 0.25rem 0.375rem;
-    border-radius: 1rem;
+    border-radius: 8px;
   }
   .home-composer-input {
     font-size: 0.95rem;

@@ -243,7 +243,7 @@ export function SkillsTab() {
                       {skill.name}
                     </span>
                     {skill.version && (
-                      <span className="shrink-0 rounded-md bg-surface-dark/60 px-1.5 py-0.5 text-[10px] font-mono text-muted">
+                      <span className="shrink-0 rounded-md bg-surface-dark/60 px-1.5 py-0.5 text-[10px] tabular-nums text-muted">
                         v{skill.version}
                       </span>
                     )}
@@ -378,7 +378,7 @@ export function SkillsTab() {
                           {pkg.name}
                         </span>
                         {pkg.version && (
-                          <span className="shrink-0 rounded-md bg-surface-dark/60 px-1.5 py-0.5 text-[10px] font-mono text-muted">
+                          <span className="shrink-0 rounded-md bg-surface-dark/60 px-1.5 py-0.5 text-[10px] tabular-nums text-muted">
                             v{pkg.version}
                           </span>
                         )}
@@ -426,7 +426,7 @@ export function SkillsTab() {
                       {pkg.skills.map((s) => (
                         <span
                           key={s}
-                          className={`rounded-md px-1.5 py-0.5 text-[10px] font-mono transition ${
+                          className={`rounded-md px-1.5 py-0.5 text-[10px] tabular-nums transition ${
                             installedNames.has(s)
                               ? "bg-accent/15 text-accent"
                               : "bg-surface-dark/60 text-muted"

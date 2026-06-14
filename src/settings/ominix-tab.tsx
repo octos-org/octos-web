@@ -154,7 +154,7 @@ function Section({
     <section className="glass-section rounded-lg p-4 sm:p-6">
       <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-accent/10 text-accent">
             {icon}
           </div>
           <h3 className="text-sm font-semibold text-text-strong">{title}</h3>
@@ -236,7 +236,7 @@ function PlatformModelRow({
 }) {
   const ready = isModelReady(model);
   return (
-    <div className="flex flex-col gap-3 rounded-xl border border-border/30 bg-surface-container/50 px-4 py-3 sm:flex-row sm:items-start sm:justify-between">
+    <div className="flex flex-col gap-3 rounded-lg border border-border/30 bg-surface-container/50 px-4 py-3 sm:flex-row sm:items-start sm:justify-between">
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <span className="truncate text-sm font-medium text-text-strong">
@@ -296,7 +296,7 @@ function AvailableModelRow({
   const roleOptions = roleOptionsForModel(model);
 
   return (
-    <div className="flex flex-col gap-3 rounded-xl border border-border/30 bg-surface-container/50 px-4 py-3 sm:flex-row sm:items-start sm:justify-between">
+    <div className="flex flex-col gap-3 rounded-lg border border-border/30 bg-surface-container/50 px-4 py-3 sm:flex-row sm:items-start sm:justify-between">
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <span className="truncate text-sm font-medium text-text-strong">
@@ -380,7 +380,7 @@ function SkillRow({
   onRemove: (name: string) => void;
 }) {
   return (
-    <div className="flex flex-col gap-3 rounded-xl border border-border/30 bg-surface-container/50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+    <div className="flex flex-col gap-3 rounded-lg border border-border/30 bg-surface-container/50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
       <div>
         <div className="text-sm font-medium text-text-strong">{skill.name}</div>
         <div className="mt-0.5 text-xs text-muted">
@@ -436,7 +436,7 @@ function ConfirmBar({
             : `Remove platform skill ${pending.name}?`;
 
   return (
-    <div className="flex items-center gap-3 rounded-xl border border-yellow-400/30 bg-yellow-400/5 px-4 py-3">
+    <div className="flex items-center gap-3 rounded-lg border border-yellow-400/30 bg-yellow-400/5 px-4 py-3">
       <AlertCircle size={16} className="shrink-0 text-yellow-400" />
       <span className="flex-1 text-xs font-medium text-yellow-400">{label}</span>
       <button
@@ -636,18 +636,18 @@ export function OminixTab() {
               />
             )}
             {error && (
-              <div className="whitespace-pre-wrap rounded-xl border border-red-400/30 bg-red-400/5 px-4 py-3 text-xs text-red-300">
+              <div className="whitespace-pre-wrap rounded-lg border border-red-400/30 bg-red-400/5 px-4 py-3 text-xs text-red-300">
                 {error}
               </div>
             )}
             {message && (
-              <div className="rounded-xl border border-green-400/30 bg-green-400/5 px-4 py-3 text-xs text-green-300">
+              <div className="rounded-lg border border-green-400/30 bg-green-400/5 px-4 py-3 text-xs text-green-300">
                 {message}
               </div>
             )}
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <div className={`rounded-xl border px-4 py-3 ${statusClass(Boolean(status?.ominix_api.healthy))}`}>
+              <div className={`rounded-lg border px-4 py-3 ${statusClass(Boolean(status?.ominix_api.healthy))}`}>
                 <div className="flex items-center gap-2 text-sm font-semibold">
                   {status?.ominix_api.healthy ? <CheckCircle size={14} /> : <AlertCircle size={14} />}
                   {runningLabel}
@@ -656,11 +656,11 @@ export function OminixTab() {
                   {compactText(status?.ominix_api.url)}
                 </div>
               </div>
-              <div className={`rounded-xl border px-4 py-3 ${statusClass(Boolean(status?.ominix_api.service_registered))}`}>
+              <div className={`rounded-lg border px-4 py-3 ${statusClass(Boolean(status?.ominix_api.service_registered))}`}>
                 <div className="text-sm font-semibold">{registeredLabel}</div>
                 <div className="mt-1 text-[11px] opacity-80">io.ominix.ominix-api</div>
               </div>
-              <div className="rounded-xl border border-border/30 bg-surface-container/50 px-4 py-3">
+              <div className="rounded-lg border border-border/30 bg-surface-container/50 px-4 py-3">
                 <div className="text-sm font-semibold text-text-strong">
                   {status?.models.asr.length ?? 0} ASR / {status?.models.tts.length ?? 0} TTS
                 </div>
@@ -670,7 +670,7 @@ export function OminixTab() {
               </div>
             </div>
 
-            <div className={`rounded-xl border px-4 py-3 ${statusClass(health?.status === "healthy")}`}>
+            <div className={`rounded-lg border px-4 py-3 ${statusClass(health?.status === "healthy")}`}>
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <div className="text-xs font-semibold uppercase text-muted">
@@ -737,7 +737,7 @@ export function OminixTab() {
       <Section title="Platform Skills" icon={<Activity size={20} />}>
         <div className="space-y-3">
           {(status?.platform_skills ?? []).length === 0 ? (
-            <div className="rounded-xl bg-surface-container/50 px-4 py-6 text-center text-sm text-muted">
+            <div className="rounded-lg bg-surface-container/50 px-4 py-6 text-center text-sm text-muted">
               No platform skills returned
             </div>
           ) : (
@@ -762,7 +762,7 @@ export function OminixTab() {
       <Section title="Enabled Platform Models" icon={<Download size={20} />}>
         <div className="space-y-3">
           {platformModels.length === 0 ? (
-            <div className="rounded-xl bg-surface-container/50 px-4 py-6 text-center text-sm text-muted">
+            <div className="rounded-lg bg-surface-container/50 px-4 py-6 text-center text-sm text-muted">
               No models are enabled for Octos
             </div>
           ) : (
@@ -798,7 +798,7 @@ export function OminixTab() {
         </div>
         <div className="max-h-[28rem] space-y-3 overflow-y-auto pr-1">
           {filteredCatalogModels.length === 0 ? (
-            <div className="rounded-xl bg-surface-container/50 px-4 py-6 text-center text-sm text-muted">
+            <div className="rounded-lg bg-surface-container/50 px-4 py-6 text-center text-sm text-muted">
               {catalogSearch.trim()
                 ? "No catalog models match the current search"
                 : "No catalog models returned"}
@@ -855,11 +855,11 @@ export function OminixTab() {
           {compactText(logs?.log_path)}
         </div>
         {logs?.error && (
-          <div className="mb-3 rounded-xl border border-yellow-400/30 bg-yellow-400/5 px-4 py-3 text-xs text-yellow-300">
+          <div className="mb-3 rounded-lg border border-yellow-400/30 bg-yellow-400/5 px-4 py-3 text-xs text-yellow-300">
             {logs.error}
           </div>
         )}
-        <pre className="max-h-80 overflow-auto rounded-xl bg-black/30 p-4 font-mono text-[11px] leading-5 text-text/80">
+        <pre className="max-h-80 overflow-auto rounded-lg bg-black/30 p-4 font-mono text-[11px] leading-5 text-text/80">
           {(logs?.lines ?? []).join("\n") || "No logs"}
         </pre>
       </Section>

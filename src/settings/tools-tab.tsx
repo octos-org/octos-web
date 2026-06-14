@@ -381,7 +381,7 @@ function EmailToolSection({
                     value={config.smtp_host}
                     onChange={(e) => set({ smtp_host: e.target.value })}
                     placeholder="smtp.example.com"
-                    className="w-full rounded-xl bg-surface-dark/50 px-4 py-2.5 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition font-mono"
+                    className="w-full rounded-xl bg-surface-dark/50 px-4 py-2.5 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition"
                   />
                 </div>
                 <div>
@@ -393,7 +393,7 @@ function EmailToolSection({
                     placeholder="587"
                     min={1}
                     max={65535}
-                    className="w-full rounded-xl bg-surface-dark/50 px-4 py-2.5 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition font-mono"
+                    className="w-full rounded-xl bg-surface-dark/50 px-4 py-2.5 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition tabular-nums"
                   />
                 </div>
               </div>
@@ -406,7 +406,7 @@ function EmailToolSection({
                     value={config.smtp_username}
                     onChange={(e) => set({ smtp_username: e.target.value })}
                     placeholder="user@example.com"
-                    className="w-full rounded-xl bg-surface-dark/50 px-4 py-2.5 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition font-mono"
+                    className="w-full rounded-xl bg-surface-dark/50 px-4 py-2.5 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition"
                   />
                 </div>
                 <div>
@@ -416,7 +416,7 @@ function EmailToolSection({
                     value={config.smtp_password}
                     onChange={(e) => set({ smtp_password: e.target.value })}
                     placeholder="App password"
-                    className="w-full rounded-xl bg-surface-dark/50 px-4 py-2.5 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition font-mono"
+                    className="w-full rounded-xl bg-surface-dark/50 px-4 py-2.5 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition"
                   />
                 </div>
               </div>
@@ -428,7 +428,7 @@ function EmailToolSection({
                   value={config.smtp_from}
                   onChange={(e) => set({ smtp_from: e.target.value })}
                   placeholder="noreply@example.com"
-                  className="w-full rounded-xl bg-surface-dark/50 px-4 py-2.5 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition font-mono"
+                  className="w-full rounded-xl bg-surface-dark/50 px-4 py-2.5 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition"
                 />
               </div>
 
@@ -616,7 +616,7 @@ export function ToolsTab({ profile, onProfileUpdated }: ToolsTabProps) {
               value={form.crawl.max_depth}
               onChange={(e) => setForm((f) => ({ ...f, crawl: { ...f.crawl, max_depth: e.target.value } }))}
               placeholder="3"
-              className="w-full rounded-xl bg-surface-container px-4 py-3 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition font-mono"
+              className="w-full rounded-xl bg-surface-container px-4 py-3 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition tabular-nums"
             />
           </div>
           <div>
@@ -630,7 +630,7 @@ export function ToolsTab({ profile, onProfileUpdated }: ToolsTabProps) {
               value={form.crawl.max_pages}
               onChange={(e) => setForm((f) => ({ ...f, crawl: { ...f.crawl, max_pages: e.target.value } }))}
               placeholder="50"
-              className="w-full rounded-xl bg-surface-container px-4 py-3 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition font-mono"
+              className="w-full rounded-xl bg-surface-container px-4 py-3 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition tabular-nums"
             />
           </div>
           <div>
@@ -644,7 +644,7 @@ export function ToolsTab({ profile, onProfileUpdated }: ToolsTabProps) {
               value={form.crawl.timeout_secs}
               onChange={(e) => setForm((f) => ({ ...f, crawl: { ...f.crawl, timeout_secs: e.target.value } }))}
               placeholder="30"
-              className="w-full rounded-xl bg-surface-container px-4 py-3 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition font-mono"
+              className="w-full rounded-xl bg-surface-container px-4 py-3 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition tabular-nums"
             />
           </div>
         </div>
@@ -679,7 +679,7 @@ export function ToolsTab({ profile, onProfileUpdated }: ToolsTabProps) {
                 }))
               }
               placeholder="30"
-              className="w-full rounded-xl bg-surface-container px-4 py-3 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition font-mono"
+              className="w-full rounded-xl bg-surface-container px-4 py-3 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition tabular-nums"
             />
             <p className="mt-1.5 text-xs text-muted/70">
               Maximum time to wait for browser-based tools to complete
