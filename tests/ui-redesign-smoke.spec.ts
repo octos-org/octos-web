@@ -234,4 +234,26 @@ test.describe("UI redesign shell smoke", () => {
       await expectNoHorizontalOverflow(page);
     }
   });
+
+  test("settings shell keeps warm restrained control styling", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/settings", { waitUntil: "networkidle" });
+
+    await expect(page.locator(".settings-shell")).toBeVisible();
+    await expect(page.locator(".settings-shell .glass-section").first()).toBeVisible();
+
+    const styling = await page.evaluate(() => {
+      const root = document.documentElement;
+      const section = document.querySelector(".settings-shell .glass-section");
+      const activeTab = document.querySelector(".settings-shell .settings-tab-button[data-active='true']");
+      const link = getComputedStyle(root).getPropertyValue("--color-link").trim();
+      const sectionRadius = section ? parseFloat(getComputedStyle(section).borderRadius) : Number.NaN;
+      const tabRadius = activeTab ? parseFloat(getComputedStyle(activeTab).borderTopRightRadius) : Number.NaN;
+      return { link, sectionRadius, tabRadius };
+    });
+
+    expect(styling.link.toLowerCase()).not.toMatch(/7ca8b8|4d7f91|blue|purple/);
+    expect(styling.sectionRadius).toBeLessThanOrEqual(8);
+    expect(styling.tabRadius).toBeLessThanOrEqual(8);
+  });
 });

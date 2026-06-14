@@ -64,6 +64,45 @@ async function liveApi<T>(
   );
 }
 
+async function liveApiRaw(
+  page: Page,
+  path: string,
+  init: { method?: string; body?: unknown } = {},
+): Promise<{ ok: boolean; status: number; text: string; json: unknown | null }> {
+  return await page.evaluate(
+    async ({ path, init }) => {
+      const token =
+        localStorage.getItem("octos_session_token") ||
+        localStorage.getItem("octos_auth_token");
+      const profileId = localStorage.getItem("selected_profile");
+      const resp = await fetch(path, {
+        method: init.method ?? "GET",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(profileId ? { "X-Profile-Id": profileId } : {}),
+        },
+        body: init.body === undefined ? undefined : JSON.stringify(init.body),
+      });
+      const text = await resp.text();
+      let json: unknown | null = null;
+      try {
+        json = text ? JSON.parse(text) : null;
+      } catch {
+        json = null;
+      }
+      return { ok: resp.ok, status: resp.status, text, json };
+    },
+    { path, init },
+  );
+}
+
+function expectObject(value: unknown, label: string): asserts value is Record<string, unknown> {
+  expect(value, label).toBeTruthy();
+  expect(Array.isArray(value), label).toBe(false);
+  expect(typeof value, label).toBe("object");
+}
+
 async function expectNoRuntimeOverlay(page: Page) {
   const state = await page.evaluate(() => ({
     hasOverlay: Boolean(
@@ -133,6 +172,104 @@ test.describe("live Settings and profile smoke", () => {
     await expect(page.getByText("No catalog models returned")).toBeVisible({
       timeout: LIVE_TIMEOUT,
     });
+    await expectNoRuntimeOverlay(page);
+  });
+
+  test("read-only Settings APIs return live contract-shaped data", async ({ page }) => {
+    await ensureSoloSession(page);
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: LIVE_TIMEOUT });
+
+    const profileStatus = await liveApiRaw(page, "/api/my/profile/status");
+    expect(profileStatus.status).toBe(200);
+    const profileStatusJson = profileStatus.json;
+    expectObject(profileStatusJson, "profile status");
+
+    const profileSkills = await liveApiRaw(page, "/api/my/profile/skills");
+    expect(profileSkills.status).toBe(200);
+    const profileSkillsJson = profileSkills.json;
+    expectObject(profileSkillsJson, "profile skills");
+    expect(Array.isArray(profileSkillsJson.skills)).toBe(true);
+
+    const users = await liveApiRaw(page, "/api/admin/users");
+    expect(users.status).toBe(200);
+    const usersJson = users.json;
+    expectObject(usersJson, "admin users");
+    expect(Array.isArray(usersJson.users)).toBe(true);
+
+    const allowedEmails = await liveApiRaw(page, "/api/admin/allowed-emails");
+    expect(allowedEmails.status).toBe(200);
+    const allowedEmailsJson = allowedEmails.json;
+    expectObject(allowedEmailsJson, "allowed emails");
+    expect(Array.isArray(allowedEmailsJson.entries)).toBe(true);
+
+    const operatorSummary = await liveApiRaw(page, "/api/admin/operator/summary");
+    expect(operatorSummary.status).toBe(200);
+    const operatorSummaryJson = operatorSummary.json;
+    expectObject(operatorSummaryJson, "operator summary");
+
+    const operatorTasks = await liveApiRaw(page, "/api/admin/operator/tasks");
+    expect(operatorTasks.status).toBe(200);
+    const operatorTasksJson = operatorTasks.json;
+    expectObject(operatorTasksJson, "operator tasks");
+    expect(Array.isArray(operatorTasksJson.tasks)).toBe(true);
+
+    const monitorStatus = await liveApiRaw(page, "/api/admin/monitor/status");
+    expect(monitorStatus.status).toBe(200);
+    const monitorStatusJson = monitorStatus.json;
+    expectObject(monitorStatusJson, "monitor status");
+    expect(typeof monitorStatusJson.watchdog_enabled).toBe("boolean");
+
+    const deploymentMode = await liveApiRaw(page, "/api/admin/deployment-mode");
+    expect(deploymentMode.status).toBe(200);
+    const deploymentModeJson = deploymentMode.json;
+    expectObject(deploymentModeJson, "deployment mode");
+    expect(typeof deploymentModeJson.mode).toBe("string");
+
+    const deploymentDetect = await liveApiRaw(page, "/api/admin/deployment-mode/detect");
+    expect(deploymentDetect.status).toBe(200);
+    const deploymentDetectJson = deploymentDetect.json;
+    expectObject(deploymentDetectJson, "deployment detection");
+    expect(typeof deploymentDetectJson.detected).toBe("string");
+
+    const systemMetrics = await liveApiRaw(page, "/api/admin/system/metrics");
+    expect(systemMetrics.status).toBe(200);
+    const systemMetricsJson = systemMetrics.json;
+    expectObject(systemMetricsJson, "system metrics");
+
+    const tokenStatus = await liveApiRaw(page, "/api/admin/token/status");
+    expect(tokenStatus.status).toBe(200);
+    const tokenStatusJson = tokenStatus.json;
+    expectObject(tokenStatusJson, "token status");
+    expect(typeof tokenStatusJson.rotated).toBe("boolean");
+
+    const platformSkills = await liveApiRaw(page, "/api/admin/platform-skills");
+    expect(platformSkills.status).toBe(200);
+    const platformSkillsJson = platformSkills.json;
+    expectObject(platformSkillsJson, "platform skills");
+    expect(Array.isArray(platformSkillsJson.platform_skills)).toBe(true);
+
+    const enabledModels = await liveApiRaw(page, "/api/admin/platform-skills/ominix-api/models");
+    expect(enabledModels.status).toBe(200);
+    const enabledModelsJson = enabledModels.json;
+    expectObject(enabledModelsJson, "enabled OminiX models");
+    expect(Array.isArray(enabledModelsJson.models)).toBe(true);
+    expect(JSON.stringify(enabledModelsJson.models)).toContain("qwen3-asr-1.7b");
+
+    const availableModels = await liveApiRaw(page, "/api/admin/platform-skills/ominix-api/models/available");
+    expect([200, 502]).toContain(availableModels.status);
+    if (availableModels.status === 200) {
+      const availableModelsJson = availableModels.json;
+      if (Array.isArray(availableModelsJson)) {
+        expect(availableModelsJson.length).toBeGreaterThanOrEqual(0);
+      } else {
+        expectObject(availableModelsJson, "available OminiX catalog");
+        expect(Array.isArray(availableModelsJson.models)).toBe(true);
+      }
+    } else {
+      expect(availableModels.text).toContain("ominix-api");
+    }
+
     await expectNoRuntimeOverlay(page);
   });
 

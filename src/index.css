@@ -29,7 +29,7 @@
   --color-assistant-bubble: #211d18;
 
   /* Semantic */
-  --color-link: #7ca8b8;
+  --color-link: #94a36f;
   --color-heading: #dbb07a;
   --color-heading-accent: #e8c07f;
   --color-code-inline: #d9a170;
@@ -63,7 +63,7 @@
   --color-user-bubble: rgba(169, 95, 57, 0.09);
   --color-assistant-bubble: #fbfcfa;
 
-  --color-link: #4d7f91;
+  --color-link: #6f8656;
   --color-heading: #9c663d;
   --color-heading-accent: #a77532;
   --color-code-inline: #b87a4a;
@@ -318,15 +318,20 @@ body {
 .workbench-shell {
   min-height: 100vh;
   background:
-    linear-gradient(180deg, color-mix(in srgb, var(--color-surface-dark) 92%, var(--color-link) 8%), var(--color-surface-dark));
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-surface-dark) 86%, #5d442b 14%),
+      color-mix(in srgb, var(--color-surface-dark) 94%, #6f7a42 6%) 42%,
+      var(--color-surface-dark)
+    );
   color: var(--color-text);
 }
 
 .workbench-topbar {
-  border-bottom: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-surface) 92%, transparent);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 76%, var(--color-accent) 24%);
+  background: color-mix(in srgb, var(--color-surface-dark) 72%, var(--color-surface) 28%);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   position: relative;
   z-index: 20;
 }
@@ -365,8 +370,8 @@ body {
 }
 
 .workbench-route-link:hover {
-  border-color: var(--color-border);
-  background: var(--color-surface-container);
+  border-color: color-mix(in srgb, var(--color-border) 78%, var(--color-accent) 22%);
+  background: color-mix(in srgb, var(--color-surface-container) 84%, var(--color-accent) 16%);
   color: var(--color-text-strong);
 }
 
@@ -378,8 +383,13 @@ body {
 }
 
 .workbench-rail {
-  border-right: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-surface) 88%, var(--color-surface-container) 12%);
+  border-right: 1px solid color-mix(in srgb, var(--color-border) 82%, var(--color-accent) 18%);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-surface) 88%, #5d442b 12%),
+      color-mix(in srgb, var(--color-surface-container) 90%, #53613f 10%)
+    );
 }
 
 .workbench-panel {
@@ -411,7 +421,7 @@ body {
   background: color-mix(in srgb, var(--color-surface-container) 88%, var(--color-accent) 12%);
   box-shadow:
     0 0 0 1px var(--color-accent-container),
-    0 10px 28px color-mix(in srgb, var(--color-accent) 12%, transparent);
+    0 10px 22px color-mix(in srgb, var(--color-accent) 10%, transparent);
 }
 
 .workbench-route-card {
@@ -572,6 +582,88 @@ body {
   color: var(--color-accent);
   box-shadow: inset 3px 0 0 var(--color-accent);
   border-radius: 0 8px 8px 0;
+}
+
+.settings-shell {
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-surface-dark) 82%, #5a412d 18%),
+      color-mix(in srgb, var(--color-surface-dark) 92%, #6b7344 8%) 44%,
+      var(--color-surface-dark)
+    );
+}
+
+[data-theme="light"] .workbench-shell,
+[data-theme="light"] .settings-shell {
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-surface) 88%, #d7b47a 12%),
+      color-mix(in srgb, var(--color-surface-dark) 88%, #9dac7c 12%)
+    );
+}
+
+.settings-shell .workbench-topbar {
+  background: color-mix(in srgb, var(--color-surface-dark) 78%, var(--color-surface) 22%);
+}
+
+[data-theme="light"] .settings-shell .workbench-topbar {
+  background: color-mix(in srgb, var(--color-surface-elevated) 86%, #c99a64 14%);
+}
+
+.settings-main {
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-surface-dark) 92%, transparent),
+      color-mix(in srgb, var(--color-surface) 88%, transparent)
+    );
+}
+
+.settings-shell .settings-rail {
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-surface) 84%, #5e442e 16%),
+      color-mix(in srgb, var(--color-surface-container) 88%, #657246 12%)
+    );
+}
+
+.settings-shell .glass-section {
+  border-color: color-mix(in srgb, var(--color-border) 74%, var(--color-accent) 26%);
+  background: color-mix(in srgb, var(--color-surface-container) 88%, #4d3a2a 12%);
+  box-shadow: none;
+}
+
+[data-theme="light"] .settings-shell .glass-section {
+  background: color-mix(in srgb, var(--color-surface-elevated) 84%, #e4cfad 16%);
+}
+
+.settings-shell .rounded-xl,
+.settings-shell .rounded-\[12px\] {
+  border-radius: 8px !important;
+}
+
+.settings-shell .bg-surface-dark\/50,
+.settings-shell .bg-surface-container\/50,
+.settings-shell .bg-surface-container\/60,
+.settings-shell .bg-surface-container\/40 {
+  background-color: color-mix(in srgb, var(--color-surface-container) 82%, var(--color-accent) 8%) !important;
+}
+
+.settings-shell .border-border\/30,
+.settings-shell .border-border\/50,
+.settings-shell .border-border\/70 {
+  border-color: color-mix(in srgb, var(--color-border) 78%, var(--color-accent) 22%) !important;
+}
+
+.settings-shell .bg-accent.text-white {
+  color: #17110c !important;
+}
+
+.settings-shell .text-link {
+  color: var(--color-link);
 }
 
 @media (max-width: 768px) {
@@ -1186,9 +1278,10 @@ button, a, input, textarea {
 
 /* ── Home Assistant UI ──────────────────────────────── */
 
-/* Root — deep dark background, no gradient noise */
+/* Root — warm dark background, no decorative noise */
 .home-root {
-  background: #090806;
+  background:
+    linear-gradient(180deg, #17120d 0%, #0f0c08 46%, #080706 100%);
   color: #fbf6ea;
   font-family: "SF Pro Display", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -1200,7 +1293,8 @@ button, a, input, textarea {
 
 /* ── Standby view ─────────────────────────────────── */
 .home-standby {
-  background: #090806;
+  background:
+    linear-gradient(180deg, #17120d 0%, #0f0c08 46%, #080706 100%);
   background-size: 100% 200%;
   animation: gradientShift 20s ease-in-out infinite;
   scrollbar-width: none;
@@ -1272,11 +1366,11 @@ button, a, input, textarea {
 
 /* ── Widget card base (glassmorphism) ────────────── */
 .home-widget {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(86, 61, 39, 0.22);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 20px;
+  border: 1px solid rgba(226, 180, 127, 0.14);
+  border-radius: 8px;
   transition:
     background 0.2s ease,
     border-color 0.2s ease,
@@ -1284,8 +1378,8 @@ button, a, input, textarea {
 }
 
 .home-widget:hover {
-  background: rgba(255, 255, 255, 0.07);
-  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(96, 69, 44, 0.28);
+  border-color: rgba(226, 180, 127, 0.2);
 }
 
 /* ── Weather widget ──────────────────────────────── */
@@ -1327,11 +1421,11 @@ button, a, input, textarea {
 
 .home-quick-card {
   border: none;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(86, 61, 39, 0.22);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
-  border-radius: 20px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  border: 1px solid rgba(226, 180, 127, 0.14);
   cursor: pointer;
   padding: 1.25rem 0.75rem;
   outline: none;
@@ -1343,8 +1437,8 @@ button, a, input, textarea {
 
 .home-quick-card:hover,
 .home-quick-card:focus-visible {
-  background: rgba(255, 255, 255, 0.09);
-  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(96, 69, 44, 0.32);
+  border-color: rgba(226, 180, 127, 0.24);
   transform: translateY(-2px);
 }
 
@@ -1357,8 +1451,8 @@ button, a, input, textarea {
   height: 56px;
   min-width: 44px;
   min-height: 44px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(226, 180, 127, 0.08);
+  border: 1px solid rgba(226, 180, 127, 0.14);
   transition:
     background 0.2s ease,
     border-color 0.2s ease,
@@ -1367,17 +1461,23 @@ button, a, input, textarea {
 
 .home-quick-card:hover .home-quick-card-icon,
 .home-quick-card:focus-visible .home-quick-card-icon {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(226, 180, 127, 0.13);
+  border-color: rgba(226, 180, 127, 0.24);
 }
 
 .home-quick-card:active .home-quick-card-icon {
   transform: scale(0.95);
 }
 
+.home-root .rounded-xl,
+.home-root .rounded-\[12px\] {
+  border-radius: 8px !important;
+}
+
 /* ── Conversation view ────────────────────────────── */
 .home-conversation {
-  background: #090806;
+  background:
+    linear-gradient(180deg, #17120d 0%, #0f0c08 46%, #080706 100%);
 }
 
 .home-back-button {
@@ -2232,6 +2332,8 @@ button, a, input, textarea {
   position: relative;
   width: 100%;
   height: 100%;
+  background:
+    linear-gradient(180deg, #17120d 0%, #0f0c08 46%, #080706 100%);
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: none;
@@ -2315,13 +2417,15 @@ button, a, input, textarea {
 .metro-tile {
   border-radius: 4px;
   overflow: hidden;
-  transition: box-shadow 0.2s ease, transform 0.15s ease;
+  box-shadow: inset 0 0 0 1px rgba(245, 217, 181, 0.035);
+  transition: box-shadow 0.2s ease, transform 0.15s ease, filter 0.15s ease;
   cursor: pointer;
   position: relative;
   touch-action: manipulation;
 }
 .metro-tile:hover {
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(245, 217, 181, 0.12);
+  filter: saturate(1.04);
 }
 .metro-tile:active {
   transform: scale(0.985);

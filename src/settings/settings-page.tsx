@@ -82,7 +82,7 @@ export function AdminSettingsPage() {
   const isAdminOnlyTab = activeTab === "system" || activeTab === "server" || activeTab === "users" || activeTab === "ominix";
 
   return (
-    <WorkbenchPage>
+    <WorkbenchPage className="settings-shell">
       <WorkbenchTopbar
         onBack={() => navigate(-1)}
         icon={SettingsIcon}
@@ -142,7 +142,7 @@ export function AdminSettingsPage() {
             </div>
           </aside>
 
-          <main className="min-w-0 flex-1 overflow-y-auto px-8 py-6 max-md:px-4 max-md:py-4">
+          <main className="settings-main min-w-0 flex-1 overflow-y-auto px-8 py-6 max-md:px-4 max-md:py-4">
             <div className={`mx-auto ${isAdminOnlyTab ? "max-w-4xl" : "max-w-3xl"}`}>
               {activeTab === "system" && portal?.can_access_admin_portal && <SystemTab />}
               {activeTab === "server" && portal?.can_access_admin_portal && <ServerTab />}
