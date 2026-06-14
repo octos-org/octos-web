@@ -171,7 +171,7 @@ export const HOME_I18N: Record<string, HomeStrings> = {
 
     settingsPhotos: "Photo Frame",
     settingsAddPhoto: "Add Photo URL",
-    settingsPhotoPlaceholder: "https://example.com/photo.jpg",
+    settingsPhotoPlaceholder: "Paste an image URL",
 
     newsHeadlines: "Headlines",
 
@@ -268,7 +268,7 @@ export const HOME_I18N: Record<string, HomeStrings> = {
 
     settingsPhotos: "\u7167\u7247\u76F8\u6846",
     settingsAddPhoto: "\u6DFB\u52A0\u7167\u7247\u94FE\u63A5",
-    settingsPhotoPlaceholder: "https://example.com/photo.jpg",
+    settingsPhotoPlaceholder: "\u7C98\u8D34\u56FE\u7247 URL",
 
     newsHeadlines: "\u5934\u6761",
 
@@ -286,13 +286,6 @@ export const HOME_I18N: Record<string, HomeStrings> = {
       "\u4F60\u80FD\u5E2E\u6211\u505A\u4EC0\u4E48\uFF1F",
     ],
   },
-} as const;
-
-/** Fallback location used when both geolocation and IP-based lookup fail. */
-export const DEFAULT_LOCATION = {
-  lat: 37.7749,
-  lon: -122.4194,
-  city: "San Francisco",
 } as const;
 
 export const HOME_STRINGS = HOME_I18N.en;

@@ -5,14 +5,13 @@
  *   1. City name from settings (geocoded via Open-Meteo Geocoding API)
  *   2. Browser Geolocation API
  *   3. IP-based geolocation (ipapi.co)
- *   4. Hardcoded default (San Francisco)
  *
- * Refreshes every 15 minutes. Never shows "unavailable" — the
- * default-city fallback guarantees a result.
+ * Refreshes every 15 minutes. If all location sources fail, the hook reports
+ * an error instead of showing a hardcoded city.
  */
 
 import { useState, useEffect, useRef } from "react";
-import { WMO_WEATHER, DEFAULT_LOCATION } from "./constants";
+import { WMO_WEATHER } from "./constants";
 import { useHomeSettings } from "./home-settings-context";
 
 export interface HourlyForecastItem {
@@ -203,19 +202,23 @@ export function useWeather(): WeatherState {
         // IP geolocation also failed
       }
 
-      // 4. Hardcoded default
-      return {
-        lat: DEFAULT_LOCATION.lat,
-        lon: DEFAULT_LOCATION.lon,
-        city: DEFAULT_LOCATION.city,
-      };
+      throw new Error("location_unavailable");
     }
 
     void (async () => {
-      const loc = await resolveLocation();
-      if (cancelled) return;
-      locationRef.current = loc;
-      await load(loc);
+      try {
+        const loc = await resolveLocation();
+        if (cancelled) return;
+        locationRef.current = loc;
+        await load(loc);
+      } catch (err) {
+        if (cancelled) return;
+        setState((prev) => ({
+          ...prev,
+          loading: false,
+          error: err instanceof Error ? err.message : "location_unavailable",
+        }));
+      }
     })();
 
     timerRef.current = setInterval(() => {
