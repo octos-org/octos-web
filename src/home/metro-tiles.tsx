@@ -673,10 +673,6 @@ export function MetroTileGrid({ onActivate, nightActive }: MetroTileGridProps) {
   const drag = useTileDrag(effectiveLayouts, setLayouts, commitLayouts, editMode, visibleIds);
   const resize = useTileResize(effectiveLayouts, setLayouts, commitLayouts, editMode, visibleIds);
 
-  const handleClick = useCallback(() => {
-    if (!settingsOpen && !editMode) onActivate();
-  }, [onActivate, settingsOpen, editMode]);
-
   const resetLayout = useCallback(() => {
     commitLayouts(defaultLayouts());
   }, [commitLayouts]);
@@ -701,7 +697,6 @@ export function MetroTileGrid({ onActivate, nightActive }: MetroTileGridProps) {
   return (
     <div
       className={`metro-grid-container ${burnIn.dimmed ? "home-dimmed" : ""} ${editMode ? "metro-edit-mode" : ""}`}
-      onClick={handleClick}
       onMouseMove={() => burnIn.onActivity()}
       onTouchStart={() => burnIn.onActivity()}
     >

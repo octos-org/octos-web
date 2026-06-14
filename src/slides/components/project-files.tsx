@@ -28,6 +28,7 @@ import {
   type SlidesRenderManifest,
   type SlidesFileEntry,
 } from "../api";
+import { getMyProfileStatus } from "@/settings/settings-api";
 
 interface ProjectFilesProps {
   slug: string;
@@ -274,6 +275,7 @@ export function ProjectFiles({
   const [manifest, setManifest] = useState<SlidesRenderManifest | null>(null);
   const [contract, setContract] = useState<SlidesWorkspaceContract | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [runtimeStopped, setRuntimeStopped] = useState(false);
   const requestedDirs = useMemo(
     () => [`slides/${slug}`, "skill-output", "research", "sites"],
     [slug],
@@ -359,6 +361,25 @@ export function ProjectFiles({
         pollTimer = undefined;
       }
       try {
+        const status = await getMyProfileStatus();
+        if (stopped) return;
+        if (status?.running === false) {
+          const sig = "runtime-stopped";
+          if (sig !== prevSignature) {
+            prevSignature = sig;
+            idleStreak = 0;
+            setFiles([]);
+            setManifest(null);
+            setContract(null);
+          } else {
+            idleStreak += 1;
+          }
+          setRuntimeStopped(true);
+          setError(null);
+          return;
+        }
+        setRuntimeStopped(false);
+
         const [nextFiles, nextContract] = await Promise.all([
           listSlidesFiles(requestedDirs, { sessionId }),
           fetchSlidesWorkspaceContract(sessionId, slug).catch(() => null),
@@ -504,6 +525,12 @@ export function ProjectFiles({
     body = (
       <div className="shell-empty-state flex h-full items-center justify-center rounded-lg px-4 text-center text-sm text-muted">
         Failed to load project files: {error}
+      </div>
+    );
+  } else if (runtimeStopped) {
+    body = (
+      <div className="shell-empty-state flex h-full items-center justify-center rounded-lg px-4 text-center text-sm leading-6 text-muted">
+        Local runtime is stopped. Start this profile from Settings &gt; Server to browse project files.
       </div>
     );
   } else if (files.length === 0) {

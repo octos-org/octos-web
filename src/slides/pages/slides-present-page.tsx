@@ -7,6 +7,7 @@ import {
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
+import { getMyProfileStatus } from "@/settings/settings-api";
 
 import { hydrateSlidesProjectFromSession } from "../api";
 import { SlidesProvider, useSlides } from "../context/slides-context";
@@ -204,6 +205,7 @@ function SlidesPresentContent() {
 export function SlidesPresentPage() {
   const { id } = useParams<{ id: string }>();
   const [hydrating, setHydrating] = useState(false);
+  const [hydrateError, setHydrateError] = useState<string | null>(null);
   const navigate = useNavigate();
 
   const project = id ? getSlidesProject(id) : undefined;
@@ -213,9 +215,18 @@ export function SlidesPresentPage() {
     const sessionId = id;
     let stopped = false;
     setHydrating(true);
+    setHydrateError(null);
 
     async function hydrate() {
       try {
+        const profileStatus = await getMyProfileStatus();
+        if (stopped) return;
+        if (profileStatus?.running === false) {
+          setHydrateError(
+            "Local runtime is stopped. Start this profile from Settings > Server to load this deck.",
+          );
+          return;
+        }
         const nextProject = await hydrateSlidesProjectFromSession(sessionId);
         if (stopped || !nextProject) return;
         upsertSlidesProject(nextProject);
@@ -236,7 +247,15 @@ export function SlidesPresentPage() {
   }, [id, navigate, project]);
 
   if (!id || (!project && hydrating)) return null;
-  if (!id || !project) return null;
+  if (!id || !project) {
+    return (
+      <div className="flex h-screen flex-col bg-black text-white">
+        <div className="flex flex-1 items-center justify-center px-6 text-center text-white/70">
+          {hydrateError || "Slides session unavailable."}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <SlidesProvider projectId={project.id}>

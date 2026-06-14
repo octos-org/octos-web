@@ -21,6 +21,7 @@ import {
   uploadSiteFiles,
   type SiteFileEntry,
 } from "../api";
+import { getMyProfileStatus } from "@/settings/settings-api";
 
 interface ProjectFilesProps {
   slug: string;
@@ -266,6 +267,7 @@ export function ProjectFiles({
 }: ProjectFilesProps) {
   const [files, setFiles] = useState<SiteFileEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [runtimeStopped, setRuntimeStopped] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
@@ -283,6 +285,16 @@ export function ProjectFiles({
 
     async function load() {
       try {
+        const status = await getMyProfileStatus();
+        if (stopped) return;
+        if (status?.running === false) {
+          setRuntimeStopped(true);
+          setFiles([]);
+          setError(null);
+          return;
+        }
+        setRuntimeStopped(false);
+
         const nextFiles = await listSiteFiles(`sites/${slug}`, {
           sessionId,
           profileId,
@@ -399,6 +411,14 @@ export function ProjectFiles({
     return (
       <div className="flex h-full items-center justify-center px-4 text-center text-xs text-muted">
         Failed to load project files: {error}
+      </div>
+    );
+  }
+
+  if (runtimeStopped) {
+    return (
+      <div className="flex h-full items-center justify-center px-4 text-center text-xs leading-5 text-muted">
+        Local runtime is stopped. Start this profile from Settings &gt; Server to browse project files.
       </div>
     );
   }

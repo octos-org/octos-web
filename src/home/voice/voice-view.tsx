@@ -7,7 +7,7 @@ import { unlockAudio } from "./audio-playback";
 import "./voice.css";
 
 const STATE_WORD: Record<VoiceState, string> = {
-  idle: "",
+  idle: "点光球开始说话",
   listening: "聆听中…",
   thinking: "思考中…",
   speaking: "说话中…",
@@ -24,7 +24,6 @@ export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
   const conv = useVoiceConversation(sessionId, historyTopic);
 
   useEffect(() => {
-    void conv.start();
     return () => conv.stop();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -34,7 +33,7 @@ export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
     // is another gesture that unlocks playback for subsequent replies.
     unlockAudio();
     if (conv.state === "speaking" || conv.state === "thinking") conv.interrupt();
-    else if (conv.state === "error") void conv.start();
+    else if (conv.state === "idle" || conv.state === "error") void conv.start();
   };
 
   return (
@@ -63,9 +62,11 @@ export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
       </div>
 
       {/* Quick voice switcher — same store as the settings panel. */}
-      <div className="absolute inset-x-0 bottom-6 px-6">
-        <VoiceSelector />
-      </div>
+      {conv.state !== "idle" && (
+        <div className="absolute inset-x-0 bottom-6 px-6">
+          <VoiceSelector />
+        </div>
+      )}
     </div>
   );
 }

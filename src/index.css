@@ -382,6 +382,30 @@ body {
   box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--color-accent) 72%, transparent);
 }
 
+@media (max-width: 640px) {
+  .workbench-topbar-inner {
+    gap: 0.45rem;
+  }
+
+  .workbench-brand {
+    padding-inline: 0.35rem;
+  }
+
+  .workbench-route-nav {
+    gap: 0.25rem;
+  }
+
+  .workbench-route-link {
+    min-width: 2rem;
+    justify-content: center;
+    padding-inline: 0.5rem;
+  }
+
+  .home-nav-actions {
+    gap: 0.45rem;
+  }
+}
+
 .workbench-rail {
   border-right: 1px solid color-mix(in srgb, var(--color-border) 82%, var(--color-accent) 18%);
   background:
@@ -1932,6 +1956,20 @@ button, a, input, textarea {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   border-left: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.home-settings-panel.is-open {
+  visibility: visible;
+  transition-delay: 0ms, 0ms;
+  transition-duration: 300ms, 0ms;
+  transition-property: transform, translate, visibility;
+}
+
+.home-settings-panel.is-closed {
+  visibility: hidden;
+  transition-delay: 0ms, 300ms;
+  transition-duration: 300ms, 0ms;
+  transition-property: transform, translate, visibility;
 }
 
 .home-settings-input {
