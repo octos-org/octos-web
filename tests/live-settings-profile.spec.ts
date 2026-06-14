@@ -103,6 +103,26 @@ function expectObject(value: unknown, label: string): asserts value is Record<st
   expect(typeof value, label).toBe("object");
 }
 
+function expectArrayField<T = Record<string, unknown>>(
+  value: unknown,
+  field: string,
+  label: string,
+): T[] {
+  expectObject(value, label);
+  const arrayValue = value[field];
+  expect(Array.isArray(arrayValue), `${label}.${field}`).toBe(true);
+  return arrayValue as T[];
+}
+
+function firstStringField(value: unknown, fields: string[]): string | null {
+  if (!value || typeof value !== "object") return null;
+  for (const field of fields) {
+    const text = (value as Record<string, unknown>)[field];
+    if (typeof text === "string" && text.trim()) return text;
+  }
+  return null;
+}
+
 async function expectNoRuntimeOverlay(page: Page) {
   const state = await page.evaluate(() => ({
     hasOverlay: Boolean(
@@ -239,6 +259,166 @@ test.describe("live Settings and profile smoke", () => {
     await expectNoRuntimeOverlay(page);
   });
 
+  test("binds admin Settings pages to live read-only data", async ({ page }) => {
+    await ensureSoloSession(page);
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: LIVE_TIMEOUT });
+
+    const [
+      users,
+      allowedEmails,
+      operatorSummary,
+      operatorTasks,
+      deploymentMode,
+      systemMetrics,
+      tokenStatus,
+      platformSkills,
+      enabledModels,
+      availableModels,
+    ] = await Promise.all([
+      liveApiRaw(page, "/api/admin/users"),
+      liveApiRaw(page, "/api/admin/allowed-emails"),
+      liveApiRaw(page, "/api/admin/operator/summary"),
+      liveApiRaw(page, "/api/admin/operator/tasks"),
+      liveApiRaw(page, "/api/admin/deployment-mode"),
+      liveApiRaw(page, "/api/admin/system/metrics"),
+      liveApiRaw(page, "/api/admin/token/status"),
+      liveApiRaw(page, "/api/admin/platform-skills"),
+      liveApiRaw(page, "/api/admin/platform-skills/ominix-api/models"),
+      liveApiRaw(page, "/api/admin/platform-skills/ominix-api/models/available"),
+    ]);
+
+    const userRows = expectArrayField(users.json, "users", "admin users");
+    const allowlistRows = expectArrayField(allowedEmails.json, "entries", "allowed emails");
+    expectObject(operatorSummary.json, "operator summary");
+    const taskRows = expectArrayField(operatorTasks.json, "tasks", "operator tasks");
+    expectObject(deploymentMode.json, "deployment mode");
+    expectObject(systemMetrics.json, "system metrics");
+    expectObject(tokenStatus.json, "token status");
+    const skillRows = expectArrayField(platformSkills.json, "platform_skills", "platform skills");
+    const modelRows = expectArrayField(enabledModels.json, "models", "enabled OminiX models");
+
+    await clickSettingsTab(page, "Users");
+    await expect(page.getByRole("heading", { name: "Users" })).toBeVisible({ timeout: LIVE_TIMEOUT });
+    await expect(page.getByRole("button", { name: "Create Sub-Account" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expect(page.getByRole("heading", { name: "Allowed Emails" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    const firstUserEmail = firstStringField(userRows[0], ["email"]);
+    if (firstUserEmail) {
+      await expect(page.getByText(firstUserEmail).first()).toBeVisible({ timeout: LIVE_TIMEOUT });
+    } else {
+      await expect(page.getByText("No registered accounts yet")).toBeVisible({
+        timeout: LIVE_TIMEOUT,
+      });
+    }
+    const firstAllowedEmail = firstStringField(allowlistRows[0], ["email"]);
+    if (firstAllowedEmail) {
+      await expect(page.getByText(firstAllowedEmail).first()).toBeVisible({ timeout: LIVE_TIMEOUT });
+    } else {
+      await expect(page.getByText("No allowlisted emails yet")).toBeVisible({
+        timeout: LIVE_TIMEOUT,
+      });
+    }
+    await expectNoRuntimeOverlay(page);
+
+    await clickSettingsTab(page, "System");
+    await expect(page.getByRole("heading", { name: "Operator Overview" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expect(page.getByText("Running Gateways")).toBeVisible({ timeout: LIVE_TIMEOUT });
+    await expect(page.getByRole("heading", { name: "Operator Tasks" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expect(page.getByRole("button", { name: /Live Logs/ })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    const firstTaskName = firstStringField(taskRows[0], ["tool_name", "id"]);
+    if (firstTaskName) {
+      await expect(page.getByText(firstTaskName).first()).toBeVisible({ timeout: LIVE_TIMEOUT });
+    } else {
+      await expect(page.getByText("No tasks in queue")).toBeVisible({ timeout: LIVE_TIMEOUT });
+    }
+    await expectNoRuntimeOverlay(page);
+
+    await clickSettingsTab(page, "Server");
+    for (const heading of [
+      "Server Info",
+      "Server Resources",
+      "Reliability",
+      "Deployment Mode",
+      "Security",
+      "All Profiles",
+    ]) {
+      await expect(page.getByRole("heading", { name: heading })).toBeVisible({
+        timeout: LIVE_TIMEOUT,
+      });
+    }
+    const deploymentModeJson = deploymentMode.json as Record<string, unknown>;
+    if (typeof deploymentModeJson.mode === "string") {
+      await expect(
+        page.locator(`input[name="deployment_mode"][value="${deploymentModeJson.mode}"]`),
+      ).toBeChecked({ timeout: LIVE_TIMEOUT });
+    }
+    const tokenStatusJson = tokenStatus.json as Record<string, unknown>;
+    if (typeof tokenStatusJson.rotated === "boolean") {
+      await expect(
+        page.getByText(
+          tokenStatusJson.rotated
+            ? "Rotated token is active"
+            : "Bootstrap token has not been rotated",
+        ),
+      ).toBeVisible({ timeout: LIVE_TIMEOUT });
+    }
+    await expectNoRuntimeOverlay(page);
+
+    await clickSettingsTab(page, "OminiX");
+    await expect(page.getByRole("heading", { name: "OminiX API" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expect(page.getByText("Health probe")).toBeVisible({ timeout: LIVE_TIMEOUT });
+    await expect(page.getByRole("heading", { name: "Platform Skills" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    const firstSkill = firstStringField(skillRows[0], ["name"]);
+    if (firstSkill) {
+      await expect(page.getByText(firstSkill).first()).toBeVisible({ timeout: LIVE_TIMEOUT });
+    } else {
+      await expect(page.getByText("No platform skills returned")).toBeVisible({
+        timeout: LIVE_TIMEOUT,
+      });
+    }
+    await expect(page.getByRole("heading", { name: "Enabled Platform Models" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    const firstModel = firstStringField(modelRows[0], ["id", "name"]);
+    if (firstModel) {
+      await expect(page.getByText(firstModel).first()).toBeVisible({ timeout: LIVE_TIMEOUT });
+    } else {
+      await expect(page.getByText("No models are enabled for Octos")).toBeVisible({
+        timeout: LIVE_TIMEOUT,
+      });
+    }
+    await expect(page.getByRole("heading", { name: "Available Catalog" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    if (availableModels.status === 200) {
+      await expect(page.getByText(/\d+ of \d+ models visible/)).toBeVisible({
+        timeout: LIVE_TIMEOUT,
+      });
+    } else {
+      await expect(page.getByText("No catalog models returned")).toBeVisible({
+        timeout: LIVE_TIMEOUT,
+      });
+    }
+    await expect(page.getByRole("heading", { name: "Logs" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expectNoRuntimeOverlay(page);
+  });
+
   test("read-only Settings APIs return live contract-shaped data", async ({ page }) => {
     await ensureSoloSession(page);
     await page.goto("/settings", { waitUntil: "networkidle" });
@@ -338,6 +518,11 @@ test.describe("live Settings and profile smoke", () => {
   });
 
   test("persists Home config through the real profile endpoint", async ({ page }) => {
+    test.skip(
+      process.env.OCTOS_LIVE_E2E_MUTATE !== "1",
+      "writes to the live profile; enable only for explicit mutation smoke",
+    );
+
     await ensureSoloSession(page);
     const profile = await liveApi<Record<string, unknown>>(page, "/api/my/profile");
     const config = (profile.config ?? {}) as Record<string, unknown>;
