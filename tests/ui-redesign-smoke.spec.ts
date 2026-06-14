@@ -35,6 +35,25 @@ async function fulfillJson(route: Route, body: unknown) {
 }
 
 async function installWorkbenchMocks(page: Page) {
+  const contentEntry = {
+    id: "content-1",
+    filename: "family-plan.md",
+    path: "pf/mock/family-plan.md",
+    category: "report",
+    size_bytes: 128,
+    created_at: "2026-01-01T00:00:00Z",
+    thumbnail_path: null,
+    session_id: "web-ui-smoke",
+    tool_name: "write_file",
+    caption: "Shared household notes",
+  };
+  const sessionFile = {
+    filename: contentEntry.filename,
+    path: contentEntry.path,
+    size_bytes: contentEntry.size_bytes,
+    modified_at: contentEntry.created_at,
+  };
+
   await page.addInitScript(() => {
     localStorage.setItem("octos_session_token", "ui-smoke-token");
     localStorage.setItem("octos_auth_token", "ui-smoke-token");
@@ -119,6 +138,23 @@ async function installWorkbenchMocks(page: Page) {
       });
       return;
     }
+    if (path === "/api/my/content") {
+      await fulfillJson(route, { entries: [contentEntry], total: 1 });
+      return;
+    }
+    if (path === "/api/files/list") {
+      await fulfillJson(route, [
+        {
+          filename: contentEntry.filename,
+          path: contentEntry.path,
+          size: contentEntry.size_bytes,
+          modified: contentEntry.created_at,
+          category: "report",
+          group: "Shared household notes",
+        },
+      ]);
+      return;
+    }
     if (path.startsWith("/api/sessions")) {
       await fulfillJson(route, {
         sessions: [{ id: "web-ui-smoke", title: "Visual review", message_count: 0 }],
@@ -165,8 +201,10 @@ async function installWorkbenchMocks(page: Page) {
                   : message.method === "session/tasks.list"
                     ? { tasks: [] }
                     : message.method === "session/files.list"
-                      ? { files: [] }
-                      : { ok: true, replayed_envelopes: [] };
+                      ? { files: [sessionFile] }
+                      : message.method === "content/list"
+                        ? { entries: [contentEntry], total: 1 }
+                        : { ok: true, replayed_envelopes: [] };
       ws.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
     });
   });
@@ -255,5 +293,53 @@ test.describe("UI redesign shell smoke", () => {
     expect(styling.link.toLowerCase()).not.toMatch(/7ca8b8|4d7f91|blue|purple/);
     expect(styling.sectionRadius).toBeLessThanOrEqual(8);
     expect(styling.tabRadius).toBeLessThanOrEqual(8);
+  });
+
+  test("content file panel keeps warm restrained control styling", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/chat", { waitUntil: "networkidle" });
+    await page.evaluate(() => {
+      window.dispatchEvent(
+        new CustomEvent("crew:file", {
+          detail: {
+            fileUrl: "/api/files/pf/mock/family-plan.md",
+            filename: "family-plan.md",
+            caption: "Shared household notes",
+            sessionId: "web-ui-smoke",
+          },
+        }),
+      );
+    });
+
+    await page.getByTitle("Open files panel").click();
+    await expect(page.getByText("Session Files")).toBeVisible();
+    await expect(page.getByTestId("content-file-row")).toBeVisible();
+
+    const styling = await page.evaluate(() => {
+      const parseRadius = (selector: string) => {
+        const element = document.querySelector(selector);
+        return element ? parseFloat(getComputedStyle(element).borderTopLeftRadius) : Number.NaN;
+      };
+      const panel = document.querySelector(".chat-media-panel-wrap .glass-panel");
+      const hasOldRoundedClass = panel
+        ? /rounded-\[(1[0-9]|[2-9][0-9])px\]|rounded-xl|rounded-2xl|rounded-3xl/.test(
+            panel.innerHTML,
+          )
+        : true;
+      return {
+        panelRadius: parseRadius(".chat-media-panel-wrap .glass-panel"),
+        toolbarRadius: parseRadius(".chat-media-panel-wrap .glass-toolbar"),
+        rowRadius: parseRadius("[data-testid='content-file-row']"),
+        inputRadius: parseRadius(".chat-media-panel-wrap .workbench-input"),
+        hasOldRoundedClass,
+      };
+    });
+
+    expect(styling.panelRadius).toBeLessThanOrEqual(8);
+    expect(styling.toolbarRadius).toBeLessThanOrEqual(8);
+    expect(styling.rowRadius).toBeLessThanOrEqual(8);
+    expect(styling.inputRadius).toBeLessThanOrEqual(8);
+    expect(styling.hasOldRoundedClass).toBe(false);
+    await expectNoHorizontalOverflow(page);
   });
 });

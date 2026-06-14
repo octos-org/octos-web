@@ -63,7 +63,7 @@ function EditableTitle({ value, onSave }: { value: string; onSave?: (v: string) 
     return (
       <input
         defaultValue={value}
-        className="mt-2 w-full rounded-[12px] border border-accent/50 bg-surface-container px-3 py-2 text-lg font-semibold tracking-tight text-text outline-none"
+        className="workbench-input mt-2 w-full px-3 py-2 text-lg font-semibold tracking-tight"
         autoFocus
         onBlur={(e) => {
           const v = e.target.value.trim();
@@ -252,14 +252,14 @@ function isViewerFile(filename: string) {
   return /\.(md|markdown|txt|js|jsx|ts|tsx|json)$/i.test(filename);
 }
 
-function fileIcon(file: SlidesFileEntry) {
+function FileIconView({ file }: { file: SlidesFileEntry }) {
   const category = inferContentCategory(file);
-  if (category === "slides") return Presentation;
-  if (category === "image") return ImageIcon;
-  if (category === "audio") return Music;
-  if (category === "video") return VideoIcon;
-  if (isViewerFile(file.filename)) return FileText;
-  return File;
+  if (category === "slides") return <Presentation size={14} />;
+  if (category === "image") return <ImageIcon size={14} />;
+  if (category === "audio") return <Music size={14} />;
+  if (category === "video") return <VideoIcon size={14} />;
+  if (isViewerFile(file.filename)) return <FileText size={14} />;
+  return <File size={14} />;
 }
 
 export function ProjectFiles({
@@ -502,13 +502,13 @@ export function ProjectFiles({
   let body: ReactNode;
   if (error) {
     body = (
-      <div className="shell-empty-state flex h-full items-center justify-center rounded-[12px] px-4 text-center text-sm text-muted">
+      <div className="shell-empty-state flex h-full items-center justify-center rounded-lg px-4 text-center text-sm text-muted">
         Failed to load project files: {error}
       </div>
     );
   } else if (files.length === 0) {
     body = (
-      <div className="shell-empty-state flex h-full items-center justify-center rounded-[12px] px-4 text-center text-sm text-muted">
+      <div className="shell-empty-state flex h-full items-center justify-center rounded-lg px-4 text-center text-sm text-muted">
         Project files will appear here after the backend scaffold finishes.
       </div>
     );
@@ -531,9 +531,9 @@ export function ProjectFiles({
   }
 
   return (
-    <div className="glass-panel flex h-full flex-col overflow-hidden rounded-[16px]">
+    <div className="glass-panel flex h-full flex-col overflow-hidden rounded-lg">
       <div className="px-3 pt-3">
-        <div className="glass-toolbar rounded-[14px] px-4 py-4">
+        <div className="glass-toolbar rounded-lg px-4 py-4">
           <div className="shell-kicker">Project Files</div>
           <EditableTitle value={title || slug} onSave={onRename} />
           <WorkspaceContractCard contract={contract} />
@@ -553,7 +553,7 @@ function WorkspaceContractCard({
 }) {
   if (!contract) {
     return (
-      <div className="mt-3 rounded-[12px] border border-border/60 bg-surface-container/70 px-3 py-3 text-xs text-muted">
+      <div className="glass-section mt-3 rounded-lg px-3 py-3 text-xs text-muted">
         Workspace contract status is loading.
       </div>
     );
@@ -570,7 +570,7 @@ function WorkspaceContractCard({
   const StatusIcon = contract.error || !contract.ready ? AlertTriangle : CheckCircle2;
 
   return (
-    <div className={`mt-3 rounded-[12px] border px-3 py-3 text-xs ${statusTone}`}>
+    <div className={`glass-section mt-3 rounded-lg px-3 py-3 text-xs ${statusTone}`}>
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <StatusIcon size={14} className="shrink-0" />
@@ -603,14 +603,14 @@ function WorkspaceContractCard({
       {failedChecks.length > 0 ? (
         <div className="mt-3 space-y-1 text-[11px] text-amber-100">
           {failedChecks.slice(0, 4).map((check) => (
-            <div key={check.spec} className="rounded-[10px] bg-black/15 px-2 py-1.5">
+            <div key={check.spec} className="rounded-lg bg-black/15 px-2 py-1.5">
               <div className="font-medium">{check.spec}</div>
               <div className="mt-0.5 text-amber-100/80">{check.reason || "validation failed"}</div>
             </div>
           ))}
         </div>
       ) : contract.error ? (
-        <div className="mt-3 rounded-[10px] bg-black/15 px-2 py-1.5 text-[11px] text-amber-100/85">
+        <div className="mt-3 rounded-lg bg-black/15 px-2 py-1.5 text-[11px] text-amber-100/85">
           {contract.error}
         </div>
       ) : null}
@@ -634,47 +634,100 @@ function TreeNodeView({
   onOpenFile: (entry: ContentEntry, allEntries: ContentEntry[]) => void;
 }) {
   if (node.kind === "file") {
-    const file = node.file;
-    const entry = entryMap.get(file.path) ?? slidesFileToContentEntry(file);
-    const Icon = fileIcon(file);
-    const category = inferContentCategory(file);
-    const opensViewer = category === "image" || isViewerFile(file.filename);
-
     return (
-      <button
-        onClick={() => {
-          if (opensViewer) {
-            onOpenFile(
-              entry,
-              category === "image" && manifestImagePaths.has(entry.path)
-                ? manifestImageEntries
-                : [entry],
-            );
-          } else {
-            void downloadContent(entry);
-          }
-        }}
-        className="glass-file-row flex w-full items-start gap-2 rounded-[12px] px-2 py-2 text-left transition-colors hover:bg-surface-elevated/70"
-        style={{ paddingLeft: `${10 + depth * 16}px` }}
-      >
-        <div className="glass-pill mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] text-muted">
-          <Icon size={14} />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium text-text-strong">
-            {file.filename}
-          </div>
-          <div className="truncate text-[10px] text-muted/65">{node.relativePath}</div>
-          <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-muted">
-            <span>{formatSize(file.size)}</span>
-            <span>{formatTime(file.modified)}</span>
-            <span className="uppercase tracking-[0.14em] text-muted/60">{category}</span>
-          </div>
-        </div>
-      </button>
+      <FileNodeView
+        node={node}
+        depth={depth}
+        entryMap={entryMap}
+        manifestImageEntries={manifestImageEntries}
+        manifestImagePaths={manifestImagePaths}
+        onOpenFile={onOpenFile}
+      />
     );
   }
 
+  return (
+    <FolderNodeView
+      node={node}
+      depth={depth}
+      entryMap={entryMap}
+      manifestImageEntries={manifestImageEntries}
+      manifestImagePaths={manifestImagePaths}
+      onOpenFile={onOpenFile}
+    />
+  );
+}
+
+function FileNodeView({
+  node,
+  depth,
+  entryMap,
+  manifestImageEntries,
+  manifestImagePaths,
+  onOpenFile,
+}: {
+  node: FileNode;
+  depth: number;
+  entryMap: Map<string, ContentEntry>;
+  manifestImageEntries: ContentEntry[];
+  manifestImagePaths: Set<string>;
+  onOpenFile: (entry: ContentEntry, allEntries: ContentEntry[]) => void;
+}) {
+  const file = node.file;
+  const entry = entryMap.get(file.path) ?? slidesFileToContentEntry(file);
+  const category = inferContentCategory(file);
+  const opensViewer = category === "image" || isViewerFile(file.filename);
+
+  return (
+    <button
+      onClick={() => {
+        if (opensViewer) {
+          onOpenFile(
+            entry,
+            category === "image" && manifestImagePaths.has(entry.path)
+              ? manifestImageEntries
+              : [entry],
+          );
+        } else {
+          void downloadContent(entry);
+        }
+      }}
+      className="glass-file-row flex w-full items-start gap-2 rounded-lg px-2 py-2 text-left transition-colors hover:bg-surface-elevated/70"
+      style={{ paddingLeft: `${10 + depth * 16}px` }}
+    >
+      <div className="glass-pill mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted">
+        <FileIconView file={file} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm font-medium text-text-strong">
+          {file.filename}
+        </div>
+        <div className="truncate text-[10px] text-muted/65">{node.relativePath}</div>
+        <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-muted">
+          <span>{formatSize(file.size)}</span>
+          <span>{formatTime(file.modified)}</span>
+          <span className="uppercase tracking-[0.14em] text-muted/60">{category}</span>
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function FolderNodeView({
+  node,
+  depth,
+  entryMap,
+  manifestImageEntries,
+  manifestImagePaths,
+  onOpenFile,
+}: {
+  node: FolderNode;
+  depth: number;
+  entryMap: Map<string, ContentEntry>;
+  manifestImageEntries: ContentEntry[];
+  manifestImagePaths: Set<string>;
+  onOpenFile: (entry: ContentEntry, allEntries: ContentEntry[]) => void;
+}) {
   const [open, setOpen] = useState(() => defaultFolderOpen(node.name, depth));
   return (
     <div>
