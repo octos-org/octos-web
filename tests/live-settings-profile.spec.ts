@@ -121,6 +121,12 @@ async function expectNoRuntimeOverlay(page: Page) {
   });
 }
 
+async function clickSettingsTab(page: Page, label: string) {
+  const tab = page.locator("aside button", { hasText: label }).first();
+  await expect(tab).toBeVisible({ timeout: LIVE_TIMEOUT });
+  await tab.click();
+}
+
 test.describe("live Settings and profile smoke", () => {
   test("loads Settings tabs without the mocked harness", async ({ page }) => {
     await ensureSoloSession(page);
@@ -133,6 +139,64 @@ test.describe("live Settings and profile smoke", () => {
       await tab.click();
       await expect(page.locator("text=No profile available")).toHaveCount(0);
     }
+  });
+
+  test("loads profile Settings pages with live data", async ({ page }) => {
+    await ensureSoloSession(page);
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: LIVE_TIMEOUT });
+
+    await clickSettingsTab(page, "Profile");
+    await expect(page.getByRole("heading", { name: "Profile Information" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expect(page.getByRole("heading", { name: "Gateway Status" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expectNoRuntimeOverlay(page);
+
+    await clickSettingsTab(page, "LLM");
+    await expect(page.getByRole("heading", { name: "LLM Configuration" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expect(page.getByRole("heading", { name: "Fallback Models" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expectNoRuntimeOverlay(page);
+
+    await clickSettingsTab(page, "Skills");
+    await expect(page.getByRole("heading", { name: "Installed Skills" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expect(page.getByRole("heading", { name: "Octos Hub" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expectNoRuntimeOverlay(page);
+
+    await clickSettingsTab(page, "Channels");
+    await expect(page.getByRole("heading", { name: "Channels" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expect(page.getByRole("button", { name: "Add Channel" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expectNoRuntimeOverlay(page);
+
+    await clickSettingsTab(page, "Sandbox");
+    await expect(page.getByRole("heading", { name: "Sandbox Configuration" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expect(page.getByText("Enable Sandbox")).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expectNoRuntimeOverlay(page);
+
+    await clickSettingsTab(page, "Tools");
+    await expect(page.getByRole("heading", { name: "Web Search APIs" })).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expect(page.getByText("Email Tool")).toBeVisible({ timeout: LIVE_TIMEOUT });
+    await expectNoRuntimeOverlay(page);
   });
 
   test("loads admin Settings tabs and OminiX offline state without mocks", async ({ page }) => {
