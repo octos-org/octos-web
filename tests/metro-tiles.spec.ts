@@ -4,7 +4,10 @@ import { login } from "./helpers";
 test.describe("Metro tiles", () => {
   test.beforeEach(async ({ page }) => {
     await login(page);
-    await page.evaluate(() => localStorage.removeItem("octos_home_metro_layout"));
+    await page.evaluate(() => {
+      localStorage.removeItem("octos_home_metro_layout");
+      localStorage.setItem("octos_home_night_mode", "off");
+    });
     await page.goto("/home", { waitUntil: "networkidle" });
     await expect(page.locator(".metro-grid")).toBeVisible();
   });
@@ -201,7 +204,7 @@ test.describe("Metro tiles", () => {
       { type: "photo-frame", enabled: false, order: 7 },
       { type: "greeting", enabled: true, order: 8 },
     ];
-    let profile = {
+    const profile = {
       id: "admin",
       name: "Admin",
       enabled: true,
@@ -216,24 +219,18 @@ test.describe("Metro tiles", () => {
       },
       config: {
         home: {
+          settings: {
+            night_mode: "off",
+          },
           widgets,
           metro_layout: {},
         },
       },
     };
-    await page.route("**/api/my/profile", async (route) => {
-      if (route.request().method() === "PUT") {
-        const body = route.request().postDataJSON() as {
-          config?: Record<string, unknown>;
-        };
-        profile = {
-          ...profile,
-          config: {
-            ...profile.config,
-            ...(body.config ?? {}),
-          },
-        };
-      }
+    let profileHits = 0;
+    await page.unroute(/\/api\/my\/profile$/);
+    await page.route(/\/api\/my\/profile$/, async (route) => {
+      profileHits += 1;
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -256,11 +253,13 @@ test.describe("Metro tiles", () => {
           { type: "greeting", enabled: true, order: 8 },
         ]),
       );
+      localStorage.setItem("octos_home_night_mode", "off");
       localStorage.removeItem("octos_home_metro_layout");
     });
 
     await page.reload({ waitUntil: "networkidle" });
     await expect(page.locator(".metro-grid")).toBeVisible();
+    expect(profileHits).toBeGreaterThan(0);
 
     await expect(page.locator(".metro-tile").first()).toHaveAttribute(
       "data-tile-id",

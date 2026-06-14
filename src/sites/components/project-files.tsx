@@ -57,7 +57,7 @@ function EditableTitle({ value, onSave }: { value: string; onSave?: (value: stri
     return (
       <input
         defaultValue={value}
-        className="mt-1 w-full rounded border border-accent/50 bg-surface-container px-1 py-0.5 text-[11px] text-muted outline-none"
+        className="workbench-input mt-1 w-full px-1 py-0.5 text-[11px]"
         autoFocus
         onBlur={(event) => {
           const next = event.target.value.trim();
@@ -99,11 +99,11 @@ function formatTime(value: string): string {
   });
 }
 
-function fileIcon(file: SiteFileEntry) {
+function FileIconView({ file }: { file: SiteFileEntry }) {
   const category = inferContentCategory(file);
-  if (category === "image") return ImageIcon;
-  if (isViewerFile(file.filename)) return FileText;
-  return File;
+  if (category === "image") return <ImageIcon size={14} />;
+  if (isViewerFile(file.filename)) return <FileText size={14} />;
+  return <File size={14} />;
 }
 
 function isViewerFile(filename: string) {
@@ -413,7 +413,7 @@ export function ProjectFiles({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-border px-3 py-2">
+      <div className="glass-toolbar m-3 mb-0 rounded-lg px-3 py-2">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <div className="text-xs font-semibold uppercase tracking-normal text-muted">
@@ -434,7 +434,7 @@ export function ProjectFiles({
             />
             <button
               onClick={() => fileInputRef.current?.click()}
-              className="rounded-lg p-2 text-muted transition hover:bg-surface-container hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+              className="glass-icon-button p-2 disabled:cursor-not-allowed disabled:opacity-50"
               title={`Upload assets into ${uploadTarget}`}
               disabled={uploading}
             >
@@ -442,7 +442,7 @@ export function ProjectFiles({
             </button>
             <button
               onClick={triggerRefresh}
-              className="rounded-lg p-2 text-muted transition hover:bg-surface-container hover:text-text"
+              className="glass-icon-button p-2"
               title="Refresh files"
             >
               <RefreshCw size={15} className={uploading ? "animate-spin" : ""} />
@@ -532,7 +532,6 @@ function FileNodeView({
 }) {
   const file = node.file;
   const entry = entryMap.get(file.path) ?? siteFileToContentEntry(file, sessionId);
-  const Icon = fileIcon(file);
   const category = inferContentCategory(file);
   const opensViewer = category === "image" || isViewerFile(file.filename);
 
@@ -545,11 +544,11 @@ function FileNodeView({
           void downloadContent(entry);
         }
       }}
-      className="flex w-full items-start gap-2 rounded-xl px-2 py-2 text-left transition-colors hover:bg-surface-container"
+      className="glass-file-row flex w-full items-start gap-2 rounded-lg px-2 py-2 text-left transition-colors hover:bg-surface-elevated/70"
       style={{ paddingLeft: `${10 + depth * 16}px` }}
     >
       <div className="mt-0.5 shrink-0 text-muted">
-        <Icon size={14} />
+        <FileIconView file={file} />
       </div>
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm text-text-strong">{file.filename}</div>

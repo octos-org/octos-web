@@ -335,16 +335,16 @@ export function ContentBrowser({
   };
 
   return (
-    <div className="glass-panel flex h-full flex-col overflow-hidden rounded-[16px]">
+    <div className="glass-panel flex h-full flex-col overflow-hidden rounded-lg">
       <div className="px-3 pt-3">
-        <div className="glass-toolbar flex flex-wrap items-start justify-between gap-3 rounded-[14px] px-4 py-4">
+        <div className="glass-toolbar flex flex-wrap items-start justify-between gap-3 rounded-lg px-4 py-4">
           <div className="min-w-0 flex-1">
             <div className="shell-kicker">Session Files</div>
             <SessionTitleEditor
               value={sessionTitle}
               onSave={onRenameTitle}
               buttonClassName="mt-2 w-full text-left text-[1.24rem] font-semibold tracking-tight text-text-strong transition hover:text-accent"
-              inputClassName="mt-2 w-full rounded-[12px] border border-accent/40 bg-surface-container px-3 py-2.5 text-[1.08rem] font-semibold tracking-tight text-text outline-none"
+              inputClassName="workbench-input mt-2 w-full px-3 py-2.5 text-[1.08rem] font-semibold tracking-tight text-text"
               testId="content-session-title"
             />
             <div className="mt-2 text-xs text-muted">
@@ -354,7 +354,7 @@ export function ContentBrowser({
           <div className="flex items-center gap-2">
             <button
               onClick={onToggleMaximize}
-              className="glass-icon-button rounded-[10px] p-2"
+              className="glass-icon-button p-2"
               title={isMaximized ? "Restore" : "Maximize"}
               aria-label={isMaximized ? "Restore files panel" : "Maximize files panel"}
             >
@@ -366,7 +366,7 @@ export function ContentBrowser({
             </button>
             <button
               onClick={onClose}
-              className="glass-icon-button rounded-[10px] p-2"
+              className="glass-icon-button p-2"
               title="Close"
               aria-label="Close files panel"
             >
@@ -376,7 +376,7 @@ export function ContentBrowser({
         </div>
 
         <div className="mt-2 grid gap-2 xl:grid-cols-[minmax(180px,1fr)_auto_auto]">
-          <label className="glass-section flex min-w-0 items-center gap-2 rounded-[12px] px-3 py-2">
+          <label className="workbench-input flex min-w-0 items-center gap-2 px-3 py-2">
             <Search size={14} className="shrink-0 text-muted" />
             <input
               value={search}
@@ -389,7 +389,7 @@ export function ContentBrowser({
             <select
               value={category}
               onChange={(event) => setCategory(event.target.value as CategoryFilter)}
-              className="glass-section rounded-[12px] px-3 py-2 text-sm text-text outline-none"
+              className="workbench-input px-3 py-2 text-sm"
               aria-label="Filter by type"
             >
               {CATEGORY_OPTIONS.map((option) => (
@@ -401,7 +401,7 @@ export function ContentBrowser({
             <select
               value={dateFilter}
               onChange={(event) => setDateFilter(event.target.value as DateFilter)}
-              className="glass-section rounded-[12px] px-3 py-2 text-sm text-text outline-none"
+              className="workbench-input px-3 py-2 text-sm"
               aria-label="Filter by date"
             >
               {DATE_OPTIONS.map((option) => (
@@ -411,7 +411,7 @@ export function ContentBrowser({
               ))}
             </select>
           </div>
-          <div className="glass-section flex items-center gap-1 rounded-[12px] p-1">
+          <div className="glass-section flex items-center gap-1 rounded-lg p-1">
             <ModeButton active={viewMode === "timeline"} onClick={() => setViewMode("timeline")}>
               <Clock3 size={14} />
               <span>Timeline</span>
@@ -428,27 +428,27 @@ export function ContentBrowser({
         </div>
 
         {selectedEntries.length > 0 && (
-          <div className="glass-section mt-2 flex flex-wrap items-center gap-2 rounded-[12px] px-3 py-2 text-xs text-muted">
+          <div className="glass-section mt-2 flex flex-wrap items-center gap-2 rounded-lg px-3 py-2 text-xs text-muted">
             <span className="font-medium text-text">
               {selectedEntries.length} selected
             </span>
             <button
               onClick={downloadSelected}
-              className="glass-icon-button rounded-[9px] px-2 py-1.5 hover:text-accent"
+              className="glass-icon-button px-2 py-1.5 hover:text-accent"
             >
               <Download size={13} />
               <span>Download</span>
             </button>
             <button
               onClick={() => deleteEntries(selectedEntries.map((entry) => entry.id))}
-              className="glass-icon-button rounded-[9px] px-2 py-1.5 hover:text-red-300"
+              className="glass-icon-button px-2 py-1.5 hover:text-red-300"
             >
               <Trash2 size={13} />
               <span>Delete</span>
             </button>
             <button
               onClick={() => setSelectedIds(new Set())}
-              className="ml-auto rounded-[9px] px-2 py-1.5 text-muted hover:bg-surface-elevated hover:text-text"
+              className="ml-auto rounded-lg px-2 py-1.5 text-muted hover:bg-surface-elevated hover:text-text"
             >
               Clear
             </button>
@@ -462,11 +462,11 @@ export function ContentBrowser({
 
       <div className="flex-1 overflow-y-auto px-3 pb-3 pt-2">
         {entries.length === 0 ? (
-          <div className="shell-empty-state flex h-full items-center justify-center rounded-[12px] px-5 text-center text-sm text-muted">
+          <div className="shell-empty-state flex h-full items-center justify-center rounded-lg px-5 text-center text-sm text-muted">
             Files generated in your sessions will appear here.
           </div>
         ) : filteredEntries.length === 0 ? (
-          <div className="shell-empty-state flex h-full items-center justify-center rounded-[12px] px-5 text-center text-sm text-muted">
+          <div className="shell-empty-state flex h-full items-center justify-center rounded-lg px-5 text-center text-sm text-muted">
             No files match the current filters.
           </div>
         ) : (
@@ -474,7 +474,7 @@ export function ContentBrowser({
             <div className="mb-2 flex items-center justify-between gap-3 text-xs text-muted">
               <button
                 onClick={selectVisible}
-                className="rounded-[9px] px-2 py-1.5 hover:bg-surface-elevated hover:text-text"
+                className="rounded-lg px-2 py-1.5 hover:bg-surface-elevated hover:text-text"
               >
                 Select visible
               </button>
@@ -553,9 +553,8 @@ function ModeButton({
     <button
       type="button"
       onClick={onClick}
-      className={`flex items-center gap-1.5 rounded-[9px] px-2.5 py-1.5 text-xs font-medium ${
-        active ? "bg-accent text-white" : "text-muted hover:bg-surface-elevated hover:text-text"
-      }`}
+      data-active={active ? "true" : undefined}
+      className="workbench-button flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium"
     >
       {children}
     </button>
@@ -591,7 +590,7 @@ function EntryActions({
           event.stopPropagation();
           onToggleSelected(entry.id);
         }}
-        className={`flex h-7 w-7 items-center justify-center rounded-[9px] border ${
+        className={`flex h-7 w-7 items-center justify-center rounded-lg border ${
           selected
             ? "border-accent bg-accent text-white"
             : "border-border text-transparent hover:text-muted"
@@ -606,7 +605,7 @@ function EntryActions({
           event.stopPropagation();
           void downloadContent(entry);
         }}
-        className="glass-icon-button rounded-[9px] p-1.5 hover:text-accent"
+        className="glass-icon-button p-1.5 hover:text-accent"
         title="Download"
         aria-label={`Download ${entry.filename}`}
       >
@@ -617,7 +616,7 @@ function EntryActions({
           event.stopPropagation();
           onStartRename(entry);
         }}
-        className="glass-icon-button rounded-[9px] p-1.5 hover:text-accent"
+        className="glass-icon-button p-1.5 hover:text-accent"
         title="Rename"
         aria-label={`Rename ${entry.filename}`}
       >
@@ -628,7 +627,7 @@ function EntryActions({
           event.stopPropagation();
           onDelete(entry);
         }}
-        className="glass-icon-button rounded-[9px] p-1.5 hover:text-red-300"
+        className="glass-icon-button p-1.5 hover:text-red-300"
         title="Delete"
         aria-label={`Delete ${entry.filename}`}
       >
@@ -659,18 +658,18 @@ function RenameField({
           if (event.key === "Enter") onCommit();
           if (event.key === "Escape") onCancel();
         }}
-        className="min-w-0 flex-1 rounded-[9px] border border-accent/40 bg-surface-container px-2 py-1.5 text-sm text-text outline-none"
+        className="workbench-input min-w-0 flex-1 px-2 py-1.5 text-sm"
       />
       <button
         onClick={onCommit}
-        className="glass-icon-button rounded-[9px] p-1.5 text-emerald-300"
+        className="glass-icon-button p-1.5 text-emerald-300"
         title="Save rename"
       >
         <Check size={13} />
       </button>
       <button
         onClick={onCancel}
-        className="glass-icon-button rounded-[9px] p-1.5 text-muted"
+        className="glass-icon-button p-1.5 text-muted"
         title="Cancel rename"
       >
         <X size={13} />
@@ -720,11 +719,11 @@ function EntryPreview({ entry }: { entry: ContentEntry }) {
 function EntryRow(props: EntryActionProps) {
   return (
     <div
-      className="glass-file-row flex items-start gap-3 rounded-[12px] px-3 py-3 transition-colors hover:bg-surface-elevated/70"
+      className="glass-file-row flex items-start gap-3 rounded-lg px-3 py-3 transition-colors hover:bg-surface-elevated/70"
       onClick={() => props.onOpen(props.entry)}
       data-testid="content-file-row"
     >
-      <div className="glass-pill mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-muted">
+      <div className="glass-pill mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted">
         {renderFileIcon(props.entry, 15)}
       </div>
       <div className="min-w-0 flex-1">
@@ -759,7 +758,7 @@ function TimelineView(props: Omit<EntryActionProps, "entry" | "selected" | "rena
     <div className="space-y-3">
       {groupByDay(props.entries).map(([key, entries]) => (
         <section key={key} className="space-y-2">
-          <div className="sticky top-0 z-10 glass-toolbar rounded-[10px] px-3 py-2 text-xs font-semibold text-text-strong">
+          <div className="sticky top-0 z-10 glass-toolbar rounded-lg px-3 py-2 text-xs font-semibold text-text-strong">
             {dayLabel(key)}
           </div>
           <div className="space-y-2">
@@ -809,7 +808,7 @@ function GridView(props: Omit<EntryActionProps, "entry" | "selected" | "renaming
 function EntryCard(props: EntryActionProps) {
   return (
     <div
-      className="group overflow-hidden rounded-[12px] border border-border bg-surface-container transition-colors hover:bg-surface-elevated"
+      className="group overflow-hidden rounded-lg border border-border bg-surface-container transition-colors hover:bg-surface-elevated"
       onClick={() => props.onOpen(props.entry)}
       data-testid="content-file-card"
     >
@@ -821,7 +820,7 @@ function EntryCard(props: EntryActionProps) {
               event.stopPropagation();
               props.onToggleSelected(props.entry.id);
             }}
-            className={`flex h-7 w-7 items-center justify-center rounded-[9px] border ${
+            className={`flex h-7 w-7 items-center justify-center rounded-lg border ${
               props.selected
                 ? "border-accent bg-accent text-white"
                 : "border-white/40 bg-black/30 text-transparent group-hover:text-white"
