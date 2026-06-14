@@ -146,6 +146,56 @@ export async function updateMyProfile(
   });
 }
 
+export function mergeProfileConfig(
+  current: ProfileConfig,
+  patch: Partial<ProfileConfig>,
+): ProfileConfig {
+  const next: ProfileConfig = {
+    ...current,
+    ...patch,
+  };
+
+  if (patch.llm) {
+    next.llm = {
+      ...current.llm,
+      ...patch.llm,
+      primary: patch.llm.primary ?? current.llm.primary,
+      fallbacks: patch.llm.fallbacks ?? current.llm.fallbacks,
+    };
+  }
+  if (patch.gateway) {
+    next.gateway = { ...current.gateway, ...patch.gateway };
+  }
+  if (patch.sandbox) {
+    next.sandbox = patch.sandbox;
+  }
+  if (patch.env_vars) {
+    next.env_vars = patch.env_vars;
+  }
+  if (patch.channels) {
+    next.channels = patch.channels;
+  }
+  if (patch.hooks) {
+    next.hooks = patch.hooks;
+  }
+  if (patch.plugins) {
+    next.plugins = { ...current.plugins, ...patch.plugins };
+  }
+
+  return next;
+}
+
+export async function updateMyProfileConfig(
+  profile: Profile,
+  config: Partial<ProfileConfig>,
+  patch: { name?: string; enabled?: boolean } = {},
+): Promise<Profile> {
+  return await updateMyProfile({
+    ...patch,
+    config: mergeProfileConfig(profile.config, config),
+  });
+}
+
 export async function getMyProfileSkills(): Promise<SkillInfo[]> {
   const resp = await request<{ skills: SkillInfo[] }>("/api/my/profile/skills");
   return resp.skills ?? [];

@@ -12,7 +12,7 @@ import {
   ToggleLeft,
   ToggleRight,
 } from "lucide-react";
-import { formatSettingsError, updateMyProfile, type Profile } from "./settings-api";
+import { formatSettingsError, updateMyProfileConfig, type Profile } from "./settings-api";
 import { request } from "@/api/client";
 
 interface ToolsTabProps {
@@ -467,7 +467,7 @@ export function ToolsTab({ profile, onProfileUpdated }: ToolsTabProps) {
     setError(null);
     const payload = formToPayload(form, profile);
     try {
-      const result = await updateMyProfile(payload);
+      const result = await updateMyProfileConfig(profile, payload.config);
       onProfileUpdated(result);
       const newForm = profileToForm(result);
       setForm(newForm);

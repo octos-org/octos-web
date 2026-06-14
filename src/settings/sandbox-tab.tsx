@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import {
   formatSettingsError,
-  updateMyProfile,
+  updateMyProfileConfig,
   type Profile,
   type SandboxConfig,
   type SandboxDocker,
@@ -185,8 +185,8 @@ export function SandboxTab({ profile, onProfileUpdated }: SandboxTabProps) {
     setSaving(true);
     setError(null);
     try {
-      const result = await updateMyProfile({
-        config: { sandbox: formToSandboxConfig(form) },
+      const result = await updateMyProfileConfig(profile, {
+        sandbox: formToSandboxConfig(form),
       });
       onProfileUpdated(result);
       const newForm = profileToForm(result);

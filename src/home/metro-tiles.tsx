@@ -55,18 +55,20 @@ const MAX_ROWS = 12;
 const MOBILE_QUERY = "(max-width: 600px)";
 
 const TILE_DEFS: TileDef[] = [
-  { id: "clock", widgetType: "clock", label: "Clock", accent: "#16130f", defaultLayout: { col: 1, row: 1, w: 4, h: 2 } },
-  { id: "weather", widgetType: "weather", label: "Weather", accent: "#2f453b", defaultLayout: { col: 5, row: 1, w: 2, h: 2 } },
-  { id: "quick-chat", widgetType: "quick-chat", label: "Chat", accent: "#9f5a35", defaultLayout: { col: 1, row: 3, w: 1, h: 1 } },
-  { id: "quick-news", widgetType: "quick-news", label: "News", accent: "#7c6545", defaultLayout: { col: 2, row: 3, w: 1, h: 1 } },
-  { id: "quick-music", widgetType: "quick-music", label: "Music", accent: "#4f6d4c", defaultLayout: { col: 3, row: 3, w: 1, h: 1 } },
-  { id: "quick-home", widgetType: "quick-home", label: "Home", accent: "#5c5145", defaultLayout: { col: 4, row: 3, w: 1, h: 1 } },
-  { id: "voice", widgetType: "voice-orb", label: "Voice", accent: "#282119", defaultLayout: { col: 5, row: 3, w: 2, h: 2 } },
-  { id: "news", widgetType: "news", label: "Headlines", accent: "#241c16", defaultLayout: { col: 1, row: 4, w: 4, h: 2 } },
-  { id: "calendar", widgetType: "calendar", label: "Calendar", accent: "#26352f", defaultLayout: { col: 1, row: 6, w: 2, h: 2 } },
-  { id: "timer", widgetType: "timer", label: "Timer", accent: "#463521", defaultLayout: { col: 3, row: 6, w: 2, h: 1 } },
-  { id: "photo", widgetType: "photo-frame", label: "Photos", accent: "#201d18", defaultLayout: { col: 5, row: 5, w: 2, h: 2 } },
+  { id: "clock", widgetType: "clock", label: "Clock", accent: "#1c1712", defaultLayout: { col: 1, row: 1, w: 4, h: 2 } },
+  { id: "weather", widgetType: "weather", label: "Weather", accent: "#405646", defaultLayout: { col: 5, row: 1, w: 2, h: 2 } },
+  { id: "quick-chat", widgetType: "quick-chat", label: "Chat", accent: "#b86f44", defaultLayout: { col: 1, row: 3, w: 1, h: 1 } },
+  { id: "quick-news", widgetType: "quick-news", label: "News", accent: "#8a704f", defaultLayout: { col: 2, row: 3, w: 1, h: 1 } },
+  { id: "quick-music", widgetType: "quick-music", label: "Music", accent: "#647a57", defaultLayout: { col: 3, row: 3, w: 1, h: 1 } },
+  { id: "quick-home", widgetType: "quick-home", label: "Home", accent: "#766250", defaultLayout: { col: 4, row: 3, w: 1, h: 1 } },
+  { id: "voice", widgetType: "voice-orb", label: "Voice", accent: "#30251d", defaultLayout: { col: 5, row: 3, w: 2, h: 2 } },
+  { id: "news", widgetType: "news", label: "Headlines", accent: "#2a211a", defaultLayout: { col: 1, row: 4, w: 4, h: 2 } },
+  { id: "calendar", widgetType: "calendar", label: "Calendar", accent: "#32483c", defaultLayout: { col: 1, row: 6, w: 2, h: 2 } },
+  { id: "timer", widgetType: "timer", label: "Timer", accent: "#5a4227", defaultLayout: { col: 3, row: 6, w: 2, h: 1 } },
+  { id: "photo", widgetType: "photo-frame", label: "Photos", accent: "#241f1a", defaultLayout: { col: 5, row: 5, w: 2, h: 2 } },
 ];
+
+const TILE_INDEX = new Map(TILE_DEFS.map((tile, index) => [tile.id, index]));
 
 function loadLayouts(): Record<string, TileLayout> {
   const defaults = defaultLayouts();
@@ -107,6 +109,58 @@ function saveLayouts(layouts: Record<string, TileLayout>) {
   try {
     localStorage.setItem(LS_LAYOUT_KEY, JSON.stringify(layouts));
   } catch { /* quota exceeded or unavailable */ }
+}
+
+function removeSavedLayouts() {
+  try {
+    localStorage.removeItem(LS_LAYOUT_KEY);
+  } catch { /* quota exceeded or unavailable */ }
+}
+
+function sameLayout(a?: TileLayout, b?: TileLayout): boolean {
+  return Boolean(a && b && a.col === b.col && a.row === b.row && a.w === b.w && a.h === b.h);
+}
+
+function hasCustomLayouts(layouts: Record<string, TileLayout>): boolean {
+  const defaults = defaultLayouts();
+  return TILE_DEFS.some((tile) => !sameLayout(layouts[tile.id], defaults[tile.id]));
+}
+
+function seedVisibleLayouts(
+  prev: Record<string, TileLayout>,
+  source: Record<string, TileLayout>,
+  visibleIds: Set<string>,
+  cols: number,
+): Record<string, TileLayout> {
+  const next = { ...prev };
+  const placed: Record<string, TileLayout> = {};
+  for (const id of visibleIds) {
+    if (source[id]) {
+      next[id] = source[id];
+      placed[id] = source[id];
+    }
+  }
+  for (const tile of TILE_DEFS) {
+    if (visibleIds.has(tile.id)) continue;
+    const layout = firstAvailableLayout(tile, placed, cols);
+    next[tile.id] = layout;
+    placed[tile.id] = layout;
+  }
+  return next;
+}
+
+function widgetTypeForOrder(tile: TileDef): WidgetType {
+  if (tile.id.startsWith("quick-")) return "quick-actions";
+  return tile.widgetType as WidgetType;
+}
+
+function orderedTiles(tiles: TileDef[], widgets: WidgetConfig[]): TileDef[] {
+  const order = new Map(widgets.map((widget) => [widget.type, widget.order]));
+  return [...tiles].sort((a, b) => {
+    const aOrder = order.get(widgetTypeForOrder(a)) ?? Number.MAX_SAFE_INTEGER;
+    const bOrder = order.get(widgetTypeForOrder(b)) ?? Number.MAX_SAFE_INTEGER;
+    return aOrder - bOrder || (TILE_INDEX.get(a.id) ?? 0) - (TILE_INDEX.get(b.id) ?? 0);
+  });
 }
 
 function tilesOverlap(a: TileLayout, b: TileLayout): boolean {
@@ -187,6 +241,38 @@ function clampLayoutForCols(layout: TileLayout, cols: number): TileLayout {
   const col = Math.max(1, Math.min(cols - w + 1, layout.col));
   const row = Math.max(1, Math.min(MAX_ROWS - h + 1, layout.row));
   return { ...layout, col, w, row, h };
+}
+
+function firstAvailableLayout(
+  tile: TileDef,
+  placed: Record<string, TileLayout>,
+  cols: number,
+): TileLayout {
+  const size = clampLayoutForCols(
+    { col: 1, row: 1, w: tile.defaultLayout.w, h: tile.defaultLayout.h },
+    cols,
+  );
+  const placedLayouts = Object.values(placed);
+  for (let row = 1; row <= MAX_ROWS - size.h + 1; row++) {
+    for (let col = 1; col <= cols - size.w + 1; col++) {
+      const candidate = { ...size, col, row };
+      if (!placedLayouts.some((layout) => tilesOverlap(candidate, layout))) {
+        return candidate;
+      }
+    }
+  }
+  return clampLayoutForCols(tile.defaultLayout, cols);
+}
+
+function packLayoutsForTiles(tiles: TileDef[], cols: number): Record<string, TileLayout> {
+  const out = defaultLayouts();
+  const placed: Record<string, TileLayout> = {};
+  for (const tile of tiles) {
+    const layout = firstAvailableLayout(tile, placed, cols);
+    placed[tile.id] = layout;
+    out[tile.id] = layout;
+  }
+  return out;
 }
 
 function useMetroGridColumns() {
@@ -385,6 +471,7 @@ function useTileDrag(
   const onPointerDown = useCallback((e: React.PointerEvent, tileId: string, gridEl: HTMLElement | null) => {
     if (!editMode || !gridEl) return;
     e.preventDefault();
+    e.stopPropagation();
     const { cols, stepX, stepY } = getGridMetrics(gridEl);
     const rawLayout = layoutsRef.current[tileId];
     if (!rawLayout) return;
@@ -404,7 +491,12 @@ function useTileDrag(
     const newRow = Math.max(1, Math.min(MAX_ROWS - h + 1, startRow + dy));
     const candidate = { ...layoutsRef.current[id], col: newCol, row: newRow };
     if (hasCollision(id, candidate, layoutsRef.current, visibleIdsRef.current, cols)) return;
-    setLayouts(prev => ({ ...prev, [id]: { ...prev[id], col: newCol, row: newRow } }));
+    setLayouts(prev => {
+      const next = seedVisibleLayouts(prev, layoutsRef.current, visibleIdsRef.current, cols);
+      next[id] = { ...layoutsRef.current[id], col: newCol, row: newRow };
+      layoutsRef.current = next;
+      return next;
+    });
   }, [setLayouts]);
 
   const onPointerUp = useCallback(() => {
@@ -477,12 +569,15 @@ function useTileResize(
     const newW = Math.max(1, Math.min(maxW, startW + dw));
     const newH = Math.max(1, Math.min(maxH, startH + dh));
     setLayouts(prev => {
-      const cur = prev[id];
+      const base = seedVisibleLayouts(prev, layoutsRef.current, visibleIdsRef.current, cols);
+      const cur = base[id];
       if (!cur) return prev;
       if (cur.w === newW && cur.h === newH) return prev;
       const candidate = { ...cur, w: newW, h: newH };
-      if (hasCollision(id, candidate, prev, visibleIdsRef.current, cols)) return prev;
-      return { ...prev, [id]: candidate };
+      if (hasCollision(id, candidate, base, visibleIdsRef.current, cols)) return prev;
+      const next = { ...base, [id]: candidate };
+      layoutsRef.current = next;
+      return next;
     });
   }, [setLayouts]);
 
@@ -504,7 +599,8 @@ function useTileResize(
     e.preventDefault();
     const { cols } = getGridMetrics(gridEl);
     setLayouts(prev => {
-      const cur = prev[tileId];
+      const base = seedVisibleLayouts(prev, layoutsRef.current, visibleIdsRef.current, cols);
+      const cur = base[tileId];
       if (!cur) return prev;
       const maxW = cols - cur.col + 1;
       const maxH = MAX_ROWS - cur.row + 1;
@@ -512,8 +608,9 @@ function useTileResize(
       const newH = Math.max(1, Math.min(maxH, cur.h + delta.h));
       if (cur.w === newW && cur.h === newH) return prev;
       const candidate = { ...cur, w: newW, h: newH };
-      if (hasCollision(tileId, candidate, prev, visibleIdsRef.current, cols)) return prev;
-      const next = { ...prev, [tileId]: candidate };
+      if (hasCollision(tileId, candidate, base, visibleIdsRef.current, cols)) return prev;
+      const next = { ...base, [tileId]: candidate };
+      layoutsRef.current = next;
       saveLayouts(next);
       return next;
     });
@@ -534,14 +631,26 @@ export function MetroTileGrid({ onActivate, nightActive }: MetroTileGridProps) {
   const gridCols = useMetroGridColumns();
 
   const visibleTiles = useMemo(
-    () => TILE_DEFS.filter(t => shouldShowTile(t, widgets, nightActive)),
+    () => orderedTiles(
+      TILE_DEFS.filter(t => shouldShowTile(t, widgets, nightActive)),
+      widgets,
+    ),
     [widgets, nightActive],
   );
   const visibleIds = useMemo(() => new Set(visibleTiles.map(t => t.id)), [visibleTiles]);
+  const usingCustomLayout = useMemo(() => hasCustomLayouts(layouts), [layouts]);
+  const orderedDefaultLayouts = useMemo(
+    () => packLayoutsForTiles(visibleTiles, gridCols),
+    [visibleTiles, gridCols],
+  );
 
   const effectiveLayouts = useMemo(
-    () => compactLayouts(layouts, visibleIds, gridCols),
-    [layouts, visibleIds, gridCols],
+    () => compactLayouts(
+      usingCustomLayout ? layouts : orderedDefaultLayouts,
+      visibleIds,
+      gridCols,
+    ),
+    [layouts, orderedDefaultLayouts, usingCustomLayout, visibleIds, gridCols],
   );
 
   const drag = useTileDrag(effectiveLayouts, setLayouts, editMode, visibleIds);
@@ -552,9 +661,8 @@ export function MetroTileGrid({ onActivate, nightActive }: MetroTileGridProps) {
   }, [onActivate, settingsOpen, editMode]);
 
   const resetLayout = useCallback(() => {
-    const fresh = defaultLayouts();
-    setLayouts(fresh);
-    saveLayouts(fresh);
+    removeSavedLayouts();
+    setLayouts(defaultLayouts());
   }, []);
 
   const renderTile = useCallback((tile: TileDef): ReactNode => {
@@ -601,6 +709,12 @@ export function MetroTileGrid({ onActivate, nightActive }: MetroTileGridProps) {
       <div
         ref={gridRef}
         className="metro-grid"
+        style={{
+          transform:
+            editMode || settingsOpen
+              ? "none"
+              : `translate3d(${burnIn.offset.x}px, ${burnIn.offset.y}px, 0)`,
+        }}
         onPointerMove={(e) => { drag.onPointerMove(e); resize.onResizePointerMove(e); }}
         onPointerUp={() => { drag.onPointerUp(); resize.onResizePointerUp(); }}
       >

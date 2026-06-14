@@ -101,15 +101,18 @@ test.describe("Metro tiles", () => {
       const tiles = Object.entries(positions) as [string, { col: number; row: number; w: number; h: number }][];
       for (let i = 0; i < tiles.length; i++) {
         for (let j = i + 1; j < tiles.length; j++) {
-          const [, a] = tiles[i];
-          const [, b] = tiles[j];
+          const [aId, a] = tiles[i];
+          const [bId, b] = tiles[j];
           const overlaps = !(
             a.col + a.w <= b.col ||
             b.col + b.w <= a.col ||
             a.row + a.h <= b.row ||
             b.row + b.h <= a.row
           );
-          expect(overlaps).toBe(false);
+          expect(
+            overlaps,
+            `${aId} overlaps ${bId}: ${JSON.stringify(positions)}`,
+          ).toBe(false);
         }
       }
     }
@@ -184,5 +187,37 @@ test.describe("Metro tiles", () => {
       return raw ? JSON.parse(raw).timer : null;
     });
     expect(savedTimer?.h).toBeGreaterThan(1);
+  });
+
+  test("home widget order controls Metro tile order and placement", async ({ page }) => {
+    await page.evaluate(() => {
+      localStorage.setItem(
+        "octos_home_widgets",
+        JSON.stringify([
+          { type: "weather", enabled: true, order: 0 },
+          { type: "clock", enabled: true, order: 1 },
+          { type: "quick-actions", enabled: true, order: 2 },
+          { type: "voice-orb", enabled: true, order: 3 },
+          { type: "news", enabled: true, order: 4 },
+          { type: "calendar", enabled: true, order: 5 },
+          { type: "timer", enabled: true, order: 6 },
+          { type: "photo-frame", enabled: false, order: 7 },
+          { type: "greeting", enabled: true, order: 8 },
+        ]),
+      );
+      localStorage.removeItem("octos_home_metro_layout");
+    });
+
+    await page.reload({ waitUntil: "networkidle" });
+    await expect(page.locator(".metro-grid")).toBeVisible();
+
+    await expect(page.locator(".metro-tile").first()).toHaveAttribute(
+      "data-tile-id",
+      "weather",
+    );
+    const weatherColumnStart = await page
+      .locator('.metro-tile[data-tile-id="weather"]')
+      .evaluate((el) => getComputedStyle(el).gridColumnStart);
+    expect(weatherColumnStart).toBe("1");
   });
 });

@@ -10,6 +10,7 @@ import { test, expect } from "@playwright/test";
 const TIMEOUT = 10_000;
 
 interface SettingsMockOptions {
+  profile?: typeof mockProfile;
   profileUpdateError?: { status: number; body: unknown };
   allowedEmailDeleteError?: { status: number; body: unknown };
   operatorTasksError?: { status: number; body: unknown };
@@ -84,11 +85,13 @@ async function installAdminSettingsMocks(
   page: import("@playwright/test").Page,
   options: SettingsMockOptions = {},
 ) {
+  const activeProfile = options.profile ?? mockProfile;
   let enableBody: unknown = null;
   let disableBody: unknown = null;
   let downloadBody: unknown = null;
   let removeLocalBody: unknown = null;
   const profileHeaders: Array<string | null> = [];
+  const profileUpdateBodies: unknown[] = [];
   const serviceActions: string[] = [];
   const logLineRequests: number[] = [];
   const accessibleProfiles = options.accessibleProfiles ?? [
@@ -127,7 +130,7 @@ async function installAdminSettingsMocks(
           created_at: "2026-01-01T00:00:00Z",
           last_login_at: null,
         },
-        profile: mockProfile,
+        profile: activeProfile,
         portal: {
           kind: "admin",
           home_profile_id: "admin",
@@ -143,6 +146,9 @@ async function installAdminSettingsMocks(
 
   await page.route("**/api/my/profile", async (route) => {
     profileHeaders.push(route.request().headers()["x-profile-id"] ?? null);
+    if (route.request().method() === "PUT") {
+      profileUpdateBodies.push(route.request().postDataJSON());
+    }
     if (route.request().method() === "PUT" && options.profileUpdateError) {
       await route.fulfill({
         status: options.profileUpdateError.status,
@@ -153,7 +159,7 @@ async function installAdminSettingsMocks(
     }
     await route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify(mockProfile),
+      body: JSON.stringify(activeProfile),
     });
   });
 
@@ -332,6 +338,7 @@ async function installAdminSettingsMocks(
     getDownloadBody: () => downloadBody,
     getRemoveLocalBody: () => removeLocalBody,
     getProfileHeaders: () => profileHeaders,
+    getProfileUpdateBodies: () => profileUpdateBodies,
     getServiceActions: () => serviceActions,
     getLogLineRequests: () => logLineRequests,
   };
@@ -352,7 +359,7 @@ async function installServerSettingsMocks(
   await page.route("**/api/admin/profiles", (route) =>
     route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify([mockProfile]),
+        body: JSON.stringify([options.profile ?? mockProfile]),
     }),
   );
 
@@ -790,6 +797,56 @@ test.describe("Settings page — tab smoke tests", () => {
     });
   });
 
+  test("LLM save preserves existing profile config sections", async ({ page }) => {
+    const profileWithConfig = {
+      ...mockProfile,
+      config: {
+        ...mockProfile.config,
+        channels: [
+          {
+            type: "telegram",
+            enabled: true,
+            token_env: "TELEGRAM_BOT_TOKEN",
+            allowed_senders: "1001,1002",
+          },
+        ],
+        env_vars: { KEEP_ME: "secret" },
+        hooks: [{ name: "after_reply", command: "notify" }],
+        sandbox: {
+          ...mockProfile.config.sandbox,
+          enabled: true,
+          mode: "read_only",
+          read_allow_paths: ["/Users/yao/work"],
+        },
+        plugins: { require_signed: true },
+      },
+    };
+    const mocks = await installServerSettingsMocks(page, {
+      profile: profileWithConfig,
+    });
+    await seedAdminSession(page);
+
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: TIMEOUT });
+    await clickTab(page, "LLM");
+
+    await page
+      .getByPlaceholder("Optional system prompt override...")
+      .fill("Speak plainly and keep family context.");
+    await page.getByRole("button", { name: "Save Changes" }).click();
+
+    await expect
+      .poll(() => mocks.getProfileUpdateBodies().at(-1))
+      .not.toBeUndefined();
+    const body = mocks.getProfileUpdateBodies().at(-1);
+    const config = (body as { config?: Record<string, unknown> }).config;
+    expect(config?.channels).toEqual(profileWithConfig.config.channels);
+    expect(config?.env_vars).toEqual(profileWithConfig.config.env_vars);
+    expect(config?.hooks).toEqual(profileWithConfig.config.hooks);
+    expect(config?.sandbox).toEqual(profileWithConfig.config.sandbox);
+    expect(config?.plugins).toEqual(profileWithConfig.config.plugins);
+  });
+
   test("Skills tab shows Installed Skills and Octos Hub", async ({
     page,
   }) => {
@@ -815,6 +872,42 @@ test.describe("Settings page — tab smoke tests", () => {
     await expect(
       page.locator("button", { hasText: "Add Channel" }).first(),
     ).toBeVisible({ timeout: TIMEOUT });
+  });
+
+  test("Channels tab can add a Twilio webhook channel", async ({ page }) => {
+    const mocks = await installServerSettingsMocks(page);
+    await seedAdminSession(page);
+
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: TIMEOUT });
+    await clickTab(page, "Channels");
+
+    await page.getByRole("button", { name: /^Add Channel$/ }).first().click();
+    const form = page.locator(".glass-section", { hasText: "New Channel" });
+    await form.locator("select").selectOption("twilio");
+    await expect(form.locator("input[readonly]")).toHaveValue(
+      /\/webhook\/twilio\/admin$/,
+      { timeout: TIMEOUT },
+    );
+    await form.getByPlaceholder("TWILIO_ACCOUNT_SID").fill("TWILIO_ACCOUNT_SID");
+    await form.getByPlaceholder("TWILIO_AUTH_TOKEN").fill("TWILIO_AUTH_TOKEN");
+    await form.getByPlaceholder("+15551234567").fill("+15551234567");
+    await form.getByRole("button", { name: /^Add Channel$/ }).click();
+
+    await expect
+      .poll(() => mocks.getProfileUpdateBodies().at(-1))
+      .not.toBeUndefined();
+    const body = mocks.getProfileUpdateBodies().at(-1);
+    const config = (body as { config?: { channels?: unknown[] } }).config;
+    expect(config?.channels).toContainEqual(
+      expect.objectContaining({
+        type: "twilio",
+        enabled: true,
+        account_sid_env: "TWILIO_ACCOUNT_SID",
+        auth_token_env: "TWILIO_AUTH_TOKEN",
+        from_number: "+15551234567",
+      }),
+    );
   });
 
   test("Sandbox tab renders configuration section", async ({ page }) => {

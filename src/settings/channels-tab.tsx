@@ -1,7 +1,9 @@
 import { useState } from "react";
+import { API_BASE } from "@/lib/constants";
 import {
   Radio,
   Plus,
+  Pencil,
   Trash2,
   Save,
   Loader2,
@@ -12,9 +14,8 @@ import {
 } from "lucide-react";
 import {
   formatSettingsError,
-  updateMyProfile,
+  updateMyProfileConfig,
   type Profile,
-  type ProfileConfig,
 } from "./settings-api";
 import { ConfirmDialog } from "./confirm-dialog";
 
@@ -28,9 +29,13 @@ interface ChannelsTabProps {
 const CHANNEL_TYPES = [
   "telegram",
   "discord",
+  "slack",
   "whatsapp",
   "email",
   "feishu",
+  "twilio",
+  "api",
+  "matrix",
   "wechat",
   "wecom-bot",
   "qq-bot",
@@ -43,13 +48,26 @@ interface ChannelConfig {
   enabled?: boolean;
   token_env?: string;
   webhook_port?: number;
-  allowed_senders?: string;
+  allowed_senders?: string | string[];
   require_mention?: boolean;
+  bot_token_env?: string;
+  app_token_env?: string;
   app_id_env?: string;
   app_secret_env?: string;
   verification_token_env?: string;
   encrypt_key_env?: string;
   region?: "china" | "global";
+  account_sid_env?: string;
+  auth_token_env?: string;
+  from_number?: string;
+  port?: number;
+  auth_token?: string;
+  homeserver?: string;
+  as_token?: string;
+  hs_token?: string;
+  server_name?: string;
+  sender_localpart?: string;
+  user_prefix?: string;
   smtp_host?: string;
   smtp_port?: number;
   username_env?: string;
@@ -70,6 +88,8 @@ function defaultsForType(type: ChannelType): Partial<ChannelConfig> {
       return { token_env: "TELEGRAM_BOT_TOKEN", allowed_senders: "" };
     case "discord":
       return { token_env: "DISCORD_BOT_TOKEN" };
+    case "slack":
+      return { bot_token_env: "SLACK_BOT_TOKEN", app_token_env: "SLACK_APP_TOKEN" };
     case "whatsapp":
       return { bridge_url: "" };
     case "email":
@@ -82,6 +102,25 @@ function defaultsForType(type: ChannelType): Partial<ChannelConfig> {
         encrypt_key_env: "",
         mode: "webhook",
         region: "china",
+      };
+    case "twilio":
+      return {
+        account_sid_env: "TWILIO_ACCOUNT_SID",
+        auth_token_env: "TWILIO_AUTH_TOKEN",
+        from_number: "",
+        mode: "webhook",
+      };
+    case "api":
+      return { port: 9090, auth_token: "" };
+    case "matrix":
+      return {
+        homeserver: "",
+        as_token: "",
+        hs_token: "",
+        server_name: "",
+        sender_localpart: "octos",
+        user_prefix: "octos_",
+        allowed_senders: "",
       };
     case "wechat":
       return { token_env: "WECHAT_BOT_TOKEN", base_url: "https://api.weixin.qq.com/cgi-bin" };
@@ -98,9 +137,13 @@ function channelLabel(type: string): string {
   const labels: Record<string, string> = {
     telegram: "Telegram",
     discord: "Discord",
+    slack: "Slack",
     whatsapp: "WhatsApp",
     email: "Email (SMTP)",
     feishu: "Feishu (Lark)",
+    twilio: "Twilio SMS",
+    api: "Local API",
+    matrix: "Matrix",
     wechat: "WeChat",
     "wecom-bot": "WeCom Bot",
     "qq-bot": "QQ Bot",
@@ -111,7 +154,7 @@ function channelLabel(type: string): string {
 // ── Webhook URL helpers ──
 
 /** Channel types that receive inbound events via webhook. */
-const WEBHOOK_CHANNEL_TYPES = new Set(["feishu"]);
+const WEBHOOK_CHANNEL_TYPES = new Set(["feishu", "twilio"]);
 
 function usesWebhook(channel: ChannelConfig): boolean {
   if (channel.type === "feishu") return channel.mode === "webhook" || !channel.mode;
@@ -119,6 +162,15 @@ function usesWebhook(channel: ChannelConfig): boolean {
 }
 
 function webhookUrl(channelType: string, profileId: string): string {
+  const configuredOrigin =
+    import.meta.env.VITE_WEBHOOK_ORIGIN ??
+    import.meta.env.VITE_PUBLIC_API_ORIGIN;
+  if (configuredOrigin) {
+    return `${String(configuredOrigin).replace(/\/$/, "")}/webhook/${channelType}/${profileId}`;
+  }
+  if (/^https?:\/\//.test(API_BASE)) {
+    return `${new URL(API_BASE).origin}/webhook/${channelType}/${profileId}`;
+  }
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   return `${origin}/webhook/${channelType}/${profileId}`;
 }
@@ -128,6 +180,32 @@ function parseChannels(raw: unknown[]): ChannelConfig[] {
     if (typeof ch === "object" && ch !== null) return ch as ChannelConfig;
     return { type: "unknown" } as ChannelConfig;
   });
+}
+
+function cleanChannelDraft(draft: ChannelConfig): ChannelConfig {
+  const cleaned: ChannelConfig = {
+    type: draft.type,
+    enabled: draft.enabled ?? true,
+  };
+  for (const [key, value] of Object.entries(draft)) {
+    if (key === "type" || key === "enabled") continue;
+    if (key === "allowed_senders" && draft.type === "matrix") {
+      const senders = Array.isArray(value)
+        ? value
+        : String(value ?? "")
+            .split(",")
+            .map((entry) => entry.trim())
+            .filter(Boolean);
+      if (senders.length > 0) {
+        cleaned.allowed_senders = senders;
+      }
+      continue;
+    }
+    if (value !== "" && value != null) {
+      (cleaned as unknown as Record<string, unknown>)[key] = value;
+    }
+  }
+  return cleaned;
 }
 
 // ── Sub-component: form fields for each channel type ──
@@ -172,11 +250,11 @@ function WebhookUrlField({ channelType, profileId }: { channelType: string; prof
 function ChannelFormFields({
   draft,
   onChange,
-  channelId,
+  profileId,
 }: {
   draft: ChannelConfig;
   onChange: (patch: Partial<ChannelConfig>) => void;
-  channelId?: string;
+  profileId?: string;
 }) {
   const field = (
     label: string,
@@ -187,8 +265,14 @@ function ChannelFormFields({
       <label className="mb-1.5 block text-xs font-medium text-muted">{label}</label>
       <input
         type={opts?.type ?? "text"}
-        value={(draft[key] as string | number) ?? ""}
-        onChange={(e) => onChange({ [key]: opts?.type === "number" ? Number(e.target.value) : e.target.value })}
+        value={Array.isArray(draft[key]) ? (draft[key] as string[]).join(", ") : (draft[key] as string | number) ?? ""}
+        onChange={(e) => {
+          const value =
+            opts?.type === "number"
+              ? e.target.value === "" ? undefined : Number(e.target.value)
+              : e.target.value;
+          onChange({ [key]: value });
+        }}
         placeholder={opts?.placeholder}
         className="w-full rounded-xl bg-surface-container px-4 py-2.5 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition"
       />
@@ -206,6 +290,13 @@ function ChannelFormFields({
     case "discord":
       return (
         field("Token env var", "token_env", { placeholder: "DISCORD_BOT_TOKEN" })
+      );
+    case "slack":
+      return (
+        <>
+          {field("Bot token env var", "bot_token_env", { placeholder: "SLACK_BOT_TOKEN" })}
+          {field("App token env var", "app_token_env", { placeholder: "SLACK_APP_TOKEN" })}
+        </>
       );
     case "whatsapp": {
       return (
@@ -245,9 +336,39 @@ function ChannelFormFields({
               />
             </div>
           </div>
-          {channelId && usesWebhook(draft) && (
-            <WebhookUrlField channelType="feishu" profileId={channelId} />
+          {profileId && usesWebhook(draft) && (
+            <WebhookUrlField channelType="feishu" profileId={profileId} />
           )}
+        </>
+      );
+    case "twilio":
+      return (
+        <>
+          {field("Account SID env var", "account_sid_env", { placeholder: "TWILIO_ACCOUNT_SID" })}
+          {field("Auth token env var", "auth_token_env", { placeholder: "TWILIO_AUTH_TOKEN" })}
+          {field("From number", "from_number", { placeholder: "+15551234567" })}
+          {profileId && usesWebhook(draft) && (
+            <WebhookUrlField channelType="twilio" profileId={profileId} />
+          )}
+        </>
+      );
+    case "api":
+      return (
+        <>
+          {field("Port", "port", { placeholder: "9090", type: "number" })}
+          {field("Auth token", "auth_token", { placeholder: "Optional shared secret" })}
+        </>
+      );
+    case "matrix":
+      return (
+        <>
+          {field("Homeserver", "homeserver", { placeholder: "https://matrix.example.com" })}
+          {field("Application service token", "as_token", { placeholder: "MATRIX_AS_TOKEN" })}
+          {field("Homeserver token", "hs_token", { placeholder: "MATRIX_HS_TOKEN" })}
+          {field("Server name", "server_name", { placeholder: "matrix.example.com" })}
+          {field("Sender localpart", "sender_localpart", { placeholder: "octos" })}
+          {field("User prefix", "user_prefix", { placeholder: "octos_" })}
+          {field("Allowed senders", "allowed_senders", { placeholder: "@yao:matrix.example.com, @home:matrix.example.com" })}
         </>
       );
     case "wechat":
@@ -285,6 +406,8 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingRemoveIdx, setPendingRemoveIdx] = useState<number | null>(null);
+  const [editingIdx, setEditingIdx] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState<ChannelConfig | null>(null);
 
   // Add-channel form state
   const [showAddForm, setShowAddForm] = useState(false);
@@ -300,13 +423,17 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
     setDraft((d) => ({ ...d, ...patch }));
   };
 
+  const updateEditDraft = (patch: Partial<ChannelConfig>) => {
+    setEditDraft((d) => d ? { ...d, ...patch } : d);
+  };
+
   // Persist channel list via PUT /api/my/profile
   const persistChannels = async (newChannels: ChannelConfig[]): Promise<boolean> => {
     setSaving(true);
     setError(null);
     try {
-      const result = await updateMyProfile({
-        config: { channels: newChannels } as Partial<ProfileConfig>,
+      const result = await updateMyProfileConfig(profile, {
+        channels: newChannels,
       });
       onProfileUpdated?.(result);
       setSaved(true);
@@ -321,20 +448,33 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
   };
 
   const handleAdd = async () => {
-    // Strip empty string fields to keep payload clean
-    const cleaned: ChannelConfig = { type: draft.type, enabled: draft.enabled ?? true };
-    for (const [k, v] of Object.entries(draft)) {
-      if (k === "type" || k === "enabled") continue;
-      if (v !== "" && v != null) {
-        (cleaned as unknown as Record<string, unknown>)[k] = v;
-      }
-    }
+    const cleaned = cleanChannelDraft(draft);
     const ok = await persistChannels([...channels, cleaned]);
     if (ok) {
       setShowAddForm(false);
       setDraft({ type: "telegram", enabled: true, ...defaultsForType("telegram") });
       setNewType("telegram");
     }
+  };
+
+  const startEdit = (idx: number) => {
+    setEditingIdx(idx);
+    setEditDraft({ ...channels[idx] });
+    setShowAddForm(false);
+  };
+
+  const cancelEdit = () => {
+    setEditingIdx(null);
+    setEditDraft(null);
+  };
+
+  const handleSaveEdit = async () => {
+    if (editingIdx == null || !editDraft) return;
+    const updated = channels.map((ch, i) =>
+      i === editingIdx ? cleanChannelDraft(editDraft) : ch,
+    );
+    const ok = await persistChannels(updated);
+    if (ok) cancelEdit();
   };
 
   const confirmRemove = async () => {
@@ -440,6 +580,14 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
                     </button>
                     {/* Delete */}
                     <button
+                      onClick={() => startEdit(idx)}
+                      disabled={saving}
+                      className="shrink-0 rounded-lg p-2 text-muted hover:text-text-strong hover:bg-surface-dark/70 disabled:opacity-40 transition"
+                      title="Edit channel"
+                    >
+                      <Pencil size={14} />
+                    </button>
+                    <button
                       onClick={() => setPendingRemoveIdx(idx)}
                       disabled={saving}
                       className="shrink-0 rounded-lg p-2 text-muted hover:text-red-400 hover:bg-red-500/10 disabled:opacity-40 transition"
@@ -456,6 +604,33 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
                   {usesWebhook(channel) && (
                     <div className="ml-12 pr-1">
                       <WebhookUrlField channelType={channel.type} profileId={profile.id} />
+                    </div>
+                  )}
+                  {editingIdx === idx && editDraft && (
+                    <div className="ml-12 rounded-xl border border-border/70 bg-surface-dark/40 p-4">
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <ChannelFormFields
+                          draft={editDraft}
+                          onChange={updateEditDraft}
+                          profileId={profile.id}
+                        />
+                      </div>
+                      <div className="mt-4 flex items-center gap-3">
+                        <button
+                          onClick={() => void handleSaveEdit()}
+                          disabled={saving}
+                          className="flex items-center gap-2 rounded-xl bg-accent px-4 py-2 text-xs font-medium text-white hover:bg-accent-dim disabled:opacity-30 transition"
+                        >
+                          {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+                          Save Channel
+                        </button>
+                        <button
+                          onClick={cancelEdit}
+                          className="rounded-xl border border-border px-4 py-2 text-xs text-muted hover:text-text-strong hover:border-accent/30 transition"
+                        >
+                          Cancel
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -511,7 +686,11 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
             </div>
 
             {/* Dynamic fields */}
-            <ChannelFormFields draft={draft} onChange={updateDraft} />
+            <ChannelFormFields
+              draft={draft}
+              onChange={updateDraft}
+              profileId={profile.id}
+            />
           </div>
 
           <div className="mt-6 flex items-center gap-3">
