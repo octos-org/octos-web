@@ -64,6 +64,24 @@ async function liveApi<T>(
   );
 }
 
+async function expectNoRuntimeOverlay(page: Page) {
+  const state = await page.evaluate(() => ({
+    hasOverlay: Boolean(
+      document.querySelector("[plugin-vite], vite-error-overlay, #webpack-dev-server-client-overlay"),
+    ),
+    horizontalOverflow:
+      document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+    runtimeErrorText: /TypeError|ReferenceError|Cannot read properties|Internal server error/i.test(
+      document.body.innerText,
+    ),
+  }));
+  expect(state).toEqual({
+    hasOverlay: false,
+    horizontalOverflow: false,
+    runtimeErrorText: false,
+  });
+}
+
 test.describe("live Settings and profile smoke", () => {
   test("loads Settings tabs without the mocked harness", async ({ page }) => {
     await ensureSoloSession(page);
@@ -76,6 +94,46 @@ test.describe("live Settings and profile smoke", () => {
       await tab.click();
       await expect(page.locator("text=No profile available")).toHaveCount(0);
     }
+  });
+
+  test("loads admin Settings tabs and OminiX offline state without mocks", async ({ page }) => {
+    await ensureSoloSession(page);
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: LIVE_TIMEOUT });
+
+    const usersTab = page.locator("aside button", { hasText: "Users" }).first();
+    await expect(usersTab).toBeVisible({ timeout: LIVE_TIMEOUT });
+    await usersTab.click();
+    await expect(page.getByText("Create Sub-Account")).toBeVisible({ timeout: LIVE_TIMEOUT });
+    await expect(page.getByText("Allowed Emails")).toBeVisible({ timeout: LIVE_TIMEOUT });
+    await expectNoRuntimeOverlay(page);
+
+    await page.locator("aside button", { hasText: "System" }).first().click();
+    await expect(page.getByText("Operator Overview")).toBeVisible({ timeout: LIVE_TIMEOUT });
+    await expect(page.getByText("Live Logs")).toBeVisible({ timeout: LIVE_TIMEOUT });
+    await expectNoRuntimeOverlay(page);
+
+    await page.locator("aside button", { hasText: "Server" }).first().click();
+    await expect(page.getByText("Deployment Mode")).toBeVisible({ timeout: LIVE_TIMEOUT });
+    await expect(page.getByText("Admin Token Status")).toBeVisible({ timeout: LIVE_TIMEOUT });
+    await expectNoRuntimeOverlay(page);
+
+    await page.locator("aside button", { hasText: "OminiX" }).first().click();
+    await expect(page.getByRole("heading", { name: "OminiX API" })).toBeVisible({ timeout: LIVE_TIMEOUT });
+    await expect(page.getByRole("heading", { name: "Enabled Platform Models" })).toBeVisible({ timeout: LIVE_TIMEOUT });
+    await expect(page.getByRole("heading", { name: "Available Catalog" })).toBeVisible({ timeout: LIVE_TIMEOUT });
+    await expect(page.getByRole("heading", { name: "Logs" })).toBeVisible({ timeout: LIVE_TIMEOUT });
+    const enabledModels = page.locator("section", { hasText: "Enabled Platform Models" });
+    await expect(
+      enabledModels.getByText("qwen3-asr-1.7b").first(),
+    ).toBeVisible({ timeout: LIVE_TIMEOUT });
+    await expect(
+      page.getByText("available models:", { exact: false }).first(),
+    ).toBeVisible({ timeout: LIVE_TIMEOUT });
+    await expect(page.getByText("No catalog models returned")).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
+    await expectNoRuntimeOverlay(page);
   });
 
   test("persists Home config through the real profile endpoint", async ({ page }) => {
