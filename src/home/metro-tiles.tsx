@@ -62,11 +62,27 @@ const TILE_DEFS: TileDef[] = [
   { id: "voice", widgetType: "voice-orb", label: "Voice", accent: "#30251d", defaultLayout: { col: 5, row: 3, w: 2, h: 2 } },
   { id: "news", widgetType: "news", label: "Headlines", accent: "#2a211a", defaultLayout: { col: 1, row: 4, w: 4, h: 2 } },
   { id: "calendar", widgetType: "calendar", label: "Calendar", accent: "#32483c", defaultLayout: { col: 1, row: 6, w: 2, h: 2 } },
-  { id: "timer", widgetType: "timer", label: "Timer", accent: "#5a4227", defaultLayout: { col: 3, row: 6, w: 2, h: 1 } },
+  { id: "timer", widgetType: "timer", label: "Timer", accent: "#5a4227", defaultLayout: { col: 3, row: 6, w: 2, h: 2 } },
   { id: "photo", widgetType: "photo-frame", label: "Photos", accent: "#241f1a", defaultLayout: { col: 5, row: 5, w: 2, h: 2 } },
 ];
 
 const TILE_INDEX = new Map(TILE_DEFS.map((tile, index) => [tile.id, index]));
+const TILE_MIN_HEIGHTS: Record<string, { desktop: number; mobile?: number }> = {
+  timer: { desktop: 2, mobile: 3 },
+};
+
+function minHeightForTile(id: string, cols = COLS): number {
+  const rule = TILE_MIN_HEIGHTS[id];
+  if (!rule) return 1;
+  return cols <= MOBILE_COLS ? rule.mobile ?? rule.desktop : rule.desktop;
+}
+
+function withTileMinimum(id: string, layout: TileLayout, cols = COLS): TileLayout {
+  return {
+    ...layout,
+    h: Math.max(minHeightForTile(id, cols), layout.h),
+  };
+}
 
 function defaultLayouts(): Record<string, TileLayout> {
   const out: Record<string, TileLayout> = {};
@@ -88,7 +104,10 @@ function normalizeLayouts(
       col: numberOr(saved.col, defaults[tile.id].col),
       row: numberOr(saved.row, defaults[tile.id].row),
       w: numberOr(saved.w, defaults[tile.id].w),
-      h: numberOr(saved.h, defaults[tile.id].h),
+      h: Math.max(
+        minHeightForTile(tile.id),
+        numberOr(saved.h, defaults[tile.id].h),
+      ),
     };
   }
   return out;
@@ -113,8 +132,9 @@ function seedVisibleLayouts(
   const placed: Record<string, TileLayout> = {};
   for (const id of visibleIds) {
     if (source[id]) {
-      next[id] = source[id];
-      placed[id] = source[id];
+      const layout = withTileMinimum(id, source[id], cols);
+      next[id] = layout;
+      placed[id] = layout;
     }
   }
   for (const tile of TILE_DEFS) {
@@ -156,12 +176,12 @@ function hasCollision(
   visibleIds: Set<string>,
   cols: number,
 ): boolean {
-  const clamped = clampLayoutForCols(candidate, cols);
+  const clamped = clampLayoutForTile(id, candidate, cols);
   for (const otherId of visibleIds) {
     if (otherId === id) continue;
     const other = allLayouts[otherId];
     if (!other) continue;
-    if (tilesOverlap(clamped, clampLayoutForCols(other, cols))) return true;
+    if (tilesOverlap(clamped, clampLayoutForTile(otherId, other, cols))) return true;
   }
   return false;
 }
@@ -172,7 +192,7 @@ function compactLayouts(
   cols: number,
 ): Record<string, TileLayout> {
   const sorted = [...visibleIds]
-    .map(id => ({ id, layout: clampLayoutForCols(layouts[id] ?? { col: 1, row: 1, w: 1, h: 1 }, cols) }))
+    .map(id => ({ id, layout: clampLayoutForTile(id, layouts[id] ?? { col: 1, row: 1, w: 1, h: 1 }, cols) }))
     .sort((a, b) => a.layout.row - b.layout.row || a.layout.col - b.layout.col);
 
   const result = { ...layouts };
@@ -186,7 +206,7 @@ function compactLayouts(
         if (otherId === id) continue;
         const other = result[otherId];
         if (!other) continue;
-        if (tilesOverlap(candidate, clampLayoutForCols(other, cols))) {
+        if (tilesOverlap(candidate, clampLayoutForTile(otherId, other, cols))) {
           fits = false;
           break;
         }
@@ -220,6 +240,10 @@ function clampLayoutForCols(layout: TileLayout, cols: number): TileLayout {
   return { ...layout, col, w, row, h };
 }
 
+function clampLayoutForTile(id: string, layout: TileLayout, cols: number): TileLayout {
+  return clampLayoutForCols(withTileMinimum(id, layout, cols), cols);
+}
+
 function firstAvailableLayout(
   tile: TileDef,
   placed: Record<string, TileLayout>,
@@ -245,7 +269,7 @@ function packLayoutsForTiles(tiles: TileDef[], cols: number): Record<string, Til
   const out = defaultLayouts();
   const placed: Record<string, TileLayout> = {};
   for (const tile of tiles) {
-    const layout = firstAvailableLayout(tile, placed, cols);
+    const layout = withTileMinimum(tile.id, firstAvailableLayout(tile, placed, cols), cols);
     placed[tile.id] = layout;
     out[tile.id] = layout;
   }
@@ -453,7 +477,7 @@ function useTileDrag(
     const { cols, stepX, stepY } = getGridMetrics(gridEl);
     const rawLayout = layoutsRef.current[tileId];
     if (!rawLayout) return;
-    const layout = clampLayoutForCols(rawLayout, cols);
+    const layout = clampLayoutForTile(tileId, rawLayout, cols);
     dragRef.current = { id: tileId, startCol: layout.col, startRow: layout.row, startX: e.clientX, startY: e.clientY, stepX, stepY, cols };
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   }, [editMode]);
@@ -464,7 +488,7 @@ function useTileDrag(
     const dx = Math.round((e.clientX - startX) / stepX);
     const dy = Math.round((e.clientY - startY) / stepY);
     const w = Math.min(cols, layoutsRef.current[id]?.w ?? 1);
-    const h = layoutsRef.current[id]?.h ?? 1;
+    const h = Math.max(minHeightForTile(id, cols), layoutsRef.current[id]?.h ?? 1);
     const newCol = Math.max(1, Math.min(cols - w + 1, startCol + dx));
     const newRow = Math.max(1, Math.min(MAX_ROWS - h + 1, startRow + dy));
     const candidate = { ...layoutsRef.current[id], col: newCol, row: newRow };
@@ -522,7 +546,7 @@ function useTileResize(
     const { cols, stepX, stepY } = getGridMetrics(gridEl);
     const rawLayout = layoutsRef.current[tileId];
     if (!rawLayout) return;
-    const layout = clampLayoutForCols(rawLayout, cols);
+    const layout = clampLayoutForTile(tileId, rawLayout, cols);
 
     resizeRef.current = {
       id: tileId,
@@ -546,7 +570,7 @@ function useTileResize(
     const row = layoutsRef.current[id]?.row ?? 1;
     const maxH = MAX_ROWS - row + 1;
     const newW = Math.max(1, Math.min(maxW, startW + dw));
-    const newH = Math.max(1, Math.min(maxH, startH + dh));
+    const newH = Math.max(minHeightForTile(id, cols), Math.min(maxH, startH + dh));
     setLayouts(prev => {
       const base = seedVisibleLayouts(prev, layoutsRef.current, visibleIdsRef.current, cols);
       const cur = base[id];
@@ -588,7 +612,7 @@ function useTileResize(
     const maxW = cols - cur.col + 1;
     const maxH = MAX_ROWS - cur.row + 1;
     const newW = Math.max(1, Math.min(maxW, cur.w + delta.w));
-    const newH = Math.max(1, Math.min(maxH, cur.h + delta.h));
+    const newH = Math.max(minHeightForTile(tileId, cols), Math.min(maxH, cur.h + delta.h));
     if (cur.w === newW && cur.h === newH) return;
     const candidate = { ...cur, w: newW, h: newH };
     if (hasCollision(tileId, candidate, base, visibleIdsRef.current, cols)) return;
@@ -711,7 +735,8 @@ export function MetroTileGrid({ onActivate, nightActive }: MetroTileGridProps) {
         onPointerUp={() => { drag.onPointerUp(); resize.onResizePointerUp(); }}
       >
         {visibleTiles.map(tile => {
-          const layout = clampLayoutForCols(
+          const layout = clampLayoutForTile(
+            tile.id,
             effectiveLayouts[tile.id] ?? tile.defaultLayout,
             gridCols,
           );

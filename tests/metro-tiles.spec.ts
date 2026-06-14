@@ -39,6 +39,77 @@ test.describe("Metro tiles", () => {
     expect(savedTimer?.h).toBeGreaterThan(1);
   });
 
+  test("default timer tile contains its idle controls without clipping", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto("/home", { waitUntil: "networkidle" });
+    await expect(page.locator(".metro-grid")).toBeVisible();
+
+    const clipping = await page.evaluate(() => {
+      const tile = document.querySelector('.metro-tile[data-tile-id="timer"]');
+      const widget = tile?.querySelector(".home-timer-widget");
+      if (!tile || !widget) return null;
+
+      const tileRect = tile.getBoundingClientRect();
+      const widgetRect = widget.getBoundingClientRect();
+      return {
+        topOverflow: Math.ceil(tileRect.top - widgetRect.top),
+        bottomOverflow: Math.ceil(widgetRect.bottom - tileRect.bottom),
+        gridRowEnd: getComputedStyle(tile).gridRowEnd,
+      };
+    });
+
+    expect(clipping).not.toBeNull();
+    expect(clipping?.gridRowEnd).toBe("span 2");
+    expect(clipping?.topOverflow).toBeLessThanOrEqual(0);
+    expect(clipping?.bottomOverflow).toBeLessThanOrEqual(0);
+  });
+
+  test("legacy saved timer layout is upgraded to the minimum readable height", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.evaluate(() => {
+      localStorage.setItem(
+        "octos_home_metro_layout",
+        JSON.stringify({
+          timer: { col: 3, row: 6, w: 2, h: 1 },
+        }),
+      );
+    });
+    await page.goto("/home", { waitUntil: "networkidle" });
+    await expect(page.locator(".metro-grid")).toBeVisible();
+
+    const timerGridRowEnd = await page.evaluate(() => {
+      const tile = document.querySelector('.metro-tile[data-tile-id="timer"]');
+      return tile ? getComputedStyle(tile).gridRowEnd : null;
+    });
+
+    expect(timerGridRowEnd).toBe("span 2");
+  });
+
+  test("mobile timer tile stays tall enough for wrapped preset controls", async ({ page }) => {
+    await page.setViewportSize({ width: 400, height: 800 });
+    await page.goto("/home", { waitUntil: "networkidle" });
+    await expect(page.locator(".metro-grid")).toBeVisible();
+
+    const clipping = await page.evaluate(() => {
+      const tile = document.querySelector('.metro-tile[data-tile-id="timer"]');
+      const widget = tile?.querySelector(".home-timer-widget");
+      if (!tile || !widget) return null;
+
+      const tileRect = tile.getBoundingClientRect();
+      const widgetRect = widget.getBoundingClientRect();
+      return {
+        topOverflow: Math.ceil(tileRect.top - widgetRect.top),
+        bottomOverflow: Math.ceil(widgetRect.bottom - tileRect.bottom),
+        gridRowEnd: getComputedStyle(tile).gridRowEnd,
+      };
+    });
+
+    expect(clipping).not.toBeNull();
+    expect(clipping?.gridRowEnd).toBe("span 3");
+    expect(clipping?.topOverflow).toBeLessThanOrEqual(0);
+    expect(clipping?.bottomOverflow).toBeLessThanOrEqual(0);
+  });
+
   test("resize persists across reload", async ({ page }) => {
     await page.getByRole("button", { name: "Edit" }).click();
 
