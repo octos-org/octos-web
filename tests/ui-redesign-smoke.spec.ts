@@ -258,6 +258,92 @@ test.describe("UI redesign shell smoke", () => {
     }
   });
 
+  test("mobile home navigation keeps visible controls inside the viewport", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/", { waitUntil: "networkidle" });
+
+    const offscreenControls = await page.evaluate(() => {
+      const controls = Array.from(
+        document.querySelectorAll(".workbench-topbar a, .workbench-topbar button"),
+      );
+      return controls
+        .map((control) => {
+          const rect = control.getBoundingClientRect();
+          const text =
+            (control.textContent ||
+              control.getAttribute("aria-label") ||
+              control.getAttribute("title") ||
+              "").trim();
+          return {
+            text,
+            left: Math.round(rect.left),
+            right: Math.round(rect.right),
+            width: Math.round(rect.width),
+          };
+        })
+        .filter(
+          (control) =>
+            control.width > 0 &&
+            (control.left < -1 || control.right > window.innerWidth + 1),
+        );
+    });
+
+    expect(offscreenControls).toEqual([]);
+  });
+
+  test("home settings drawer hides closed controls from visual audits", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/home", { waitUntil: "networkidle" });
+
+    const panel = page.locator(".home-settings-panel");
+    await expect(panel).toHaveCSS("visibility", "hidden");
+
+    await page.locator(".home-settings-gear").click();
+    await expect(panel).toHaveCSS("visibility", "visible");
+
+    await page.getByRole("button", { name: "Close" }).click();
+    await expect(panel).toHaveCSS("visibility", "hidden");
+  });
+
+  test("home blank space does not enter conversation mode", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/home", { waitUntil: "networkidle" });
+
+    const readMode = () =>
+      page.evaluate(() => {
+        const layers = Array.from(document.querySelectorAll(".home-layer"));
+        return layers.map((layer) => {
+          const style = getComputedStyle(layer);
+          return {
+            opacity: style.opacity,
+            pointerEvents: style.pointerEvents,
+          };
+        });
+      });
+
+    expect(await readMode()).toEqual([
+      { opacity: "1", pointerEvents: "auto" },
+      { opacity: "0", pointerEvents: "none" },
+    ]);
+
+    await page.mouse.click(1320, 820);
+    await page.waitForTimeout(100);
+    expect(await readMode()).toEqual([
+      { opacity: "1", pointerEvents: "auto" },
+      { opacity: "0", pointerEvents: "none" },
+    ]);
+
+    await page.getByRole("button", { name: "Chat" }).click();
+    await expect.poll(readMode).toEqual([
+      { opacity: "0", pointerEvents: "none" },
+      { opacity: "1", pointerEvents: "auto" },
+    ]);
+  });
+
   test("workspace surfaces use the shared topbar titles", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
 

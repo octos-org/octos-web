@@ -465,6 +465,7 @@ export function OminixTab() {
   const [logs, setLogs] = useState<OminixLogResponse | null>(null);
   const [logLines, setLogLines] = useState(80);
   const [catalogSearch, setCatalogSearch] = useState("");
+  const [catalogNotice, setCatalogNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -474,38 +475,51 @@ export function OminixTab() {
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setCatalogNotice(null);
 
-    const [
-      statusResult,
-      healthResult,
-      platformResult,
-      availableResult,
-      logsResult,
-    ] =
-      await Promise.allSettled([
-        fetchPlatformSkillsStatus(),
-        fetchPlatformSkillHealth("ominix-api"),
-        fetchOminixPlatformModels(),
-        fetchOminixAvailableModels(),
-        fetchOminixLogs(logLines),
-      ]);
+    const [statusResult, healthResult, logsResult] = await Promise.allSettled([
+      fetchPlatformSkillsStatus(),
+      fetchPlatformSkillHealth("ominix-api"),
+      fetchOminixLogs(logLines),
+    ]);
 
     const errors: string[] = [];
-
-    if (statusResult.status === "fulfilled") setStatus(statusResult.value);
-    else errors.push(`status: ${errorMessage(statusResult.reason)}`);
+    let nextStatus: PlatformSkillsStatus | null = null;
+    if (statusResult.status === "fulfilled") {
+      nextStatus = statusResult.value;
+      setStatus(nextStatus);
+    } else {
+      errors.push(`status: ${errorMessage(statusResult.reason)}`);
+    }
 
     if (healthResult.status === "fulfilled") setHealth(healthResult.value);
     else errors.push(`health: ${errorMessage(healthResult.reason)}`);
+
+    if (logsResult.status === "fulfilled") setLogs(logsResult.value);
+    else errors.push(`logs: ${errorMessage(logsResult.reason)}`);
+
+    const canLoadAvailableCatalog = Boolean(
+      nextStatus?.ominix_api.healthy &&
+        nextStatus.ominix_api.service_registered,
+    );
+
+    const [platformResult, availableResult] = await Promise.allSettled([
+      fetchOminixPlatformModels(),
+      canLoadAvailableCatalog
+        ? fetchOminixAvailableModels()
+        : Promise.resolve([] as OminixCatalogModel[]),
+    ]);
 
     if (platformResult.status === "fulfilled") setPlatformModels(platformResult.value);
     else errors.push(`models: ${errorMessage(platformResult.reason)}`);
 
     if (availableResult.status === "fulfilled") setAvailableModels(availableResult.value);
     else errors.push(`available models: ${errorMessage(availableResult.reason)}`);
-
-    if (logsResult.status === "fulfilled") setLogs(logsResult.value);
-    else errors.push(`logs: ${errorMessage(logsResult.reason)}`);
+    if (!canLoadAvailableCatalog) {
+      setCatalogNotice(
+        "Catalog sync is paused until OminiX API is installed and running.",
+      );
+    }
 
     setError(errors.length ? errors.join("\n") : null);
     setLoading(false);
@@ -793,6 +807,11 @@ export function OminixTab() {
           />
         }
       >
+        {catalogNotice && (
+          <div className="mb-3 rounded-lg border border-yellow-400/30 bg-yellow-400/5 px-4 py-3 text-xs text-yellow-300">
+            {catalogNotice}
+          </div>
+        )}
         <div className="mb-3 text-xs text-muted">
           {filteredCatalogModels.length} of {catalogModels.length} models visible
         </div>

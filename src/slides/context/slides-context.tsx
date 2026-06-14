@@ -7,6 +7,8 @@ import {
   type ReactNode,
 } from "react";
 
+import { getMyProfileStatus } from "@/settings/settings-api";
+
 import type { SlidesProject, Slide } from "../types";
 import { useSlidesProject, updateSlidesProject } from "../store";
 import { fetchSlidesManifest, listSlidesFiles } from "../api";
@@ -69,6 +71,12 @@ export function SlidesProvider({
       try {
         const latest = projectRef.current;
         if (!latest?.slug) return;
+        const profileStatus = await getMyProfileStatus();
+        if (stopped) return;
+        if (profileStatus?.running === false) {
+          idleStreak += 1;
+          return;
+        }
 
         // List BOTH the scaffold dir and the plugin-output dir. The
         // `mofa_slides` plugin writes generated PNGs to

@@ -11,6 +11,7 @@ import type { SiteProject } from "../types";
 const threadStoreMocks = vi.hoisted(() => ({
   loadHistory: vi.fn(),
 }));
+const bridgeSendMock = vi.hoisted(() => vi.fn());
 const sitesApiMocks = vi.hoisted(() => ({
   hydrateSiteProjectFromSession: vi.fn(),
 }));
@@ -33,7 +34,7 @@ vi.mock("@/runtime/runtime-provider", () => ({
 }));
 
 vi.mock("@/runtime/ui-protocol-send", () => ({
-  sendMessage: vi.fn(),
+  sendMessage: bridgeSendMock,
 }));
 
 vi.mock("@/store/thread-store", () => ({
@@ -130,6 +131,7 @@ beforeEach(() => {
   installLocalStorageStub();
   localStorage.clear();
   threadStoreMocks.loadHistory.mockReset();
+  bridgeSendMock.mockReset();
   sitesApiMocks.hydrateSiteProjectFromSession.mockReset();
   sitesContextMocks.project = undefined;
   sitesContextMocks.save.mockReset();
@@ -153,6 +155,31 @@ afterEach(() => {
 });
 
 describe("SitesChat approval requests", () => {
+  it("does not auto-scaffold or hydrate an already scaffolded local project", async () => {
+    seedProject({ scaffolded: true, slug: "physics-learning-studio" });
+    sitesApiMocks.hydrateSiteProjectFromSession.mockRejectedValue(
+      new Error("HTTP 503"),
+    );
+
+    const harness = await mountSitesChat();
+    try {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(sitesApiMocks.hydrateSiteProjectFromSession).not.toHaveBeenCalled();
+      expect(bridgeSendMock).not.toHaveBeenCalled();
+      expect(sitesContextMocks.save).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          scaffolded: false,
+          scaffoldError: "HTTP 503",
+        }),
+      );
+    } finally {
+      harness.unmount();
+    }
+  });
+
   it("renders a blocking approval dialog for a topic-scoped approval", async () => {
     seedProject();
     const harness = await mountSitesChat();

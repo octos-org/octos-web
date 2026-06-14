@@ -7,6 +7,7 @@ import {
 } from "react";
 
 import { getSelectedProfileId } from "@/api/client";
+import { getMyProfileStatus } from "@/settings/settings-api";
 
 import { buildSitePreviewUrl, fetchSiteSession, listSiteFiles } from "../api";
 import { useSiteProject, updateSiteProject } from "../store";
@@ -37,12 +38,36 @@ export function SitesProvider({
 
     let stopped = false;
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
+    let idleStreak = 0;
+
+    function nextDelay(): number {
+      if (idleStreak < 3) return 5000;
+      if (idleStreak < 10) return 15_000;
+      return 30_000;
+    }
+
+    function schedule() {
+      if (stopped) return;
+      pollTimer = setTimeout(() => {
+        if (typeof document !== "undefined" && document.hidden) {
+          schedule();
+          return;
+        }
+        void pollProject();
+      }, nextDelay());
+    }
 
     async function pollProject() {
       try {
         const latest = projectRef.current;
         if (!latest?.slug) return;
         const profileId = latest.profileId || getSelectedProfileId() || undefined;
+        const profileStatus = await getMyProfileStatus();
+        if (stopped) return;
+        if (profileStatus?.running === false) {
+          idleStreak += 1;
+          return;
+        }
 
         const files = await listSiteFiles(`sites/${latest.slug}`, {
           sessionId: latest.id,
@@ -77,10 +102,14 @@ export function SitesProvider({
             nextUpdate.previewUrl !== latest.previewUrl;
 
           if (changed) {
+            idleStreak = 0;
             updateSiteProject(latest.id, nextUpdate);
             reload();
+          } else {
+            idleStreak += 1;
           }
         } else if (!latest.previewUrl) {
+          idleStreak = 0;
           updateSiteProject(latest.id, {
             profileId: profileId || latest.profileId,
             previewUrl: buildSitePreviewUrl(
@@ -90,11 +119,14 @@ export function SitesProvider({
             ),
           });
           reload();
+        } else {
+          idleStreak += 1;
         }
       } catch {
         // The site scaffold can still be warming up.
+        idleStreak += 1;
       } finally {
-        if (!stopped) pollTimer = setTimeout(pollProject, 5000);
+        schedule();
       }
     }
 

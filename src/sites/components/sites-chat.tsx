@@ -122,6 +122,7 @@ export function SitesChat({ sessionId }: Props) {
   const projectId = project?.id;
   const projectTitle = project?.title;
   const projectScaffolded = project?.scaffolded;
+  const projectScaffoldError = project?.scaffoldError;
   const historyTopic = project?.preset ? `site ${project.preset}` : undefined;
   // M10.5: ThreadStore is the single source of truth. SitesChat still
   // reads a flattened `Message[]` for backwards compatibility with its
@@ -154,6 +155,9 @@ export function SitesChat({ sessionId }: Props) {
     async (request?: SessionSendRequest) => {
       const current = projectRef.current;
       if (!current?.id) return;
+      if (current.scaffolded && current.slug && !current.scaffoldError) {
+        return;
+      }
 
       if (scaffoldPromiseRef.current) {
         return scaffoldPromiseRef.current;
@@ -284,8 +288,9 @@ export function SitesChat({ sessionId }: Props) {
 
   useEffect(() => {
     if (!projectId) return;
+    if (projectScaffolded || projectScaffoldError) return;
     void ensureSiteScaffolded();
-  }, [ensureSiteScaffolded, projectId, projectScaffolded]);
+  }, [ensureSiteScaffolded, projectId, projectScaffolded, projectScaffoldError]);
 
   const beforeSend = useCallback(
     async (request: SessionSendRequest): Promise<SessionBeforeSendResult> => {
