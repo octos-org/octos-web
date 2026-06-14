@@ -97,13 +97,9 @@ describe("useWeather", () => {
     });
   });
 
-  it("does not fall back to a hardcoded city when location resolution fails", async () => {
+  it("does not call IP geolocation or fall back to a hardcoded city when location resolution fails", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes("ipapi.co")) {
-        return new Response("{}", { status: 503 });
-      }
-      throw new Error(`unexpected weather request: ${url}`);
+      throw new Error(`unexpected weather request: ${String(input)}`);
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -116,6 +112,6 @@ describe("useWeather", () => {
     await waitFor(() => expect(screen.getByTestId("loading").textContent).toBe("no"));
     expect(screen.getByTestId("error").textContent).toBe("location_unavailable");
     expect(screen.getByTestId("city").textContent).toBe("");
-    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("forecast"))).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

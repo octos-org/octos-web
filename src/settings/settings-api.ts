@@ -160,6 +160,113 @@ export interface Profile {
   status: ProfileStatus;
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+const DEFAULT_GATEWAY_CONFIG: GatewayConfig = {
+  max_history: null,
+  max_iterations: null,
+  system_prompt: null,
+  max_concurrent_sessions: null,
+  browser_timeout_secs: null,
+  max_output_tokens: null,
+};
+
+const DEFAULT_SANDBOX_CONFIG: SandboxConfig = {
+  enabled: false,
+  mode: "auto",
+  allow_network: false,
+  docker: {
+    image: "ubuntu:24.04",
+    cpu_limit: null,
+    memory_limit: null,
+    pids_limit: null,
+    mount_mode: "rw",
+    extra_binds: [],
+  },
+  read_allow_paths: [],
+};
+
+const DEFAULT_PROFILE_CONFIG: ProfileConfig = {
+  llm: {
+    primary: { family_id: "", model_id: "" },
+    fallbacks: [],
+  },
+  home: null,
+  channels: [],
+  gateway: DEFAULT_GATEWAY_CONFIG,
+  env_vars: {},
+  hooks: [],
+  email: null,
+  api_type: null,
+  admin_mode: false,
+  sandbox: DEFAULT_SANDBOX_CONFIG,
+  adaptive_routing: null,
+  content_routing: null,
+  plugins: { require_signed: false },
+};
+
+export function normalizeProfileConfig(config: Partial<ProfileConfig> | null | undefined): ProfileConfig {
+  const source = asRecord(config);
+  const llm = asRecord(source.llm);
+  const primary = asRecord(llm.primary);
+  const gateway = asRecord(source.gateway);
+  const sandbox = asRecord(source.sandbox);
+  const docker = asRecord(sandbox.docker);
+  const plugins = asRecord(source.plugins);
+
+  return {
+    ...DEFAULT_PROFILE_CONFIG,
+    ...source,
+    llm: {
+      primary: {
+        family_id: typeof primary.family_id === "string" ? primary.family_id : "",
+        model_id: typeof primary.model_id === "string" ? primary.model_id : "",
+        route:
+          primary.route && typeof primary.route === "object"
+            ? (primary.route as LlmPrimary["route"])
+            : null,
+      },
+      fallbacks: Array.isArray(llm.fallbacks) ? (llm.fallbacks as LlmPrimary[]) : [],
+    },
+    channels: Array.isArray(source.channels) ? source.channels : [],
+    gateway: {
+      ...DEFAULT_GATEWAY_CONFIG,
+      ...gateway,
+    },
+    env_vars: asRecord(source.env_vars) as Record<string, string>,
+    hooks: Array.isArray(source.hooks) ? source.hooks : [],
+    email: typeof source.email === "string" ? source.email : null,
+    api_type: typeof source.api_type === "string" ? source.api_type : null,
+    admin_mode: source.admin_mode === true,
+    sandbox: {
+      ...DEFAULT_SANDBOX_CONFIG,
+      ...sandbox,
+      docker: {
+        ...DEFAULT_SANDBOX_CONFIG.docker,
+        ...docker,
+        extra_binds: Array.isArray(docker.extra_binds) ? (docker.extra_binds as string[]) : [],
+      },
+      read_allow_paths: Array.isArray(sandbox.read_allow_paths)
+        ? (sandbox.read_allow_paths as string[])
+        : [],
+    },
+    plugins: {
+      require_signed: plugins.require_signed === true,
+    },
+  };
+}
+
+export function normalizeProfile(profile: Profile): Profile {
+  return {
+    ...profile,
+    config: normalizeProfileConfig(profile.config),
+  };
+}
+
 export interface ProviderModelsRequest {
   provider: string;
   model?: string;
@@ -180,7 +287,7 @@ export interface SkillInfo {
 
 export async function getMyProfile(): Promise<Profile | null> {
   try {
-    return await request<Profile>("/api/my/profile");
+    return normalizeProfile(await request<Profile>("/api/my/profile"));
   } catch {
     return null;
   }
@@ -189,10 +296,10 @@ export async function getMyProfile(): Promise<Profile | null> {
 export async function updateMyProfile(
   patch: { name?: string; enabled?: boolean; config?: Partial<ProfileConfig> },
 ): Promise<Profile> {
-  return await request<Profile>("/api/my/profile", {
+  return normalizeProfile(await request<Profile>("/api/my/profile", {
     method: "PUT",
     body: JSON.stringify(patch),
-  });
+  }));
 }
 
 export function mergeProfileConfig(
@@ -501,7 +608,8 @@ export async function fetchOperatorTasks(): Promise<OperatorTasksResponse | null
 }
 
 export async function fetchAllProfiles(): Promise<Profile[]> {
-  return await request<Profile[]>("/api/admin/profiles");
+  const profiles = await request<Profile[]>("/api/admin/profiles");
+  return profiles.map(normalizeProfile);
 }
 
 export async function startProfile(profileId: string): Promise<string | null> {

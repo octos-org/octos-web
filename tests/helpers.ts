@@ -123,6 +123,58 @@ function harnessReplyFor(message: string): string {
 async function installDefaultE2EHarness(page: Page) {
   const sessions = new Map<string, HarnessSession>();
   let adaptiveMode: "off" | "hedge" | "lane" = "off";
+  let harnessProfile = {
+    id: "admin",
+    name: "Admin",
+    enabled: true,
+    data_dir: null,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    status: {
+      running: false,
+      pid: null,
+      started_at: null,
+      uptime_secs: null,
+    },
+    config: {
+      llm: {
+        primary: { family_id: "openai", model_id: "gpt-5.4" },
+        fallbacks: [],
+      },
+      home: null,
+      channels: [],
+      gateway: {
+        max_history: null,
+        max_iterations: null,
+        system_prompt: null,
+        max_concurrent_sessions: null,
+        browser_timeout_secs: null,
+        max_output_tokens: null,
+      },
+      env_vars: {},
+      hooks: [],
+      email: "admin@localhost",
+      api_type: null,
+      admin_mode: true,
+      sandbox: {
+        enabled: false,
+        mode: "off",
+        allow_network: false,
+        docker: {
+          image: "ubuntu:24.04",
+          cpu_limit: null,
+          memory_limit: null,
+          pids_limit: null,
+          mount_mode: "read_only",
+          extra_binds: [],
+        },
+        read_allow_paths: [],
+      },
+      adaptive_routing: null,
+      content_routing: null,
+      plugins: { require_signed: false },
+    },
+  };
 
   const ensureSession = (id: string): HarnessSession => {
     let session = sessions.get(id);
@@ -197,6 +249,23 @@ async function installDefaultE2EHarness(page: Page) {
       },
     }),
   );
+  await page.route(/\/api\/my\/profile$/, async (route) => {
+    if (route.request().method() === "PUT") {
+      const body = route.request().postDataJSON() as {
+        name?: string;
+        enabled?: boolean;
+        config?: typeof harnessProfile.config;
+      };
+      harnessProfile = {
+        ...harnessProfile,
+        ...(body.name !== undefined ? { name: body.name } : {}),
+        ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
+        ...(body.config !== undefined ? { config: body.config } : {}),
+        updated_at: new Date().toISOString(),
+      };
+    }
+    await fulfillJson(route, harnessProfile);
+  });
   await page.route(/\/api\/status$/, (route) =>
     fulfillJson(route, {
       version: "test",

@@ -152,7 +152,11 @@ export function AdminSettingsPage() {
               {!isAdminOnlyTab && profile ? (
                 <>
                   {activeTab === "profile" && (
-                    <ProfileTab profile={profile} onProfileUpdated={setProfile} />
+                    <ProfileTab
+                      profile={profile}
+                      onProfileUpdated={setProfile}
+                      canDeleteProfile={Boolean(portal?.can_access_admin_portal)}
+                    />
                   )}
                   {activeTab === "llm" && (
                     <LlmTab profile={profile} onProfileUpdated={setProfile} />

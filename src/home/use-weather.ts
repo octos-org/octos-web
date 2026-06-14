@@ -4,10 +4,10 @@
  * Location resolution waterfall:
  *   1. City name from settings (geocoded via Open-Meteo Geocoding API)
  *   2. Browser Geolocation API
- *   3. IP-based geolocation (ipapi.co)
+ *   3. Weather unavailable if no trusted location source resolves
  *
  * Refreshes every 15 minutes. If all location sources fail, the hook reports
- * an error instead of showing a hardcoded city.
+ * an error instead of calling a third-party IP geolocation endpoint.
  */
 
 import { useState, useEffect, useRef } from "react";
@@ -105,20 +105,6 @@ async function fetchWeather(
   };
 }
 
-async function fetchIpLocation(): Promise<ResolvedLocation> {
-  const res = await fetch("https://ipapi.co/json/");
-  if (!res.ok) throw new Error(`IP geolocation HTTP ${res.status}`);
-  const data = (await res.json()) as {
-    latitude: number;
-    longitude: number;
-    city?: string;
-  };
-  if (typeof data.latitude !== "number" || typeof data.longitude !== "number") {
-    throw new Error("IP geolocation returned invalid coordinates");
-  }
-  return { lat: data.latitude, lon: data.longitude, city: data.city ?? null };
-}
-
 export function useWeather(): WeatherState {
   const { city } = useHomeSettings();
   const [state, setState] = useState<WeatherState>({
@@ -193,13 +179,6 @@ export function useWeather(): WeatherState {
         };
       } catch {
         // Geolocation denied or unavailable
-      }
-
-      // 3. IP-based geolocation
-      try {
-        return await fetchIpLocation();
-      } catch {
-        // IP geolocation also failed
       }
 
       throw new Error("location_unavailable");

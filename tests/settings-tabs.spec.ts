@@ -17,6 +17,7 @@ interface SettingsMockOptions {
   ominixServiceActionErrors?: Partial<Record<"start" | "stop" | "restart", { status: number; body: unknown }>>;
   ominixHealthError?: { status: number; body: unknown };
   accessibleProfiles?: AccessibleProfileMock[];
+  canAccessAdminPortal?: boolean;
 }
 
 interface AccessibleProfileMock {
@@ -132,11 +133,11 @@ async function installAdminSettingsMocks(
         },
         profile: activeProfile,
         portal: {
-          kind: "admin",
+          kind: options.canAccessAdminPortal === false ? "profile" : "admin",
           home_profile_id: "admin",
           home_route: "/",
-          can_access_admin_portal: true,
-          can_manage_users: true,
+          can_access_admin_portal: options.canAccessAdminPortal !== false,
+          can_manage_users: options.canAccessAdminPortal !== false,
           sub_account_limit: 10,
           accessible_profiles: accessibleProfiles,
         },
@@ -743,6 +744,22 @@ test.describe("Settings page — tab smoke tests", () => {
         page.locator("text=No profile available").first(),
       ).toBeVisible({ timeout: TIMEOUT });
     }
+  });
+
+  test("Profile tab hides destructive admin actions for profile-only users", async ({ page }) => {
+    await installServerSettingsMocks(page, { canAccessAdminPortal: false });
+    await seedAdminSession(page);
+
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: TIMEOUT });
+    await clickTab(page, "Profile");
+
+    await expect(
+      page.locator("h3", { hasText: "Profile Information" }),
+    ).toBeVisible({ timeout: TIMEOUT });
+    await expect(page.getByText("Delete Profile")).toHaveCount(0);
+    await expect(page.locator("aside button", { hasText: "Users" })).toHaveCount(0);
+    await expect(page.locator("aside button", { hasText: "OminiX" })).toHaveCount(0);
   });
 
   test("Profile save surfaces backend validation errors", async ({ page }) => {

@@ -105,6 +105,7 @@ interface ProfileTabProps {
   profile: Profile;
   onProfileUpdated: (p: Profile) => void;
   onNavigateBack?: () => void;
+  canDeleteProfile?: boolean;
 }
 
 type GatewayAction = "start" | "stop" | "restart";
@@ -119,7 +120,12 @@ interface EnvVarRow {
 
 // ── Component ──
 
-export function ProfileTab({ profile, onProfileUpdated, onNavigateBack }: ProfileTabProps) {
+export function ProfileTab({
+  profile,
+  onProfileUpdated,
+  onNavigateBack,
+  canDeleteProfile = false,
+}: ProfileTabProps) {
   // Profile name + editable fields
   const [name, setName] = useState(profile.name);
   const [autoStart, setAutoStart] = useState(profile.enabled);
@@ -650,43 +656,45 @@ export function ProfileTab({ profile, onProfileUpdated, onNavigateBack }: Profil
       </div>
 
       {/* ── Danger zone ── */}
-      <div className="mt-2 border-t border-border/40 pt-6">
-        <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-6">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-500/10 text-red-400">
-              <AlertTriangle size={20} />
+      {canDeleteProfile && (
+        <div className="mt-2 border-t border-border/40 pt-6">
+          <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-500/10 text-red-400">
+                <AlertTriangle size={20} />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-red-400">
+                  {LABELS.dangerZone}
+                </h3>
+                <p className="text-xs text-muted">{LABELS.dangerZoneDesc}</p>
+              </div>
             </div>
-            <div>
-              <h3 className="text-sm font-semibold text-red-400">
-                {LABELS.dangerZone}
-              </h3>
-              <p className="text-xs text-muted">{LABELS.dangerZoneDesc}</p>
-            </div>
-          </div>
 
-          <div className="flex items-center justify-between rounded-xl bg-surface-container/40 px-4 py-3">
-            <div>
-              <p className="text-sm font-medium text-text-strong">
+            <div className="flex items-center justify-between rounded-xl bg-surface-container/40 px-4 py-3">
+              <div>
+                <p className="text-sm font-medium text-text-strong">
+                  {LABELS.deleteProfile}
+                </p>
+                <p className="text-xs text-muted mt-0.5">
+                  {LABELS.deleteProfileBody}
+                </p>
+              </div>
+              <button
+                onClick={() => setDeleteProfileOpen(true)}
+                className="ml-4 shrink-0 flex items-center gap-2 rounded-xl bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 transition"
+              >
+                <Trash2 size={14} />
                 {LABELS.deleteProfile}
-              </p>
-              <p className="text-xs text-muted mt-0.5">
-                {LABELS.deleteProfileBody}
-              </p>
+              </button>
             </div>
-            <button
-              onClick={() => setDeleteProfileOpen(true)}
-              className="ml-4 shrink-0 flex items-center gap-2 rounded-xl bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 transition"
-            >
-              <Trash2 size={14} />
-              {LABELS.deleteProfile}
-            </button>
-          </div>
 
-          {deleteProfileError && (
-            <p className="mt-3 text-xs text-red-400">{deleteProfileError}</p>
-          )}
+            {deleteProfileError && (
+              <p className="mt-3 text-xs text-red-400">{deleteProfileError}</p>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* ── Confirm dialogs ── */}
       <ConfirmDialog

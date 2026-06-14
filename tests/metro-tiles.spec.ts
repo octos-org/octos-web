@@ -190,6 +190,57 @@ test.describe("Metro tiles", () => {
   });
 
   test("home widget order controls Metro tile order and placement", async ({ page }) => {
+    const widgets = [
+      { type: "weather", enabled: true, order: 0 },
+      { type: "clock", enabled: true, order: 1 },
+      { type: "quick-actions", enabled: true, order: 2 },
+      { type: "voice-orb", enabled: true, order: 3 },
+      { type: "news", enabled: true, order: 4 },
+      { type: "calendar", enabled: true, order: 5 },
+      { type: "timer", enabled: true, order: 6 },
+      { type: "photo-frame", enabled: false, order: 7 },
+      { type: "greeting", enabled: true, order: 8 },
+    ];
+    let profile = {
+      id: "admin",
+      name: "Admin",
+      enabled: true,
+      data_dir: null,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      status: {
+        running: false,
+        pid: null,
+        started_at: null,
+        uptime_secs: null,
+      },
+      config: {
+        home: {
+          widgets,
+          metro_layout: {},
+        },
+      },
+    };
+    await page.route("**/api/my/profile", async (route) => {
+      if (route.request().method() === "PUT") {
+        const body = route.request().postDataJSON() as {
+          config?: Record<string, unknown>;
+        };
+        profile = {
+          ...profile,
+          config: {
+            ...profile.config,
+            ...(body.config ?? {}),
+          },
+        };
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(profile),
+      });
+    });
+
     await page.evaluate(() => {
       localStorage.setItem(
         "octos_home_widgets",
