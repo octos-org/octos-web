@@ -1,72 +1,72 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
-/* ── Dark theme (default) ─ Graphite workbench ── */
+/* ── Dark theme (default) ─ Evening hearth ── */
 @theme {
   /* Surfaces */
-  --color-surface: #151817;
-  --color-surface-light: #1d2220;
-  --color-surface-dark: #0b0e0d;
-  --color-surface-container: #202522;
-  --color-surface-elevated: #29302c;
+  --color-surface: #1a1714;
+  --color-surface-light: #221e1a;
+  --color-surface-dark: #110f0c;
+  --color-surface-container: #252019;
+  --color-surface-elevated: #2e2820;
 
   /* Accent */
-  --color-accent: #c57b4d;
-  --color-accent-dim: #9d5d39;
-  --color-accent-container: rgba(197, 123, 77, 0.14);
+  --color-accent: #d4a574;
+  --color-accent-dim: #b08654;
+  --color-accent-container: rgba(212, 165, 116, 0.14);
 
   /* Borders & dividers */
-  --color-border: rgba(231, 238, 230, 0.11);
-  --color-outline: rgba(231, 238, 230, 0.18);
+  --color-border: rgba(244, 232, 214, 0.11);
+  --color-outline: rgba(244, 232, 214, 0.18);
 
   /* Text */
-  --color-muted: #99a399;
-  --color-text: #dce5dc;
-  --color-text-strong: #f4fbf3;
+  --color-muted: #a09689;
+  --color-text: #e4ddd4;
+  --color-text-strong: #f8f3ed;
 
   /* Chat bubbles */
-  --color-user-bubble: rgba(197, 123, 77, 0.13);
-  --color-assistant-bubble: #1a1e1c;
+  --color-user-bubble: rgba(212, 165, 116, 0.13);
+  --color-assistant-bubble: #211d18;
 
   /* Semantic */
-  --color-link: #52a99d;
-  --color-heading: #d69a58;
-  --color-heading-accent: #e2b45f;
-  --color-code-inline: #d88b5a;
+  --color-link: #7ca8b8;
+  --color-heading: #dbb07a;
+  --color-heading-accent: #e8c07f;
+  --color-code-inline: #d9a170;
   --color-code-block-bg: #0f0e0c;
   --color-code-header-bg: #191611;
   --color-code-text: #e4dbc9;
-  --color-blockquote-border: #c47445;
-  --color-sidebar: #101412;
-  --color-highlight: #d6a14d;
+  --color-blockquote-border: #d19b6c;
+  --color-sidebar: #15110e;
+  --color-highlight: #d9ad63;
 }
 
 /* ── Light theme ────────────────────────────────────── */
 [data-theme="light"] {
-  --color-surface: #f6f7f4;
+  --color-surface: #f8f7f3;
   --color-surface-light: #ffffff;
-  --color-surface-dark: #e8ebe6;
-  --color-surface-container: #eef1ed;
-  --color-surface-elevated: #fbfdf9;
+  --color-surface-dark: #ecefea;
+  --color-surface-container: #f3f1ec;
+  --color-surface-elevated: #fffefa;
 
-  --color-accent: #a9643f;
-  --color-accent-dim: #844a2f;
-  --color-accent-container: rgba(169, 100, 63, 0.10);
+  --color-accent: #b87a4a;
+  --color-accent-dim: #915f39;
+  --color-accent-container: rgba(184, 122, 74, 0.10);
 
-  --color-border: rgba(28, 30, 27, 0.12);
-  --color-outline: rgba(28, 30, 27, 0.20);
+  --color-border: rgba(35, 39, 34, 0.12);
+  --color-outline: rgba(35, 39, 34, 0.20);
 
-  --color-muted: #626a62;
-  --color-text: #242a25;
-  --color-text-strong: #101511;
+  --color-muted: #7a6f64;
+  --color-text: #2c2520;
+  --color-text-strong: #15100c;
 
   --color-user-bubble: rgba(169, 95, 57, 0.09);
   --color-assistant-bubble: #fbfcfa;
 
-  --color-link: #14786f;
-  --color-heading: #8a5738;
-  --color-heading-accent: #8f6428;
-  --color-code-inline: #a95f39;
+  --color-link: #4d7f91;
+  --color-heading: #9c663d;
+  --color-heading-accent: #a77532;
+  --color-code-inline: #b87a4a;
   --color-code-block-bg: #211d18;
   --color-code-header-bg: #332b22;
   --color-code-text: #f4ecdc;
@@ -113,7 +113,7 @@ body {
   margin: 0;
   background: var(--color-surface-dark);
   color: var(--color-text);
-  font-family: "SF Pro Text", "SF Pro Display", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: "SF Pro Text", "SF Pro Display", "PingFang SC", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -403,13 +403,15 @@ body {
   transition:
     background-color 0.16s ease,
     border-color 0.16s ease,
-    transform 0.16s ease;
+    box-shadow 0.18s ease;
 }
 
 .workbench-card:hover {
-  border-color: color-mix(in srgb, var(--color-accent) 34%, var(--color-border) 66%);
-  background: var(--color-surface-container);
-  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--color-accent) 38%, var(--color-border) 62%);
+  background: color-mix(in srgb, var(--color-surface-container) 88%, var(--color-accent) 12%);
+  box-shadow:
+    0 0 0 1px var(--color-accent-container),
+    0 10px 28px color-mix(in srgb, var(--color-accent) 12%, transparent);
 }
 
 .workbench-route-card {
@@ -569,6 +571,7 @@ body {
   background: color-mix(in srgb, var(--color-accent) 12%, var(--color-surface-container) 88%);
   color: var(--color-accent);
   box-shadow: inset 3px 0 0 var(--color-accent);
+  border-radius: 0 8px 8px 0;
 }
 
 @media (max-width: 768px) {
@@ -2296,6 +2299,7 @@ button, a, input, textarea {
   width: 100%;
   max-width: 900px;
   margin: 0 auto;
+  transition: transform 0.8s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @media (max-width: 600px) {

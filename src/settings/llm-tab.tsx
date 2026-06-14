@@ -20,7 +20,7 @@ import {
 import { request } from "@/api/client";
 import {
   formatSettingsError,
-  updateMyProfile,
+  updateMyProfileConfig,
   type Profile,
   type LlmPrimary,
 } from "./settings-api";
@@ -229,27 +229,25 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
     };
 
     try {
-      const result = await updateMyProfile({
-        config: {
-          llm: {
-            primary: {
-              family_id: effectiveFamilyId,
-              model_id: effectiveModelId,
-              route: primaryRoute.api_key_env || primaryRoute.base_url ? primaryRoute : null,
-            },
-            fallbacks: fallbacksPayload,
+      const result = await updateMyProfileConfig(profile, {
+        llm: {
+          primary: {
+            family_id: effectiveFamilyId,
+            model_id: effectiveModelId,
+            route: primaryRoute.api_key_env || primaryRoute.base_url ? primaryRoute : null,
           },
-          gateway: {
-            ...profile.config.gateway,
-            system_prompt: form.system_prompt.trim() || null,
-            max_output_tokens: optionalInt(form.max_output_tokens),
-            max_history: optionalInt(form.max_history),
-            max_iterations: optionalInt(form.max_iterations),
-            max_concurrent_sessions: optionalInt(form.max_concurrent_sessions),
-            browser_timeout_secs: optionalInt(form.browser_timeout_secs),
-          },
-          adaptive_routing: { enabled: form.adaptive_routing_enabled },
+          fallbacks: fallbacksPayload,
         },
+        gateway: {
+          ...profile.config.gateway,
+          system_prompt: form.system_prompt.trim() || null,
+          max_output_tokens: optionalInt(form.max_output_tokens),
+          max_history: optionalInt(form.max_history),
+          max_iterations: optionalInt(form.max_iterations),
+          max_concurrent_sessions: optionalInt(form.max_concurrent_sessions),
+          browser_timeout_secs: optionalInt(form.browser_timeout_secs),
+        },
+        adaptive_routing: { enabled: form.adaptive_routing_enabled },
       });
       onProfileUpdated(result);
       const newForm = profileToForm(result);

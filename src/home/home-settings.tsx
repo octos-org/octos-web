@@ -58,7 +58,6 @@ export function HomeSettingsPanel({ open, onClose }: HomeSettingsPanelProps) {
   // Reset drafts each time the panel opens so they pick up latest values.
   const [cityDraft, setCityDraft] = useState(s.city);
   const [feedDraft, setFeedDraft] = useState(s.newsFeedUrl);
-  const [prevOpen, setPrevOpen] = useState(open);
 
   // Event add form state
   const [evTitle, setEvTitle] = useState("");
@@ -69,13 +68,11 @@ export function HomeSettingsPanel({ open, onClose }: HomeSettingsPanelProps) {
   });
   const [evRecurring, setEvRecurring] = useState<CalendarEvent["recurring"]>(undefined);
 
-  if (open && !prevOpen) {
+  useEffect(() => {
+    if (!open) return;
     setCityDraft(s.city);
     setFeedDraft(s.newsFeedUrl);
-  }
-  if (open !== prevOpen) {
-    setPrevOpen(open);
-  }
+  }, [open, s.city, s.newsFeedUrl]);
 
   // Close on Escape
   useEffect(() => {

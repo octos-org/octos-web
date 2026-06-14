@@ -15,7 +15,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import {
-  updateMyProfile,
+  updateMyProfileConfig,
   formatSettingsError,
   getMyProfile,
   startMyGateway,
@@ -163,13 +163,11 @@ export function ProfileTab({ profile, onProfileUpdated, onNavigateBack }: Profil
     setSaving(true);
     setError(null);
     try {
-      const result = await updateMyProfile({
-        name: name.trim(),
-        enabled: autoStart,
-        config: {
-          admin_mode: adminMode,
-        },
-      });
+      const result = await updateMyProfileConfig(
+        profile,
+        { admin_mode: adminMode },
+        { name: name.trim(), enabled: autoStart },
+      );
       onProfileUpdated(result);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -281,7 +279,7 @@ export function ProfileTab({ profile, onProfileUpdated, onNavigateBack }: Profil
     }
 
     try {
-      const result = await updateMyProfile({ config: { env_vars: envVars } });
+      const result = await updateMyProfileConfig(profile, { env_vars: envVars });
       onProfileUpdated(result);
       // Reset rows from fresh server data
       setEnvRows(
