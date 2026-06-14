@@ -27,8 +27,6 @@ import { PhotoFrame } from "./photo-frame";
 import { SettingsGearButton, HomeSettingsPanel } from "./home-settings";
 import type { WidgetConfig, WidgetType } from "./widget-registry";
 
-const LS_LAYOUT_KEY = "octos_home_metro_layout";
-
 interface MetroTileGridProps {
   onActivate: (prefill?: string) => void;
   nightActive: boolean;
@@ -70,15 +68,6 @@ const TILE_DEFS: TileDef[] = [
 
 const TILE_INDEX = new Map(TILE_DEFS.map((tile, index) => [tile.id, index]));
 
-function loadLayouts(): Record<string, TileLayout> {
-  const defaults = defaultLayouts();
-  try {
-    const raw = localStorage.getItem(LS_LAYOUT_KEY);
-    if (raw) return normalizeLayouts(JSON.parse(raw), defaults);
-  } catch { /* ignore */ }
-  return defaults;
-}
-
 function defaultLayouts(): Record<string, TileLayout> {
   const out: Record<string, TileLayout> = {};
   for (const t of TILE_DEFS) out[t.id] = { ...t.defaultLayout };
@@ -103,18 +92,6 @@ function normalizeLayouts(
     };
   }
   return out;
-}
-
-function saveLayouts(layouts: Record<string, TileLayout>) {
-  try {
-    localStorage.setItem(LS_LAYOUT_KEY, JSON.stringify(layouts));
-  } catch { /* quota exceeded or unavailable */ }
-}
-
-function removeSavedLayouts() {
-  try {
-    localStorage.removeItem(LS_LAYOUT_KEY);
-  } catch { /* quota exceeded or unavailable */ }
 }
 
 function sameLayout(a?: TileLayout, b?: TileLayout): boolean {
@@ -456,6 +433,7 @@ function VoiceTile({ onActivate, lang }: { onActivate: (text?: string) => void; 
 function useTileDrag(
   layouts: Record<string, TileLayout>,
   setLayouts: (fn: (prev: Record<string, TileLayout>) => Record<string, TileLayout>) => void,
+  commitLayouts: (layouts: Record<string, TileLayout>) => void,
   editMode: boolean,
   visibleIds: Set<string>,
 ) {
@@ -502,9 +480,9 @@ function useTileDrag(
   const onPointerUp = useCallback(() => {
     if (dragRef.current) {
       dragRef.current = null;
-      saveLayouts(layoutsRef.current);
+      commitLayouts(layoutsRef.current);
     }
-  }, []);
+  }, [commitLayouts]);
 
   return { onPointerDown, onPointerMove, onPointerUp };
 }
@@ -513,6 +491,7 @@ function useTileDrag(
 function useTileResize(
   layouts: Record<string, TileLayout>,
   setLayouts: (fn: (prev: Record<string, TileLayout>) => Record<string, TileLayout>) => void,
+  commitLayouts: (layouts: Record<string, TileLayout>) => void,
   editMode: boolean,
   visibleIds: Set<string>,
 ) {
@@ -584,9 +563,9 @@ function useTileResize(
   const onResizePointerUp = useCallback(() => {
     if (resizeRef.current) {
       resizeRef.current = null;
-      saveLayouts(layoutsRef.current);
+      commitLayouts(layoutsRef.current);
     }
-  }, []);
+  }, [commitLayouts]);
 
   const onResizeKeyDown = useCallback((e: React.KeyboardEvent, tileId: string, gridEl: HTMLElement | null) => {
     if (!editMode || !gridEl) return;
@@ -598,23 +577,26 @@ function useTileResize(
     else return;
     e.preventDefault();
     const { cols } = getGridMetrics(gridEl);
-    setLayouts(prev => {
-      const base = seedVisibleLayouts(prev, layoutsRef.current, visibleIdsRef.current, cols);
-      const cur = base[tileId];
-      if (!cur) return prev;
-      const maxW = cols - cur.col + 1;
-      const maxH = MAX_ROWS - cur.row + 1;
-      const newW = Math.max(1, Math.min(maxW, cur.w + delta.w));
-      const newH = Math.max(1, Math.min(maxH, cur.h + delta.h));
-      if (cur.w === newW && cur.h === newH) return prev;
-      const candidate = { ...cur, w: newW, h: newH };
-      if (hasCollision(tileId, candidate, base, visibleIdsRef.current, cols)) return prev;
-      const next = { ...base, [tileId]: candidate };
-      layoutsRef.current = next;
-      saveLayouts(next);
-      return next;
-    });
-  }, [editMode, setLayouts]);
+    const base = seedVisibleLayouts(
+      layoutsRef.current,
+      layoutsRef.current,
+      visibleIdsRef.current,
+      cols,
+    );
+    const cur = base[tileId];
+    if (!cur) return;
+    const maxW = cols - cur.col + 1;
+    const maxH = MAX_ROWS - cur.row + 1;
+    const newW = Math.max(1, Math.min(maxW, cur.w + delta.w));
+    const newH = Math.max(1, Math.min(maxH, cur.h + delta.h));
+    if (cur.w === newW && cur.h === newH) return;
+    const candidate = { ...cur, w: newW, h: newH };
+    if (hasCollision(tileId, candidate, base, visibleIdsRef.current, cols)) return;
+    const next = { ...base, [tileId]: candidate };
+    layoutsRef.current = next;
+    setLayouts(() => next);
+    commitLayouts(next);
+  }, [editMode, setLayouts, commitLayouts]);
 
   return { onResizePointerDown, onResizePointerMove, onResizePointerUp, onResizeKeyDown };
 }
@@ -622,13 +604,19 @@ function useTileResize(
 /* ─── Main Metro Tile Grid ─── */
 
 export function MetroTileGrid({ onActivate, nightActive }: MetroTileGridProps) {
-  const [layouts, setLayouts] = useState(loadLayouts);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [editMode, setEditMode] = useState(false);
-  const { strings, widgets, lang } = useHomeSettings();
+  const { strings, widgets, lang, metroLayout, setMetroLayout } = useHomeSettings();
+  const [layouts, setLayouts] = useState(() =>
+    normalizeLayouts(metroLayout, defaultLayouts()),
+  );
   const burnIn = useBurnInProtection();
   const gridRef = useRef<HTMLDivElement>(null);
   const gridCols = useMetroGridColumns();
+
+  useEffect(() => {
+    setLayouts(normalizeLayouts(metroLayout, defaultLayouts()));
+  }, [metroLayout]);
 
   const visibleTiles = useMemo(
     () => orderedTiles(
@@ -653,17 +641,21 @@ export function MetroTileGrid({ onActivate, nightActive }: MetroTileGridProps) {
     [layouts, orderedDefaultLayouts, usingCustomLayout, visibleIds, gridCols],
   );
 
-  const drag = useTileDrag(effectiveLayouts, setLayouts, editMode, visibleIds);
-  const resize = useTileResize(effectiveLayouts, setLayouts, editMode, visibleIds);
+  const commitLayouts = useCallback((next: Record<string, TileLayout>) => {
+    setLayouts(next);
+    setMetroLayout(next);
+  }, [setMetroLayout]);
+
+  const drag = useTileDrag(effectiveLayouts, setLayouts, commitLayouts, editMode, visibleIds);
+  const resize = useTileResize(effectiveLayouts, setLayouts, commitLayouts, editMode, visibleIds);
 
   const handleClick = useCallback(() => {
     if (!settingsOpen && !editMode) onActivate();
   }, [onActivate, settingsOpen, editMode]);
 
   const resetLayout = useCallback(() => {
-    removeSavedLayouts();
-    setLayouts(defaultLayouts());
-  }, []);
+    commitLayouts(defaultLayouts());
+  }, [commitLayouts]);
 
   const renderTile = useCallback((tile: TileDef): ReactNode => {
     switch (tile.id) {

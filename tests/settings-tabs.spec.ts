@@ -355,6 +355,7 @@ async function installServerSettingsMocks(
   let createdSubAccountBody: unknown = null;
   let testSearchBody: unknown = null;
   let testProviderBody: unknown = null;
+  let providerModelsBody: unknown = null;
 
   await page.route("**/api/admin/profiles", (route) =>
     route.fulfill({
@@ -460,6 +461,14 @@ async function installServerSettingsMocks(
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({ ok: true, message: "OK" }),
+    });
+  });
+
+  await page.route("**/api/my/provider-models", async (route) => {
+    providerModelsBody = route.request().postDataJSON();
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(["gpt-5.4", "gpt-5.5-live"]),
     });
   });
 
@@ -616,6 +625,7 @@ async function installServerSettingsMocks(
     getCreatedSubAccountBody: () => createdSubAccountBody,
     getTestSearchBody: () => testSearchBody,
     getTestProviderBody: () => testProviderBody,
+    getProviderModelsBody: () => providerModelsBody,
   };
 }
 
@@ -773,6 +783,7 @@ test.describe("Settings page — tab smoke tests", () => {
     await expect(
       page.locator("h3", { hasText: "Fallback Models" }),
     ).toBeVisible({ timeout: TIMEOUT });
+    await expect(page.locator('option[value="gpt-5.5-live"]')).toHaveCount(1);
   });
 
   test("LLM tab tests provider with selected model and route data", async ({

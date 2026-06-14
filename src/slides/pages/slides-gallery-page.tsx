@@ -86,21 +86,6 @@ export function SlidesGalleryPage() {
     navigate(`/slides/${project.id}`);
   };
 
-  const handleDemo = () => {
-    const project = create("AI Industry Report 2026", {
-      template: "business",
-      tags: ["business", "ai", "2026"],
-      slides: [
-        { index: 0, title: "AI Industry Report 2026", notes: "Title slide", layout: "title" as const },
-        { index: 1, title: "Market Overview", notes: "Global AI market reached $500B in 2026", layout: "content" as const },
-        { index: 2, title: "Key Players", notes: "Top companies by market cap and revenue", layout: "two-column" as const },
-        { index: 3, title: "Technology Trends", notes: "LLMs, multimodal AI, autonomous agents", layout: "content" as const },
-        { index: 4, title: "Conclusion", notes: "AI continues to accelerate across industries", layout: "conclusion" as const },
-      ],
-    });
-    navigate(`/slides/${project.id}`);
-  };
-
   return (
     <WorkbenchPage>
       <WorkbenchTopbar
@@ -128,12 +113,6 @@ export function SlidesGalleryPage() {
                 className="workbench-input w-64 py-1.5 pl-9 pr-3 text-sm placeholder-muted max-sm:w-full"
               />
             </div>
-            <button
-              onClick={handleDemo}
-              className="workbench-button flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium"
-            >
-              Demo
-            </button>
             <button
               onClick={handleNew}
               className="workbench-button workbench-button-primary flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium"
@@ -193,11 +172,11 @@ export function SlidesGalleryPage() {
             <div className="workbench-panel-muted p-5">
               <p className="shell-kicker">Generation Lane</p>
               <h2 className="mt-2 text-lg font-semibold text-text-strong">
-                Start with a blank deck or seed a demo.
+                Start with a real deck.
               </h2>
               <p className="mt-2 text-sm leading-6 text-muted">
-                The gallery stays local-first; generated outputs are persisted in the
-                browser library before you open the editor.
+                The gallery stays local-first; only decks you create or generate are
+                persisted in the browser library before you open the editor.
               </p>
               <div className="mt-5 grid gap-2">
                 <button
@@ -207,14 +186,6 @@ export function SlidesGalleryPage() {
                 >
                   <span>New blank deck</span>
                   <Plus size={16} aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  onClick={handleDemo}
-                  className="workbench-button flex items-center justify-between gap-3 px-4 py-3 text-left text-sm font-semibold"
-                >
-                  <span>Seed business demo</span>
-                  <Sparkles size={16} aria-hidden="true" />
                 </button>
               </div>
             </div>

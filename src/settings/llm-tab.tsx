@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Cpu,
   Save,
@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { request } from "@/api/client";
 import {
+  fetchProviderModels,
   formatSettingsError,
   updateMyProfileConfig,
   type Profile,
@@ -43,6 +44,11 @@ interface LlmTabProps {
 interface FallbackEntry {
   family_id: string;
   model_id: string;
+}
+
+interface ModelOption {
+  id: string;
+  name: string;
 }
 
 interface LlmFormState {
@@ -124,6 +130,39 @@ function optionalInt(value: string): number | null {
   return Number.isNaN(n) ? null : n;
 }
 
+function modelNameFromId(id: string): string {
+  return id
+    .split(/[-_:/]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function mergeModelOptions(
+  staticModels: ModelOption[],
+  fetchedIds: string[],
+  configuredModelId: string,
+): ModelOption[] {
+  const options: ModelOption[] = [];
+  const seen = new Set<string>();
+  const add = (model: ModelOption) => {
+    if (!model.id || seen.has(model.id)) return;
+    seen.add(model.id);
+    options.push(model);
+  };
+
+  for (const model of staticModels) add(model);
+  for (const id of fetchedIds) add({ id, name: modelNameFromId(id) || id });
+  if (
+    configuredModelId &&
+    configuredModelId !== "__custom__" &&
+    !seen.has(configuredModelId)
+  ) {
+    add({ id: configuredModelId, name: `${configuredModelId} (configured)` });
+  }
+  return options;
+}
+
 /* ─── Shared UI atoms ─── */
 
 const inputClass =
@@ -144,14 +183,25 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
   const [error, setError] = useState<string | null>(null);
   const [testStatus, setTestStatus] = useState<TestStatus>("idle");
   const [testMessage, setTestMessage] = useState<string | null>(null);
+  const [providerModelIds, setProviderModelIds] = useState<Record<string, string[]>>({});
+  const [modelCatalogLoading, setModelCatalogLoading] = useState(false);
+  const [modelCatalogError, setModelCatalogError] = useState<string | null>(null);
 
   const isDirty = JSON.stringify(form) !== JSON.stringify(original);
   const isCustom = form.family_id === "__custom_family__";
   const selectedProvider = isCustom ? undefined : findProvider(form.family_id);
-  const providerModels = selectedProvider?.models ?? [];
   const needsBaseUrl = selectedProvider
     ? showsBaseUrl(selectedProvider)
     : isCustom;
+  const providerModels = useMemo(
+    () =>
+      mergeModelOptions(
+        selectedProvider?.models ?? [],
+        selectedProvider ? (providerModelIds[selectedProvider.id] ?? []) : [],
+        form.model_id,
+      ),
+    [form.model_id, providerModelIds, selectedProvider],
+  );
 
   /* ── Derived effective IDs (what we send to API) ── */
   const effectiveFamilyId = isCustom
@@ -162,6 +212,58 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
     : form.model_id === "__custom__"
       ? form.custom_model_id
       : form.model_id;
+
+  useEffect(() => {
+    if (!selectedProvider) {
+      setModelCatalogLoading(false);
+      setModelCatalogError(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    const provider = selectedProvider;
+    const baseUrl = showsBaseUrl(provider)
+      ? form.base_url.trim()
+      : provider.defaultBaseUrl;
+
+    setModelCatalogLoading(true);
+    setModelCatalogError(null);
+    void fetchProviderModels(
+      {
+        provider: provider.id,
+        model: form.model_id || provider.models[0]?.id || "",
+        api_key_env: provider.envKey || undefined,
+        api_key: provider.envKey ? undefined : "not-required",
+        base_url: baseUrl || undefined,
+        profile_id: profile.id,
+      },
+      { signal: controller.signal },
+    )
+      .then((ids) => {
+        setProviderModelIds((prev) => ({ ...prev, [provider.id]: ids }));
+        if (ids.length > 0) {
+          setForm((current) =>
+            current.family_id === provider.id && !current.model_id
+              ? { ...current, model_id: ids[0] }
+              : current,
+          );
+        }
+      })
+      .catch((err) => {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        setModelCatalogError("Live model catalog unavailable; using saved/static options.");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setModelCatalogLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [
+    form.base_url,
+    form.model_id,
+    profile.id,
+    selectedProvider,
+  ]);
 
   /* ── Provider change ── */
   const handleProviderChange = (newFamilyId: string) => {
@@ -337,6 +439,11 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
                 ))}
                 <option value="__custom__">Custom model...</option>
               </select>
+              {(modelCatalogLoading || modelCatalogError) && (
+                <p className="mt-2 text-xs text-muted">
+                  {modelCatalogLoading ? "Loading live model catalog..." : modelCatalogError}
+                </p>
+              )}
             </div>
           )}
 
@@ -454,7 +561,13 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
 
           {form.fallbacks.map((entry, idx) => {
             const fbProvider = findProvider(entry.family_id);
-            const fbModels = fbProvider?.models ?? [];
+            const fbModels = fbProvider
+              ? mergeModelOptions(
+                  fbProvider.models,
+                  providerModelIds[fbProvider.id] ?? [],
+                  entry.model_id,
+                )
+              : [];
             return (
               <div
                 key={idx}

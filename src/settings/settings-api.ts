@@ -84,11 +84,51 @@ export interface SandboxConfig {
   read_allow_paths: string[];
 }
 
+export interface HomeProfileSettings {
+  city?: string | null;
+  temp_unit?: string | null;
+  clock_format?: string | null;
+  idle_seconds?: number | null;
+  night_mode?: string | null;
+  lang?: string | null;
+  news_feed_url?: string | null;
+}
+
+export interface HomeProfileEvent {
+  id: string;
+  title: string;
+  time: string;
+  date: string;
+  recurring?: string | null;
+}
+
+export interface HomeProfileWidget {
+  type: string;
+  enabled: boolean;
+  order: number;
+}
+
+export interface HomeProfileTileLayout {
+  col: number;
+  row: number;
+  w: number;
+  h: number;
+}
+
+export interface HomeProfileConfig {
+  settings?: HomeProfileSettings | null;
+  events?: HomeProfileEvent[];
+  photos?: string[];
+  widgets?: HomeProfileWidget[];
+  metro_layout?: Record<string, HomeProfileTileLayout>;
+}
+
 export interface ProfileConfig {
   llm: {
     primary: LlmPrimary;
     fallbacks: LlmPrimary[];
   };
+  home?: HomeProfileConfig | null;
   channels: unknown[];
   gateway: GatewayConfig;
   env_vars: Record<string, string>;
@@ -118,6 +158,15 @@ export interface Profile {
   created_at: string;
   updated_at: string;
   status: ProfileStatus;
+}
+
+export interface ProviderModelsRequest {
+  provider: string;
+  model?: string;
+  api_key?: string;
+  api_key_env?: string;
+  base_url?: string;
+  profile_id?: string;
 }
 
 export interface SkillInfo {
@@ -169,6 +218,9 @@ export function mergeProfileConfig(
   if (patch.sandbox) {
     next.sandbox = patch.sandbox;
   }
+  if (patch.home !== undefined) {
+    next.home = patch.home;
+  }
   if (patch.env_vars) {
     next.env_vars = patch.env_vars;
   }
@@ -193,6 +245,17 @@ export async function updateMyProfileConfig(
   return await updateMyProfile({
     ...patch,
     config: mergeProfileConfig(profile.config, config),
+  });
+}
+
+export async function fetchProviderModels(
+  body: ProviderModelsRequest,
+  options: Pick<RequestInit, "signal"> = {},
+): Promise<string[]> {
+  return await request<string[]>("/api/my/provider-models", {
+    method: "POST",
+    body: JSON.stringify(body),
+    signal: options.signal,
   });
 }
 

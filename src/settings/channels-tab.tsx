@@ -368,7 +368,7 @@ function ChannelFormFields({
           {field("Server name", "server_name", { placeholder: "matrix.example.com" })}
           {field("Sender localpart", "sender_localpart", { placeholder: "octos" })}
           {field("User prefix", "user_prefix", { placeholder: "octos_" })}
-          {field("Allowed senders", "allowed_senders", { placeholder: "@yao:matrix.example.com, @home:matrix.example.com" })}
+          {field("Allowed senders", "allowed_senders", { placeholder: "@user:matrix.example.com, @bot:matrix.example.com" })}
         </>
       );
     case "wechat":
