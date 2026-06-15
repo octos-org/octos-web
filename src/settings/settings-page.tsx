@@ -14,6 +14,7 @@ import {
   Waves,
   Loader2,
   Settings as SettingsIcon,
+  Palette,
 } from "lucide-react";
 import {
   WorkbenchPage,
@@ -33,8 +34,9 @@ import { ToolsTab } from "./tools-tab";
 import { SystemTab } from "./system-tab";
 import { ServerTab } from "./server-tab";
 import { OminixTab } from "./ominix-tab";
+import { AppearanceTab } from "./appearance-tab";
 
-type TabId = "profile" | "llm" | "skills" | "channels" | "sandbox" | "tools" | "users" | "system" | "server" | "ominix";
+type TabId = "profile" | "appearance" | "llm" | "skills" | "channels" | "sandbox" | "tools" | "users" | "system" | "server" | "ominix";
 
 interface TabDef {
   id: TabId;
@@ -45,6 +47,7 @@ interface TabDef {
 
 const TABS: TabDef[] = [
   { id: "profile", label: "Profile", icon: User },
+  { id: "appearance", label: "Appearance", icon: Palette },
   { id: "llm", label: "LLM", icon: Cpu },
   { id: "skills", label: "Skills", icon: Puzzle },
   { id: "channels", label: "Channels", icon: Radio },
@@ -158,6 +161,7 @@ export function AdminSettingsPage() {
                       canDeleteProfile={Boolean(portal?.can_access_admin_portal)}
                     />
                   )}
+                  {activeTab === "appearance" && <AppearanceTab />}
                   {activeTab === "llm" && (
                     <LlmTab profile={profile} onProfileUpdated={setProfile} />
                   )}

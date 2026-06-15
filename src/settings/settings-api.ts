@@ -90,8 +90,10 @@ export interface HomeProfileSettings {
   clock_format?: string | null;
   idle_seconds?: number | null;
   night_mode?: string | null;
+  burn_in_protection?: boolean | null;
   lang?: string | null;
   news_feed_url?: string | null;
+  calendar_feed_url?: string | null;
   ui_style?: string | null;
 }
 

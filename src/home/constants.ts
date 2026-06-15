@@ -51,6 +51,7 @@ export interface HomeStrings {
   settingsNightAuto: string;
   settingsNightOn: string;
   settingsNightOff: string;
+  settingsBurnInProtection: string;
   settingsLanguage: string;
   settingsHomeUi: string;
   settingsHomeUiMetro: string;
@@ -88,6 +89,7 @@ export interface HomeStrings {
 
   // Settings — News & Events
   settingsNewsFeed: string;
+  settingsCalendarFeed: string;
   settingsEvents: string;
   settingsAddEvent: string;
 
@@ -154,10 +156,11 @@ export const HOME_I18N: Record<string, HomeStrings> = {
     settingsNightAuto: "Auto",
     settingsNightOn: "On",
     settingsNightOff: "Off",
+    settingsBurnInProtection: "Burn-in Protection",
     settingsLanguage: "Language",
     settingsHomeUi: "Home UI",
     settingsHomeUiMetro: "Metro",
-    settingsHomeUiClassic: "Classic",
+    settingsHomeUiClassic: "Grid",
     settingsClose: "Close",
 
     voiceListening: "Listening...",
@@ -185,6 +188,7 @@ export const HOME_I18N: Record<string, HomeStrings> = {
     calendarNoEvents: "No events today",
 
     settingsNewsFeed: "News Feed URL",
+    settingsCalendarFeed: "Calendar Feed URL",
     settingsEvents: "Events",
     settingsAddEvent: "Add Event",
 
@@ -254,10 +258,11 @@ export const HOME_I18N: Record<string, HomeStrings> = {
     settingsNightAuto: "\u81EA\u52A8",
     settingsNightOn: "\u5F00\u542F",
     settingsNightOff: "\u5173\u95ED",
+    settingsBurnInProtection: "\u9632\u70E7\u5C4F",
     settingsLanguage: "\u8BED\u8A00",
     settingsHomeUi: "\u9996\u9875 UI",
     settingsHomeUiMetro: "Metro",
-    settingsHomeUiClassic: "\u7ECF\u5178",
+    settingsHomeUiClassic: "\u7F51\u683C",
     settingsClose: "\u5173\u95ED",
 
     voiceListening: "\u6B63\u5728\u542C...",
@@ -285,6 +290,7 @@ export const HOME_I18N: Record<string, HomeStrings> = {
     calendarNoEvents: "\u4ECA\u5929\u6CA1\u6709\u65E5\u7A0B",
 
     settingsNewsFeed: "\u65B0\u95FB\u6E90",
+    settingsCalendarFeed: "\u65E5\u5386\u6E90",
     settingsEvents: "\u65E5\u7A0B",
     settingsAddEvent: "\u6DFB\u52A0\u65E5\u7A0B",
 

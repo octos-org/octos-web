@@ -3,8 +3,8 @@
  *
  * 1. Every 3 minutes, micro-shifts the clock position by a random
  *    offset within +/-30px (CSS transform).
- * 2. After 5 minutes of no user interaction, dims the display to
- *    brightness 0.5 (applies a CSS filter on the root element).
+ * 2. After 30 minutes of no user interaction, gently dims the display
+ *    (applies a CSS filter on the root element).
  *
  * Returns:
  * - `offset` — { x, y } to feed into `transform: translate(...)`.
@@ -21,7 +21,7 @@ export interface BurnInState {
 }
 
 const SHIFT_INTERVAL = 3 * 60 * 1000; // 3 min
-const DIM_TIMEOUT = 5 * 60 * 1000; // 5 min
+const DIM_TIMEOUT = 30 * 60 * 1000; // 30 min
 const MAX_OFFSET = 30; // px
 
 function randomOffset(): { x: number; y: number } {
@@ -31,7 +31,7 @@ function randomOffset(): { x: number; y: number } {
   };
 }
 
-export function useBurnInProtection(): BurnInState {
+export function useBurnInProtection(enabled = false): BurnInState {
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [dimmed, setDimmed] = useState(false);
   const dimTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(
@@ -44,30 +44,43 @@ export function useBurnInProtection(): BurnInState {
     lastActivityRef.current = Date.now();
     setDimmed(false);
     clearTimeout(dimTimerRef.current);
-    dimTimerRef.current = setTimeout(() => setDimmed(true), DIM_TIMEOUT);
-  }, []);
+    if (enabled) {
+      dimTimerRef.current = setTimeout(() => setDimmed(true), DIM_TIMEOUT);
+    }
+  }, [enabled]);
 
   // Public callback for user interaction events
   const onActivity = useCallback(() => {
+    if (!enabled) return;
     resetDim();
-  }, [resetDim]);
+  }, [enabled, resetDim]);
+
+  useEffect(() => {
+    if (enabled) return;
+    setOffset({ x: 0, y: 0 });
+    setDimmed(false);
+    clearTimeout(dimTimerRef.current);
+  }, [enabled]);
 
   // Periodic clock shift
   useEffect(() => {
+    if (!enabled) return;
     const id = setInterval(() => {
       setOffset(randomOffset());
     }, SHIFT_INTERVAL);
     return () => clearInterval(id);
-  }, []);
+  }, [enabled]);
 
   // Initial dim timer
   useEffect(() => {
+    if (!enabled) return;
     dimTimerRef.current = setTimeout(() => setDimmed(true), DIM_TIMEOUT);
     return () => clearTimeout(dimTimerRef.current);
-  }, []);
+  }, [enabled]);
 
   // Global interaction listeners for dim reset
   useEffect(() => {
+    if (!enabled) return;
     const handler = () => onActivity();
     window.addEventListener("mousemove", handler);
     window.addEventListener("touchstart", handler);
@@ -77,7 +90,7 @@ export function useBurnInProtection(): BurnInState {
       window.removeEventListener("touchstart", handler);
       window.removeEventListener("keydown", handler);
     };
-  }, [onActivity]);
+  }, [enabled, onActivity]);
 
   return { offset, dimmed, onActivity };
 }

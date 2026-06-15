@@ -1,5 +1,5 @@
 import { render, screen, waitFor, cleanup } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HomeSettingsProvider } from "./home-settings-context";
 import { useWeather } from "./use-weather";
 
@@ -84,6 +84,8 @@ describe("useWeather", () => {
   beforeEach(() => {
     cleanup();
     localStorage.clear();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     apiMocks.getMyProfile.mockReset();
     apiMocks.updateMyProfileConfig.mockReset();
     apiMocks.getMyProfile.mockResolvedValue(profileWithoutHomeCity());
@@ -97,9 +99,43 @@ describe("useWeather", () => {
     });
   });
 
-  it("does not call IP geolocation or fall back to a hardcoded city when location resolution fails", async () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("uses a timezone city fallback when no city is configured", async () => {
+    vi.spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions").mockReturnValue({
+      locale: "en-US",
+      calendar: "gregory",
+      numberingSystem: "latn",
+      timeZone: "Asia/Tokyo",
+    } as Intl.ResolvedDateTimeFormatOptions);
+
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      throw new Error(`unexpected weather request: ${String(input)}`);
+      const url = String(input);
+      if (url.startsWith("https://geocoding-api.open-meteo.com")) {
+        return {
+          ok: true,
+          json: async () => ({
+            results: [{ latitude: 35.6762, longitude: 139.6503 }],
+          }),
+        } as Response;
+      }
+      if (url.startsWith("https://api.open-meteo.com")) {
+        return {
+          ok: true,
+          json: async () => ({
+            current: { temperature_2m: 23.4, weather_code: 1 },
+            hourly: {
+              time: ["2026-06-15T09:00"],
+              temperature_2m: [24],
+              weather_code: [1],
+            },
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected weather request: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -110,8 +146,8 @@ describe("useWeather", () => {
     );
 
     await waitFor(() => expect(screen.getByTestId("loading").textContent).toBe("no"));
-    expect(screen.getByTestId("error").textContent).toBe("location_unavailable");
-    expect(screen.getByTestId("city").textContent).toBe("");
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.getByTestId("error").textContent).toBe("");
+    expect(screen.getByTestId("city").textContent).toBe("Tokyo");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
