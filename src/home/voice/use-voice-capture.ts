@@ -8,7 +8,10 @@ export interface VoiceCapture {
     onUtterance: (wav: Blob) => void,
     options?: VoiceCaptureStartOptions,
   ) => Promise<void>;
-  stop: () => void;
+  /** Resolves once the VAD is fully torn down. Await before starting reply
+   *  playback so the Silero ONNX/WASM + mic AudioContext shutdown doesn't
+   *  contend with the playback render thread. */
+  stop: () => Promise<void>;
   error: string | null;
 }
 
@@ -53,15 +56,28 @@ export function useVoiceCapture(): VoiceCapture {
   const [capturing, setCapturing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const stop = useCallback(() => {
+  const stop = useCallback((): Promise<void> => {
     startGenRef.current++;
     const vad = vadRef.current;
     vadRef.current = null;
-    if (vad) {
-      void vad.pause();
-      void vad.destroy();
-    }
     setCapturing(false);
+    if (!vad) return Promise.resolve();
+    // Return a promise that resolves once teardown finishes so callers can
+    // await it BEFORE starting reply playback — otherwise the ONNX/WASM + mic
+    // AudioContext shutdown spikes CPU exactly as the reply's Web Audio render
+    // thread starts, glitching the first sentence.
+    return (async () => {
+      try {
+        await vad.pause();
+      } catch {
+        // already paused / destroyed
+      }
+      try {
+        await vad.destroy();
+      } catch {
+        // already destroyed
+      }
+    })();
   }, []);
 
   const start = useCallback(async (
@@ -120,7 +136,7 @@ export function useVoiceCapture(): VoiceCapture {
     }
   }, []);
 
-  useEffect(() => () => stop(), [stop]);
+  useEffect(() => () => void stop(), [stop]);
 
   return { capturing, start, stop, error };
 }

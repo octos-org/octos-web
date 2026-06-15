@@ -38,7 +38,7 @@ export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
   };
 
   return (
-    <div className="voice-view relative flex h-full w-full flex-col items-center justify-center">
+    <div className="voice-view relative flex h-full w-full flex-col items-center justify-center bg-black">
       <button
         onClick={onBack}
         aria-label="exit voice mode"

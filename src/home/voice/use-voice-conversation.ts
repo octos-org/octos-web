@@ -208,7 +208,7 @@ export function useVoiceConversation(
     await captureStart(
       (wav: Blob) => {
         if (!speechInterruptArmedRef.current) return;
-        captureStop();
+        void captureStop();
         void sendUtteranceRef.current(wav);
       },
       {
@@ -239,7 +239,7 @@ export function useVoiceConversation(
       (wav: Blob) => {
         // Ignore late utterances that land after we've left listening.
         if (stateRef.current !== "listening") return;
-        captureStop();
+        void captureStop();
         void sendUtteranceRef.current(wav);
       },
       LISTENING_VAD_OPTIONS,
@@ -357,7 +357,7 @@ export function useVoiceConversation(
     speechInterruptArmedRef.current = false;
     audioQueueRef.current = [];
     playingRef.current = false;
-    captureStop();
+    void captureStop();
     releaseAudio();
     stateRef.current = "idle";
     setState("idle");
@@ -375,7 +375,7 @@ export function useVoiceConversation(
       audioQueueRef.current = [];
       speechInterruptArmedRef.current = false;
       requestTurnInterrupt("user tapped orb while thinking");
-      captureStop();
+      void captureStop();
       void beginListeningRef.current();
     }
   }, [captureStop, releaseAudio, requestTurnInterrupt]);
@@ -395,17 +395,25 @@ export function useVoiceConversation(
       ignoredTurnIdsRef.current,
     );
     if (fresh.length === 0) return;
-    captureStop();
     speechInterruptArmedRef.current = false;
     activeTurnIdRef.current = null;
     clearTimeout(replyTimerRef.current);
     clearTimeout(graceTimerRef.current);
+    // Mark + enqueue synchronously so a re-render mid-teardown doesn't
+    // re-collect the same audio.
     for (const f of fresh) {
       playedPathsRef.current.add(f.path);
       audioQueueRef.current.push(f.path);
       setLastAssistantText(f.text);
     }
-    void drainQueueRef.current();
+    // Tear the barge-in VAD down and WAIT for it to finish BEFORE playback, so
+    // its Silero ONNX/WASM + mic AudioContext shutdown doesn't contend with the
+    // reply's Web Audio render thread (that contention glitched the first
+    // sentence). drainQueue is guarded by playingRef against concurrent runs.
+    void (async () => {
+      await captureStop();
+      await drainQueueRef.current();
+    })();
   }, [captureStop, threads, state]);
 
   // Stop ONLY on real unmount. Use a ref so identity churn of `stop` across
