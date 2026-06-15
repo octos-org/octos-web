@@ -1,3 +1,5 @@
+import { ClassicStandbyView } from "./classic-standby-view";
+import { useHomeSettings } from "./home-settings-context";
 import { MetroTileGrid } from "./metro-tiles";
 
 interface StandbyViewProps {
@@ -6,5 +8,11 @@ interface StandbyViewProps {
 }
 
 export function StandbyView({ onActivate, nightActive }: StandbyViewProps) {
+  const { uiStyle } = useHomeSettings();
+  if (uiStyle === "classic") {
+    return (
+      <ClassicStandbyView onActivate={onActivate} nightActive={nightActive} />
+    );
+  }
   return <MetroTileGrid onActivate={onActivate} nightActive={nightActive} />;
 }

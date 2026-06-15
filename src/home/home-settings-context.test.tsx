@@ -72,9 +72,11 @@ function Probe({ onValue }: { onValue?: (value: HomeSettingsContextValue) => voi
   return (
     <div>
       <span data-testid="city">{home.city}</span>
+      <span data-testid="ui-style">{home.uiStyle}</span>
       <span data-testid="photos">{home.photos.join("|")}</span>
       <span data-testid="events">{home.events.map((event) => event.title).join("|")}</span>
       <button onClick={() => home.update({ city: "Kyoto" })}>Set city</button>
+      <button onClick={() => home.update({ uiStyle: "classic" })}>Set classic</button>
       <button
         onClick={() =>
           home.addEvent({
@@ -120,6 +122,7 @@ describe("HomeSettingsProvider", () => {
           night_mode: "on",
           lang: "zh",
           news_feed_url: "https://example.test/feed.xml",
+          ui_style: "classic",
         },
         events: [
           {
@@ -142,6 +145,7 @@ describe("HomeSettingsProvider", () => {
     );
 
     await waitFor(() => expect(screen.getByTestId("city").textContent).toBe("Tokyo"));
+    expect(screen.getByTestId("ui-style").textContent).toBe("classic");
     expect(screen.getByTestId("events").textContent).toBe("Breakfast");
     expect(screen.getByTestId("photos").textContent).toBe("https://example.test/home.jpg");
   });
@@ -166,6 +170,7 @@ describe("HomeSettingsProvider", () => {
 
     await act(async () => {
       screen.getByText("Set city").click();
+      screen.getByText("Set classic").click();
       screen.getByText("Add event").click();
       screen.getByText("Add photo").click();
       screen.getByText("Set layout").click();
@@ -176,7 +181,7 @@ describe("HomeSettingsProvider", () => {
     expect(lastCall?.[0]).toMatchObject({ id: "admin" });
     expect(lastCall?.[1]).toMatchObject({
       home: {
-        settings: { city: "Kyoto" },
+        settings: { city: "Kyoto", ui_style: "classic" },
         events: [expect.objectContaining({ title: "Dinner" })],
         photos: ["https://example.test/family.jpg"],
         metro_layout: { clock: { col: 1, row: 1, w: 4, h: 2 } },
@@ -186,6 +191,7 @@ describe("HomeSettingsProvider", () => {
 
   it("migrates legacy localStorage Home data into the profile once", async () => {
     localStorage.setItem("octos_home_city", "Osaka");
+    localStorage.setItem("octos_home_ui_style", "classic");
     localStorage.setItem(
       "octos_home_events",
       JSON.stringify([
@@ -212,7 +218,10 @@ describe("HomeSettingsProvider", () => {
         expect.objectContaining({ id: "admin" }),
         expect.objectContaining({
           home: expect.objectContaining({
-            settings: expect.objectContaining({ city: "Osaka" }),
+            settings: expect.objectContaining({
+              city: "Osaka",
+              ui_style: "classic",
+            }),
             events: [expect.objectContaining({ title: "Lunch" })],
             photos: ["https://example.test/legacy.jpg"],
           }),

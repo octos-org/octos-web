@@ -92,6 +92,7 @@ export interface HomeProfileSettings {
   night_mode?: string | null;
   lang?: string | null;
   news_feed_url?: string | null;
+  ui_style?: string | null;
 }
 
 export interface HomeProfileEvent {

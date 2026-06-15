@@ -34,6 +34,7 @@ export type TempUnit = "C" | "F";
 export type ClockFormat = "12h" | "24h";
 export type NightMode = "auto" | "on" | "off";
 export type Lang = "en" | "zh";
+export type HomeUiStyle = "metro" | "classic";
 
 export interface HomeSettings {
   city: string;
@@ -43,6 +44,7 @@ export interface HomeSettings {
   nightMode: NightMode;
   lang: Lang;
   newsFeedUrl: string;
+  uiStyle: HomeUiStyle;
 }
 
 export interface CalendarEvent {
@@ -98,6 +100,7 @@ const SETTINGS_KEYS = {
   nightMode: "octos_home_night_mode",
   lang: "octos_home_lang",
   newsFeedUrl: "octos_home_news_feed_url",
+  uiStyle: "octos_home_ui_style",
 } as const;
 
 const EVENTS_KEY = "octos_home_events";
@@ -112,6 +115,7 @@ const DEFAULT_SETTINGS: HomeSettings = {
   nightMode: "auto",
   lang: "en",
   newsFeedUrl: DEFAULT_FEED_URL,
+  uiStyle: "metro",
 };
 
 function storageGet(key: string): string | null {
@@ -150,6 +154,10 @@ function asLang(value: unknown, fallback: Lang): Lang {
   return value === "en" || value === "zh" ? value : fallback;
 }
 
+function asHomeUiStyle(value: unknown, fallback: HomeUiStyle): HomeUiStyle {
+  return value === "metro" || value === "classic" ? value : fallback;
+}
+
 function readLegacySettings(): HomeSettings {
   return {
     city: storageGet(SETTINGS_KEYS.city) ?? DEFAULT_SETTINGS.city,
@@ -164,6 +172,7 @@ function readLegacySettings(): HomeSettings {
     nightMode: asNightMode(storageGet(SETTINGS_KEYS.nightMode), DEFAULT_SETTINGS.nightMode),
     lang: asLang(storageGet(SETTINGS_KEYS.lang), DEFAULT_SETTINGS.lang),
     newsFeedUrl: storageGet(SETTINGS_KEYS.newsFeedUrl) ?? DEFAULT_SETTINGS.newsFeedUrl,
+    uiStyle: asHomeUiStyle(storageGet(SETTINGS_KEYS.uiStyle), DEFAULT_SETTINGS.uiStyle),
   };
 }
 
@@ -175,6 +184,7 @@ function writeLegacySettings(settings: HomeSettings): void {
   storageSet(SETTINGS_KEYS.nightMode, settings.nightMode);
   storageSet(SETTINGS_KEYS.lang, settings.lang);
   storageSet(SETTINGS_KEYS.newsFeedUrl, settings.newsFeedUrl);
+  storageSet(SETTINGS_KEYS.uiStyle, settings.uiStyle);
 }
 
 function readJsonArray<T>(key: string, guard: (value: unknown) => value is T): T[] {
@@ -334,6 +344,7 @@ function mergeProfileHome(
         typeof settings.news_feed_url === "string" && settings.news_feed_url.trim()
           ? settings.news_feed_url
           : legacy.settings.newsFeedUrl,
+      uiStyle: asHomeUiStyle(settings.ui_style, legacy.settings.uiStyle),
     },
     widgets: normalizeWidgets(home?.widgets, legacy.widgets),
     events: normalizeEvents(home?.events, legacy.events),
@@ -363,6 +374,7 @@ function serializeHome(data: HomeData): HomeProfileConfig {
       night_mode: data.settings.nightMode,
       lang: data.settings.lang,
       news_feed_url: data.settings.newsFeedUrl,
+      ui_style: data.settings.uiStyle,
     },
     events: data.events,
     photos: data.photos,

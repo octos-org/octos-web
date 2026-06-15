@@ -12,6 +12,7 @@ import {
   useHomeSettings,
   DEFAULT_FEED_URL,
   type ClockFormat,
+  type HomeUiStyle,
   type Lang,
   type NightMode,
   type TempUnit,
@@ -212,6 +213,16 @@ export function HomeSettingsPanel({ open, onClose }: HomeSettingsPanelProps) {
               labels={["EN", "\u4E2D\u6587"]}
               value={s.lang}
               onChange={(v) => s.update({ lang: v })}
+            />
+          </SettingsField>
+
+          {/* Home UI style */}
+          <SettingsField label={t.settingsHomeUi}>
+            <SegmentedPicker
+              options={["metro", "classic"] as HomeUiStyle[]}
+              labels={[t.settingsHomeUiMetro, t.settingsHomeUiClassic]}
+              value={s.uiStyle}
+              onChange={(v) => s.update({ uiStyle: v })}
             />
           </SettingsField>
 
