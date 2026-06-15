@@ -52,6 +52,9 @@ export interface HomeStrings {
   settingsNightOn: string;
   settingsNightOff: string;
   settingsLanguage: string;
+  settingsHomeUi: string;
+  settingsHomeUiMetro: string;
+  settingsHomeUiClassic: string;
   settingsClose: string;
 
   // Voice
@@ -152,6 +155,9 @@ export const HOME_I18N: Record<string, HomeStrings> = {
     settingsNightOn: "On",
     settingsNightOff: "Off",
     settingsLanguage: "Language",
+    settingsHomeUi: "Home UI",
+    settingsHomeUiMetro: "Metro",
+    settingsHomeUiClassic: "Classic",
     settingsClose: "Close",
 
     voiceListening: "Listening...",
@@ -249,6 +255,9 @@ export const HOME_I18N: Record<string, HomeStrings> = {
     settingsNightOn: "\u5F00\u542F",
     settingsNightOff: "\u5173\u95ED",
     settingsLanguage: "\u8BED\u8A00",
+    settingsHomeUi: "\u9996\u9875 UI",
+    settingsHomeUiMetro: "Metro",
+    settingsHomeUiClassic: "\u7ECF\u5178",
     settingsClose: "\u5173\u95ED",
 
     voiceListening: "\u6B63\u5728\u542C...",

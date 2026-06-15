@@ -344,6 +344,28 @@ test.describe("UI redesign shell smoke", () => {
     ]);
   });
 
+  test("home settings can switch back to the classic dashboard UI", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/home", { waitUntil: "networkidle" });
+
+    await expect(page.locator(".metro-grid")).toBeVisible();
+
+    await page.locator(".home-settings-gear").click();
+    await page.getByRole("button", { name: "Classic" }).click();
+    await expect(page.locator(".classic-home-standby")).toBeVisible();
+    await expect(page.locator(".metro-grid")).toHaveCount(0);
+
+    await page.reload({ waitUntil: "networkidle" });
+    await expect(page.locator(".classic-home-standby")).toBeVisible();
+    await expect(page.locator(".metro-grid")).toHaveCount(0);
+
+    await page.locator(".home-settings-gear").click();
+    await page.getByRole("button", { name: "Metro" }).click();
+    await expect(page.locator(".metro-grid")).toBeVisible();
+  });
+
   test("workspace surfaces use the shared topbar titles", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
 
