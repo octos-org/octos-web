@@ -11,7 +11,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { initTheme, resolveInitialTheme } from "./use-theme";
+import { initTheme, resolveInitialTheme, resolveInitialUiStyle } from "./use-theme";
 
 function stubMatchMedia(lightMatches: boolean) {
   vi.stubGlobal(
@@ -30,6 +30,7 @@ describe("initTheme", () => {
   beforeEach(() => {
     localStorage.clear();
     document.documentElement.removeAttribute("data-theme");
+    document.documentElement.removeAttribute("data-ui-style");
   });
 
   afterEach(() => {
@@ -72,5 +73,25 @@ describe("initTheme", () => {
     initTheme();
 
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+  });
+
+  it("should apply the stored legacy blue UI style before React mounts", () => {
+    localStorage.setItem("octos-ui-style", "legacy-blue");
+    stubMatchMedia(false);
+
+    initTheme();
+
+    expect(document.documentElement.getAttribute("data-ui-style")).toBe("legacy-blue");
+  });
+
+  it("should preserve warm palette variants before React mounts", () => {
+    localStorage.setItem("octos-ui-style", "warm-sage");
+    stubMatchMedia(false);
+
+    expect(resolveInitialUiStyle()).toBe("warm-sage");
+
+    initTheme();
+
+    expect(document.documentElement.getAttribute("data-ui-style")).toBe("warm-sage");
   });
 });

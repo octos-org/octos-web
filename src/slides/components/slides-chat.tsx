@@ -230,8 +230,8 @@ export function SlidesChat({ sessionId, retryNonce = 0 }: Props) {
   return (
     <SessionContext.Provider value={sessionValue}>
       <ScopedRuntimeBridge>
-        <div className="flex flex-col h-full">
-          <div className="px-3 py-2 border-b border-border">
+        <div className="slides-chat flex h-full min-h-0 flex-col">
+          <div className="shrink-0 px-3 py-2 border-b border-border">
             <p className="text-xs text-muted truncate">
               {project?.title || "Slides Agent"}
             </p>
@@ -240,7 +240,7 @@ export function SlidesChat({ sessionId, retryNonce = 0 }: Props) {
               historyTopic={historyTopic}
             />
           </div>
-          <div className="flex-1 min-h-0 overflow-hidden">
+          <div className="slides-chat-thread min-h-0 flex-1 overflow-hidden">
             <ChatThread hideFileOnlyAssistantMessages />
           </div>
         </div>

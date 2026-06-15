@@ -3,8 +3,9 @@
  *
  * Location resolution waterfall:
  *   1. City name from settings (geocoded via Open-Meteo Geocoding API)
- *   2. Browser Geolocation API
- *   3. Weather unavailable if no trusted location source resolves
+ *   2. Timezone-derived city fallback (no IP lookup)
+ *   3. Browser Geolocation API
+ *   4. Weather unavailable if no trusted location source resolves
  *
  * Refreshes every 15 minutes. If all location sources fail, the hook reports
  * an error instead of calling a third-party IP geolocation endpoint.
@@ -32,6 +33,19 @@ export interface WeatherState {
 }
 
 const REFRESH_INTERVAL = 15 * 60 * 1000; // 15 min
+
+const TIMEZONE_CITY_FALLBACKS: Record<string, string> = {
+  "Asia/Tokyo": "Tokyo",
+  "Asia/Shanghai": "Shanghai",
+  "Asia/Hong_Kong": "Hong Kong",
+  "Asia/Singapore": "Singapore",
+  "Europe/London": "London",
+  "Europe/Paris": "Paris",
+  "America/Los_Angeles": "Los Angeles",
+  "America/Denver": "Denver",
+  "America/Chicago": "Chicago",
+  "America/New_York": "New York",
+};
 
 interface ResolvedLocation {
   lat: number;
@@ -105,6 +119,15 @@ async function fetchWeather(
   };
 }
 
+function timezoneFallbackCity(): string | null {
+  try {
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return timeZone ? (TIMEZONE_CITY_FALLBACKS[timeZone] ?? null) : null;
+  } catch {
+    return null;
+  }
+}
+
 export function useWeather(): WeatherState {
   const { city } = useHomeSettings();
   const [state, setState] = useState<WeatherState>({
@@ -160,7 +183,17 @@ export function useWeather(): WeatherState {
         }
       }
 
-      // 2. Browser geolocation
+      // 2. Timezone-derived fallback. This avoids the "unavailable until the
+      // user grants geolocation" dead end without calling IP geolocation.
+      const fallbackCity = timezoneFallbackCity();
+      if (fallbackCity) {
+        const geo = await geocodeCity(fallbackCity);
+        if (geo) {
+          return { lat: geo.lat, lon: geo.lon, city: fallbackCity };
+        }
+      }
+
+      // 3. Browser geolocation
       try {
         const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
           if (!navigator.geolocation) {

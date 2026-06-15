@@ -201,7 +201,7 @@ export function SlidesEditorLayout({
           <>
             <div
               style={{ width: chatWidth }}
-              className="glass-panel shrink-0 overflow-hidden rounded-lg max-lg:!h-72 max-lg:!w-full"
+              className="slides-editor-chat-panel glass-panel shrink-0 overflow-hidden rounded-lg max-lg:!h-[32rem] max-lg:!w-full"
             >
               {chatPanel || (
                 <div className="flex h-full items-center justify-center text-xs text-muted/50">

@@ -5,12 +5,17 @@ import {
   Activity,
   ArrowRight,
   Globe,
+  LogOut,
   MessageSquare,
   Mic,
+  Moon,
   MonitorSmartphone,
   Presentation,
   Settings,
+  Sun,
 } from "lucide-react";
+import { useAuth } from "@/auth/auth-context";
+import { useTheme } from "@/hooks/use-theme";
 import { unlockAudio } from "@/home/voice/audio-playback";
 import {
   WorkbenchPage,
@@ -57,7 +62,47 @@ function QuickAction({
   );
 }
 
+function HomeStatusTile({
+  icon: Icon,
+  title,
+  description,
+  ariaLabel,
+  tone,
+  onClick,
+}: {
+  icon: typeof Activity;
+  title: ReactNode;
+  description: string;
+  ariaLabel: string;
+  tone: "link" | "accent";
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={ariaLabel}
+      data-testid="home-status-tile"
+      className="workbench-card p-4 text-left transition hover:border-accent/45 hover:bg-surface-elevated"
+    >
+      <Icon size={18} className={tone === "link" ? "text-link" : "text-accent"} />
+      <div className="mt-3 text-2xl font-semibold text-text-strong">{title}</div>
+      <div className="mt-1 text-xs text-muted">{description}</div>
+    </button>
+  );
+}
+
 export function HomePage() {
+  const { uiStyle } = useTheme();
+
+  if (uiStyle === "legacy-blue") {
+    return <LegacyBlueHomePage />;
+  }
+
+  return <WarmWorkbenchHomePage />;
+}
+
+function WarmWorkbenchHomePage() {
   const navigate = useNavigate();
   const counts = useLocalProjectCounts();
 
@@ -87,26 +132,38 @@ export function HomePage() {
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <div className="workbench-card p-4">
-                <Activity size={18} className="text-link" />
-                <div className="mt-3 text-2xl font-semibold text-text-strong">Ready</div>
-                <div className="mt-1 text-xs text-muted">Workbench shell</div>
-              </div>
-              <div className="workbench-card p-4">
-                <Presentation size={18} className="text-accent" />
-                <div className="mt-3 text-2xl font-semibold text-text-strong">{counts.slides}</div>
-                <div className="mt-1 text-xs text-muted">Local decks</div>
-              </div>
-              <div className="workbench-card p-4">
-                <Globe size={18} className="text-link" />
-                <div className="mt-3 text-2xl font-semibold text-text-strong">{counts.sites}</div>
-                <div className="mt-1 text-xs text-muted">Local sites</div>
-              </div>
-              <div className="workbench-card p-4">
-                <MonitorSmartphone size={18} className="text-accent" />
-                <div className="mt-3 text-2xl font-semibold text-text-strong">Touch</div>
-                <div className="mt-1 text-xs text-muted">Display mode</div>
-              </div>
+              <HomeStatusTile
+                icon={Activity}
+                title="Ready"
+                description="Open chat"
+                ariaLabel="Open chat status"
+                tone="link"
+                onClick={() => navigate("/chat")}
+              />
+              <HomeStatusTile
+                icon={Presentation}
+                title={counts.slides}
+                description="Local decks"
+                ariaLabel="Open deck count"
+                tone="accent"
+                onClick={() => navigate("/slides")}
+              />
+              <HomeStatusTile
+                icon={Globe}
+                title={counts.sites}
+                description="Local sites"
+                ariaLabel="Open site count"
+                tone="link"
+                onClick={() => navigate("/sites")}
+              />
+              <HomeStatusTile
+                icon={MonitorSmartphone}
+                title="Touch"
+                description="Display mode"
+                ariaLabel="Open display console"
+                tone="accent"
+                onClick={() => navigate("/home")}
+              />
             </div>
           </header>
 
@@ -177,5 +234,152 @@ export function HomePage() {
         </div>
       </div>
     </WorkbenchPage>
+  );
+}
+
+function LegacyHomeNav() {
+  const { user, portal, logout } = useAuth();
+  const { theme, toggleTheme, setUiStyle } = useTheme();
+  const navigate = useNavigate();
+
+  return (
+    <nav className="flex items-center gap-4 px-6 py-4">
+      <button
+        type="button"
+        onClick={() => navigate("/")}
+        className="flex items-center gap-2.5"
+        aria-label="Octos home"
+      >
+        <img
+          src="/images/octos-logo-color.svg"
+          alt="Octos"
+          className="h-7 w-auto select-none"
+        />
+        <span className="text-xl font-semibold tracking-tight text-text-strong">octos</span>
+      </button>
+
+      <div className="flex-1" />
+
+      <button
+        type="button"
+        onClick={() => setUiStyle("warm")}
+        className="flex items-center gap-2 rounded-xl bg-surface-container px-4 py-2.5 text-sm text-text hover:bg-surface-elevated"
+      >
+        Workbench
+      </button>
+      <button
+        type="button"
+        onClick={() => navigate("/chat")}
+        className="flex items-center gap-2 rounded-xl bg-surface-container px-4 py-2.5 text-sm text-text hover:bg-surface-elevated"
+      >
+        <MessageSquare size={16} />
+        Chat
+      </button>
+      {portal?.can_access_admin_portal && (
+        <button
+          type="button"
+          onClick={() => navigate("/settings")}
+          className="rounded-xl p-2.5 text-muted hover:bg-surface-container hover:text-text-strong"
+          title="Settings"
+          aria-label="Settings"
+        >
+          <Settings size={18} />
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={toggleTheme}
+        className="rounded-xl p-2.5 text-muted hover:bg-surface-container hover:text-text-strong"
+        title={theme === "dark" ? "Light mode" : "Dark mode"}
+        aria-label={theme === "dark" ? "Light mode" : "Dark mode"}
+      >
+        {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+      </button>
+      {user && (
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="max-w-[18rem] truncate text-sm text-muted">{user.email}</span>
+          <button
+            type="button"
+            onClick={logout}
+            className="rounded-xl p-2 text-muted hover:bg-surface-container hover:text-text-strong"
+            aria-label="Log out"
+            title="Log out"
+          >
+            <LogOut size={16} />
+          </button>
+        </div>
+      )}
+    </nav>
+  );
+}
+
+function LegacyActionCard({
+  icon: Icon,
+  title,
+  description,
+  toneClass,
+  onClick,
+}: {
+  icon: typeof MessageSquare;
+  title: string;
+  description: string;
+  toneClass: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex items-center gap-4 rounded-2xl bg-surface-container p-6 text-left transition-all hover:bg-surface-elevated elevation-1"
+    >
+      <div
+        className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl ${toneClass}`}
+      >
+        <Icon size={24} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium text-text-strong">{title}</div>
+        <div className="text-xs text-muted">{description}</div>
+      </div>
+      <ArrowRight size={16} className="ml-auto shrink-0 text-muted" />
+    </button>
+  );
+}
+
+function LegacyBlueHomePage() {
+  const navigate = useNavigate();
+
+  return (
+    <div className="legacy-blue-home flex h-screen flex-col bg-surface-dark">
+      <LegacyHomeNav />
+
+      <div className="flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-5xl px-6 py-8">
+          <div className="mb-10 grid grid-cols-1 gap-4 md:grid-cols-3">
+            <LegacyActionCard
+              icon={MessageSquare}
+              title="Start chat"
+              description="Research, ask questions, explore"
+              toneClass="bg-link/10 text-link"
+              onClick={() => navigate("/chat")}
+            />
+            <LegacyActionCard
+              icon={Presentation}
+              title="Slides"
+              description="Build presentations with AI"
+              toneClass="bg-amber-500/10 text-amber-500"
+              onClick={() => navigate("/slides")}
+            />
+            <LegacyActionCard
+              icon={Globe}
+              title="Sites"
+              description="Create websites and landing pages"
+              toneClass="bg-emerald-500/10 text-emerald-500"
+              onClick={() => navigate("/sites")}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }

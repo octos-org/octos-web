@@ -59,6 +59,7 @@ export function HomeSettingsPanel({ open, onClose }: HomeSettingsPanelProps) {
   // Reset drafts each time the panel opens so they pick up latest values.
   const [cityDraft, setCityDraft] = useState(s.city);
   const [feedDraft, setFeedDraft] = useState(s.newsFeedUrl);
+  const [calendarFeedDraft, setCalendarFeedDraft] = useState(s.calendarFeedUrl);
 
   // Event add form state
   const [evTitle, setEvTitle] = useState("");
@@ -73,7 +74,8 @@ export function HomeSettingsPanel({ open, onClose }: HomeSettingsPanelProps) {
     if (!open) return;
     setCityDraft(s.city);
     setFeedDraft(s.newsFeedUrl);
-  }, [open, s.city, s.newsFeedUrl]);
+    setCalendarFeedDraft(s.calendarFeedUrl);
+  }, [open, s.calendarFeedUrl, s.city, s.newsFeedUrl]);
 
   // Close on Escape
   useEffect(() => {
@@ -100,6 +102,13 @@ export function HomeSettingsPanel({ open, onClose }: HomeSettingsPanelProps) {
       s.update({ newsFeedUrl: trimmed });
     }
   }, [feedDraft, s]);
+
+  const commitCalendarFeed = useCallback(() => {
+    const trimmed = calendarFeedDraft.trim();
+    if (trimmed !== s.calendarFeedUrl) {
+      s.update({ calendarFeedUrl: trimmed });
+    }
+  }, [calendarFeedDraft, s]);
 
   const handleAddEvent = useCallback(() => {
     const title = evTitle.trim();
@@ -206,6 +215,16 @@ export function HomeSettingsPanel({ open, onClose }: HomeSettingsPanelProps) {
             />
           </SettingsField>
 
+          {/* Burn-in protection */}
+          <SettingsField label={t.settingsBurnInProtection}>
+            <SegmentedPicker
+              options={["off", "on"]}
+              labels={[t.settingsNightOff, t.settingsNightOn]}
+              value={s.burnInProtection ? "on" : "off"}
+              onChange={(v) => s.update({ burnInProtection: v === "on" })}
+            />
+          </SettingsField>
+
           {/* Language */}
           <SettingsField label={t.settingsLanguage}>
             <SegmentedPicker
@@ -237,6 +256,21 @@ export function HomeSettingsPanel({ open, onClose }: HomeSettingsPanelProps) {
                 if (e.key === "Enter") commitFeed();
               }}
               placeholder={DEFAULT_FEED_URL}
+              className="home-settings-input"
+            />
+          </SettingsField>
+
+          {/* Calendar Feed URL */}
+          <SettingsField label={t.settingsCalendarFeed}>
+            <input
+              type="text"
+              value={calendarFeedDraft}
+              onChange={(e) => setCalendarFeedDraft(e.target.value)}
+              onBlur={commitCalendarFeed}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitCalendarFeed();
+              }}
+              placeholder="https://calendar.google.com/calendar/ical/..."
               className="home-settings-input"
             />
           </SettingsField>

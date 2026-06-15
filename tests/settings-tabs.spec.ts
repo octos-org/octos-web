@@ -665,7 +665,7 @@ test.describe("Settings page — tab smoke tests", () => {
   test("settings tab buttons are visible", async ({ page }) => {
     await goToSettings(page);
 
-    const baseTabs = ["Profile", "LLM", "Skills", "Channels", "Sandbox", "Tools"];
+    const baseTabs = ["Profile", "Appearance", "LLM", "Skills", "Channels", "Sandbox", "Tools"];
     const adminTabs = ["Users", "System", "Server", "OminiX"];
     const profileLoaded = await hasProfile(page);
 

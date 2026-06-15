@@ -42,8 +42,10 @@ export interface HomeSettings {
   clockFormat: ClockFormat;
   idleSeconds: number;
   nightMode: NightMode;
+  burnInProtection: boolean;
   lang: Lang;
   newsFeedUrl: string;
+  calendarFeedUrl: string;
   uiStyle: HomeUiStyle;
 }
 
@@ -98,8 +100,10 @@ const SETTINGS_KEYS = {
   clockFormat: "octos_home_clock_format",
   idleSeconds: "octos_home_idle_seconds",
   nightMode: "octos_home_night_mode",
+  burnInProtection: "octos_home_burn_in_protection",
   lang: "octos_home_lang",
   newsFeedUrl: "octos_home_news_feed_url",
+  calendarFeedUrl: "octos_home_calendar_feed_url",
   uiStyle: "octos_home_ui_style",
 } as const;
 
@@ -113,8 +117,10 @@ const DEFAULT_SETTINGS: HomeSettings = {
   clockFormat: "24h",
   idleSeconds: 30,
   nightMode: "auto",
+  burnInProtection: false,
   lang: "en",
   newsFeedUrl: DEFAULT_FEED_URL,
+  calendarFeedUrl: "",
   uiStyle: "metro",
 };
 
@@ -150,6 +156,12 @@ function asNightMode(value: unknown, fallback: NightMode): NightMode {
   return value === "auto" || value === "on" || value === "off" ? value : fallback;
 }
 
+function asBoolean(value: unknown, fallback: boolean): boolean {
+  if (value === true || value === "true" || value === "1") return true;
+  if (value === false || value === "false" || value === "0") return false;
+  return fallback;
+}
+
 function asLang(value: unknown, fallback: Lang): Lang {
   return value === "en" || value === "zh" ? value : fallback;
 }
@@ -170,8 +182,14 @@ function readLegacySettings(): HomeSettings {
       Number(storageGet(SETTINGS_KEYS.idleSeconds)) || DEFAULT_SETTINGS.idleSeconds,
     ),
     nightMode: asNightMode(storageGet(SETTINGS_KEYS.nightMode), DEFAULT_SETTINGS.nightMode),
+    burnInProtection: asBoolean(
+      storageGet(SETTINGS_KEYS.burnInProtection),
+      DEFAULT_SETTINGS.burnInProtection,
+    ),
     lang: asLang(storageGet(SETTINGS_KEYS.lang), DEFAULT_SETTINGS.lang),
     newsFeedUrl: storageGet(SETTINGS_KEYS.newsFeedUrl) ?? DEFAULT_SETTINGS.newsFeedUrl,
+    calendarFeedUrl:
+      storageGet(SETTINGS_KEYS.calendarFeedUrl) ?? DEFAULT_SETTINGS.calendarFeedUrl,
     uiStyle: asHomeUiStyle(storageGet(SETTINGS_KEYS.uiStyle), DEFAULT_SETTINGS.uiStyle),
   };
 }
@@ -182,8 +200,10 @@ function writeLegacySettings(settings: HomeSettings): void {
   storageSet(SETTINGS_KEYS.clockFormat, settings.clockFormat);
   storageSet(SETTINGS_KEYS.idleSeconds, String(settings.idleSeconds));
   storageSet(SETTINGS_KEYS.nightMode, settings.nightMode);
+  storageSet(SETTINGS_KEYS.burnInProtection, String(settings.burnInProtection));
   storageSet(SETTINGS_KEYS.lang, settings.lang);
   storageSet(SETTINGS_KEYS.newsFeedUrl, settings.newsFeedUrl);
+  storageSet(SETTINGS_KEYS.calendarFeedUrl, settings.calendarFeedUrl);
   storageSet(SETTINGS_KEYS.uiStyle, settings.uiStyle);
 }
 
@@ -339,11 +359,19 @@ function mergeProfileHome(
           ? clampIdle(settings.idle_seconds)
           : legacy.settings.idleSeconds,
       nightMode: asNightMode(settings.night_mode, legacy.settings.nightMode),
+      burnInProtection: asBoolean(
+        settings.burn_in_protection,
+        legacy.settings.burnInProtection,
+      ),
       lang: asLang(settings.lang, legacy.settings.lang),
       newsFeedUrl:
         typeof settings.news_feed_url === "string" && settings.news_feed_url.trim()
           ? settings.news_feed_url
           : legacy.settings.newsFeedUrl,
+      calendarFeedUrl:
+        typeof settings.calendar_feed_url === "string"
+          ? settings.calendar_feed_url
+          : legacy.settings.calendarFeedUrl,
       uiStyle: asHomeUiStyle(settings.ui_style, legacy.settings.uiStyle),
     },
     widgets: normalizeWidgets(home?.widgets, legacy.widgets),
@@ -372,8 +400,10 @@ function serializeHome(data: HomeData): HomeProfileConfig {
       clock_format: data.settings.clockFormat,
       idle_seconds: data.settings.idleSeconds,
       night_mode: data.settings.nightMode,
+      burn_in_protection: data.settings.burnInProtection,
       lang: data.settings.lang,
       news_feed_url: data.settings.newsFeedUrl,
+      calendar_feed_url: data.settings.calendarFeedUrl,
       ui_style: data.settings.uiStyle,
     },
     events: data.events,

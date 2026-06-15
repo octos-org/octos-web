@@ -34,7 +34,23 @@ async function fulfillJson(route: Route, body: unknown) {
   });
 }
 
-async function installWorkbenchMocks(page: Page) {
+type UiSmokeMessage = {
+  seq: number;
+  role: "user" | "assistant";
+  content: string;
+  timestamp: string;
+  client_message_id?: string;
+  thread_id?: string;
+  response_to_client_message_id?: string;
+  message_id?: string;
+  source?: string;
+};
+
+async function installWorkbenchMocks(
+  page: Page,
+  options: { messages?: UiSmokeMessage[] } = {},
+) {
+  const messages = options.messages ?? [];
   const contentEntry = {
     id: "content-1",
     filename: "family-plan.md",
@@ -157,7 +173,7 @@ async function installWorkbenchMocks(page: Page) {
     }
     if (path.startsWith("/api/sessions")) {
       await fulfillJson(route, {
-        sessions: [{ id: "web-ui-smoke", title: "Visual review", message_count: 0 }],
+      sessions: [{ id: "web-ui-smoke", title: "Visual review", message_count: messages.length }],
         current: null,
       });
       return;
@@ -189,9 +205,9 @@ async function installWorkbenchMocks(page: Page) {
       if (!message.id) return;
       const result =
         message.method === "session/list"
-          ? { sessions: [{ id: "web-ui-smoke", title: "Visual review", message_count: 0 }] }
+          ? { sessions: [{ id: "web-ui-smoke", title: "Visual review", message_count: messages.length }] }
           : message.method === "session/messages_page"
-            ? { messages: [], has_more: false, next_offset: 0 }
+            ? { messages, has_more: false, next_offset: messages.length }
             : message.method === "session/open"
               ? { opened: { session_id: "web-ui-smoke", active_profile_id: "admin" } }
               : message.method === "router/get_metrics"
@@ -258,6 +274,18 @@ test.describe("UI redesign shell smoke", () => {
     }
   });
 
+  test("home status tiles navigate instead of looking inert", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/", { waitUntil: "networkidle" });
+
+    await page.getByTestId("home-status-tile").filter({ hasText: "Local decks" }).click();
+    await expect(page).toHaveURL(/\/slides$/);
+
+    await page.goto("/", { waitUntil: "networkidle" });
+    await page.getByTestId("home-status-tile").filter({ hasText: "Display mode" }).click();
+    await expect(page).toHaveURL(/\/home$/);
+  });
+
   test("mobile home navigation keeps visible controls inside the viewport", async ({
     page,
   }) => {
@@ -293,6 +321,39 @@ test.describe("UI redesign shell smoke", () => {
     expect(offscreenControls).toEqual([]);
   });
 
+  test("workbench topbar route icons are readable and not edge-clipped", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 728, height: 694 });
+    await page.goto("/", { waitUntil: "networkidle" });
+
+    const geometry = await page.evaluate(() => {
+      const nav = document.querySelector(".workbench-route-nav");
+      const firstLink = document.querySelector(".workbench-route-link");
+      const firstIcon = firstLink?.querySelector("svg");
+      const brandIcon = document.querySelector(".workbench-brand img");
+      const navStyle = nav ? getComputedStyle(nav) : null;
+      const firstIconRect = firstIcon?.getBoundingClientRect();
+      const brandIconRect = brandIcon?.getBoundingClientRect();
+      return {
+        maskImage: navStyle?.maskImage ?? "",
+        webkitMaskImage: navStyle?.webkitMaskImage ?? "",
+        routeIconWidth: firstIconRect?.width ?? 0,
+        routeIconLeft: firstIconRect?.left ?? 0,
+        navLeft: nav?.getBoundingClientRect().left ?? 0,
+        brandIconWidth: brandIconRect?.width ?? 0,
+        brandIconHeight: brandIconRect?.height ?? 0,
+      };
+    });
+
+    expect(geometry.maskImage).toBe("none");
+    expect(geometry.webkitMaskImage).toBe("none");
+    expect(geometry.routeIconWidth).toBeGreaterThanOrEqual(18);
+    expect(geometry.routeIconLeft).toBeGreaterThanOrEqual(geometry.navLeft);
+    expect(geometry.brandIconWidth).toBeGreaterThanOrEqual(24);
+    expect(geometry.brandIconHeight).toBeGreaterThanOrEqual(24);
+  });
+
   test("home settings drawer hides closed controls from visual audits", async ({
     page,
   }) => {
@@ -304,6 +365,14 @@ test.describe("UI redesign shell smoke", () => {
 
     await page.locator(".home-settings-gear").click();
     await expect(panel).toHaveCSS("visibility", "visible");
+    const burnInField = page
+      .locator(".home-settings-panel .space-y-2")
+      .filter({ hasText: "Burn-in Protection" });
+    await expect(burnInField).toBeVisible();
+    await burnInField.getByRole("button", { name: "On" }).click();
+    await expect
+      .poll(() => page.evaluate(() => localStorage.getItem("octos_home_burn_in_protection")))
+      .toBe("true");
 
     await page.getByRole("button", { name: "Close" }).click();
     await expect(panel).toHaveCSS("visibility", "hidden");
@@ -353,7 +422,7 @@ test.describe("UI redesign shell smoke", () => {
     await expect(page.locator(".metro-grid")).toBeVisible();
 
     await page.locator(".home-settings-gear").click();
-    await page.getByRole("button", { name: "Classic" }).click();
+    await page.getByRole("button", { name: "Grid" }).click();
     await expect(page.locator(".classic-home-standby")).toBeVisible();
     await expect(page.locator(".metro-grid")).toHaveCount(0);
 
@@ -364,6 +433,87 @@ test.describe("UI redesign shell smoke", () => {
     await page.locator(".home-settings-gear").click();
     await page.getByRole("button", { name: "Metro" }).click();
     await expect(page.locator(".metro-grid")).toBeVisible();
+  });
+
+  test("classic home uses an aligned widget grid", async ({ page }) => {
+    await page.setViewportSize({ width: 859, height: 819 });
+    await page.addInitScript(() => {
+      localStorage.setItem("octos_home_ui_style", "classic");
+      localStorage.setItem("octos_home_night_mode", "off");
+    });
+
+    await page.goto("/home", { waitUntil: "networkidle" });
+    await expect(page.locator(".classic-home-grid")).toBeVisible();
+
+    const layout = await page.evaluate(() => {
+      const grid = document.querySelector(".classic-home-grid");
+      if (!grid) return { display: "", columns: 0, maxSameRow: 0 };
+      const style = getComputedStyle(grid);
+      const children = Array.from(grid.children)
+        .map((child) => child.getBoundingClientRect())
+        .filter((rect) => rect.width > 0 && rect.height > 0);
+      const rowCounts = new Map<number, number>();
+      for (const rect of children) {
+        const top = Math.round(rect.top / 4) * 4;
+        rowCounts.set(top, (rowCounts.get(top) ?? 0) + 1);
+      }
+      return {
+        display: style.display,
+        columns: style.gridTemplateColumns.split(" ").filter(Boolean).length,
+        maxSameRow: Math.max(0, ...rowCounts.values()),
+      };
+    });
+
+    expect(layout.display).toBe("grid");
+    expect(layout.columns).toBeGreaterThanOrEqual(4);
+    expect(layout.maxSameRow).toBeGreaterThanOrEqual(2);
+  });
+
+  test("classic home weather content stays inside its tile", async ({ page }) => {
+    await page.setViewportSize({ width: 859, height: 819 });
+    await page.addInitScript(() => {
+      localStorage.setItem("octos_home_ui_style", "classic");
+      localStorage.setItem("octos_home_night_mode", "off");
+    });
+    await page.route("https://geocoding-api.open-meteo.com/**", async (route) => {
+      await fulfillJson(route, {
+        results: [{ latitude: 35.6762, longitude: 139.6503 }],
+      });
+    });
+    await page.route("https://api.open-meteo.com/**", async (route) => {
+      await fulfillJson(route, {
+        current: { temperature_2m: 17, weather_code: 1 },
+        hourly: {
+          time: [
+            "2026-06-15T23:00",
+            "2026-06-16T00:00",
+            "2026-06-16T01:00",
+            "2026-06-16T02:00",
+            "2026-06-16T03:00",
+          ],
+          temperature_2m: [17, 17, 17, 17, 16],
+          weather_code: [1, 1, 1, 1, 0],
+        },
+      });
+    });
+
+    await page.goto("/home", { waitUntil: "networkidle" });
+    await expect(page.locator(".classic-home-weather-panel")).toContainText("Tokyo");
+
+    const overflow = await page.evaluate(() => {
+      const tile = document.querySelector(".classic-home-weather-panel");
+      const content = tile?.querySelector(".home-weather-layout");
+      const tileRect = tile?.getBoundingClientRect();
+      const contentRect = content?.getBoundingClientRect();
+      return {
+        tileRight: tileRect?.right ?? 0,
+        contentRight: contentRect?.right ?? 0,
+        scrollOverflow: tile ? tile.scrollWidth - tile.clientWidth : 0,
+      };
+    });
+
+    expect(overflow.contentRight).toBeLessThanOrEqual(overflow.tileRight + 1);
+    expect(overflow.scrollOverflow).toBeLessThanOrEqual(1);
   });
 
   test("workspace surfaces use the shared topbar titles", async ({ page }) => {
@@ -401,6 +551,123 @@ test.describe("UI redesign shell smoke", () => {
     expect(styling.link.toLowerCase()).not.toMatch(/7ca8b8|4d7f91|blue|purple/);
     expect(styling.sectionRadius).toBeLessThanOrEqual(8);
     expect(styling.tabRadius).toBeLessThanOrEqual(8);
+  });
+
+  test("settings can restore the legacy blue global UI style", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/settings", { waitUntil: "networkidle" });
+
+    await page.getByRole("button", { name: "Appearance" }).click();
+    await page.getByRole("button", { name: "Legacy Blue" }).click();
+
+    await expect
+      .poll(() =>
+        page.evaluate(() => ({
+          attr: document.documentElement.getAttribute("data-ui-style"),
+          stored: localStorage.getItem("octos-ui-style"),
+          surfaceDark: getComputedStyle(document.documentElement)
+            .getPropertyValue("--color-surface-dark")
+            .trim()
+            .toLowerCase(),
+        })),
+      )
+      .toEqual({
+        attr: "legacy-blue",
+        stored: "legacy-blue",
+        surfaceDark: "#081e3f",
+      });
+
+    await page.goto("/", { waitUntil: "networkidle" });
+
+    await expect(page.locator(".legacy-blue-home")).toBeVisible();
+    await expect(page.locator(".workbench-shell")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /Start chat/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Slides/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Sites/i })).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+  });
+
+  test("settings exposes multiple warm interface palettes", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/settings", { waitUntil: "networkidle" });
+
+    await page.getByRole("button", { name: "Appearance" }).click();
+    await expect(page.getByRole("button", { name: "Warm Hearth" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Garden Sage" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Soft Daylight" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Legacy Blue" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Garden Sage" }).click();
+
+    await expect
+      .poll(() =>
+        page.evaluate(() => ({
+          attr: document.documentElement.getAttribute("data-ui-style"),
+          stored: localStorage.getItem("octos-ui-style"),
+          link: getComputedStyle(document.documentElement)
+            .getPropertyValue("--color-link")
+            .trim()
+            .toLowerCase(),
+        })),
+      )
+      .toEqual({
+        attr: "warm-sage",
+        stored: "warm-sage",
+        link: "#59784f",
+      });
+  });
+
+  test("legacy blue home exposes a direct return to the warm workbench", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.addInitScript(() => {
+      localStorage.setItem("octos-ui-style", "legacy-blue");
+      localStorage.setItem("octos-theme", "dark");
+    });
+
+    await page.goto("/", { waitUntil: "networkidle" });
+
+    await expect(page.locator(".legacy-blue-home")).toBeVisible();
+    await page.getByRole("button", { name: "Workbench" }).click();
+
+    await expect(page.locator(".workbench-shell")).toBeVisible();
+    await expect(page.locator(".legacy-blue-home")).toHaveCount(0);
+    await expect
+      .poll(() => page.evaluate(() => localStorage.getItem("octos-ui-style")))
+      .toBe("warm");
+    await expect(
+      page.getByRole("heading", { name: "Octos Workspace" }),
+    ).toBeVisible();
+  });
+
+  test("slides editor composer stays below its message viewport", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 859, height: 819 });
+    await page.goto("/slides/deck-1", { waitUntil: "networkidle" });
+
+    await expect(page.locator(".slides-editor-chat-panel")).toBeVisible();
+
+    const layout = await page.evaluate(() => {
+      const panel = document.querySelector(".slides-editor-chat-panel");
+      const viewport = panel?.querySelector(".chat-thread-viewport");
+      const composer = panel?.querySelector(".chat-composer-wrap");
+      const panelRect = panel?.getBoundingClientRect();
+      const viewportRect = viewport?.getBoundingClientRect();
+      const composerRect = composer?.getBoundingClientRect();
+      return {
+        panelBottom: panelRect?.bottom ?? 0,
+        viewportHeight: viewportRect?.height ?? 0,
+        viewportBottom: viewportRect?.bottom ?? 0,
+        composerTop: composerRect?.top ?? 0,
+        composerBottom: composerRect?.bottom ?? 0,
+      };
+    });
+
+    expect(layout.viewportHeight).toBeGreaterThanOrEqual(220);
+    expect(layout.composerTop).toBeGreaterThanOrEqual(layout.viewportBottom - 1);
+    expect(layout.composerBottom).toBeLessThanOrEqual(layout.panelBottom + 1);
   });
 
   test("content file panel keeps warm restrained control styling", async ({ page }) => {
@@ -449,5 +716,85 @@ test.describe("UI redesign shell smoke", () => {
     expect(styling.inputRadius).toBeLessThanOrEqual(8);
     expect(styling.hasOldRoundedClass).toBe(false);
     await expectNoHorizontalOverflow(page);
+  });
+
+  test("chat sidebar route navigation wraps without clipping", async ({ page }) => {
+    await page.setViewportSize({ width: 1067, height: 787 });
+    await page.goto("/chat", { waitUntil: "networkidle" });
+
+    await expect(page.locator(".chat-sidebar-panel .chat-panel-toolbar")).toBeVisible();
+
+    const layout = await page.evaluate(() => {
+      const toolbar = document.querySelector(".chat-sidebar-panel .chat-panel-toolbar");
+      const nav = toolbar?.querySelector(".workbench-route-nav");
+      const links = Array.from(nav?.querySelectorAll(".workbench-route-link") ?? []);
+      const toolbarRect = toolbar?.getBoundingClientRect();
+      const navRect = nav?.getBoundingClientRect();
+      const maxLinkOverflow = links.reduce((max, link) => {
+        const rect = link.getBoundingClientRect();
+        const overflow = Math.max(
+          0,
+          rect.right - (toolbarRect?.right ?? 0),
+          (toolbarRect?.left ?? 0) - rect.left,
+        );
+        return Math.max(max, overflow);
+      }, 0);
+
+      return {
+        visibleLinks: links.filter((link) => {
+          const rect = link.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        }).length,
+        navScrollOverflow: nav ? nav.scrollWidth - nav.clientWidth : 0,
+        navRight: navRect?.right ?? 0,
+        toolbarRight: toolbarRect?.right ?? 0,
+        maxLinkOverflow,
+      };
+    });
+
+    expect(layout.visibleLinks).toBeGreaterThanOrEqual(7);
+    expect(layout.navScrollOverflow).toBeLessThanOrEqual(1);
+    expect(layout.navRight).toBeLessThanOrEqual(layout.toolbarRight + 1);
+    expect(layout.maxLinkOverflow).toBeLessThanOrEqual(1);
+  });
+});
+
+test.describe("Home conversation TTS smoke", () => {
+  test("home assistant exposes TTS on completed assistant replies", async ({
+    page,
+  }) => {
+    await installWorkbenchMocks(page, {
+      messages: [
+        {
+          seq: 1,
+          role: "user",
+          content: "Summarize the room status",
+          timestamp: "2026-01-01T00:00:00Z",
+          client_message_id: "tts-thread",
+          thread_id: "tts-thread",
+          message_id: "user-tts",
+          source: "user",
+        },
+        {
+          seq: 2,
+          role: "assistant",
+          content: "The room is calm and ready.",
+          timestamp: "2026-01-01T00:00:01Z",
+          thread_id: "tts-thread",
+          response_to_client_message_id: "tts-thread",
+          message_id: "assistant-tts",
+          source: "assistant",
+        },
+      ],
+    });
+    await page.setViewportSize({ width: 859, height: 819 });
+    await page.goto("/home", { waitUntil: "networkidle" });
+
+    await page.getByRole("button", { name: "Chat" }).click();
+    await expect(page.locator(".home-conversation")).toBeVisible();
+    await expect(page.getByText("The room is calm and ready.")).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Read response aloud" }),
+    ).toBeVisible();
   });
 });

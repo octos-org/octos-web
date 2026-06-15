@@ -6,14 +6,46 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { ImageIcon } from "lucide-react";
 import { usePhotos } from "./use-photos";
+
+const PLACEHOLDER_CYCLE_MS = 30_000;
+
+const LANDSCAPE_PLACEHOLDERS = [
+  {
+    src: "https://picsum.photos/id/1018/960/540",
+    label: "Mountain landscape",
+  },
+  {
+    src: "https://picsum.photos/id/1015/960/540",
+    label: "River valley landscape",
+  },
+  {
+    src: "https://picsum.photos/id/10/960/540",
+    label: "Forest landscape",
+  },
+];
 
 export function PhotoFrame() {
   const { currentUrl } = usePhotos();
   const [displayed, setDisplayed] = useState<string | null>(null);
   const [fading, setFading] = useState(false);
+  const [placeholderIndex, setPlaceholderIndex] = useState(0);
   const prevRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (currentUrl) return;
+    const timer = window.setInterval(() => {
+      setPlaceholderIndex((index) => (index + 1) % LANDSCAPE_PLACEHOLDERS.length);
+    }, PLACEHOLDER_CYCLE_MS);
+    return () => window.clearInterval(timer);
+  }, [currentUrl]);
+
+  useEffect(() => {
+    if (currentUrl) return;
+    prevRef.current = null;
+    setDisplayed(null);
+    setFading(false);
+  }, [currentUrl]);
 
   useEffect(() => {
     if (!currentUrl || currentUrl === displayed) return;
@@ -27,10 +59,20 @@ export function PhotoFrame() {
   }, [currentUrl, displayed]);
 
   if (!currentUrl && !displayed) {
+    const placeholder =
+      LANDSCAPE_PLACEHOLDERS[placeholderIndex % LANDSCAPE_PLACEHOLDERS.length];
     return (
-      <div className="home-widget home-photo-frame mt-4 mx-4 px-5 py-6 flex flex-col items-center gap-2">
-        <ImageIcon size={24} className="text-white/20" />
-        <span className="text-sm text-white/25">Add photos in Settings</span>
+      <div className="home-photo-frame-container mt-4 mx-4">
+        <img
+          src={placeholder.src}
+          alt={placeholder.label}
+          className="home-photo-frame-img"
+          loading="lazy"
+        />
+        <div className="home-photo-placeholder-caption">
+          <span>{placeholder.label}</span>
+          <span>Add photos in Settings</span>
+        </div>
       </div>
     );
   }

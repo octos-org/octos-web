@@ -53,6 +53,7 @@ export interface VoiceInputState {
   start: () => void;
   stop: () => void;
   transcript: string;
+  error: string | null;
   /** Externally set the orb to `speaking` state. */
   setSpeaking: (speaking: boolean) => void;
 }
@@ -72,6 +73,7 @@ export function useVoiceInput(options: VoiceInputOptions): VoiceInputState {
   const { lang = "en-US" } = options;
   const [orbState, setOrbState] = useState<OrbState>("idle");
   const [transcript, setTranscript] = useState("");
+  const [error, setError] = useState<string | null>(null);
   const [isSupported] = useState(() => getSpeechRecognition() !== null);
 
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
@@ -91,7 +93,10 @@ export function useVoiceInput(options: VoiceInputOptions): VoiceInputState {
   /* ── Start listening ─────────────────────────────────── */
   const start = useCallback(() => {
     const Ctor = getSpeechRecognition();
-    if (!Ctor) return;
+    if (!Ctor) {
+      setError("Voice is not supported in this browser.");
+      return;
+    }
 
     // Abort any existing session
     recognitionRef.current?.abort();
@@ -105,6 +110,7 @@ export function useVoiceInput(options: VoiceInputOptions): VoiceInputState {
 
     setOrbState("listening");
     setTranscript("");
+    setError(null);
 
     // Start silence timer
     silenceTimerRef.current = setTimeout(() => {
@@ -146,9 +152,10 @@ export function useVoiceInput(options: VoiceInputOptions): VoiceInputState {
       }
     };
 
-    rec.onerror = (_event: SpeechRecognitionErrorEvent) => {
+    rec.onerror = (event: SpeechRecognitionErrorEvent) => {
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       recognitionRef.current = null;
+      setError(event.message || event.error || "Microphone unavailable.");
       setOrbState("idle");
     };
 
@@ -163,6 +170,7 @@ export function useVoiceInput(options: VoiceInputOptions): VoiceInputState {
     try {
       rec.start();
     } catch {
+      setError("Microphone unavailable.");
       setOrbState("idle");
       recognitionRef.current = null;
     }
@@ -179,5 +187,5 @@ export function useVoiceInput(options: VoiceInputOptions): VoiceInputState {
     setOrbState(speaking ? "speaking" : "idle");
   }, []);
 
-  return { orbState, isSupported, start, stop, transcript, setSpeaking };
+  return { orbState, isSupported, start, stop, transcript, error, setSpeaking };
 }

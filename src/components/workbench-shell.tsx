@@ -59,13 +59,13 @@ export function WorkbenchBrand() {
   return (
     <Link
       to="/"
-      className="workbench-brand flex min-w-0 items-center gap-2.5 text-left"
+      className="workbench-brand flex min-w-0 items-center gap-3 text-left"
       aria-label="Octos home"
     >
       <img
         src="/images/octos-logo-color.svg"
         alt="Octos"
-        className="h-7 w-auto shrink-0 select-none"
+        className="workbench-brand-logo h-8 w-8 shrink-0 select-none object-cover"
       />
       <span className="text-base font-semibold text-text-strong max-sm:hidden">
         Octos
@@ -89,10 +89,12 @@ export function WorkbenchRouteNav({ compact = false }: { compact?: boolean }) {
               key={to}
               to={to}
               className="workbench-route-link flex shrink-0 items-center gap-1.5 px-3 py-2 text-sm"
+              aria-label={label}
               aria-current={active ? "page" : undefined}
               data-active={active ? "true" : undefined}
+              title={label}
             >
-              <Icon size={15} />
+              <Icon size={20} strokeWidth={2} />
               <span className={compact ? "max-lg:hidden" : "max-md:hidden"}>
                 {label}
               </span>
@@ -115,7 +117,7 @@ export function WorkbenchThemeButton() {
       title={label}
       aria-label={label}
     >
-      {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+      {theme === "dark" ? <Sun size={20} /> : <Moon size={20} />}
     </button>
   );
 }
@@ -136,7 +138,7 @@ export function WorkbenchUserActions() {
         aria-label="Log out"
         title="Log out"
       >
-        <LogOut size={16} />
+        <LogOut size={18} />
       </button>
     </div>
   );

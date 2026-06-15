@@ -110,7 +110,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
         {/* Header */}
         <div className="px-3 pt-3">
           <div className="chat-panel-toolbar glass-toolbar px-4 py-4">
-            <div className="flex items-start gap-3">
+            <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
                 <div className="flex min-w-0 items-center gap-2.5">
                   <img
@@ -122,14 +122,16 @@ export function ChatLayout({ children }: { children: ReactNode }) {
                     Octos
                   </span>
                 </div>
-                <WorkbenchRouteNav compact />
-                <div className="shell-kicker mt-4">Session Stack</div>
-                <div className="mt-1 text-lg font-semibold tracking-tight text-text-strong">
-                  Chat History
-                </div>
               </div>
               <div className="flex items-center gap-2">
                 <WorkbenchThemeButton />
+              </div>
+            </div>
+            <WorkbenchRouteNav compact />
+            <div className="mt-4 flex flex-col items-start">
+              <div className="shell-kicker">Session Stack</div>
+              <div className="mt-1 text-lg font-semibold tracking-tight text-text-strong">
+                Chat History
               </div>
             </div>
           </div>

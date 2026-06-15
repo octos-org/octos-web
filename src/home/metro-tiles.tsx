@@ -437,9 +437,10 @@ function CalendarTile() {
 }
 
 function VoiceTile({ onActivate, lang }: { onActivate: (text?: string) => void; lang: string }) {
+  const { strings } = useHomeSettings();
   const voice = useVoiceInput({ onResult: (text) => onActivate(text), lang: lang === "zh" ? "zh-CN" : "en-US" });
   const handleClick = useCallback(() => {
-    if (!voice.isSupported) { onActivate(); return; }
+    if (!voice.isSupported) { onActivate(""); return; }
     if (voice.orbState === "listening") voice.stop();
     else if (voice.orbState === "idle") voice.start();
   }, [voice, onActivate]);
@@ -448,6 +449,11 @@ function VoiceTile({ onActivate, lang }: { onActivate: (text?: string) => void; 
       <VoiceOrb state={voice.orbState} onClick={handleClick} />
       {voice.orbState === "listening" && voice.transcript && (
         <p className="metro-voice-transcript">{voice.transcript}</p>
+      )}
+      {(!voice.isSupported || voice.error) && (
+        <p className="metro-voice-transcript">
+          {voice.error ?? strings.voiceNotSupported}
+        </p>
       )}
     </div>
   );
@@ -630,11 +636,18 @@ function useTileResize(
 export function MetroTileGrid({ onActivate, nightActive }: MetroTileGridProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [editMode, setEditMode] = useState(false);
-  const { strings, widgets, lang, metroLayout, setMetroLayout } = useHomeSettings();
+  const {
+    strings,
+    widgets,
+    lang,
+    metroLayout,
+    setMetroLayout,
+    burnInProtection,
+  } = useHomeSettings();
   const [layouts, setLayouts] = useState(() =>
     normalizeLayouts(metroLayout, defaultLayouts()),
   );
-  const burnIn = useBurnInProtection();
+  const burnIn = useBurnInProtection(burnInProtection);
   const gridRef = useRef<HTMLDivElement>(null);
   const gridCols = useMetroGridColumns();
 

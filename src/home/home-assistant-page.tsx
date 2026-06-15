@@ -17,9 +17,9 @@
  * Wake Lock is acquired while mounted to prevent screen-off on idle
  * touch devices.
  *
- * Night mode: dims display and hides non-essential UI between 22:00
- * and 06:00 (auto), or always/never based on user setting. Touch/mouse
- * activity temporarily restores normal brightness for 5 seconds.
+ * Night mode: gently dims display between 22:00 and 06:00 (auto), or
+ * always/never based on user setting. Touch/mouse activity temporarily
+ * restores normal brightness.
  */
 
 import { useMemo, useCallback, useEffect, useRef, useState } from "react";
@@ -47,7 +47,7 @@ const HOME_SESSION_KEY = "octos_home_session_id";
 const HOME_HISTORY_TOPIC = "home";
 
 /** Duration in ms to temporarily suppress night mode on interaction. */
-const NIGHT_SUPPRESS_MS = 5000;
+const NIGHT_SUPPRESS_MS = 30 * 60 * 1000;
 
 function generateSessionId(): string {
   return `web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -60,7 +60,7 @@ function generateSessionId(): string {
 function useNightMode(): boolean {
   const { nightMode } = useHomeSettings();
   const clock = useClock();
-  const [suppressed, setSuppressed] = useState(false);
+  const [suppressed, setSuppressed] = useState(true);
   const suppressTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
@@ -84,6 +84,7 @@ function useNightMode(): boolean {
       );
     };
 
+    handler();
     window.addEventListener("mousemove", handler);
     window.addEventListener("touchstart", handler);
     return () => {

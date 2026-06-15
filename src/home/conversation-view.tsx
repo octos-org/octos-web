@@ -32,6 +32,8 @@ import {
   Download,
   SendHorizontal,
   Square,
+  Volume2,
+  VolumeX,
   Wrench,
 } from "lucide-react";
 import { useSession } from "@/runtime/session-context";
@@ -57,6 +59,17 @@ function formatBubbleTime(ts: number): string {
   const d = new Date(ts);
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function speechTextFromMarkdown(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[[^\]]*]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]+)]\([^)]*\)/g, "$1")
+    .replace(/[#*_>~-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 // ── File type detection ────────────────────────────────────────────
@@ -187,6 +200,7 @@ export function ConversationView({ onBack, prefill }: ConversationViewProps) {
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const composingRef = useRef(false);
   const prefillAppliedRef = useRef<string | undefined>(undefined);
+  const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
 
   // ── Scroll state ────────────────────────────────────────────────
   const isAtBottomRef = useRef(true);
@@ -233,6 +247,14 @@ export function ConversationView({ onBack, prefill }: ConversationViewProps) {
     resetIdle();
     return () => clearTimeout(idleTimerRef.current);
   }, [resetIdle]);
+
+  useEffect(() => {
+    return () => {
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
 
   // Any new thread data (assistant reply) resets the idle timer.
   useEffect(() => {
@@ -378,6 +400,45 @@ export function ConversationView({ onBack, prefill }: ConversationViewProps) {
     }
   }, [currentSessionId, historyTopic, threads]);
 
+  const stopSpeaking = useCallback(() => {
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    setSpeakingMessageId(null);
+  }, []);
+
+  const handleSpeak = useCallback(
+    (msg: ThreadMessage) => {
+      resetIdle();
+      if (speakingMessageId === msg.id) {
+        stopSpeaking();
+        return;
+      }
+      if (
+        typeof window === "undefined" ||
+        !("speechSynthesis" in window) ||
+        typeof SpeechSynthesisUtterance === "undefined"
+      ) {
+        return;
+      }
+
+      const textToRead = speechTextFromMarkdown(msg.text);
+      if (!textToRead) return;
+
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(textToRead);
+      utterance.onend = () => {
+        setSpeakingMessageId((current) => (current === msg.id ? null : current));
+      };
+      utterance.onerror = () => {
+        setSpeakingMessageId((current) => (current === msg.id ? null : current));
+      };
+      setSpeakingMessageId(msg.id);
+      window.speechSynthesis.speak(utterance);
+    },
+    [resetIdle, speakingMessageId, stopSpeaking],
+  );
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (composingRef.current || e.nativeEvent.isComposing || e.keyCode === 229) return;
@@ -496,8 +557,24 @@ export function ConversationView({ onBack, prefill }: ConversationViewProps) {
                   {msg.toolCalls.length > 0 && (
                     <ToolCallsIndicator toolCalls={msg.toolCalls} />
                   )}
-                  <div className="mt-1 text-xs text-white/30 tabular-nums">
-                    {formatBubbleTime(msg.timestamp)}
+                  <div className="mt-2 flex items-center justify-between gap-3 text-xs text-white/30 tabular-nums">
+                    <button
+                      type="button"
+                      className="home-tts-button"
+                      aria-label={
+                        speakingMessageId === msg.id
+                          ? "Stop reading response"
+                          : "Read response aloud"
+                      }
+                      onClick={() => handleSpeak(msg)}
+                    >
+                      {speakingMessageId === msg.id ? (
+                        <VolumeX size={16} />
+                      ) : (
+                        <Volume2 size={16} />
+                      )}
+                    </button>
+                    <span>{formatBubbleTime(msg.timestamp)}</span>
                   </div>
                 </div>
               </div>
