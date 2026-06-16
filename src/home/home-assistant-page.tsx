@@ -35,6 +35,7 @@ import * as ThreadStore from "@/store/thread-store";
 import { useWakeLock } from "./use-wake-lock";
 import { StandbyView } from "./standby-view";
 import { ConversationView } from "./conversation-view";
+import { BilibiliMusicPanel } from "./bilibili-music-panel";
 import {
   HomeSettingsProvider,
   useHomeSettings,
@@ -104,6 +105,7 @@ function useNightMode(): boolean {
 function HomeAssistantShell() {
   const [mode, setMode] = useState<Mode>("standby");
   const [prefill, setPrefill] = useState<string | undefined>(undefined);
+  const [musicOpen, setMusicOpen] = useState(false);
   const nightActive = useNightMode();
 
   const activate = useCallback((cardPrefill?: string) => {
@@ -126,7 +128,11 @@ function HomeAssistantShell() {
             : "opacity-0 scale-[0.98] pointer-events-none z-0"
         }`}
       >
-        <StandbyView onActivate={activate} nightActive={nightActive} />
+        <StandbyView
+          onActivate={activate}
+          onMusicOpen={() => setMusicOpen(true)}
+          nightActive={nightActive}
+        />
       </div>
 
       {/* Conversation layer */}
@@ -141,6 +147,10 @@ function HomeAssistantShell() {
       </div>
 
       <UiProtocolApprovalHost />
+      <BilibiliMusicPanel
+        open={musicOpen && mode === "standby"}
+        onClose={() => setMusicOpen(false)}
+      />
     </div>
   );
 }
