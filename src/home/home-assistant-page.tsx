@@ -35,7 +35,10 @@ import * as ThreadStore from "@/store/thread-store";
 import { useWakeLock } from "./use-wake-lock";
 import { StandbyView } from "./standby-view";
 import { ConversationView } from "./conversation-view";
-import { BilibiliMusicPanel } from "./bilibili-music-panel";
+import {
+  BILIBILI_MUSIC_SCENES,
+  createBilibiliMusicController,
+} from "./bilibili-music";
 import {
   HomeSettingsProvider,
   useHomeSettings,
@@ -105,7 +108,10 @@ function useNightMode(): boolean {
 function HomeAssistantShell() {
   const [mode, setMode] = useState<Mode>("standby");
   const [prefill, setPrefill] = useState<string | undefined>(undefined);
-  const [musicOpen, setMusicOpen] = useState(false);
+  const musicController = useMemo(() => createBilibiliMusicController(), []);
+  const [musicSnapshot, setMusicSnapshot] = useState(
+    musicController.getSnapshot(),
+  );
   const nightActive = useNightMode();
 
   const activate = useCallback((cardPrefill?: string) => {
@@ -117,6 +123,28 @@ function HomeAssistantShell() {
     setPrefill(undefined);
     setMode("standby");
   }, []);
+
+  const toggleMusic = useCallback(() => {
+    if (musicController.getSnapshot().playing) {
+      musicController.stop();
+      setMusicSnapshot(musicController.getSnapshot());
+      return;
+    }
+
+    const scene =
+      BILIBILI_MUSIC_SCENES.find((item) => item.id === "cooking-dinner") ??
+      BILIBILI_MUSIC_SCENES[0];
+    void musicController.playScene(scene).finally(() => {
+      setMusicSnapshot(musicController.getSnapshot());
+    });
+    setMusicSnapshot(musicController.getSnapshot());
+  }, [musicController]);
+
+  useEffect(() => {
+    return () => {
+      musicController.stop();
+    };
+  }, [musicController]);
 
   return (
     <div className={`relative h-full w-full ${nightActive ? "home-night-mode" : ""}`}>
@@ -130,7 +158,8 @@ function HomeAssistantShell() {
       >
         <StandbyView
           onActivate={activate}
-          onMusicOpen={() => setMusicOpen(true)}
+          onMusicToggle={toggleMusic}
+          musicPlaying={musicSnapshot.playing}
           nightActive={nightActive}
         />
       </div>
@@ -147,10 +176,6 @@ function HomeAssistantShell() {
       </div>
 
       <UiProtocolApprovalHost />
-      <BilibiliMusicPanel
-        open={musicOpen && mode === "standby"}
-        onClose={() => setMusicOpen(false)}
-      />
     </div>
   );
 }

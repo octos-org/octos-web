@@ -523,107 +523,48 @@ test.describe("UI redesign shell smoke", () => {
     expect(overflow.scrollOverflow).toBeLessThanOrEqual(1);
   });
 
-  test("home music tile opens and stops the Bilibili music window", async ({
+  test("home music tile toggles hidden Bilibili sound without leaving home", async ({
     page,
   }) => {
     await page.setViewportSize({ width: 859, height: 819 });
     await page.addInitScript(() => {
-      const state = {
-        calls: [] as Array<{ type: string; url?: string; name?: string; features?: string }>,
-        href: "",
-        closed: false,
-      };
-      Object.defineProperty(window, "__octosBilibiliMusicWindow", {
-        value: state,
+      const calls: string[] = [];
+      Object.defineProperty(window, "__octosWindowOpenCalls", {
+        value: calls,
         configurable: true,
       });
       window.open = ((url?: string | URL, name?: string, features?: string) => {
-        state.closed = false;
-        state.href = String(url ?? "");
-        state.calls.push({
-          type: "open",
-          url: state.href,
-          name,
-          features,
-        });
-        const location = {};
-        Object.defineProperty(location, "href", {
-          get: () => state.href,
-          set: (next: string) => {
-            state.href = next;
-            state.calls.push({ type: "navigate", url: next });
-          },
-        });
-        return {
-          get closed() {
-            return state.closed;
-          },
-          location,
-          focus: () => state.calls.push({ type: "focus" }),
-          close: () => {
-            state.closed = true;
-            state.calls.push({ type: "close" });
-          },
-        } as Window;
+        calls.push(`${String(url ?? "")}|${name ?? ""}|${features ?? ""}`);
+        return null;
       }) as typeof window.open;
     });
 
     await page.goto("/home", { waitUntil: "networkidle" });
-    await page.getByRole("button", { name: "Music", exact: true }).click();
-    await expect(
-      page.getByRole("dialog", { name: "Bilibili music" }),
-    ).toBeVisible();
-    await expect(page.getByRole("button", { name: "Cooking / Dinner" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Focus" })).toBeVisible();
-
-    await page.getByRole("button", { name: "Cooking / Dinner" }).click();
-    await expect(page.getByText("Video opened")).toBeVisible();
-    await expect(page.getByText("40分钟做饭神曲合集")).toBeVisible();
+    await page.getByRole("button", { name: "Sound on", exact: true }).click();
+    await expect(page.getByRole("dialog", { name: "Bilibili music" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Sound off", exact: true })).toBeVisible();
+    const audioFrame = page.locator("iframe[data-octos-bilibili-audio]");
+    await expect(audioFrame).toHaveCount(1);
+    await expect(audioFrame).toHaveAttribute(
+      "src",
+      /https:\/\/player\.bilibili\.com\/player\.html\?bvid=BV1cTcbzNE9p&autoplay=1&danmaku=0&high_quality=1/,
+    );
+    await expect(audioFrame).toHaveAttribute("allow", /autoplay/);
     await expect
       .poll(() =>
         page.evaluate(() => {
-          const state = (
+          return (
             window as typeof window & {
-              __octosBilibiliMusicWindow?: {
-                href: string;
-                closed: boolean;
-                calls: Array<{ type: string; url?: string; name?: string; features?: string }>;
-              };
+              __octosWindowOpenCalls?: string[];
             }
-          ).__octosBilibiliMusicWindow;
-          return {
-            href: state?.href,
-            closed: state?.closed,
-            openName: state?.calls.find((call) => call.type === "open")?.name,
-            navigated: state?.calls.some(
-              (call) =>
-                call.type === "navigate" &&
-                call.url === "https://www.bilibili.com/video/BV1cTcbzNE9p/",
-            ),
-          };
+          ).__octosWindowOpenCalls?.length;
         }),
       )
-      .toEqual({
-        href: "https://www.bilibili.com/video/BV1cTcbzNE9p/",
-        closed: false,
-        openName: "octos-bilibili-music",
-        navigated: true,
-      });
+      .toBe(0);
 
-    await page.getByRole("button", { name: "Stop" }).click();
-    await expect(page.getByText("No Bilibili window")).toBeVisible();
-    await expect
-      .poll(() =>
-        page.evaluate(
-          () =>
-            (
-              window as typeof window & {
-                __octosBilibiliMusicWindow?: { closed: boolean };
-              }
-            ).__octosBilibiliMusicWindow?.closed,
-        ),
-      )
-      .toBe(true);
+    await page.getByRole("button", { name: "Sound off", exact: true }).click();
+    await expect(page.locator("iframe[data-octos-bilibili-audio]")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Sound on", exact: true })).toBeVisible();
   });
 
   test("workspace surfaces use the shared topbar titles", async ({ page }) => {
