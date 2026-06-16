@@ -22,6 +22,7 @@ import type { WidgetConfig, WidgetType } from "./widget-registry";
 
 interface ClassicStandbyViewProps {
   onActivate: (prefill?: string) => void;
+  onMusicOpen: () => void;
   nightActive: boolean;
 }
 
@@ -32,6 +33,7 @@ function isWidgetOn(widgets: WidgetConfig[], type: WidgetType): boolean {
 
 export function ClassicStandbyView({
   onActivate,
+  onMusicOpen,
   nightActive,
 }: ClassicStandbyViewProps) {
   const clock = useClock();
@@ -240,7 +242,13 @@ export function ClassicStandbyView({
             {quickActions.map(({ id, icon: Icon, label, color, prefill }) => (
               <button
                 key={id}
-                onClick={() => onActivate(prefill || undefined)}
+                onClick={() => {
+                  if (id === "music") {
+                    onMusicOpen();
+                    return;
+                  }
+                  onActivate(prefill || undefined);
+                }}
                 className="home-quick-card group flex flex-col items-center justify-center gap-2"
                 aria-label={label}
               >

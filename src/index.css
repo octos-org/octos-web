@@ -1786,6 +1786,109 @@ button, a, input, textarea {
   transform: scale(0.95);
 }
 
+.home-music-panel {
+  position: fixed;
+  right: 1.5rem;
+  bottom: 1.5rem;
+  z-index: 60;
+  width: min(420px, calc(100vw - 2rem));
+  padding: 1rem;
+  border: 1px solid rgba(226, 180, 127, 0.18);
+  border-radius: 10px;
+  background: rgba(23, 18, 13, 0.96);
+  box-shadow: 0 24px 72px rgba(0, 0, 0, 0.42);
+}
+
+.home-music-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.home-music-panel-icon,
+.home-music-icon-button,
+.home-music-stop-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.home-music-panel-icon {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  border: 1px solid rgba(226, 180, 127, 0.18);
+  border-radius: 8px;
+  color: #8baf7b;
+  background: rgba(226, 180, 127, 0.08);
+}
+
+.home-music-icon-button {
+  width: 40px;
+  height: 40px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.home-music-scene-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin-top: 1rem;
+}
+
+.home-music-scene-button {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border: 1px solid rgba(226, 180, 127, 0.16);
+  border-radius: 8px;
+  padding: 0.7rem 0.8rem;
+  color: rgba(255, 255, 255, 0.84);
+  background: rgba(86, 61, 39, 0.22);
+}
+
+.home-music-scene-button:hover,
+.home-music-scene-button:focus-visible {
+  border-color: rgba(226, 180, 127, 0.3);
+  background: rgba(96, 69, 44, 0.34);
+}
+
+.home-music-scene-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.home-music-panel-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 1rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 0.85rem;
+}
+
+.home-music-stop-button {
+  min-height: 40px;
+  gap: 0.45rem;
+  border: 1px solid rgba(238, 93, 99, 0.32);
+  border-radius: 8px;
+  padding: 0 0.8rem;
+  color: rgba(255, 255, 255, 0.88);
+  background: rgba(185, 58, 67, 0.28);
+}
+
+.home-music-stop-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
 .home-root .rounded-xl,
 .home-root .rounded-\[12px\] {
   border-radius: 8px !important;

@@ -4,15 +4,30 @@ import { MetroTileGrid } from "./metro-tiles";
 
 interface StandbyViewProps {
   onActivate: (prefill?: string) => void;
+  onMusicOpen: () => void;
   nightActive: boolean;
 }
 
-export function StandbyView({ onActivate, nightActive }: StandbyViewProps) {
+export function StandbyView({
+  onActivate,
+  onMusicOpen,
+  nightActive,
+}: StandbyViewProps) {
   const { uiStyle } = useHomeSettings();
   if (uiStyle === "classic") {
     return (
-      <ClassicStandbyView onActivate={onActivate} nightActive={nightActive} />
+      <ClassicStandbyView
+        onActivate={onActivate}
+        onMusicOpen={onMusicOpen}
+        nightActive={nightActive}
+      />
     );
   }
-  return <MetroTileGrid onActivate={onActivate} nightActive={nightActive} />;
+  return (
+    <MetroTileGrid
+      onActivate={onActivate}
+      onMusicOpen={onMusicOpen}
+      nightActive={nightActive}
+    />
+  );
 }

@@ -29,6 +29,7 @@ import type { WidgetConfig, WidgetType } from "./widget-registry";
 
 interface MetroTileGridProps {
   onActivate: (prefill?: string) => void;
+  onMusicOpen: () => void;
   nightActive: boolean;
 }
 
@@ -633,7 +634,11 @@ function useTileResize(
 
 /* ─── Main Metro Tile Grid ─── */
 
-export function MetroTileGrid({ onActivate, nightActive }: MetroTileGridProps) {
+export function MetroTileGrid({
+  onActivate,
+  onMusicOpen,
+  nightActive,
+}: MetroTileGridProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const {
@@ -652,6 +657,7 @@ export function MetroTileGrid({ onActivate, nightActive }: MetroTileGridProps) {
   const gridCols = useMetroGridColumns();
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- local drag state must track persisted layout changes.
     setLayouts(normalizeLayouts(metroLayout, defaultLayouts()));
   }, [metroLayout]);
 
@@ -696,7 +702,7 @@ export function MetroTileGrid({ onActivate, nightActive }: MetroTileGridProps) {
       case "weather": return <WeatherTile />;
       case "quick-chat": return <QuickActionTile icon={MessageSquare} label={strings.cardChat} color="text-[#E8B87C]" onClick={() => onActivate(strings.cardChatPrefill)} />;
       case "quick-news": return <QuickActionTile icon={Newspaper} label={strings.cardNews} color="text-[#C4A882]" onClick={() => onActivate(strings.cardNewsPrefill)} />;
-      case "quick-music": return <QuickActionTile icon={Music} label={strings.cardMusic} color="text-[#8BAF7B]" onClick={() => onActivate(strings.cardMusicPrefill)} />;
+      case "quick-music": return <QuickActionTile icon={Music} label={strings.cardMusic} color="text-[#8BAF7B]" onClick={onMusicOpen} />;
       case "quick-home": return <QuickActionTile icon={Home} label={strings.cardHome} color="text-[#C8A088]" onClick={() => onActivate(strings.cardHomePrefill)} />;
       case "voice": return <VoiceTile onActivate={onActivate} lang={lang} />;
       case "news": return <NewsTile onActivate={onActivate} />;
@@ -705,7 +711,7 @@ export function MetroTileGrid({ onActivate, nightActive }: MetroTileGridProps) {
       case "photo": return <PhotoFrame />;
       default: return null;
     }
-  }, [nightActive, strings, lang, onActivate]);
+  }, [nightActive, strings, lang, onActivate, onMusicOpen]);
 
   return (
     <div
