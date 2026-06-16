@@ -9,6 +9,7 @@ import { useThreads, type Thread, type ThreadMessage } from "@/store/thread-stor
 import { buildFileUrl } from "@/api/files";
 import { buildApiHeaders } from "@/api/client";
 import { useVoiceCapture } from "./use-voice-capture";
+import { useCameraFrame } from "./use-camera-frame";
 import { playAudioBlob, stopAudio, unlockAudio } from "./audio-playback";
 
 export type VoiceState = "idle" | "listening" | "thinking" | "speaking" | "error";
@@ -21,6 +22,27 @@ export interface VoiceConversation {
   start: () => Promise<void>;
   stop: () => void;
   interrupt: () => void;
+  /** Whether the camera is on (each spoken turn then attaches a frame). */
+  cameraActive: boolean;
+  /** Last camera error (permission denied / no device). */
+  cameraError: string | null;
+  /** Toggle the camera on/off. */
+  toggleCamera: () => void;
+}
+
+/**
+ * Assemble the files for one spoken turn: always the audio, plus a camera frame
+ * when the camera is on and a frame is available. A failed/empty grab degrades
+ * to audio-only so the turn still goes through. Exported for unit tests.
+ */
+export async function assembleTurnFiles(
+  audio: File,
+  cameraActive: boolean,
+  grabFrame: () => Promise<File | null>,
+): Promise<File[]> {
+  if (!cameraActive) return [audio];
+  const frame = await grabFrame();
+  return frame ? [audio, frame] : [audio];
 }
 
 const AUDIO_EXT = /\.(wav|mp3|ogg|m4a|flac)$/i;
@@ -99,8 +121,18 @@ export function useVoiceConversation(
   const captureStart = capture.start;
   const captureStop = capture.stop;
   const captureError = capture.error;
+  const camera = useCameraFrame();
+  // Stable fns (useCallback([])); the object identity churns each render.
+  const cameraStart = camera.start;
+  const cameraStop = camera.stop;
+  const cameraGrab = camera.grabFrame;
+  const cameraActive = camera.active;
+  const cameraError = camera.error;
   const [state, setState] = useState<VoiceState>("idle");
   const [lastAssistantText, setLastAssistantText] = useState("");
+  // Read camera-on inside the stable send callback without re-creating it.
+  const cameraActiveRef = useRef(false);
+  cameraActiveRef.current = cameraActive;
 
   const playedPathsRef = useRef<Set<string>>(new Set());
   const ignoredTurnIdsRef = useRef<Set<string>>(new Set());
@@ -170,10 +202,18 @@ export function useVoiceConversation(
         stateRef.current = "thinking";
         setState("thinking");
         const file = new File([wav], "utterance.wav", { type: "audio/wav" });
-        const paths = await uploadFiles([file], "recording");
-        // Audio-only turn: the server-side STT transcribes `media` into the
-        // prompt. The reply's TTS audio arrives asynchronously and is played
-        // by the threads watcher below (not here in onComplete).
+        // When the camera is on, attach the current frame so the turn is a
+        // video call (audio + image); the server transcribes the audio and the
+        // VLM sees the frame. Degrades to audio-only on a failed grab.
+        const files = await assembleTurnFiles(
+          file,
+          cameraActiveRef.current,
+          cameraGrab,
+        );
+        const paths = await uploadFiles(files, "recording");
+        // The server-side STT transcribes the audio in `media` into the prompt.
+        // The reply's TTS audio arrives asynchronously and is played by the
+        // threads watcher below (not here in onComplete).
         sendMessage({
           sessionId,
           historyTopic,
@@ -199,7 +239,7 @@ export function useVoiceConversation(
         setState("error");
       }
     },
-    [historyTopic, sessionId],
+    [historyTopic, sessionId, cameraGrab],
   );
 
   const beginThinkingInterrupt = useCallback(async () => {
@@ -358,10 +398,19 @@ export function useVoiceConversation(
     audioQueueRef.current = [];
     playingRef.current = false;
     void captureStop();
+    cameraStop();
     releaseAudio();
     stateRef.current = "idle";
     setState("idle");
-  }, [captureStop, releaseAudio]);
+  }, [captureStop, cameraStop, releaseAudio]);
+
+  const toggleCamera = useCallback(() => {
+    if (cameraActiveRef.current) {
+      cameraStop();
+    } else {
+      void cameraStart();
+    }
+  }, [cameraStart, cameraStop]);
 
   const interrupt = useCallback(() => {
     if (stateRef.current === "speaking") {
@@ -436,5 +485,8 @@ export function useVoiceConversation(
     start,
     stop,
     interrupt,
+    cameraActive,
+    cameraError,
+    toggleCamera,
   };
 }

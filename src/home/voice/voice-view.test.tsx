@@ -5,9 +5,11 @@ import type { VoiceConversation } from "./use-voice-conversation";
 
 const conversationMock = vi.hoisted(() => ({
   state: "idle" as VoiceConversation["state"],
+  cameraActive: false,
   start: vi.fn(),
   stop: vi.fn(),
   interrupt: vi.fn(),
+  toggleCamera: vi.fn(),
 }));
 
 vi.mock("./use-voice-conversation", () => ({
@@ -19,6 +21,9 @@ vi.mock("./use-voice-conversation", () => ({
     start: conversationMock.start,
     stop: conversationMock.stop,
     interrupt: conversationMock.interrupt,
+    cameraActive: conversationMock.cameraActive,
+    cameraError: null,
+    toggleCamera: conversationMock.toggleCamera,
   }),
 }));
 
@@ -40,9 +45,11 @@ describe("VoiceView", () => {
   beforeEach(() => {
     cleanup();
     conversationMock.state = "idle";
+    conversationMock.cameraActive = false;
     conversationMock.start.mockReset();
     conversationMock.stop.mockReset();
     conversationMock.interrupt.mockReset();
+    conversationMock.toggleCamera.mockReset();
   });
 
   it("waits for an orb click before starting microphone capture", () => {
@@ -55,5 +62,20 @@ describe("VoiceView", () => {
     fireEvent.click(screen.getByRole("button", { name: "voice orb" }));
 
     expect(conversationMock.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("toggles the camera when the camera button is clicked", () => {
+    render(<VoiceView sessionId="voice-test" onBack={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "toggle camera" }));
+
+    expect(conversationMock.toggleCamera).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the camera status indicator only when the camera is active", () => {
+    conversationMock.cameraActive = true;
+    render(<VoiceView sessionId="voice-test" onBack={vi.fn()} />);
+
+    expect(screen.getByText("摄像头开启中")).toBeTruthy();
   });
 });

@@ -1,9 +1,34 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
+  assembleTurnFiles,
   collectFreshAudio,
   pickFreshAudio,
 } from "./use-voice-conversation";
 import type { Thread } from "@/store/thread-store";
+
+describe("assembleTurnFiles", () => {
+  const audio = new File(["a"], "utterance.wav", { type: "audio/wav" });
+  const frame = new File(["f"], "frame.jpg", { type: "image/jpeg" });
+
+  it("sends audio only when the camera is disabled", async () => {
+    const grab = vi.fn();
+    const files = await assembleTurnFiles(audio, false, grab);
+    expect(files).toEqual([audio]);
+    expect(grab).not.toHaveBeenCalled();
+  });
+
+  it("appends the frame when the camera is enabled", async () => {
+    const grab = vi.fn().mockResolvedValue(frame);
+    const files = await assembleTurnFiles(audio, true, grab);
+    expect(files).toEqual([audio, frame]);
+  });
+
+  it("falls back to audio only when grabFrame returns null", async () => {
+    const grab = vi.fn().mockResolvedValue(null);
+    const files = await assembleTurnFiles(audio, true, grab);
+    expect(files).toEqual([audio]);
+  });
+});
 
 describe("pickFreshAudio", () => {
   it("returns latest unplayed assistant audio file", () => {

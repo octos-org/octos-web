@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { X } from "lucide-react";
+import { Camera, CameraOff, X } from "lucide-react";
 import { useVoiceConversation, type VoiceState } from "./use-voice-conversation";
 import { VoiceOrb } from "./voice-orb";
 import { VoiceSelector } from "./voice-selector";
@@ -46,11 +46,28 @@ export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
         <X size={22} />
       </button>
 
+      <button
+        onClick={() => conv.toggleCamera()}
+        aria-label="toggle camera"
+        aria-pressed={conv.cameraActive}
+        className="absolute left-5 top-5 flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white/70"
+      >
+        {conv.cameraActive ? <Camera size={20} /> : <CameraOff size={20} />}
+      </button>
+
       <div onClick={onOrbClick} role="button" aria-label="voice orb">
         <VoiceOrb state={conv.state} />
       </div>
 
       <div className="mt-6 min-h-[20px] text-sm text-white/55">{STATE_WORD[conv.state]}</div>
+
+      {/* MVP: status indicator only — no self-preview. */}
+      {conv.cameraActive && (
+        <div className="mt-1 text-xs text-white/40">摄像头开启中</div>
+      )}
+      {conv.cameraError && (
+        <div className="mt-1 text-xs text-red-300/70">摄像头不可用，已切回纯语音</div>
+      )}
 
       <div className="mt-4 max-w-[80%] text-center">
         {conv.lastUserText && (
