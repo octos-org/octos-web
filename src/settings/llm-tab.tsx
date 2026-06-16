@@ -27,8 +27,10 @@ import {
 } from "./settings-api";
 import {
   LLM_PROVIDERS,
+  buildCredentialEnvPatch,
   findProvider,
   showsBaseUrl,
+  usesJsonCredential,
   type LlmProvider,
 } from "./llm-providers";
 
@@ -57,6 +59,8 @@ interface LlmFormState {
   custom_family_id: string;
   custom_model_id: string;
   base_url: string;
+  /** Inline JSON credential (Vertex SA JSON). Blank = keep what's stored. */
+  sa_json: string;
   system_prompt: string;
   max_output_tokens: string;
   max_history: string;
@@ -92,6 +96,8 @@ function profileToForm(profile: Profile): LlmFormState {
     custom_family_id: knownProvider ? "" : familyId,
     custom_model_id: knownProvider ? "" : (profile.config.llm.primary.model_id ?? ""),
     base_url: primaryRoute?.base_url ?? knownProvider?.defaultBaseUrl ?? "",
+    // Never prefill the secret; blank means "keep what's stored".
+    sa_json: "",
     system_prompt: profile.config.gateway.system_prompt ?? "",
     max_output_tokens:
       profile.config.gateway.max_output_tokens != null
@@ -193,6 +199,12 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
   const needsBaseUrl = selectedProvider
     ? showsBaseUrl(selectedProvider)
     : isCustom;
+  const isJsonCredential = usesJsonCredential(selectedProvider);
+  // env_vars values come back masked; a non-empty entry means it's already set.
+  const saAlreadyConfigured = Boolean(
+    selectedProvider?.envKey &&
+      profile.config.env_vars?.[selectedProvider.envKey],
+  );
   const providerModels = useMemo(
     () =>
       mergeModelOptions(
@@ -330,8 +342,17 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
       base_url: needsBaseUrl ? form.base_url.trim() || null : null,
     };
 
+    // For JSON-credential providers (Vertex), overlay the pasted SA JSON onto
+    // env_vars; the backend relocates it into the keychain. Blank = no change.
+    const envPatch = buildCredentialEnvPatch(
+      selectedProvider,
+      profile.config.env_vars ?? {},
+      form.sa_json,
+    );
+
     try {
       const result = await updateMyProfileConfig(profile, {
+        ...(envPatch ? { env_vars: envPatch } : {}),
         llm: {
           primary: {
             family_id: effectiveFamilyId,
@@ -469,8 +490,43 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
             </div>
           )}
 
-          {/* Env key hint */}
-          {selectedProvider?.envKey && (
+          {/* Inline JSON credential (e.g. Vertex service-account JSON) */}
+          {isJsonCredential && (
+            <div>
+              <label className={labelClass}>Service Account JSON</label>
+              <textarea
+                value={form.sa_json}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, sa_json: e.target.value }))
+                }
+                placeholder={
+                  saAlreadyConfigured
+                    ? "Stored in keychain — paste new JSON to replace"
+                    : "Paste the full service-account JSON…"
+                }
+                rows={6}
+                spellCheck={false}
+                className="w-full resize-y rounded-xl bg-surface-container px-4 py-3 font-mono text-xs text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition"
+              />
+              <p className="mt-2 flex items-center gap-1.5 text-xs text-muted">
+                {saAlreadyConfigured ? (
+                  <>
+                    <CheckCircle2 size={13} className="text-green-400" />
+                    Configured (stored in macOS Keychain). Leave blank to keep.
+                  </>
+                ) : (
+                  <>
+                    <AlertCircle size={13} className="text-amber-400" />
+                    The private key is stored in the macOS Keychain, never in
+                    plaintext config. macOS only.
+                  </>
+                )}
+              </p>
+            </div>
+          )}
+
+          {/* Env key hint (single-line API-key providers) */}
+          {!isJsonCredential && selectedProvider?.envKey && (
             <div className="flex items-start gap-2 rounded-xl bg-surface-dark/50 px-4 py-3">
               <AlertCircle
                 size={14}

@@ -4,6 +4,13 @@ export interface LlmProvider {
   envKey: string;
   defaultBaseUrl?: string;
   models: { id: string; name: string }[];
+  /**
+   * How the credential is entered. `"apiKey"` (default) is a single-line key
+   * set in the Environment Variables editor. `"json"` is a multi-line blob
+   * (e.g. a Vertex service-account JSON) entered inline and stored in the OS
+   * keychain by the backend.
+   */
+  credentialKind?: "apiKey" | "json";
 }
 
 export const LLM_PROVIDERS: LlmProvider[] = [
@@ -45,6 +52,16 @@ export const LLM_PROVIDERS: LlmProvider[] = [
     models: [
       { id: "gemini-3.1-pro-preview", name: "Gemini 3.1 Pro" },
       { id: "gemini-3-flash-preview", name: "Gemini 3 Flash" },
+    ],
+  },
+  {
+    id: "vertex",
+    name: "Google Vertex AI",
+    envKey: "VERTEX_SA_JSON",
+    credentialKind: "json",
+    models: [
+      { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
+      { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" },
     ],
   },
   {
@@ -103,4 +120,26 @@ export function showsBaseUrl(provider: LlmProvider): boolean {
     provider.id === "vllm" ||
     provider.id === "__custom_family__"
   );
+}
+
+/** Whether this provider's credential is a multi-line JSON blob (entered inline). */
+export function usesJsonCredential(provider: LlmProvider | undefined): boolean {
+  return provider?.credentialKind === "json";
+}
+
+/**
+ * Build the env_vars patch for a JSON-credential provider. Returns the full
+ * existing map with the credential overlaid (so the backend's masked-value
+ * merge preserves other keys), or `undefined` when nothing should change
+ * (non-JSON provider, or a blank input meaning "keep what's stored").
+ */
+export function buildCredentialEnvPatch(
+  provider: LlmProvider | undefined,
+  existing: Record<string, string>,
+  credentialInput: string,
+): Record<string, string> | undefined {
+  if (!usesJsonCredential(provider)) return undefined;
+  const value = credentialInput.trim();
+  if (!value) return undefined;
+  return { ...existing, [provider!.envKey]: value };
 }
