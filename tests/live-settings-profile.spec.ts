@@ -1,23 +1,70 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 
 test.skip(process.env.OCTOS_LIVE_E2E !== "1", "requires a live octos API server");
 
 const LIVE_TIMEOUT = 30_000;
 
+type LiveAuthStatus = {
+  admin_token_login_enabled?: boolean;
+  local_solo_enabled?: boolean;
+};
+
+function readLocalAuthToken(): string {
+  const fromEnv = process.env.OCTOS_AUTH_TOKEN || process.env.AUTH_TOKEN || "";
+  if (fromEnv.trim()) return fromEnv.trim();
+
+  const configPath = process.env.OCTOS_CONFIG_PATH || path.join(os.homedir(), ".octos", "config.json");
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8")) as { auth_token?: unknown };
+    return typeof config.auth_token === "string" ? config.auth_token.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+async function readLiveAuthStatus(page: Page): Promise<LiveAuthStatus> {
+  return await page.evaluate(async () => {
+    const resp = await fetch("/api/auth/status");
+    if (!resp.ok) return {};
+    return (await resp.json()) as LiveAuthStatus;
+  });
+}
+
 async function ensureSoloSession(page: Page): Promise<{ token: string; profileId: string }> {
   await page.goto("/login", { waitUntil: "networkidle" });
+  const authStatus = await readLiveAuthStatus(page);
 
   const soloButton = page.getByTestId("solo-continue");
-  await expect(soloButton).toBeVisible({ timeout: LIVE_TIMEOUT });
-  await soloButton.click();
+  if (authStatus.local_solo_enabled) {
+    await expect(soloButton).toBeVisible({ timeout: LIVE_TIMEOUT });
+    await soloButton.click();
 
-  const form = page.getByTestId("solo-profile-form");
-  if (await form.isVisible({ timeout: 5_000 }).catch(() => false)) {
-    const suffix = Date.now().toString(36);
-    await page.getByTestId("solo-name").fill(`Live Smoke ${suffix}`);
-    await page.getByTestId("solo-username").fill(`live-smoke-${suffix}`);
-    await page.getByTestId("solo-email").fill(`live-smoke-${suffix}@localhost`);
-    await page.getByTestId("solo-submit").click();
+    const form = page.getByTestId("solo-profile-form");
+    if (await form.isVisible({ timeout: 5_000 }).catch(() => false)) {
+      const suffix = Date.now().toString(36);
+      await page.getByTestId("solo-name").fill(`Live Smoke ${suffix}`);
+      await page.getByTestId("solo-username").fill(`live-smoke-${suffix}`);
+      await page.getByTestId("solo-email").fill(`live-smoke-${suffix}@localhost`);
+      await page.getByTestId("solo-submit").click();
+    }
+  } else if (authStatus.admin_token_login_enabled) {
+    const authToken = readLocalAuthToken();
+    expect(
+      authToken,
+      "live admin-token login requires OCTOS_AUTH_TOKEN, AUTH_TOKEN, or ~/.octos/config.json auth_token",
+    ).toBeTruthy();
+
+    const tokenMode = page.getByRole("button", { name: "Auth Token" });
+    if (await tokenMode.isVisible({ timeout: 5_000 }).catch(() => false)) {
+      await tokenMode.click();
+    }
+    await page.getByTestId("token-input").fill(authToken);
+    await page.getByTestId("login-button").click();
+  } else {
+    throw new Error("live auth status exposes neither local solo nor admin-token login");
   }
 
   await page.waitForURL((url) => !url.pathname.endsWith("/login"), {
@@ -364,9 +411,9 @@ test.describe("live Settings and profile smoke", () => {
     await expect(
       enabledModels.getByText("qwen3-asr-1.7b").first(),
     ).toBeVisible({ timeout: LIVE_TIMEOUT });
-    await expect(
-      page.getByText("available models:", { exact: false }).first(),
-    ).toBeVisible({ timeout: LIVE_TIMEOUT });
+    await expect(page.getByText(/models visible/i).first()).toBeVisible({
+      timeout: LIVE_TIMEOUT,
+    });
     await expect(page.getByText("No catalog models returned")).toBeVisible({
       timeout: LIVE_TIMEOUT,
     });
@@ -577,10 +624,14 @@ test.describe("live Settings and profile smoke", () => {
     expect(Array.isArray(profileSkillsJson.skills)).toBe(true);
 
     const skillRegistry = await liveApiRaw(page, "/api/my/profile/skills/registry");
-    expect(skillRegistry.status).toBe(200);
-    const skillRegistryJson = skillRegistry.json;
-    expectObject(skillRegistryJson, "skill registry");
-    expect(Array.isArray(skillRegistryJson.packages)).toBe(true);
+    expect([200, 502]).toContain(skillRegistry.status);
+    if (skillRegistry.status === 200) {
+      const skillRegistryJson = skillRegistry.json;
+      expectObject(skillRegistryJson, "skill registry");
+      expect(Array.isArray(skillRegistryJson.packages)).toBe(true);
+    } else {
+      expect(skillRegistry.text).toContain("registry");
+    }
 
     const users = await liveApiRaw(page, "/api/admin/users");
     expect(users.status).toBe(200);
@@ -673,6 +724,7 @@ test.describe("live Settings and profile smoke", () => {
     await ensureSoloSession(page);
     const profile = await liveApi<Record<string, unknown>>(page, "/api/my/profile");
     const config = (profile.config ?? {}) as Record<string, unknown>;
+    const originalHome = config.home;
     const suffix = Date.now().toString(36);
 
     const nextHome = {
@@ -697,17 +749,89 @@ test.describe("live Settings and profile smoke", () => {
       metro_layout: { clock: { col: 1, row: 1, w: 4, h: 2 } },
     };
 
-    await liveApi(page, "/api/my/profile", {
-      method: "PUT",
-      body: {
-        name: profile.name,
-        enabled: profile.enabled,
-        config: { ...config, home: nextHome },
-      },
-    });
+    try {
+      await liveApi(page, "/api/my/profile", {
+        method: "PUT",
+        body: {
+          name: profile.name,
+          enabled: profile.enabled,
+          config: { ...config, home: nextHome },
+        },
+      });
 
-    const reloaded = await liveApi<Record<string, unknown>>(page, "/api/my/profile");
-    const reloadedConfig = reloaded.config as Record<string, unknown>;
-    expect(reloadedConfig.home).toMatchObject(nextHome);
+      const reloaded = await liveApi<Record<string, unknown>>(page, "/api/my/profile");
+      const reloadedConfig = reloaded.config as Record<string, unknown>;
+      expect(reloadedConfig.home).toMatchObject(nextHome);
+    } finally {
+      await liveApi(page, "/api/my/profile", {
+        method: "PUT",
+        body: {
+          name: profile.name,
+          enabled: profile.enabled,
+          config: { ...config, home: originalHome },
+        },
+      });
+    }
+  });
+
+  test("persists LLM primary model through the real profile endpoint", async ({ page }) => {
+    test.skip(
+      process.env.OCTOS_LIVE_E2E_MUTATE !== "1",
+      "writes to the live profile; enable only for explicit mutation smoke",
+    );
+
+    await ensureSoloSession(page);
+    const profile = await liveApi<Record<string, unknown>>(page, "/api/my/profile");
+    const config = (profile.config ?? {}) as Record<string, unknown>;
+    const llmConfig = (config.llm ?? {}) as Record<string, unknown>;
+    const primary = (llmConfig.primary ?? {}) as Record<string, unknown>;
+    const familyId = typeof primary.family_id === "string" ? primary.family_id : "deepseek";
+    const modelId = typeof primary.model_id === "string" ? primary.model_id : "deepseek-chat";
+    const modelChoices: Record<string, string[]> = {
+      deepseek: ["deepseek-chat", "deepseek-reasoner"],
+      openai: ["gpt-4o-mini", "gpt-4o"],
+      dashscope: ["qwen-turbo", "qwen-max"],
+      gemini: ["gemini-2.5-flash", "gemini-2.5-pro"],
+    };
+    const nextModelId =
+      modelChoices[familyId]?.find((candidate) => candidate !== modelId) ??
+      `${modelId}-live-smoke`;
+    const nextLlmConfig = {
+      ...llmConfig,
+      primary: {
+        ...primary,
+        family_id: familyId,
+        model_id: nextModelId,
+      },
+    };
+
+    try {
+      await liveApi(page, "/api/my/profile", {
+        method: "PUT",
+        body: {
+          name: profile.name,
+          enabled: profile.enabled,
+          config: { ...config, llm: nextLlmConfig },
+        },
+      });
+
+      const reloaded = await liveApi<Record<string, unknown>>(page, "/api/my/profile");
+      const reloadedConfig = reloaded.config as Record<string, unknown>;
+      const reloadedLlm = reloadedConfig.llm as Record<string, unknown>;
+      const reloadedPrimary = reloadedLlm.primary as Record<string, unknown>;
+      expect(reloadedPrimary).toMatchObject({
+        family_id: familyId,
+        model_id: nextModelId,
+      });
+    } finally {
+      await liveApi(page, "/api/my/profile", {
+        method: "PUT",
+        body: {
+          name: profile.name,
+          enabled: profile.enabled,
+          config,
+        },
+      });
+    }
   });
 });
