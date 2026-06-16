@@ -29,7 +29,8 @@ import type { WidgetConfig, WidgetType } from "./widget-registry";
 
 interface MetroTileGridProps {
   onActivate: (prefill?: string) => void;
-  onMusicOpen: () => void;
+  onMusicToggle: () => void;
+  musicPlaying: boolean;
   nightActive: boolean;
 }
 
@@ -636,7 +637,8 @@ function useTileResize(
 
 export function MetroTileGrid({
   onActivate,
-  onMusicOpen,
+  onMusicToggle,
+  musicPlaying,
   nightActive,
 }: MetroTileGridProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -702,7 +704,7 @@ export function MetroTileGrid({
       case "weather": return <WeatherTile />;
       case "quick-chat": return <QuickActionTile icon={MessageSquare} label={strings.cardChat} color="text-[#E8B87C]" onClick={() => onActivate(strings.cardChatPrefill)} />;
       case "quick-news": return <QuickActionTile icon={Newspaper} label={strings.cardNews} color="text-[#C4A882]" onClick={() => onActivate(strings.cardNewsPrefill)} />;
-      case "quick-music": return <QuickActionTile icon={Music} label={strings.cardMusic} color="text-[#8BAF7B]" onClick={onMusicOpen} />;
+      case "quick-music": return <QuickActionTile icon={Music} label={musicPlaying ? strings.cardMusicOff : strings.cardMusicOn} color="text-[#8BAF7B]" onClick={onMusicToggle} />;
       case "quick-home": return <QuickActionTile icon={Home} label={strings.cardHome} color="text-[#C8A088]" onClick={() => onActivate(strings.cardHomePrefill)} />;
       case "voice": return <VoiceTile onActivate={onActivate} lang={lang} />;
       case "news": return <NewsTile onActivate={onActivate} />;
@@ -711,7 +713,7 @@ export function MetroTileGrid({
       case "photo": return <PhotoFrame />;
       default: return null;
     }
-  }, [nightActive, strings, lang, onActivate, onMusicOpen]);
+  }, [nightActive, strings, lang, onActivate, onMusicToggle, musicPlaying]);
 
   return (
     <div

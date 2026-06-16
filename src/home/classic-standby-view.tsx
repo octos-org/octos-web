@@ -22,7 +22,8 @@ import type { WidgetConfig, WidgetType } from "./widget-registry";
 
 interface ClassicStandbyViewProps {
   onActivate: (prefill?: string) => void;
-  onMusicOpen: () => void;
+  onMusicToggle: () => void;
+  musicPlaying: boolean;
   nightActive: boolean;
 }
 
@@ -33,7 +34,8 @@ function isWidgetOn(widgets: WidgetConfig[], type: WidgetType): boolean {
 
 export function ClassicStandbyView({
   onActivate,
-  onMusicOpen,
+  onMusicToggle,
+  musicPlaying,
   nightActive,
 }: ClassicStandbyViewProps) {
   const clock = useClock();
@@ -107,9 +109,9 @@ export function ClassicStandbyView({
     {
       id: "music",
       icon: Music,
-      label: strings.cardMusic,
+      label: musicPlaying ? strings.cardMusicOff : strings.cardMusicOn,
       color: "text-emerald-400",
-      prefill: strings.cardMusicPrefill,
+      prefill: "",
     },
     {
       id: "home",
@@ -244,7 +246,7 @@ export function ClassicStandbyView({
                 key={id}
                 onClick={() => {
                   if (id === "music") {
-                    onMusicOpen();
+                    onMusicToggle();
                     return;
                   }
                   onActivate(prefill || undefined);

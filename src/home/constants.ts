@@ -16,6 +16,8 @@ export interface HomeStrings {
   cardChat: string;
   cardNews: string;
   cardMusic: string;
+  cardMusicOn: string;
+  cardMusicOff: string;
   cardHome: string;
 
   // Quick-action card prefills (empty string = no prefill)
@@ -126,6 +128,8 @@ export const HOME_I18N: Record<string, HomeStrings> = {
     cardChat: "Chat",
     cardNews: "News",
     cardMusic: "Music",
+    cardMusicOn: "Sound on",
+    cardMusicOff: "Sound off",
     cardHome: "Home",
 
     cardChatPrefill: "",
@@ -228,6 +232,8 @@ export const HOME_I18N: Record<string, HomeStrings> = {
     cardChat: "\u804A\u5929",
     cardNews: "\u65B0\u95FB",
     cardMusic: "\u97F3\u4E50",
+    cardMusicOn: "\u58F0\u97F3\u5F00",
+    cardMusicOff: "\u58F0\u97F3\u5173",
     cardHome: "\u9996\u9875",
 
     cardChatPrefill: "",

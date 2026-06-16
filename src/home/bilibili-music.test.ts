@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BILIBILI_MUSIC_SCENES,
+  buildBilibiliPlayerUrl,
   buildBilibiliSearchUrl,
   createBilibiliMusicController,
 } from "./bilibili-music";
@@ -14,6 +15,9 @@ describe("bilibili music launcher", () => {
 
   afterEach(() => {
     window.open = originalOpen;
+    document.querySelectorAll("[data-octos-bilibili-audio]").forEach((node) => {
+      node.remove();
+    });
   });
 
   it("builds a Bilibili search URL from the scene keyword plus music", () => {
@@ -22,46 +26,44 @@ describe("bilibili music launcher", () => {
     );
   });
 
-  it("opens the first resolved video in a named window", async () => {
-    const popup = {
-      closed: false,
-      location: { href: "about:blank" },
-      close: vi.fn(),
-      focus: vi.fn(),
-    };
-    window.open = vi.fn(() => popup as unknown as Window);
+  it("builds a hidden Bilibili player URL from a video URL", () => {
+    expect(buildBilibiliPlayerUrl("https://www.bilibili.com/video/BV1cTcbzNE9p/")).toBe(
+      "https://player.bilibili.com/player.html?bvid=BV1cTcbzNE9p&autoplay=1&danmaku=0&high_quality=1",
+    );
+  });
+
+  it("starts Bilibili sound in a hidden in-page iframe without opening a window", async () => {
+    window.open = vi.fn();
     const controller = createBilibiliMusicController({
       resolveFirstVideo: vi.fn().mockResolvedValue({
         title: "first result",
-        url: "https://www.bilibili.com/video/BV123/",
+        url: "https://www.bilibili.com/video/BV1cTcbzNE9p/",
       }),
     });
 
     const result = await controller.playScene(BILIBILI_MUSIC_SCENES[1]);
 
-    expect(window.open).toHaveBeenCalledWith(
-      "about:blank",
-      "octos-bilibili-music",
-      "noopener=false,noreferrer=false",
+    expect(window.open).not.toHaveBeenCalled();
+    const frame = document.querySelector<HTMLIFrameElement>(
+      "iframe[data-octos-bilibili-audio]",
     );
-    expect(popup.location.href).toBe("https://www.bilibili.com/video/BV123/");
-    expect(popup.focus).toHaveBeenCalled();
+    expect(frame).not.toBeNull();
+    expect(frame?.src).toBe(
+      "https://player.bilibili.com/player.html?bvid=BV1cTcbzNE9p&autoplay=1&danmaku=0&high_quality=1",
+    );
+    expect(frame?.allow).toContain("autoplay");
     expect(result).toEqual({
-      opened: true,
+      playing: true,
       fallback: false,
       title: "first result",
-      url: "https://www.bilibili.com/video/BV123/",
+      url: "https://www.bilibili.com/video/BV1cTcbzNE9p/",
+      embedUrl:
+        "https://player.bilibili.com/player.html?bvid=BV1cTcbzNE9p&autoplay=1&danmaku=0&high_quality=1",
     });
   });
 
-  it("falls back to the Bilibili search page when the resolver fails", async () => {
-    const popup = {
-      closed: false,
-      location: { href: "about:blank" },
-      close: vi.fn(),
-      focus: vi.fn(),
-    };
-    window.open = vi.fn(() => popup as unknown as Window);
+  it("uses the built-in default video when the resolver fails", async () => {
+    window.open = vi.fn();
     const controller = createBilibiliMusicController({
       resolveFirstVideo: vi.fn().mockRejectedValue(new Error("blocked")),
     });
@@ -69,21 +71,12 @@ describe("bilibili music launcher", () => {
     const result = await controller.playScene(BILIBILI_MUSIC_SCENES[2]);
 
     expect(result.fallback).toBe(true);
-    expect(popup.location.href).toBe(
-      buildBilibiliSearchUrl(BILIBILI_MUSIC_SCENES[2].keyword),
-    );
+    expect(window.open).not.toHaveBeenCalled();
+    expect(result.embedUrl).toContain("player.bilibili.com/player.html");
   });
 
-  it("closes the owned Bilibili window on stop", async () => {
-    const popup = {
-      closed: false,
-      location: { href: "about:blank" },
-      close: vi.fn(() => {
-        popup.closed = true;
-      }),
-      focus: vi.fn(),
-    };
-    window.open = vi.fn(() => popup as unknown as Window);
+  it("removes the hidden Bilibili iframe on stop", async () => {
+    window.open = vi.fn();
     const controller = createBilibiliMusicController({
       resolveFirstVideo: vi.fn().mockResolvedValue(null),
     });
@@ -91,7 +84,7 @@ describe("bilibili music launcher", () => {
     await controller.playScene(BILIBILI_MUSIC_SCENES[0]);
     controller.stop();
 
-    expect(popup.close).toHaveBeenCalled();
+    expect(document.querySelector("iframe[data-octos-bilibili-audio]")).toBeNull();
     expect(controller.getSnapshot().playing).toBe(false);
   });
 });
