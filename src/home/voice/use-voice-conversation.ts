@@ -34,6 +34,20 @@ export interface VoiceConversation {
   cameraError: string | null;
   /** Toggle the camera on/off. */
   toggleCamera: () => void;
+  /** The latest rich-output artifact (image/HTML) to render, or null. */
+  visual: VisualArtifact | null;
+  /** True while a visual is being generated (marker seen, artifact not yet in). */
+  generating: boolean;
+  /** Dismiss the currently shown visual artifact. */
+  dismissVisual: () => void;
+}
+
+/** A rich-output artifact the assistant produced for this voice turn. */
+export type VisualKind = "html" | "image";
+export interface VisualArtifact {
+  /** Workspace-relative path, fetched via /api/files (session-scoped). */
+  path: string;
+  kind: VisualKind;
 }
 
 /**
@@ -116,6 +130,49 @@ export function collectFreshAudio(
   return out;
 }
 
+const HTML_EXT = /\.html?$/i;
+const VISUAL_IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg)$/i;
+/** Mirror of the backend in-band marker `[[VISUAL:kind|brief]]`. */
+const VISUAL_MARKER = /\[\[VISUAL:(html|image|infographic)\|([^\]]*)\]\]/;
+/** Safety net: clear the "generating" state if no artifact arrives in time. */
+const VISUAL_TIMEOUT_MS = 90000;
+
+/** Whether the assistant reply carries an in-band visual marker. */
+export function hasVisualMarker(text: string): boolean {
+  const m = VISUAL_MARKER.exec(text);
+  return m !== null && m[2].trim().length > 0;
+}
+
+/** Strip a trailing `[[VISUAL:...]]` marker so it isn't shown to the user. */
+export function stripVisualMarker(text: string): string {
+  const i = text.indexOf("[[VISUAL:");
+  return i >= 0 ? text.slice(0, i).trimEnd() : text;
+}
+
+/** Collect ALL unseen assistant visual artifacts (image/HTML) in order. */
+export function collectFreshVisuals(
+  threads: Thread[],
+  seen: Set<string>,
+  ignoredThreadIds: Set<string> = new Set(),
+): VisualArtifact[] {
+  const out: VisualArtifact[] = [];
+  for (let i = 0; i < threads.length; i++) {
+    if (ignoredThreadIds.has(threads[i].id)) continue;
+    const asst = threads[i].responses.filter(
+      (m: ThreadMessage) => m.role === "assistant",
+    );
+    for (let j = 0; j < asst.length; j++) {
+      for (const f of asst[j].files) {
+        if (seen.has(f.path)) continue;
+        if (HTML_EXT.test(f.path)) out.push({ path: f.path, kind: "html" });
+        else if (VISUAL_IMAGE_EXT.test(f.path))
+          out.push({ path: f.path, kind: "image" });
+      }
+    }
+  }
+  return out;
+}
+
 export function useVoiceConversation(
   sessionId: string,
   historyTopic?: string,
@@ -139,6 +196,16 @@ export function useVoiceConversation(
   const cameraError = camera.error;
   const [state, setState] = useState<VoiceState>("idle");
   const [lastAssistantText, setLastAssistantText] = useState("");
+  const [visual, setVisual] = useState<VisualArtifact | null>(null);
+  const [generating, setGenerating] = useState(false);
+
+  // Rich output: artifacts already surfaced (so re-renders / re-entry don't
+  // re-show them), a key for the marker we last flagged as "generating", and a
+  // safety timer to clear a stuck generating state.
+  const seenVisualsRef = useRef<Set<string>>(new Set());
+  const generatingKeyRef = useRef<string | null>(null);
+  const generatingTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
   // Read camera-on inside the stable send callback without re-creating it.
   const cameraActiveRef = useRef(false);
   cameraActiveRef.current = cameraActive;
@@ -415,6 +482,19 @@ export function useVoiceConversation(
     activeTurnIdRef.current = null;
     turnBaselineRef.current = threadsRef.current.length;
     setLastAssistantText("");
+    // Rich output: mark pre-existing artifacts as seen so re-entry doesn't
+    // re-surface a prior turn's visual; reset the live visual/generating state.
+    seenVisualsRef.current = new Set(
+      collectFreshVisuals(
+        threadsRef.current,
+        new Set(),
+        ignoredTurnIdsRef.current,
+      ).map((v) => v.path),
+    );
+    setVisual(null);
+    setGenerating(false);
+    generatingKeyRef.current = null;
+    clearTimeout(generatingTimerRef.current);
     audioQueueRef.current = [];
     playingRef.current = false;
     clearTimeout(graceTimerRef.current);
@@ -439,6 +519,10 @@ export function useVoiceConversation(
     speechInterruptArmedRef.current = false;
     audioQueueRef.current = [];
     playingRef.current = false;
+    clearTimeout(generatingTimerRef.current);
+    generatingKeyRef.current = null;
+    setVisual(null);
+    setGenerating(false);
     void captureStop();
     cameraStop();
     clearSentFrame();
@@ -496,7 +580,7 @@ export function useVoiceConversation(
     for (const f of fresh) {
       playedPathsRef.current.add(f.path);
       audioQueueRef.current.push(f.path);
-      setLastAssistantText(f.text);
+      setLastAssistantText(stripVisualMarker(f.text));
     }
     // Tear the barge-in VAD down and WAIT for it to finish BEFORE playback, so
     // its Silero ONNX/WASM + mic AudioContext shutdown doesn't contend with the
@@ -507,6 +591,47 @@ export function useVoiceConversation(
       await drainQueueRef.current();
     })();
   }, [captureStop, threads, state]);
+
+  // Rich output: surface visual artifacts as they land (decoupled from turn
+  // timing — HTML authoring / image gen can finish seconds after the reply),
+  // and reflect a "generating" state while a marker is seen but no artifact has
+  // arrived yet. Not gated on voice state, so a late artifact is still caught.
+  useEffect(() => {
+    const fresh = collectFreshVisuals(
+      threads,
+      seenVisualsRef.current,
+      ignoredTurnIdsRef.current,
+    );
+    if (fresh.length > 0) {
+      for (const v of fresh) seenVisualsRef.current.add(v.path);
+      setVisual(fresh[fresh.length - 1]);
+      setGenerating(false);
+      generatingKeyRef.current = null;
+      clearTimeout(generatingTimerRef.current);
+      return;
+    }
+    // No artifact yet: if the newest post-baseline assistant reply carries a
+    // marker we haven't flagged, enter the generating state (with a safety
+    // timeout so a failed generation can't wedge it on forever).
+    for (let i = threads.length - 1; i >= turnBaselineRef.current; i--) {
+      const t = threads[i];
+      if (!t) continue;
+      const asst = t.responses.filter((m) => m.role === "assistant");
+      const text = asst.length > 0 ? asst[asst.length - 1].text : "";
+      if (text && hasVisualMarker(text)) {
+        if (generatingKeyRef.current !== text) {
+          generatingKeyRef.current = text;
+          setGenerating(true);
+          clearTimeout(generatingTimerRef.current);
+          generatingTimerRef.current = setTimeout(
+            () => setGenerating(false),
+            VISUAL_TIMEOUT_MS,
+          );
+        }
+        break;
+      }
+    }
+  }, [threads]);
 
   // Stop ONLY on real unmount. Use a ref so identity churn of `stop` across
   // re-renders never re-fires this cleanup (that was tearing the VAD down on
@@ -519,6 +644,8 @@ export function useVoiceConversation(
     threads.length > turnBaselineRef.current
       ? (threads[threads.length - 1].userMsg?.text ?? "")
       : "";
+
+  const dismissVisual = useCallback(() => setVisual(null), []);
 
   return {
     state,
@@ -533,5 +660,8 @@ export function useVoiceConversation(
     lastSentFrameUrl,
     cameraError,
     toggleCamera,
+    visual,
+    generating,
+    dismissVisual,
   };
 }
