@@ -61,6 +61,20 @@ export function summarizeOminixRuntime(runtime: OminixRuntimeStatus): OminixRunt
     };
   }
 
+  if (
+    runtime.suggested_action === "install_ominix_api_binary" ||
+    !runtime.binary_installed
+  ) {
+    return {
+      label: "Voice engine not installed",
+      tone: "warning",
+      ready: false,
+      loading: false,
+      canRepair: true,
+      state: runtime.state,
+    };
+  }
+
   return {
     label: "Voice engine unavailable",
     tone: "danger",

@@ -802,6 +802,12 @@ export async function repairOminixRuntime(): Promise<OminixRepairResponse> {
   });
 }
 
+export async function installOminixRuntime(): Promise<OminixRepairResponse> {
+  return await request<OminixRepairResponse>(`${OMINIX_RUNTIME_BASE}/install`, {
+    method: "POST",
+  });
+}
+
 export async function fetchOminixPlatformModels(): Promise<OminixCatalogModel[]> {
   const resp = await request<OminixModelsResponse>(`${OMINIX_ADMIN_BASE}/models`);
   return resp.models ?? [];
