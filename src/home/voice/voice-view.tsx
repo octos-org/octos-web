@@ -1,11 +1,13 @@
 import { useEffect, useRef } from "react";
-import { Camera, CameraOff, X } from "lucide-react";
+import { Camera, CameraOff, Settings, X } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { useVoiceConversation, type VoiceState } from "./use-voice-conversation";
 import { VoiceOrb } from "./voice-orb";
 import { VoiceSelector } from "./voice-selector";
 import { CameraPreview } from "./camera-preview";
 import { VisualPanel } from "./visual-panel";
 import { unlockAudio } from "./audio-playback";
+import { useOminixRuntimeSummary } from "../use-ominix-runtime-summary";
 import "./voice.css";
 
 const STATE_WORD: Record<VoiceState, string> = {
@@ -27,6 +29,8 @@ export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
   // screen via the same destination as the manual X button — the hook fires it
   // only AFTER the farewell audio finishes.
   const conv = useVoiceConversation(sessionId, historyTopic, onBack);
+  const navigate = useNavigate();
+  const runtime = useOminixRuntimeSummary();
 
   // Auto-enter listening on mount: the user reached this full-screen view via a
   // navigation gesture, so unlock audio playback and begin capture immediately
@@ -34,16 +38,24 @@ export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
   // double-invoke (and any re-render) can't start the turn twice.
   const startedRef = useRef(false);
   useEffect(() => {
-    if (!startedRef.current) {
+    if (!startedRef.current && runtime.ready) {
       startedRef.current = true;
       unlockAudio();
       void conv.start();
     }
     return () => conv.stop();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [runtime.ready]);
+
+  const openOminixSettings = () => {
+    navigate("/settings?tab=ominix");
+  };
 
   const onOrbClick = () => {
+    if (!runtime.ready) {
+      if (!runtime.loading) openOminixSettings();
+      return;
+    }
     // Backup audio unlock: if the entry gesture didn't stick, tapping the orb
     // is another gesture that unlocks playback for subsequent replies.
     unlockAudio();
@@ -106,13 +118,36 @@ export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
           </div>
         )}
 
-        <div onClick={onOrbClick} role="button" aria-label="voice orb">
-          <VoiceOrb state={conv.state} />
+        <div
+          onClick={onOrbClick}
+          role="button"
+          aria-label={runtime.ready ? "voice orb" : "open OMiniX settings"}
+        >
+          <VoiceOrb state={runtime.ready ? conv.state : "error"} />
+        </div>
+
+        <div className={`voice-runtime-pill is-${runtime.tone}`}>
+          {runtime.label}
         </div>
 
         <div className="mt-6 min-h-[20px] text-sm text-white/55">
-          {conv.exiting ? "再见 👋" : STATE_WORD[conv.state]}
+          {runtime.ready
+            ? conv.exiting
+              ? "再见 👋"
+              : STATE_WORD[conv.state]
+            : "语音引擎未就绪，请先在 Settings 里安装或修复 OMiniX。"}
         </div>
+
+        {!runtime.ready && !runtime.loading && (
+          <button
+            type="button"
+            onClick={openOminixSettings}
+            className="voice-runtime-action"
+          >
+            <Settings size={15} />
+            打开 OMiniX 设置
+          </button>
+        )}
 
         {/* Camera on but stream not ready yet, or it failed. */}
         {conv.cameraActive && !conv.cameraStream && (

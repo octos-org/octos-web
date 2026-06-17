@@ -17,6 +17,7 @@ import {
 import { useAuth } from "@/auth/auth-context";
 import { useTheme } from "@/hooks/use-theme";
 import { unlockAudio } from "@/home/voice/audio-playback";
+import { useOminixRuntimeSummary } from "@/home/use-ominix-runtime-summary";
 import {
   WorkbenchPage,
   WorkbenchRouteCard,
@@ -105,6 +106,7 @@ export function HomePage() {
 function WarmWorkbenchHomePage() {
   const navigate = useNavigate();
   const counts = useLocalProjectCounts();
+  const voiceRuntime = useOminixRuntimeSummary();
 
   return (
     <WorkbenchPage>
@@ -220,7 +222,11 @@ function WarmWorkbenchHomePage() {
                   unlockAudio();
                   navigate("/voice");
                 }}
-                meta="Audio runtime"
+                meta={
+                  <WorkbenchStatusPill tone={voiceRuntime.tone}>
+                    {voiceRuntime.label}
+                  </WorkbenchStatusPill>
+                }
               />
               <WorkbenchRouteCard
                 icon={Settings}

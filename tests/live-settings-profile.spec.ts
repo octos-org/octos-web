@@ -380,7 +380,7 @@ test.describe("live Settings and profile smoke", () => {
     await expectNoRuntimeOverlay(page);
   });
 
-  test("loads admin Settings tabs and OminiX offline state without mocks", async ({ page }) => {
+  test("loads admin Settings tabs and OminiX state without mocks", async ({ page }) => {
     await ensureSoloSession(page);
     await page.goto("/settings", { waitUntil: "networkidle" });
     await expect(page.locator(".animate-spin")).toBeHidden({ timeout: LIVE_TIMEOUT });
@@ -414,9 +414,16 @@ test.describe("live Settings and profile smoke", () => {
     await expect(page.getByText(/models visible/i).first()).toBeVisible({
       timeout: LIVE_TIMEOUT,
     });
-    await expect(page.getByText("No catalog models returned")).toBeVisible({
-      timeout: LIVE_TIMEOUT,
-    });
+    const availableModels = await liveApiRaw(page, "/api/admin/platform-skills/ominix-api/models/available");
+    if (availableModels.status === 200) {
+      await expect(page.getByText(/\d+ of \d+ models visible/).first()).toBeVisible({
+        timeout: LIVE_TIMEOUT,
+      });
+    } else {
+      await expect(page.getByText("No catalog models returned")).toBeVisible({
+        timeout: LIVE_TIMEOUT,
+      });
+    }
     await expectNoRuntimeOverlay(page);
   });
 
