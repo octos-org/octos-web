@@ -25,6 +25,7 @@ import {
   fetchPlatformSkillHealth,
   fetchPlatformSkillsStatus,
   formatSettingsError,
+  installOminixRuntime,
   installPlatformSkill,
   removeOminixModel,
   removePlatformSkill,
@@ -552,6 +553,11 @@ export function OminixTab() {
   const runtimeIssues = runtime?.issues ?? status?.ominix_api.runtime?.issues ?? [];
   const runtimeAction = runtime?.suggested_action ?? "unknown";
   const canRepairRuntime = runtime?.can_repair ?? false;
+  const shouldInstallRuntime =
+    runtimeAction === "install_ominix_api_binary" || runtime?.binary_installed === false;
+  const canInstallOrRepairRuntime =
+    shouldInstallRuntime || canRepairRuntime || runtimeAction === "ready";
+  const runtimeButtonLabel = shouldInstallRuntime ? "Install OMiniX API" : "Repair";
 
   const platformModelIds = useMemo(
     () => new Set(platformModels.map((m) => m.id)),
@@ -763,12 +769,17 @@ export function OminixTab() {
 
             <div className="flex flex-wrap gap-2">
               <SmallButton
-                disabled={busy || !canRepairRuntime}
+                disabled={busy || !canInstallOrRepairRuntime}
                 tone={runtimeAction === "ready" ? "default" : "good"}
-                onClick={() => void performAction("repair-runtime", repairOminixRuntime)}
+                onClick={() =>
+                  void performAction(
+                    shouldInstallRuntime ? "install-runtime" : "repair-runtime",
+                    shouldInstallRuntime ? installOminixRuntime : repairOminixRuntime,
+                  )
+                }
               >
-                <Wrench size={12} />
-                Repair
+                {shouldInstallRuntime ? <Download size={12} /> : <Wrench size={12} />}
+                {runtimeButtonLabel}
               </SmallButton>
               <SmallButton
                 disabled={busy}

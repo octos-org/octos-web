@@ -16,6 +16,7 @@ const apiMocks = vi.hoisted(() => ({
   formatSettingsError: vi.fn((err: unknown, fallback = "Request failed.") =>
     err instanceof Error ? err.message : fallback,
   ),
+  installOminixRuntime: vi.fn(),
   installPlatformSkill: vi.fn(),
   removeOminixModel: vi.fn(),
   removePlatformSkill: vi.fn(),

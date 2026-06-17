@@ -69,7 +69,7 @@ describe("summarizeOminixRuntime", () => {
     });
   });
 
-  it("marks a non-repairable runtime as unavailable", () => {
+  it("marks a missing binary runtime as installable", () => {
     expect(
       stripRefresh(summarizeOminixRuntime(
         runtime({
@@ -77,14 +77,14 @@ describe("summarizeOminixRuntime", () => {
           health: { healthy: false },
           binary_installed: false,
           can_repair: false,
-          suggested_action: "install",
+          suggested_action: "install_ominix_api_binary",
         }),
       )),
     ).toMatchObject({
-      label: "Voice engine unavailable",
-      tone: "danger",
+      label: "Voice engine not installed",
+      tone: "warning",
       ready: false,
-      canRepair: false,
+      canRepair: true,
       state: "missing_binary",
     });
   });
