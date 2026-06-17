@@ -75,6 +75,7 @@ export interface HomeStrings {
   widgetCalendar: string;
   widgetTimer: string;
   widgetPhotoFrame: string;
+  widgetSmartHome: string;
   settingsWidgets: string;
 
   // Photo frame
@@ -180,6 +181,7 @@ export const HOME_I18N: Record<string, HomeStrings> = {
     widgetCalendar: "Calendar",
     widgetTimer: "Timer",
     widgetPhotoFrame: "Photos",
+    widgetSmartHome: "Smart Home",
     settingsWidgets: "Widgets",
 
     settingsPhotos: "Photo Frame",
@@ -284,6 +286,7 @@ export const HOME_I18N: Record<string, HomeStrings> = {
     widgetCalendar: "\u65E5\u5386",
     widgetTimer: "\u8BA1\u65F6\u5668",
     widgetPhotoFrame: "\u76F8\u518C",
+    widgetSmartHome: "\u667A\u80FD\u5BB6\u5C45",
     settingsWidgets: "\u7EC4\u4EF6",
 
     settingsPhotos: "\u7167\u7247\u76F8\u6846",

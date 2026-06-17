@@ -25,6 +25,7 @@ import { VoiceOrb } from "./voice-orb";
 import { TimerWidget } from "./timer-widget";
 import { PhotoFrame } from "./photo-frame";
 import { SettingsGearButton, HomeSettingsPanel } from "./home-settings";
+import { SmartHomePanel } from "./smart-home";
 import type { WidgetConfig, WidgetType } from "./widget-registry";
 
 interface MetroTileGridProps {
@@ -51,25 +52,27 @@ interface TileDef {
 
 const COLS = 6;
 const MOBILE_COLS = 4;
-const MAX_ROWS = 12;
+const MAX_ROWS = 20;
 const MOBILE_QUERY = "(max-width: 600px)";
 
 const TILE_DEFS: TileDef[] = [
   { id: "clock", widgetType: "clock", label: "Clock", accent: "#1c1712", defaultLayout: { col: 1, row: 1, w: 4, h: 2 } },
   { id: "weather", widgetType: "weather", label: "Weather", accent: "#405646", defaultLayout: { col: 5, row: 1, w: 2, h: 2 } },
-  { id: "quick-chat", widgetType: "quick-chat", label: "Chat", accent: "#b86f44", defaultLayout: { col: 1, row: 3, w: 1, h: 1 } },
-  { id: "quick-news", widgetType: "quick-news", label: "News", accent: "#8a704f", defaultLayout: { col: 2, row: 3, w: 1, h: 1 } },
-  { id: "quick-music", widgetType: "quick-music", label: "Music", accent: "#647a57", defaultLayout: { col: 3, row: 3, w: 1, h: 1 } },
-  { id: "quick-home", widgetType: "quick-home", label: "Home", accent: "#766250", defaultLayout: { col: 4, row: 3, w: 1, h: 1 } },
+  { id: "quick-chat", widgetType: "quick-chat", label: "Chat", accent: "#b86f44", defaultLayout: { col: 5, row: 5, w: 1, h: 1 } },
+  { id: "quick-news", widgetType: "quick-news", label: "News", accent: "#8a704f", defaultLayout: { col: 6, row: 5, w: 1, h: 1 } },
+  { id: "quick-music", widgetType: "quick-music", label: "Music", accent: "#647a57", defaultLayout: { col: 5, row: 6, w: 1, h: 1 } },
+  { id: "quick-home", widgetType: "quick-home", label: "Home", accent: "#766250", defaultLayout: { col: 6, row: 6, w: 1, h: 1 } },
   { id: "voice", widgetType: "voice-orb", label: "Voice", accent: "#30251d", defaultLayout: { col: 5, row: 3, w: 2, h: 2 } },
-  { id: "news", widgetType: "news", label: "Headlines", accent: "#2a211a", defaultLayout: { col: 1, row: 4, w: 4, h: 2 } },
-  { id: "calendar", widgetType: "calendar", label: "Calendar", accent: "#32483c", defaultLayout: { col: 1, row: 6, w: 2, h: 2 } },
-  { id: "timer", widgetType: "timer", label: "Timer", accent: "#5a4227", defaultLayout: { col: 3, row: 6, w: 2, h: 2 } },
-  { id: "photo", widgetType: "photo-frame", label: "Photos", accent: "#241f1a", defaultLayout: { col: 5, row: 5, w: 2, h: 2 } },
+  { id: "smart-home", widgetType: "smart-home", label: "Smart Home", accent: "#203c35", defaultLayout: { col: 1, row: 3, w: 4, h: 4 } },
+  { id: "news", widgetType: "news", label: "Headlines", accent: "#2a211a", defaultLayout: { col: 1, row: 7, w: 4, h: 2 } },
+  { id: "calendar", widgetType: "calendar", label: "Calendar", accent: "#32483c", defaultLayout: { col: 5, row: 7, w: 2, h: 2 } },
+  { id: "timer", widgetType: "timer", label: "Timer", accent: "#5a4227", defaultLayout: { col: 1, row: 9, w: 2, h: 2 } },
+  { id: "photo", widgetType: "photo-frame", label: "Photos", accent: "#241f1a", defaultLayout: { col: 3, row: 9, w: 2, h: 2 } },
 ];
 
 const TILE_INDEX = new Map(TILE_DEFS.map((tile, index) => [tile.id, index]));
 const TILE_MIN_HEIGHTS: Record<string, { desktop: number; mobile?: number }> = {
+  "smart-home": { desktop: 4, mobile: 5 },
   timer: { desktop: 2, mobile: 3 },
 };
 
@@ -102,15 +105,27 @@ function normalizeLayouts(
   const out: Record<string, TileLayout> = {};
   for (const tile of TILE_DEFS) {
     const saved = record[tile.id] ?? {};
+    const defaultLayout = defaults[tile.id];
     out[tile.id] = {
-      col: numberOr(saved.col, defaults[tile.id].col),
-      row: numberOr(saved.row, defaults[tile.id].row),
-      w: numberOr(saved.w, defaults[tile.id].w),
+      col: numberOr(saved.col, defaultLayout.col),
+      row: numberOr(saved.row, defaultLayout.row),
+      w: numberOr(saved.w, defaultLayout.w),
       h: Math.max(
         minHeightForTile(tile.id),
-        numberOr(saved.h, defaults[tile.id].h),
+        numberOr(saved.h, defaultLayout.h),
       ),
     };
+  }
+  const savedSmartHome = record["smart-home"];
+  if (
+    !savedSmartHome ||
+    (
+      numberOr(savedSmartHome.w, 0) === 4 &&
+      numberOr(savedSmartHome.h, 0) >= 5 &&
+      numberOr(savedSmartHome.row, 0) > 4
+    )
+  ) {
+    out["smart-home"] = { ...defaults["smart-home"] };
   }
   return out;
 }
@@ -155,9 +170,17 @@ function widgetTypeForOrder(tile: TileDef): WidgetType {
 
 function orderedTiles(tiles: TileDef[], widgets: WidgetConfig[]): TileDef[] {
   const order = new Map(widgets.map((widget) => [widget.type, widget.order]));
+  const sortOrder = (tile: TileDef) => {
+    const type = widgetTypeForOrder(tile);
+    const configured = order.get(type);
+    if (type === "smart-home" && (configured === undefined || configured > 5)) {
+      return 1.5;
+    }
+    return configured ?? Number.MAX_SAFE_INTEGER;
+  };
   return [...tiles].sort((a, b) => {
-    const aOrder = order.get(widgetTypeForOrder(a)) ?? Number.MAX_SAFE_INTEGER;
-    const bOrder = order.get(widgetTypeForOrder(b)) ?? Number.MAX_SAFE_INTEGER;
+    const aOrder = sortOrder(a);
+    const bOrder = sortOrder(b);
     return aOrder - bOrder || (TILE_INDEX.get(a.id) ?? 0) - (TILE_INDEX.get(b.id) ?? 0);
   });
 }
@@ -195,27 +218,29 @@ function compactLayouts(
 ): Record<string, TileLayout> {
   const sorted = [...visibleIds]
     .map(id => ({ id, layout: clampLayoutForTile(id, layouts[id] ?? { col: 1, row: 1, w: 1, h: 1 }, cols) }))
-    .sort((a, b) => a.layout.row - b.layout.row || a.layout.col - b.layout.col);
+    .sort((a, b) =>
+      a.layout.row - b.layout.row ||
+      a.layout.col - b.layout.col ||
+      (TILE_INDEX.get(a.id) ?? 0) - (TILE_INDEX.get(b.id) ?? 0)
+    );
 
   const result = { ...layouts };
+  const placed: Record<string, TileLayout> = {};
   for (const { id, layout } of sorted) {
-    let bestRow = 1;
-    for (let tryRow = 1; tryRow <= layout.row; tryRow++) {
-      const candidate = { ...layout, row: tryRow };
-      const occupied = new Set(visibleIds);
-      let fits = true;
-      for (const otherId of occupied) {
-        if (otherId === id) continue;
-        const other = result[otherId];
-        if (!other) continue;
-        if (tilesOverlap(candidate, clampLayoutForTile(otherId, other, cols))) {
-          fits = false;
+    let best = layout;
+    let found = false;
+    for (let row = 1; row <= MAX_ROWS - layout.h + 1 && !found; row++) {
+      for (let col = 1; col <= cols - layout.w + 1; col++) {
+        const candidate = { ...layout, row, col };
+        if (!Object.values(placed).some((other) => tilesOverlap(candidate, other))) {
+          best = candidate;
+          found = true;
           break;
         }
       }
-      if (fits) { bestRow = tryRow; break; }
     }
-    result[id] = { ...layout, row: bestRow };
+    result[id] = best;
+    placed[id] = best;
   }
   return result;
 }
@@ -308,7 +333,7 @@ function shouldShowTile(tile: TileDef, widgets: WidgetConfig[], nightActive: boo
   if (wt === "quick-chat" || wt === "quick-news" || wt === "quick-music" || wt === "quick-home") {
     return isWidgetOn(widgets, "quick-actions");
   }
-  if (wt === "voice-orb" || wt === "weather" || wt === "news" || wt === "calendar" || wt === "timer" || wt === "photo-frame" || wt === "clock") {
+  if (wt === "voice-orb" || wt === "weather" || wt === "news" || wt === "calendar" || wt === "timer" || wt === "photo-frame" || wt === "clock" || wt === "smart-home") {
     return isWidgetOn(widgets, wt);
   }
   return true;
@@ -707,6 +732,7 @@ export function MetroTileGrid({
       case "quick-music": return <QuickActionTile icon={Music} label={musicPlaying ? strings.cardMusicOff : strings.cardMusicOn} color="text-[#8BAF7B]" onClick={onMusicToggle} />;
       case "quick-home": return <QuickActionTile icon={Home} label={strings.cardHome} color="text-[#C8A088]" onClick={() => onActivate(strings.cardHomePrefill)} />;
       case "voice": return <VoiceTile onActivate={onActivate} lang={lang} />;
+      case "smart-home": return <SmartHomePanel variant="metro" />;
       case "news": return <NewsTile onActivate={onActivate} />;
       case "calendar": return <CalendarTile />;
       case "timer": return <TimerWidget />;

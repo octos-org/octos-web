@@ -20,23 +20,12 @@ test.describe("Metro tiles", () => {
       .first();
     await expect(handle).toBeVisible();
 
-    const box = await handle.boundingBox();
-    expect(box).not.toBeNull();
-    if (!box) return;
+    await handle.press("ArrowDown");
 
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 + 110, {
-      steps: 6,
-    });
-    await page.mouse.up();
-
-    const savedTimer = await page.evaluate(() => {
+    await expect.poll(() => page.evaluate(() => {
       const raw = localStorage.getItem("octos_home_metro_layout");
-      return raw ? JSON.parse(raw).timer : null;
-    });
-
-    expect(savedTimer?.h).toBeGreaterThan(1);
+      return raw ? (JSON.parse(raw).timer?.h ?? 0) : 0;
+    })).toBeGreaterThan(1);
   });
 
   test("default timer tile contains its idle controls without clipping", async ({ page }) => {
@@ -222,7 +211,7 @@ test.describe("Metro tiles", () => {
     }
   });
 
-  test("row position is clamped to MAX_ROWS (12)", async ({ page }) => {
+  test("row position is clamped to MAX_ROWS (20)", async ({ page }) => {
     // Set a layout with a tile at row 20
     await page.evaluate(() => {
       const layouts = {
@@ -239,7 +228,7 @@ test.describe("Metro tiles", () => {
       .getAttribute("style");
     const rowMatch = clockStyle?.match(/grid-row:\s*(\d+)/);
     if (rowMatch) {
-      expect(Number(rowMatch[1])).toBeLessThanOrEqual(12);
+      expect(Number(rowMatch[1])).toBeLessThanOrEqual(20);
     }
   });
 

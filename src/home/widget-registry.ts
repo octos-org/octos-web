@@ -14,7 +14,8 @@ export type WidgetType =
   | "news"
   | "calendar"
   | "timer"
-  | "photo-frame";
+  | "photo-frame"
+  | "smart-home";
 
 export interface WidgetConfig {
   type: WidgetType;
@@ -25,13 +26,14 @@ export interface WidgetConfig {
 export const DEFAULT_WIDGETS: WidgetConfig[] = [
   { type: "greeting", enabled: true, order: 0 },
   { type: "clock", enabled: true, order: 1 },
-  { type: "voice-orb", enabled: true, order: 2 },
-  { type: "weather", enabled: true, order: 3 },
-  { type: "quick-actions", enabled: true, order: 4 },
-  { type: "news", enabled: true, order: 5 },
-  { type: "calendar", enabled: true, order: 6 },
-  { type: "timer", enabled: true, order: 7 },
-  { type: "photo-frame", enabled: false, order: 8 },
+  { type: "smart-home", enabled: true, order: 2 },
+  { type: "voice-orb", enabled: true, order: 3 },
+  { type: "weather", enabled: true, order: 4 },
+  { type: "quick-actions", enabled: true, order: 5 },
+  { type: "news", enabled: true, order: 6 },
+  { type: "calendar", enabled: true, order: 7 },
+  { type: "timer", enabled: true, order: 8 },
+  { type: "photo-frame", enabled: false, order: 9 },
 ];
 
 const LS_KEY = "octos_home_widgets";

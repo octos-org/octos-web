@@ -14,6 +14,7 @@ import { useEvents } from "./use-events";
 import { useHomeSettings } from "./home-settings-context";
 import { useNews, timeAgo } from "./use-news";
 import { PhotoFrame } from "./photo-frame";
+import { SmartHomePanel } from "./smart-home";
 import { TimerWidget } from "./timer-widget";
 import { useVoiceInput } from "./use-voice-input";
 import { useWeather } from "./use-weather";
@@ -266,6 +267,12 @@ export function ClassicStandbyView({
               </button>
             ))}
           </div>
+        )}
+
+        {isWidgetOn(widgets, "smart-home") && (
+          <section className="classic-home-smart-panel">
+            <SmartHomePanel variant="classic" />
+          </section>
         )}
 
         {isWidgetOn(widgets, "news") && (

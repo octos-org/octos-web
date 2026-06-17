@@ -7,7 +7,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Settings, X, ChevronUp, ChevronDown, Clock, CloudSun, Zap, Mic, MessageCircle, Newspaper, CalendarDays, Timer, ImageIcon, Trash2, Plus } from "lucide-react";
+import { Settings, X, ChevronUp, ChevronDown, Clock, CloudSun, Zap, Mic, MessageCircle, Newspaper, CalendarDays, Timer, ImageIcon, Trash2, Plus, Home } from "lucide-react";
 import {
   useHomeSettings,
   DEFAULT_FEED_URL,
@@ -490,6 +490,7 @@ const WIDGET_ICONS: Record<WidgetType, typeof Clock> = {
   calendar: CalendarDays,
   timer: Timer,
   "photo-frame": ImageIcon,
+  "smart-home": Home,
 };
 
 function widgetLabel(type: WidgetType, t: ReturnType<typeof useHomeSettings>["strings"]): string {
@@ -503,6 +504,7 @@ function widgetLabel(type: WidgetType, t: ReturnType<typeof useHomeSettings>["st
     calendar: t.widgetCalendar,
     timer: t.widgetTimer,
     "photo-frame": t.widgetPhotoFrame,
+    "smart-home": t.widgetSmartHome,
   };
   return map[type];
 }

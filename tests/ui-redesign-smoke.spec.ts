@@ -26,6 +26,70 @@ const mockProfile = {
   },
 };
 
+const mockSmartHomeDevices = [
+  {
+    id: "real_tv",
+    name: "Living Room TV",
+    home: "Main home",
+    room: "Living room",
+    kind: "tv",
+    on: true,
+    online: true,
+    readonly: true,
+    volume: 24,
+    brightness: 24,
+    mode: "HDMI 1",
+    note: "Input HDMI 1",
+    color: "#60a5fa",
+  },
+  {
+    id: "real_ac",
+    name: "Bedroom AC",
+    home: "Main home",
+    room: "Bedroom",
+    kind: "climate",
+    on: true,
+    online: true,
+    readonly: false,
+    temperature: 24,
+    brightness: 24,
+    mode: "cool",
+    note: "Target 24C",
+    color: "#38bdf8",
+  },
+  {
+    id: "curtain",
+    name: "Kitchen Curtain",
+    home: "Main home",
+    room: "Kitchen",
+    kind: "cover",
+    on: true,
+    online: true,
+    readonly: false,
+    position: 66,
+    brightness: 66,
+    mode: "open",
+    note: "Position 66%",
+    color: "#22c55e",
+  },
+  {
+    id: "camera_wangwang",
+    name: "Wangwang Camera",
+    home: "Camera home",
+    room: "Living room",
+    kind: "camera",
+    on: true,
+    online: true,
+    readonly: true,
+    stream: "available",
+    stream_capable: true,
+    stream_protocol: "rtc",
+    mode: "ready",
+    note: "Stream available",
+    color: "#64748b",
+  },
+];
+
 async function fulfillJson(route: Route, body: unknown) {
   await route.fulfill({
     status: 200,
@@ -196,6 +260,38 @@ async function installWorkbenchMocks(
     }
     if (path.includes("/ominix-api/models")) {
       await fulfillJson(route, { models: [] });
+      return;
+    }
+    await fulfillJson(route, { ok: true });
+  });
+
+  await page.route((url) => url.pathname.startsWith("/smart-home-api/"), async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/smart-home-api/health") {
+      await fulfillJson(route, {
+        ok: true,
+        devices: mockSmartHomeDevices.length,
+        home_assistant: "connected",
+      });
+      return;
+    }
+    if (path === "/smart-home-api/devices") {
+      await fulfillJson(route, {
+        source: "home_assistant",
+        devices: mockSmartHomeDevices,
+      });
+      return;
+    }
+    if (path.startsWith("/smart-home-api/devices/")) {
+      await fulfillJson(route, { ok: true, source: "home_assistant" });
+      return;
+    }
+    if (path.startsWith("/smart-home-api/cameras/")) {
+      await fulfillJson(route, {
+        ok: true,
+        protocol: "rtc",
+        playback_url: "http://127.0.0.1:1984/stream.html?src=wangwang",
+      });
       return;
     }
     await fulfillJson(route, { ok: true });
@@ -442,11 +538,71 @@ test.describe("UI redesign shell smoke", () => {
     await expect(page.locator(".metro-grid")).toBeVisible();
   });
 
+  test("home smart home widget renders bridge devices", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/home", { waitUntil: "networkidle" });
+
+    const panel = page.getByTestId("smart-home-panel");
+    await expect(panel).toBeVisible();
+    await expect(panel).toContainText("Smart Home");
+    await expect(panel).toContainText("Living Room TV");
+    await expect(panel).toContainText("Kitchen Curtain");
+    await expect(panel).toContainText("4");
+    await expect(panel.getByRole("button", { name: "Refresh" })).toBeVisible();
+
+    const overflow = await page.evaluate(() => {
+      const panelEl = document.querySelector('[data-testid="smart-home-panel"]');
+      const rect = panelEl?.getBoundingClientRect();
+      return {
+        documentOverflow: document.documentElement.scrollWidth - window.innerWidth,
+        panelRight: rect?.right ?? 0,
+        viewportWidth: window.innerWidth,
+      };
+    });
+
+    expect(overflow.documentOverflow).toBeLessThanOrEqual(1);
+    expect(overflow.panelRight).toBeLessThanOrEqual(overflow.viewportWidth + 1);
+  });
+
+  test("home smart home device rows open device-specific controls", async ({ page }) => {
+    await page.setViewportSize({ width: 948, height: 749 });
+    await page.goto("/home", { waitUntil: "networkidle" });
+
+    await page.getByRole("button", { name: "Living Room TV controls" }).click();
+    const panel = page.getByRole("dialog", { name: "Living Room TV controls" });
+    await expect(panel).toBeVisible();
+    const panelBox = await page.locator(".smart-home-device-popover").boundingBox();
+    expect(panelBox).not.toBeNull();
+    expect(panelBox!.y).toBeGreaterThanOrEqual(8);
+    expect(panelBox!.y + panelBox!.height).toBeLessThanOrEqual(749 - 8);
+    await expect(panel).toContainText("HDMI 1");
+    await expect(panel.getByRole("button", { name: "Living Room TV Vol +" })).toBeVisible();
+    await expect(panel.getByRole("button", { name: "Living Room TV Home" })).toBeVisible();
+    const tvVolumeAction = page.waitForRequest((request) => {
+      const url = new URL(request.url());
+      return (
+        request.method() === "POST" &&
+        url.pathname === "/smart-home-api/devices/real_tv" &&
+        request.postData()?.includes("action=volume_up") === true
+      );
+    });
+    await panel.getByRole("button", { name: "Living Room TV Vol +" }).click();
+    await tvVolumeAction;
+
+    await panel.getByRole("button", { name: "Living Room TV close controls" }).click();
+    await page.getByRole("button", { name: "Bedroom AC controls" }).click();
+    const climatePanel = page.getByRole("dialog", { name: "Bedroom AC controls" });
+    await expect(climatePanel).toBeVisible();
+    await expect(climatePanel.getByLabel("Bedroom AC Fan")).toBeVisible();
+    await expect(climatePanel.getByRole("button", { name: "Cool", exact: true })).toBeVisible();
+  });
+
   test("classic home uses an aligned widget grid", async ({ page }) => {
     await page.setViewportSize({ width: 859, height: 819 });
     await page.addInitScript(() => {
       localStorage.setItem("octos_home_ui_style", "classic");
       localStorage.setItem("octos_home_night_mode", "off");
+      localStorage.setItem("octos_home_city", "Tokyo");
     });
 
     await page.goto("/home", { waitUntil: "networkidle" });
@@ -481,6 +637,7 @@ test.describe("UI redesign shell smoke", () => {
     await page.addInitScript(() => {
       localStorage.setItem("octos_home_ui_style", "classic");
       localStorage.setItem("octos_home_night_mode", "off");
+      localStorage.setItem("octos_home_city", "Tokyo");
     });
     await page.route("https://geocoding-api.open-meteo.com/**", async (route) => {
       await fulfillJson(route, {
