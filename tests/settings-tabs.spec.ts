@@ -94,6 +94,7 @@ async function installAdminSettingsMocks(
   const profileHeaders: Array<string | null> = [];
   const profileUpdateBodies: unknown[] = [];
   const serviceActions: string[] = [];
+  let repairActions = 0;
   const logLineRequests: number[] = [];
   const accessibleProfiles = options.accessibleProfiles ?? [
     {
@@ -183,6 +184,54 @@ async function installAdminSettingsMocks(
       }),
     }),
   );
+
+  const ominixRuntime = {
+    state: "healthy",
+    url: "http://localhost:8080",
+    url_source: "env",
+    port: 8080,
+    home_dir: "/Users/yao",
+    ominix_dir: "/Users/yao/.ominix",
+    binary_path: "/Users/yao/.local/bin/ominix-api",
+    binary_installed: true,
+    metallib_path: "/Users/yao/.local/bin/mlx.metallib",
+    metallib_installed: true,
+    models_dir: "/Users/yao/.OminiX/models",
+    models_dir_exists: true,
+    plist_path: "/Users/yao/Library/LaunchAgents/io.ominix.ominix-api.plist",
+    plist_exists: true,
+    plist_port: 8080,
+    discovery_path: "/Users/yao/.ominix/api_url",
+    discovery_url: "http://localhost:8080",
+    service_registered: true,
+    service_running: true,
+    launchctl_skipped: false,
+    health: { healthy: true, http_status: 200, detail: { version: "0.4.2" } },
+    issues: [],
+    can_repair: true,
+    suggested_action: "ready",
+  };
+
+  await page.route("**/api/admin/ominix/runtime", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(ominixRuntime),
+    }),
+  );
+
+  await page.route("**/api/admin/ominix/repair", async (route) => {
+    repairActions += 1;
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        message: "OMiniX API is healthy at http://localhost:8080",
+        dry_run: false,
+        actions: ["kept launchd service"],
+        status: ominixRuntime,
+      }),
+    });
+  });
 
   await page.route("**/api/admin/platform-skills/ominix-api/models", (route) =>
     route.fulfill({
@@ -341,6 +390,7 @@ async function installAdminSettingsMocks(
     getProfileHeaders: () => profileHeaders,
     getProfileUpdateBodies: () => profileUpdateBodies,
     getServiceActions: () => serviceActions,
+    getRepairActions: () => repairActions,
     getLogLineRequests: () => logLineRequests,
   };
 }
@@ -1046,8 +1096,11 @@ test.describe("Settings page — tab smoke tests", () => {
     await expect(
       page.locator("h3", { hasText: "OminiX API" }),
     ).toBeVisible({ timeout: TIMEOUT });
-    await expect(page.getByText("Healthy")).toBeVisible({ timeout: TIMEOUT });
+    await expect(page.getByText("Healthy", { exact: true })).toBeVisible({
+      timeout: TIMEOUT,
+    });
     await expect(page.getByText("LaunchAgent registered")).toBeVisible();
+    await expect(page.getByText("Runtime healthy")).toBeVisible();
     await expect(page.getByText("Qwen3 ASR").first()).toBeVisible();
     await expect(page.getByText("Qwen3 TTS").first()).toBeVisible();
     await expect(
@@ -1096,6 +1149,9 @@ test.describe("Settings page — tab smoke tests", () => {
     ).toBeVisible({ timeout: TIMEOUT });
     await page.getByRole("button", { name: "Confirm" }).click();
     await expect.poll(() => mocks.getServiceActions()).toEqual(["restart"]);
+
+    await page.getByRole("button", { name: "Repair" }).click();
+    await expect.poll(() => mocks.getRepairActions()).toBe(1);
   });
 
   test("OminiX service actions surface backend error details", async ({ page }) => {

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/auth/auth-context";
 import {
   User,
@@ -59,10 +59,17 @@ const TABS: TabDef[] = [
   { id: "ominix", label: "OminiX", icon: Waves, adminOnly: true },
 ];
 
+function asTabId(value: string | null): TabId | null {
+  return TABS.some((tab) => tab.id === value) ? value as TabId : null;
+}
+
 export function AdminSettingsPage() {
   const { portal } = useAuth();
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<TabId>("profile");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState<TabId>(
+    () => asTabId(searchParams.get("tab")) ?? "profile",
+  );
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -81,6 +88,22 @@ export function AdminSettingsPage() {
     });
     return () => { cancelled = true; };
   }, [selectedProfileId]);
+
+  useEffect(() => {
+    const nextTab = asTabId(searchParams.get("tab"));
+    if (!nextTab) return;
+    const tab = TABS.find((entry) => entry.id === nextTab);
+    if (tab?.adminOnly && !portal?.can_access_admin_portal) return;
+    setActiveTab(nextTab);
+  }, [portal?.can_access_admin_portal, searchParams]);
+
+  const selectTab = (id: TabId) => {
+    setActiveTab(id);
+    const next = new URLSearchParams(searchParams);
+    if (id === "profile") next.delete("tab");
+    else next.set("tab", id);
+    setSearchParams(next, { replace: true });
+  };
 
   const isAdminOnlyTab = activeTab === "system" || activeTab === "server" || activeTab === "users" || activeTab === "ominix";
 
@@ -129,7 +152,7 @@ export function AdminSettingsPage() {
               ).map(({ id, label, icon: Icon, adminOnly }) => (
                 <button
                   key={id}
-                  onClick={() => setActiveTab(id)}
+                  onClick={() => selectTab(id)}
                   data-active={activeTab === id ? "true" : undefined}
                   className="settings-tab-button flex w-full items-center gap-3 rounded-lg border px-4 py-3 text-left text-sm font-medium transition max-md:w-auto max-md:shrink-0 max-md:px-3"
                 >

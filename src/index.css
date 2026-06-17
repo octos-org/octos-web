@@ -2866,6 +2866,30 @@ button, a, input, textarea {
   height: 92px;
 }
 
+.classic-home-voice-status {
+  margin-top: 0.55rem;
+  max-width: 220px;
+  text-align: center;
+  font-size: 0.72rem;
+  line-height: 1.25;
+  color: rgba(255, 255, 255, 0.42);
+}
+
+.classic-home-voice-status.is-success,
+.metro-voice-status.is-success {
+  color: rgba(123, 211, 154, 0.9);
+}
+
+.classic-home-voice-status.is-warning,
+.metro-voice-status.is-warning {
+  color: rgba(245, 202, 118, 0.92);
+}
+
+.classic-home-voice-status.is-danger,
+.metro-voice-status.is-danger {
+  color: rgba(248, 113, 113, 0.9);
+}
+
 .classic-home-weather-panel {
   grid-column: span 3;
   display: flex;
@@ -3455,7 +3479,8 @@ button, a, input, textarea {
   height: 72px;
 }
 
-.metro-voice-transcript {
+.metro-voice-transcript,
+.metro-voice-status {
   font-size: 0.7rem;
   color: rgba(255, 255, 255, 0.35);
   text-align: center;

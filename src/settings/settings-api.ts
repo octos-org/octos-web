@@ -654,6 +654,48 @@ export interface OminixApiStatus {
   url: string;
   healthy: boolean;
   service_registered: boolean;
+  runtime?: OminixRuntimeStatus;
+}
+
+export interface OminixRuntimeIssue {
+  code: string;
+  severity: string;
+  message: string;
+  fixable: boolean;
+}
+
+export interface OminixHealthProbe {
+  healthy: boolean;
+  http_status?: number;
+  error?: string;
+  detail?: unknown;
+}
+
+export interface OminixRuntimeStatus {
+  state: string;
+  url: string;
+  url_source: string;
+  port?: number;
+  home_dir: string;
+  ominix_dir: string;
+  binary_path: string;
+  binary_installed: boolean;
+  metallib_path: string;
+  metallib_installed: boolean;
+  models_dir: string;
+  models_dir_exists: boolean;
+  plist_path: string;
+  plist_exists: boolean;
+  plist_port?: number;
+  discovery_path: string;
+  discovery_url?: string;
+  service_registered: boolean;
+  service_running: boolean;
+  launchctl_skipped: boolean;
+  health: OminixHealthProbe;
+  issues: OminixRuntimeIssue[];
+  can_repair: boolean;
+  suggested_action: string;
 }
 
 export interface PlatformModelsStatus {
@@ -720,9 +762,16 @@ export interface AdminActionResponse {
   message?: string;
 }
 
+export interface OminixRepairResponse extends AdminActionResponse {
+  dry_run: boolean;
+  actions: string[];
+  status: OminixRuntimeStatus;
+}
+
 export type OminixServiceAction = "start" | "stop" | "restart";
 
 const OMINIX_ADMIN_BASE = "/api/admin/platform-skills/ominix-api";
+const OMINIX_RUNTIME_BASE = "/api/admin/ominix";
 
 export async function fetchPlatformSkillsStatus(): Promise<PlatformSkillsStatus> {
   return await request<PlatformSkillsStatus>("/api/admin/platform-skills");
@@ -741,6 +790,16 @@ export async function fetchOminixLogs(lines = 80): Promise<OminixLogResponse> {
   return await request<OminixLogResponse>(
     `${OMINIX_ADMIN_BASE}/logs?lines=${safeLines}`,
   );
+}
+
+export async function fetchOminixRuntimeStatus(): Promise<OminixRuntimeStatus> {
+  return await request<OminixRuntimeStatus>(`${OMINIX_RUNTIME_BASE}/runtime`);
+}
+
+export async function repairOminixRuntime(): Promise<OminixRepairResponse> {
+  return await request<OminixRepairResponse>(`${OMINIX_RUNTIME_BASE}/repair`, {
+    method: "POST",
+  });
 }
 
 export async function fetchOminixPlatformModels(): Promise<OminixCatalogModel[]> {

@@ -1,11 +1,13 @@
 import { useEffect } from "react";
-import { Camera, CameraOff, X } from "lucide-react";
+import { Camera, CameraOff, Settings, X } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { useVoiceConversation, type VoiceState } from "./use-voice-conversation";
 import { VoiceOrb } from "./voice-orb";
 import { VoiceSelector } from "./voice-selector";
 import { CameraPreview } from "./camera-preview";
 import { VisualPanel } from "./visual-panel";
 import { unlockAudio } from "./audio-playback";
+import { useOminixRuntimeSummary } from "../use-ominix-runtime-summary";
 import "./voice.css";
 
 const STATE_WORD: Record<VoiceState, string> = {
@@ -23,14 +25,24 @@ interface VoiceViewProps {
 }
 
 export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
+  const navigate = useNavigate();
   const conv = useVoiceConversation(sessionId, historyTopic);
+  const runtime = useOminixRuntimeSummary();
 
   useEffect(() => {
     return () => conv.stop();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const openOminixSettings = () => {
+    navigate("/settings?tab=ominix");
+  };
+
   const onOrbClick = () => {
+    if (!runtime.ready) {
+      if (!runtime.loading) openOminixSettings();
+      return;
+    }
     // Backup audio unlock: if the entry gesture didn't stick, tapping the orb
     // is another gesture that unlocks playback for subsequent replies.
     unlockAudio();
@@ -93,11 +105,34 @@ export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
           </div>
         )}
 
-        <div onClick={onOrbClick} role="button" aria-label="voice orb">
-          <VoiceOrb state={conv.state} />
+        <div
+          onClick={onOrbClick}
+          role="button"
+          aria-label={runtime.ready ? "voice orb" : "open OMiniX settings"}
+        >
+          <VoiceOrb state={runtime.ready ? conv.state : "error"} />
         </div>
 
-        <div className="mt-6 min-h-[20px] text-sm text-white/55">{STATE_WORD[conv.state]}</div>
+        <div className={`voice-runtime-pill is-${runtime.tone}`}>
+          {runtime.label}
+        </div>
+
+        <div className="mt-6 min-h-[20px] text-sm text-white/55">
+          {runtime.ready
+            ? STATE_WORD[conv.state]
+            : "语音引擎未就绪，请先在 Settings 里安装或修复 OMiniX。"}
+        </div>
+
+        {!runtime.ready && !runtime.loading && (
+          <button
+            type="button"
+            onClick={openOminixSettings}
+            className="voice-runtime-action"
+          >
+            <Settings size={15} />
+            打开 OMiniX 设置
+          </button>
+        )}
 
         {/* Camera on but stream not ready yet, or it failed. */}
         {conv.cameraActive && !conv.cameraStream && (

@@ -12,6 +12,7 @@ import {
   Square,
   Terminal,
   Trash2,
+  Wrench,
 } from "lucide-react";
 import {
   disableOminixModel,
@@ -20,15 +21,18 @@ import {
   fetchOminixAvailableModels,
   fetchOminixLogs,
   fetchOminixPlatformModels,
+  fetchOminixRuntimeStatus,
   fetchPlatformSkillHealth,
   fetchPlatformSkillsStatus,
   formatSettingsError,
   installPlatformSkill,
   removeOminixModel,
   removePlatformSkill,
+  repairOminixRuntime,
   runOminixServiceAction,
   type OminixCatalogModel,
   type OminixLogResponse,
+  type OminixRuntimeStatus,
   type OminixServiceAction,
   type PlatformSkillHealth,
   type PlatformSkillInfo,
@@ -460,6 +464,7 @@ function ConfirmBar({
 export function OminixTab() {
   const [status, setStatus] = useState<PlatformSkillsStatus | null>(null);
   const [health, setHealth] = useState<PlatformSkillHealth | null>(null);
+  const [runtime, setRuntime] = useState<OminixRuntimeStatus | null>(null);
   const [platformModels, setPlatformModels] = useState<OminixCatalogModel[]>([]);
   const [availableModels, setAvailableModels] = useState<OminixCatalogModel[]>([]);
   const [logs, setLogs] = useState<OminixLogResponse | null>(null);
@@ -477,9 +482,10 @@ export function OminixTab() {
     setError(null);
     setCatalogNotice(null);
 
-    const [statusResult, healthResult, logsResult] = await Promise.allSettled([
+    const [statusResult, healthResult, runtimeResult, logsResult] = await Promise.allSettled([
       fetchPlatformSkillsStatus(),
       fetchPlatformSkillHealth("ominix-api"),
+      fetchOminixRuntimeStatus(),
       fetchOminixLogs(logLines),
     ]);
 
@@ -494,6 +500,13 @@ export function OminixTab() {
 
     if (healthResult.status === "fulfilled") setHealth(healthResult.value);
     else errors.push(`health: ${errorMessage(healthResult.reason)}`);
+
+    if (runtimeResult.status === "fulfilled") setRuntime(runtimeResult.value);
+    else if (nextStatus?.ominix_api.runtime) {
+      setRuntime(nextStatus.ominix_api.runtime);
+    } else {
+      errors.push(`runtime: ${errorMessage(runtimeResult.reason)}`);
+    }
 
     if (logsResult.status === "fulfilled") setLogs(logsResult.value);
     else errors.push(`logs: ${errorMessage(logsResult.reason)}`);
@@ -534,6 +547,11 @@ export function OminixTab() {
   const registeredLabel = status?.ominix_api.service_registered
     ? "LaunchAgent registered"
     : "LaunchAgent missing";
+  const runtimeState = runtime?.state ?? status?.ominix_api.runtime?.state ?? "unknown";
+  const runtimeHealthy = runtime?.health.healthy ?? status?.ominix_api.healthy ?? false;
+  const runtimeIssues = runtime?.issues ?? status?.ominix_api.runtime?.issues ?? [];
+  const runtimeAction = runtime?.suggested_action ?? "unknown";
+  const canRepairRuntime = runtime?.can_repair ?? false;
 
   const platformModelIds = useMemo(
     () => new Set(platformModels.map((m) => m.id)),
@@ -660,7 +678,7 @@ export function OminixTab() {
               </div>
             )}
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <div className={`rounded-lg border px-4 py-3 ${statusClass(Boolean(status?.ominix_api.healthy))}`}>
                 <div className="flex items-center gap-2 text-sm font-semibold">
                   {status?.ominix_api.healthy ? <CheckCircle size={14} /> : <AlertCircle size={14} />}
@@ -682,7 +700,32 @@ export function OminixTab() {
                   {compactText(status?.models.dir)}
                 </div>
               </div>
+              <div className={`rounded-lg border px-4 py-3 ${statusClass(runtimeHealthy)}`}>
+                <div className="text-sm font-semibold">
+                  Runtime {compactText(runtimeState)}
+                </div>
+                <div className="mt-1 truncate font-mono text-[11px] opacity-80">
+                  {compactText(runtime?.url_source, "source unknown")}
+                </div>
+              </div>
             </div>
+
+            {runtimeIssues.length > 0 && (
+              <div className="rounded-lg border border-yellow-400/30 bg-yellow-400/5 px-4 py-3">
+                <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase text-yellow-300">
+                  <AlertCircle size={14} />
+                  Runtime needs attention
+                </div>
+                <div className="space-y-1 text-xs text-yellow-100/90">
+                  {runtimeIssues.slice(0, 5).map((issue) => (
+                    <div key={issue.code} className="flex flex-wrap gap-2">
+                      <span className="font-mono text-yellow-300">{issue.code}</span>
+                      <span>{issue.message}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className={`rounded-lg border px-4 py-3 ${statusClass(health?.status === "healthy")}`}>
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -719,6 +762,14 @@ export function OminixTab() {
             </div>
 
             <div className="flex flex-wrap gap-2">
+              <SmallButton
+                disabled={busy || !canRepairRuntime}
+                tone={runtimeAction === "ready" ? "default" : "good"}
+                onClick={() => void performAction("repair-runtime", repairOminixRuntime)}
+              >
+                <Wrench size={12} />
+                Repair
+              </SmallButton>
               <SmallButton
                 disabled={busy}
                 tone="good"

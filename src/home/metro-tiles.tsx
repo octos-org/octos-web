@@ -6,6 +6,7 @@ import {
   useRef,
   type ReactNode,
 } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   MessageSquare,
   Newspaper,
@@ -20,12 +21,13 @@ import { useHomeSettings } from "./home-settings-context";
 import { useBurnInProtection } from "./use-burn-in-protection";
 import { useNews, timeAgo } from "./use-news";
 import { useEvents } from "./use-events";
-import { useVoiceInput } from "./use-voice-input";
 import { VoiceOrb } from "./voice-orb";
 import { TimerWidget } from "./timer-widget";
 import { PhotoFrame } from "./photo-frame";
 import { SettingsGearButton, HomeSettingsPanel } from "./home-settings";
 import { SmartHomePanel } from "./smart-home";
+import { unlockAudio } from "./voice/audio-playback";
+import { useOminixRuntimeSummary } from "./use-ominix-runtime-summary";
 import type { WidgetConfig, WidgetType } from "./widget-registry";
 
 interface MetroTileGridProps {
@@ -463,25 +465,31 @@ function CalendarTile() {
   );
 }
 
-function VoiceTile({ onActivate, lang }: { onActivate: (text?: string) => void; lang: string }) {
-  const { strings } = useHomeSettings();
-  const voice = useVoiceInput({ onResult: (text) => onActivate(text), lang: lang === "zh" ? "zh-CN" : "en-US" });
+function VoiceTile({
+  onOpen,
+  onOpenSettings,
+}: {
+  onOpen: () => void;
+  onOpenSettings: () => void;
+}) {
+  const runtime = useOminixRuntimeSummary();
   const handleClick = useCallback(() => {
-    if (!voice.isSupported) { onActivate(""); return; }
-    if (voice.orbState === "listening") voice.stop();
-    else if (voice.orbState === "idle") voice.start();
-  }, [voice, onActivate]);
+    if (!runtime.ready) {
+      if (!runtime.loading) onOpenSettings();
+      return;
+    }
+    unlockAudio();
+    onOpen();
+  }, [onOpen, onOpenSettings, runtime.loading, runtime.ready]);
+
   return (
     <div className="metro-tile-voice" onClick={(e) => e.stopPropagation()}>
-      <VoiceOrb state={voice.orbState} onClick={handleClick} />
-      {voice.orbState === "listening" && voice.transcript && (
-        <p className="metro-voice-transcript">{voice.transcript}</p>
-      )}
-      {(!voice.isSupported || voice.error) && (
-        <p className="metro-voice-transcript">
-          {voice.error ?? strings.voiceNotSupported}
-        </p>
-      )}
+      <VoiceOrb
+        state={runtime.ready ? "idle" : "processing"}
+        onClick={handleClick}
+        disabled={runtime.loading}
+      />
+      <p className={`metro-voice-status is-${runtime.tone}`}>{runtime.label}</p>
     </div>
   );
 }
@@ -666,12 +674,12 @@ export function MetroTileGrid({
   musicPlaying,
   nightActive,
 }: MetroTileGridProps) {
+  const navigate = useNavigate();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const {
     strings,
     widgets,
-    lang,
     metroLayout,
     setMetroLayout,
     burnInProtection,
@@ -731,7 +739,12 @@ export function MetroTileGrid({
       case "quick-news": return <QuickActionTile icon={Newspaper} label={strings.cardNews} color="text-[#C4A882]" onClick={() => onActivate(strings.cardNewsPrefill)} />;
       case "quick-music": return <QuickActionTile icon={Music} label={musicPlaying ? strings.cardMusicOff : strings.cardMusicOn} color="text-[#8BAF7B]" onClick={onMusicToggle} />;
       case "quick-home": return <QuickActionTile icon={Home} label={strings.cardHome} color="text-[#C8A088]" onClick={() => onActivate(strings.cardHomePrefill)} />;
-      case "voice": return <VoiceTile onActivate={onActivate} lang={lang} />;
+      case "voice": return (
+        <VoiceTile
+          onOpen={() => navigate("/voice")}
+          onOpenSettings={() => navigate("/settings?tab=ominix")}
+        />
+      );
       case "smart-home": return <SmartHomePanel variant="metro" />;
       case "news": return <NewsTile onActivate={onActivate} />;
       case "calendar": return <CalendarTile />;
@@ -739,7 +752,7 @@ export function MetroTileGrid({
       case "photo": return <PhotoFrame />;
       default: return null;
     }
-  }, [nightActive, strings, lang, onActivate, onMusicToggle, musicPlaying]);
+  }, [nightActive, strings, navigate, onActivate, onMusicToggle, musicPlaying]);
 
   return (
     <div

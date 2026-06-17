@@ -13,6 +13,28 @@ const conversationMock = vi.hoisted(() => ({
   interrupt: vi.fn(),
   toggleCamera: vi.fn(),
 }));
+const navigateMock = vi.hoisted(() => vi.fn());
+const runtimeMock = vi.hoisted((): {
+  label: string;
+  tone: "default" | "success" | "warning" | "danger";
+  ready: boolean;
+  loading: boolean;
+  canRepair: boolean;
+  state: string;
+  refresh: ReturnType<typeof vi.fn>;
+} => ({
+  label: "Voice engine ready",
+  tone: "success",
+  ready: true,
+  loading: false,
+  canRepair: true,
+  state: "healthy",
+  refresh: vi.fn(),
+}));
+
+vi.mock("react-router-dom", () => ({
+  useNavigate: () => navigateMock,
+}));
 
 vi.mock("./use-voice-conversation", () => ({
   useVoiceConversation: () => ({
@@ -49,6 +71,10 @@ vi.mock("./audio-playback", () => ({
   unlockAudio: vi.fn(),
 }));
 
+vi.mock("../use-ominix-runtime-summary", () => ({
+  useOminixRuntimeSummary: () => runtimeMock,
+}));
+
 describe("VoiceView", () => {
   beforeEach(() => {
     cleanup();
@@ -60,6 +86,14 @@ describe("VoiceView", () => {
     conversationMock.stop.mockReset();
     conversationMock.interrupt.mockReset();
     conversationMock.toggleCamera.mockReset();
+    navigateMock.mockReset();
+    runtimeMock.label = "Voice engine ready";
+    runtimeMock.tone = "success";
+    runtimeMock.ready = true;
+    runtimeMock.loading = false;
+    runtimeMock.canRepair = true;
+    runtimeMock.state = "healthy";
+    runtimeMock.refresh.mockReset();
   });
 
   it("waits for an orb click before starting microphone capture", () => {
@@ -123,5 +157,22 @@ describe("VoiceView", () => {
     render(<VoiceView sessionId="voice-test" onBack={vi.fn()} />);
 
     expect(screen.queryByAltText("frame sent to AI")).toBeNull();
+  });
+
+  it("opens OMiniX settings instead of starting capture when runtime is not ready", () => {
+    runtimeMock.label = "Voice engine needs repair";
+    runtimeMock.tone = "warning";
+    runtimeMock.ready = false;
+    runtimeMock.loading = false;
+    runtimeMock.canRepair = true;
+    runtimeMock.state = "missing_plist";
+
+    render(<VoiceView sessionId="voice-test" onBack={vi.fn()} />);
+
+    expect(screen.getByText("语音引擎未就绪，请先在 Settings 里安装或修复 OMiniX。")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "open OMiniX settings" }));
+
+    expect(conversationMock.start).not.toHaveBeenCalled();
+    expect(navigateMock).toHaveBeenCalledWith("/settings?tab=ominix");
   });
 });
