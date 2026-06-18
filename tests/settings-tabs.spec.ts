@@ -16,6 +16,7 @@ interface SettingsMockOptions {
   operatorTasksError?: { status: number; body: unknown };
   ominixServiceActionErrors?: Partial<Record<"start" | "stop" | "restart", { status: number; body: unknown }>>;
   ominixHealthError?: { status: number; body: unknown };
+  ominixRuntimeOverride?: Record<string, unknown>;
   accessibleProfiles?: AccessibleProfileMock[];
   canAccessAdminPortal?: boolean;
 }
@@ -95,6 +96,7 @@ async function installAdminSettingsMocks(
   const profileUpdateBodies: unknown[] = [];
   const serviceActions: string[] = [];
   let repairActions = 0;
+  let bootstrapActions = 0;
   const logLineRequests: number[] = [];
   const accessibleProfiles = options.accessibleProfiles ?? [
     {
@@ -207,9 +209,29 @@ async function installAdminSettingsMocks(
     service_running: true,
     launchctl_skipped: false,
     health: { healthy: true, http_status: 200, detail: { version: "0.4.2" } },
+    voice_models_ready: true,
+    voice_models: [
+      {
+        id: "qwen3-asr-1.7b",
+        role: "asr",
+        status: "ready",
+        ready: true,
+        name: "Qwen3 ASR",
+        size: "1.7 GB",
+      },
+      {
+        id: "qwen3-tts",
+        role: "tts",
+        status: "ready",
+        ready: true,
+        name: "Qwen3 TTS",
+        size: "2.1 GB",
+      },
+    ],
     issues: [],
     can_repair: true,
     suggested_action: "ready",
+    ...(options.ominixRuntimeOverride ?? {}),
   };
 
   await page.route("**/api/admin/ominix/runtime", (route) =>
@@ -229,6 +251,45 @@ async function installAdminSettingsMocks(
         dry_run: false,
         actions: ["kept launchd service"],
         status: ominixRuntime,
+      }),
+    });
+  });
+
+  await page.route("**/api/admin/ominix/bootstrap", async (route) => {
+    bootstrapActions += 1;
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        message: "OMiniX API and core voice models are ready",
+        actions: ["kept qwen3-asr-1.7b", "downloaded qwen3-tts"],
+        status: {
+          ...ominixRuntime,
+          state: "healthy",
+          voice_models_ready: true,
+          suggested_action: "ready",
+        },
+        models_ready: true,
+        models: [
+          {
+            id: "qwen3-asr-1.7b",
+            role: "asr",
+            ready: true,
+            action: "kept",
+            status_before: "ready",
+            status_after: "ready",
+            size: "1.7 GB",
+          },
+          {
+            id: "qwen3-tts",
+            role: "tts",
+            ready: true,
+            action: "downloaded",
+            status_before: "not_downloaded",
+            status_after: "ready",
+            size: "2.1 GB",
+          },
+        ],
       }),
     });
   });
@@ -391,6 +452,7 @@ async function installAdminSettingsMocks(
     getProfileUpdateBodies: () => profileUpdateBodies,
     getServiceActions: () => serviceActions,
     getRepairActions: () => repairActions,
+    getBootstrapActions: () => bootstrapActions,
     getLogLineRequests: () => logLineRequests,
   };
 }
@@ -1152,6 +1214,57 @@ test.describe("Settings page — tab smoke tests", () => {
 
     await page.getByRole("button", { name: "Repair" }).click();
     await expect.poll(() => mocks.getRepairActions()).toBe(1);
+  });
+
+  test("OminiX tab bootstraps core voice models when API is healthy but models are missing", async ({
+    page,
+  }) => {
+    const mocks = await installAdminSettingsMocks(page, {
+      ominixRuntimeOverride: {
+        state: "models_missing",
+        voice_models_ready: false,
+        suggested_action: "bootstrap_voice_models",
+        issues: [
+          {
+            code: "missing_voice_model",
+            severity: "warning",
+            message: "Core voice model qwen3-tts is not ready",
+            fixable: true,
+          },
+        ],
+        voice_models: [
+          {
+            id: "qwen3-asr-1.7b",
+            role: "asr",
+            status: "ready",
+            ready: true,
+            name: "Qwen3 ASR",
+            size: "1.7 GB",
+          },
+          {
+            id: "qwen3-tts",
+            role: "tts",
+            status: "not_downloaded",
+            ready: false,
+            name: "Qwen3 TTS",
+            size: "2.1 GB",
+          },
+        ],
+      },
+    });
+    await seedAdminSession(page);
+
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: TIMEOUT });
+    await clickTab(page, "OminiX");
+
+    await expect(
+      page.getByText("missing_voice_model", { exact: true }),
+    ).toBeVisible({ timeout: TIMEOUT });
+    await page.getByRole("button", { name: "Prepare Voice Models" }).click();
+
+    await expect.poll(() => mocks.getBootstrapActions()).toBe(1);
+    await expect.poll(() => mocks.getRepairActions()).toBe(0);
   });
 
   test("OminiX service actions surface backend error details", async ({ page }) => {

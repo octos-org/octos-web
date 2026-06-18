@@ -39,13 +39,27 @@ function emit(summary: OminixRuntimeSnapshot) {
 }
 
 export function summarizeOminixRuntime(runtime: OminixRuntimeStatus): OminixRuntimeSnapshot {
-  if (runtime.health.healthy) {
+  if (runtime.health.healthy && runtime.voice_models_ready !== false) {
     return {
       label: "Voice engine ready",
       tone: "success",
       ready: true,
       loading: false,
       canRepair: runtime.can_repair,
+      state: runtime.state,
+    };
+  }
+
+  if (
+    runtime.suggested_action === "bootstrap_voice_models" ||
+    (runtime.health.healthy && runtime.voice_models_ready === false)
+  ) {
+    return {
+      label: "Voice models not ready",
+      tone: "warning",
+      ready: false,
+      loading: false,
+      canRepair: true,
       state: runtime.state,
     };
   }

@@ -15,6 +15,7 @@ import {
   Wrench,
 } from "lucide-react";
 import {
+  bootstrapOminixRuntime,
   disableOminixModel,
   downloadOminixModel,
   enableOminixModel,
@@ -25,7 +26,6 @@ import {
   fetchPlatformSkillHealth,
   fetchPlatformSkillsStatus,
   formatSettingsError,
-  installOminixRuntime,
   installPlatformSkill,
   removeOminixModel,
   removePlatformSkill,
@@ -555,9 +555,16 @@ export function OminixTab() {
   const canRepairRuntime = runtime?.can_repair ?? false;
   const shouldInstallRuntime =
     runtimeAction === "install_ominix_api_binary" || runtime?.binary_installed === false;
+  const shouldBootstrapModels =
+    runtimeAction === "bootstrap_voice_models" || runtime?.voice_models_ready === false;
+  const shouldBootstrapRuntime = shouldInstallRuntime || shouldBootstrapModels;
   const canInstallOrRepairRuntime =
-    shouldInstallRuntime || canRepairRuntime || runtimeAction === "ready";
-  const runtimeButtonLabel = shouldInstallRuntime ? "Install OMiniX API" : "Repair";
+    shouldBootstrapRuntime || canRepairRuntime || runtimeAction === "ready";
+  const runtimeButtonLabel = shouldInstallRuntime
+    ? "Install OMiniX & Voice Models"
+    : shouldBootstrapModels
+      ? "Prepare Voice Models"
+      : "Repair";
 
   const platformModelIds = useMemo(
     () => new Set(platformModels.map((m) => m.id)),
@@ -773,12 +780,12 @@ export function OminixTab() {
                 tone={runtimeAction === "ready" ? "default" : "good"}
                 onClick={() =>
                   void performAction(
-                    shouldInstallRuntime ? "install-runtime" : "repair-runtime",
-                    shouldInstallRuntime ? installOminixRuntime : repairOminixRuntime,
+                    shouldBootstrapRuntime ? "bootstrap-runtime" : "repair-runtime",
+                    shouldBootstrapRuntime ? bootstrapOminixRuntime : repairOminixRuntime,
                   )
                 }
               >
-                {shouldInstallRuntime ? <Download size={12} /> : <Wrench size={12} />}
+                {shouldBootstrapRuntime ? <Download size={12} /> : <Wrench size={12} />}
                 {runtimeButtonLabel}
               </SmallButton>
               <SmallButton
