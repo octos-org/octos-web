@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { Camera, CameraOff, X } from "lucide-react";
 import { useVoiceConversation, type VoiceState } from "./use-voice-conversation";
 import { VoiceOrb } from "./voice-orb";
@@ -25,7 +25,17 @@ interface VoiceViewProps {
 export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
   const conv = useVoiceConversation(sessionId, historyTopic);
 
+  // Auto-enter listening on mount: the user reached this full-screen view via a
+  // navigation gesture, so unlock audio playback and begin capture immediately
+  // instead of requiring an extra orb tap. One-shot guarded so StrictMode's
+  // double-invoke (and any re-render) can't start the turn twice.
+  const startedRef = useRef(false);
   useEffect(() => {
+    if (!startedRef.current) {
+      startedRef.current = true;
+      unlockAudio();
+      void conv.start();
+    }
     return () => conv.stop();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -116,8 +126,10 @@ export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
           )}
         </div>
 
-        {/* Rich output: generating indicator while the visual is being produced. */}
-        {conv.generating && !conv.visual && (
+        {/* Rich output: generating indicator while a visual is being produced.
+            Shown even when a prior visual is still docked on the right, so a
+            follow-up turn that generates a NEW visual still signals progress. */}
+        {conv.generating && (
           <div className="mt-5 flex items-center gap-2 text-sm text-white/60">
             <span className="h-2 w-2 animate-ping rounded-full bg-white/70" />
             正在生成视觉内容…

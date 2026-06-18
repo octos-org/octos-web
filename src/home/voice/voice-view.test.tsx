@@ -8,10 +8,13 @@ const conversationMock = vi.hoisted(() => ({
   cameraActive: false,
   cameraStream: null as MediaStream | null,
   lastSentFrameUrl: null as string | null,
+  generating: false,
+  visual: null as VoiceConversation["visual"],
   start: vi.fn(),
   stop: vi.fn(),
   interrupt: vi.fn(),
   toggleCamera: vi.fn(),
+  dismissVisual: vi.fn(),
 }));
 
 vi.mock("./use-voice-conversation", () => ({
@@ -28,6 +31,9 @@ vi.mock("./use-voice-conversation", () => ({
     lastSentFrameUrl: conversationMock.lastSentFrameUrl,
     cameraError: null,
     toggleCamera: conversationMock.toggleCamera,
+    generating: conversationMock.generating,
+    visual: conversationMock.visual,
+    dismissVisual: conversationMock.dismissVisual,
   }),
 }));
 
@@ -45,6 +51,10 @@ vi.mock("./camera-preview", () => ({
   CameraPreview: () => <div data-testid="camera-preview" />,
 }));
 
+vi.mock("./visual-panel", () => ({
+  VisualPanel: () => <div data-testid="visual-panel" />,
+}));
+
 vi.mock("./audio-playback", () => ({
   unlockAudio: vi.fn(),
 }));
@@ -56,22 +66,28 @@ describe("VoiceView", () => {
     conversationMock.cameraActive = false;
     conversationMock.cameraStream = null;
     conversationMock.lastSentFrameUrl = null;
+    conversationMock.generating = false;
+    conversationMock.visual = null;
     conversationMock.start.mockReset();
     conversationMock.stop.mockReset();
     conversationMock.interrupt.mockReset();
     conversationMock.toggleCamera.mockReset();
+    conversationMock.dismissVisual.mockReset();
   });
 
-  it("waits for an orb click before starting microphone capture", () => {
+  it("auto-starts microphone capture on mount", () => {
     render(<VoiceView sessionId="voice-test" onBack={vi.fn()} />);
 
-    expect(conversationMock.start).not.toHaveBeenCalled();
-    expect(screen.getByText("点光球开始说话")).toBeTruthy();
-    expect(screen.queryByTestId("voice-selector")).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "voice orb" }));
-
+    // Entering the voice view begins listening immediately — no orb tap needed.
     expect(conversationMock.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the generating indicator even while a prior visual is docked", () => {
+    conversationMock.generating = true;
+    conversationMock.visual = { path: "w/old.html", kind: "html" };
+    render(<VoiceView sessionId="voice-test" onBack={vi.fn()} />);
+
+    expect(screen.getByText("正在生成视觉内容…")).toBeTruthy();
   });
 
   it("toggles the camera when the camera button is clicked", () => {

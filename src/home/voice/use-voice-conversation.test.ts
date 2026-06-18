@@ -75,6 +75,7 @@ describe("visual marker", () => {
   it("detects a well-formed marker and ignores empty/absent", () => {
     expect(hasVisualMarker("好的。\n[[VISUAL:html|负反馈电路]]")).toBe(true);
     expect(hasVisualMarker("[[VISUAL:image|一只猫]]")).toBe(true);
+    expect(hasVisualMarker("好的。\n[[VISUAL:illustrated|人类细胞结构]]")).toBe(true);
     expect(hasVisualMarker("纯口播没有标记")).toBe(false);
     expect(hasVisualMarker("[[VISUAL:html|]]")).toBe(false);
   });
