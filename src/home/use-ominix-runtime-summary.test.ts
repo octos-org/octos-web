@@ -49,6 +49,24 @@ describe("summarizeOminixRuntime", () => {
     });
   });
 
+  it("marks a healthy runtime with missing voice models as not ready", () => {
+    expect(
+      stripRefresh(summarizeOminixRuntime(
+        runtime({
+          state: "models_missing",
+          voice_models_ready: false,
+          suggested_action: "bootstrap_voice_models",
+        }),
+      )),
+    ).toMatchObject({
+      label: "Voice models not ready",
+      tone: "warning",
+      ready: false,
+      canRepair: true,
+      state: "models_missing",
+    });
+  });
+
   it("marks a repairable runtime as warning", () => {
     expect(
       stripRefresh(summarizeOminixRuntime(

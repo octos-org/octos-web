@@ -799,6 +799,15 @@ export interface OminixRuntimeStatus {
   service_running: boolean;
   launchctl_skipped: boolean;
   health: OminixHealthProbe;
+  voice_models_ready?: boolean;
+  voice_models?: Array<{
+    id: string;
+    role: string;
+    status: string;
+    ready: boolean;
+    name?: string;
+    size?: string;
+  }>;
   issues: OminixRuntimeIssue[];
   can_repair: boolean;
   suggested_action: string;
@@ -874,6 +883,22 @@ export interface OminixRepairResponse extends AdminActionResponse {
   status: OminixRuntimeStatus;
 }
 
+export interface OminixBootstrapResponse extends AdminActionResponse {
+  actions: string[];
+  status?: OminixRuntimeStatus;
+  models_ready?: boolean;
+  models?: Array<{
+    id: string;
+    role: string;
+    ready: boolean;
+    action: string;
+    status_before: string;
+    status_after: string;
+    size?: string;
+    message?: string;
+  }>;
+}
+
 export type OminixServiceAction = "start" | "stop" | "restart";
 
 const OMINIX_ADMIN_BASE = "/api/admin/platform-skills/ominix-api";
@@ -910,6 +935,12 @@ export async function repairOminixRuntime(): Promise<OminixRepairResponse> {
 
 export async function installOminixRuntime(): Promise<OminixRepairResponse> {
   return await request<OminixRepairResponse>(`${OMINIX_RUNTIME_BASE}/install`, {
+    method: "POST",
+  });
+}
+
+export async function bootstrapOminixRuntime(): Promise<OminixBootstrapResponse> {
+  return await request<OminixBootstrapResponse>(`${OMINIX_RUNTIME_BASE}/bootstrap`, {
     method: "POST",
   });
 }

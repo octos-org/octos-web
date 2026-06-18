@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { OminixTab } from "./ominix-tab";
 
 const apiMocks = vi.hoisted(() => ({
+  bootstrapOminixRuntime: vi.fn(),
   disableOminixModel: vi.fn(),
   downloadOminixModel: vi.fn(),
   enableOminixModel: vi.fn(),
