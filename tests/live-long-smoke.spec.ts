@@ -34,8 +34,6 @@ test.describe("Live long-task smoke", () => {
   test("short TTS success renders exactly one audio attachment", async ({
     page
   }) => {
-    const hasTTS = process.env.HAS_TTS === "1";
-    test.skip(!hasTTS, "TTS not configured on this server (set HAS_TTS=1 to enable)");
     await sendAndWait(page, "用杨幂声音说：你好世界", {
       label: "live-short-tts-smoke"
       });
@@ -103,8 +101,6 @@ test.describe("Live long-task smoke", () => {
   test("research podcast delivers exactly one audio card after reload", async ({
     page
   }) => {
-    const hasTTS = process.env.HAS_TTS === "1";
-    test.skip(!hasTTS, "TTS/podcast not configured on this server");
     const prompt =
       "不要搜索，直接生成一个简短测试播客并把音频发回会话。脚本： [杨幂 - clone:yangmi, professional] 大家好。 [窦文涛 - clone:douwentao, professional] 这里是测试播客。 [杨幂 - clone:yangmi, professional] 今天只做一次快速验证。 [窦文涛 - clone:douwentao, professional] 感谢收听。";
 

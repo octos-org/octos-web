@@ -6,7 +6,7 @@
  * Requires GEMINI_API_KEY for mofa_slides image generation.
  */
 
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import {
   login,
   sendAndWait,
@@ -18,10 +18,6 @@ import {
   createNewSession
 } from "./helpers";
 
-// Skip if slides not available (same pattern as slides-api.spec.ts)
-const SLIDES_CMD = process.env.SLIDES_ENABLED === "1";
-test.skip(!SLIDES_CMD, "Slides /new command not available (set SLIDES_ENABLED=1)");
-
 test.setTimeout(120_000);
 
 test.beforeEach(async ({ page }) => {
@@ -29,28 +25,21 @@ test.beforeEach(async ({ page }) => {
   await createNewSession(page);
 });
 
+async function issueSlidesCommand(page: Page, command: string) {
+  const input = getInput(page);
+  await input.fill(command);
+  await getSendButton(page).click();
+  await page.waitForTimeout(1_000);
+  await expect(input).toBeVisible();
+}
+
 // ── Round 1: Create slides project ──────────────────────────────
 
 test("Round 1: /new slides creates project and agent follows design-first workflow", async ({
   page
 }) => {
   // Step 1: Create slides project via /new command
-  const newResult = await sendAndWait(page, "/new slides ai-test-deck", {
-    label: "new-slides",
-    maxWait: 30_000,
-    throwOnTimeout: false,
-  });
-  // /new may produce a cmd-feedback or an assistant bubble
-  await page.waitForTimeout(3000);
-  const cmdFeedback = await page.locator(SEL.cmdFeedback).textContent().catch(() => "");
-  const assistantText = await page.locator(SEL.assistantMessage).last().textContent().catch(() => "");
-  const anyResponse = (cmdFeedback || "").length > 0 || (assistantText || "").length > 0;
-  console.log("  [slides] /new feedback:", (cmdFeedback || "").slice(0, 100));
-  console.log("  [slides] /new assistant:", (assistantText || "").slice(0, 100));
-  if (!anyResponse) {
-    test.skip(true, "/new slides command not supported on this server");
-    return;
-  }
+  await issueSlidesCommand(page, "/new slides ai-test-deck");
 
   // Step 2: Describe what we want — agent should write JS, NOT generate yet
   const result = await sendAndWait(
@@ -78,14 +67,7 @@ test("Round 2: modify slide content before generating", async ({ page }) => {
   // Assume we're in a slides session from Round 1
   // First create a fresh project
   const input = getInput(page);
-  await input.fill("/new slides update-test");
-  await page.keyboard.press("Enter");
-  await page.waitForFunction(
-    () => document.querySelectorAll("[data-testid='assistant-message']").length > 0,
-    undefined,
-    { timeout: 90_000 },
-  );
-  await page.waitForTimeout(2000);
+  await issueSlidesCommand(page, "/new slides update-test");
 
   // Create initial 3-slide deck
   const result1 = await sendAndWait(
@@ -117,14 +99,7 @@ test("Round 2: modify slide content before generating", async ({ page }) => {
 
 test("Round 3: generate PPTX on explicit command", async ({ page }) => {
   const input = getInput(page);
-  await input.fill("/new slides gen-test");
-  await page.keyboard.press("Enter");
-  await page.waitForFunction(
-    () => document.querySelectorAll("[data-testid='assistant-message']").length > 0,
-    undefined,
-    { timeout: 90_000 },
-  );
-  await page.waitForTimeout(2000);
+  await issueSlidesCommand(page, "/new slides gen-test");
 
   // Create a minimal 2-slide deck
   await sendAndWait(
@@ -173,14 +148,7 @@ test("Round 4: incremental update deletes only changed slide PNG", async ({
   page
 }) => {
   const input = getInput(page);
-  await input.fill("/new slides delta-test");
-  await page.keyboard.press("Enter");
-  await page.waitForFunction(
-    () => document.querySelectorAll("[data-testid='assistant-message']").length > 0,
-    undefined,
-    { timeout: 90_000 },
-  );
-  await page.waitForTimeout(2000);
+  await issueSlidesCommand(page, "/new slides delta-test");
 
   // Create and generate a 2-slide deck
   await sendAndWait(

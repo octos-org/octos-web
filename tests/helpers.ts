@@ -59,6 +59,18 @@ type HarnessMessage = {
   media?: string[];
 };
 
+type HarnessTask = {
+  id: string;
+  tool_name: string;
+  tool_call_id?: string;
+  status: "spawned" | "running" | "completed" | "failed";
+  started_at: string;
+  completed_at?: string | null;
+  output_files?: string[];
+  error: string | null;
+  session_key?: string;
+};
+
 type HarnessSession = {
   id: string;
   title?: string;
@@ -78,6 +90,37 @@ function extractTurnText(params: Record<string, unknown> | undefined): string {
     .trim();
 }
 
+function isTtsLikePrompt(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    /\btts\b/.test(lower) ||
+    lower.includes("podcast") ||
+    lower.includes("audio") ||
+    lower.includes("voice") ||
+    message.includes("声音") ||
+    message.includes("语音") ||
+    message.includes("音频") ||
+    message.includes("播客") ||
+    message.includes("朗读")
+  );
+}
+
+function isSlidesLikePrompt(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("slides") ||
+    lower.includes("slide") ||
+    lower.includes("pptx") ||
+    lower.includes("deck") ||
+    lower.includes("script.js")
+  );
+}
+
+function isToolLikePrompt(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes("shell tool") || lower.includes("use the shell") || lower.includes("tool call");
+}
+
 function harnessReplyFor(message: string): string {
   const lower = message.toLowerCase();
   const exact = message.match(/(?:say|reply with)\s+exactly:\s*(.+)$/i);
@@ -95,9 +138,9 @@ function harnessReplyFor(message: string): string {
   if (lower.includes("capital of sweden")) return "Stockholm.";
   if (lower.includes("capital of greece")) return "Athens.";
   if (lower.includes("capital of portugal")) return "Lisbon.";
-  if (lower.includes("1+1") || lower.includes("1 + 1")) return "2.";
-  if (lower.includes("2+2") || lower.includes("2 + 2")) return "4.";
-  if (lower.includes("3+3") || lower.includes("3 + 3")) return "6.";
+  if (lower.includes("1+1") || lower.includes("1 + 1")) return "2";
+  if (lower.includes("2+2") || lower.includes("2 + 2")) return "4";
+  if (lower.includes("3+3") || lower.includes("3 + 3")) return "6";
   const arithmetic = lower.match(/\b(\d+)\s*([+*x])\s*(\d+)\b/);
   if (arithmetic) {
     const left = Number(arithmetic[1]);
@@ -106,6 +149,26 @@ function harnessReplyFor(message: string): string {
     if (Number.isFinite(left) && Number.isFinite(right)) {
       return String(op === "+" ? left + right : left * right);
     }
+  }
+  if (lower.startsWith("/new slides")) return "Slides project created. Switched to the slides workspace.";
+  if (lower === "/help") return "/new slides, /sessions, /help commands are available.";
+  if (lower.startsWith("/") && !lower.startsWith("/new") && !lower.startsWith("/queue")) {
+    return "Unknown command. Available commands include /new slides, /sessions, and /help.";
+  }
+  if (isSlidesLikePrompt(message)) {
+    const forbidsGenerate =
+      lower.includes("do not generate") ||
+      lower.includes("don't generate") ||
+      lower.includes("without generating") ||
+      lower.includes("not generate");
+    const wantsGenerate =
+      lower.includes("generate") ||
+      lower.includes("regenerate") ||
+      lower.includes("pptx");
+    if (wantsGenerate && !forbidsGenerate) {
+      return "Generated deck.pptx and delivered the slides artifact.";
+    }
+    return "Wrote script.js for the requested slide deck without generating yet.";
   }
   if (lower.includes("csv")) return "The CSV contains Alice, Bob, and Charlie.";
   if (lower.includes("markdown") || lower.includes("title")) {
@@ -116,12 +179,13 @@ function harnessReplyFor(message: string): string {
   }
   if (lower.startsWith("/queue")) return `Queue mode updated: ${message.replace("/queue", "").trim() || "followup"}.`;
   if (lower.includes("weather")) return "The weather response is sunny and mild.";
-  if (lower.includes("tts") || message.includes("声音")) return "TTS task accepted. Audio generation is mocked in this E2E harness.";
+  if (isTtsLikePrompt(message)) return "TTS task accepted. Audio generation is running in the E2E harness.";
   return `Mock response: ${message || "ok"}`;
 }
 
 async function installDefaultE2EHarness(page: Page) {
   const sessions = new Map<string, HarnessSession>();
+  const tasks = new Map<string, HarnessTask[]>();
   let adaptiveMode: "off" | "hedge" | "lane" = "off";
   let harnessProfile = {
     id: "admin",
@@ -183,6 +247,15 @@ async function installDefaultE2EHarness(page: Page) {
       sessions.set(id, session);
     }
     return session;
+  };
+
+  const ensureTasks = (id: string): HarnessTask[] => {
+    let sessionTasks = tasks.get(id);
+    if (!sessionTasks) {
+      sessionTasks = [];
+      tasks.set(id, sessionTasks);
+    }
+    return sessionTasks;
   };
 
   await page.addInitScript(
@@ -350,8 +423,17 @@ async function installDefaultE2EHarness(page: Page) {
       if (method === "session/messages_page" && id) {
         const sessionId = String(params?.session_id || "");
         const session = ensureSession(sessionId);
+        const rawSinceSeq = params?.since_seq;
+        const sinceSeq =
+          typeof rawSinceSeq === "number" && Number.isFinite(rawSinceSeq)
+            ? rawSinceSeq
+            : undefined;
+        const messages =
+          sinceSeq === undefined
+            ? session.messages
+            : session.messages.filter((message) => message.seq > sinceSeq);
         ws.send(rpcResponse(id, {
-          messages: session.messages,
+          messages,
           has_more: false,
           next_offset: session.messages.length,
         }));
@@ -359,21 +441,36 @@ async function installDefaultE2EHarness(page: Page) {
       }
 
       if (method === "session/status.get" && id) {
+        const sessionId = String(params?.session_id || "");
+        const activeTasks = ensureTasks(sessionId).some(
+          (task) => task.status === "spawned" || task.status === "running",
+        );
         ws.send(rpcResponse(id, {
           active: false,
-          has_deferred_files: false,
-          has_bg_tasks: false,
+          has_deferred_files: activeTasks,
+          has_bg_tasks: activeTasks,
         }));
         return;
       }
 
       if (method === "session/tasks.list" && id) {
-        ws.send(rpcResponse(id, { tasks: [] }));
+        const sessionId = String(params?.session_id || "");
+        ws.send(rpcResponse(id, { tasks: ensureTasks(sessionId) }));
         return;
       }
 
       if (method === "session/files.list" && id) {
-        ws.send(rpcResponse(id, { files: [] }));
+        const sessionId = String(params?.session_id || "");
+        const session = ensureSession(sessionId);
+        const files = session.messages.flatMap((message) =>
+          (message.media ?? []).map((path) => ({
+            filename: path.split("/").pop() || path,
+            path,
+            size_bytes: 9,
+            modified_at: message.timestamp,
+          })),
+        );
+        ws.send(rpcResponse(id, { files }));
         return;
       }
 
@@ -449,19 +546,22 @@ async function installDefaultE2EHarness(page: Page) {
         const turnId = String(params?.turn_id || `turn-${Date.now()}`);
         const session = ensureSession(sessionId);
         const userText = extractTurnText(params);
+        const startedAt = new Date().toISOString();
         const userSeq = session.messages.length + 1;
         session.messages.push({
           seq: userSeq,
           role: "user",
           content: userText,
-          timestamp: new Date().toISOString(),
+          timestamp: startedAt,
           client_message_id: turnId,
           thread_id: turnId,
           message_id: `user-${userSeq}`,
           source: "user",
         });
         const reply = harnessReplyFor(userText);
+        const toolLike = isToolLikePrompt(userText);
         const assistantSeq = session.messages.length + 1;
+        const syncToolCallId = `sync-tool-${assistantSeq}`;
         session.messages.push({
           seq: assistantSeq,
           role: "assistant",
@@ -479,6 +579,21 @@ async function installDefaultE2EHarness(page: Page) {
           session_id: sessionId,
           turn_id: turnId,
         }));
+        if (toolLike) {
+          ws.send(rpcNotification("tool/started", {
+            session_id: sessionId,
+            turn_id: turnId,
+            tool_call_id: syncToolCallId,
+            tool_name: "shell",
+            arguments: { command: "echo 56" },
+          }));
+          ws.send(rpcNotification("tool/progress", {
+            session_id: sessionId,
+            turn_id: turnId,
+            tool_call_id: syncToolCallId,
+            message: "running shell command",
+          }));
+        }
         ws.send(rpcNotification("message/delta", {
           session_id: sessionId,
           turn_id: turnId,
@@ -501,10 +616,14 @@ async function installDefaultE2EHarness(page: Page) {
           turn_id: turnId,
           kind: "token_cost_update",
           metadata: {
-            input_tokens: 12,
-            output_tokens: 8,
-            session_cost: 0.0001,
-            model: "mock-model",
+            kind: "token_cost_update",
+            label: "mock-model",
+            token_cost: {
+              input_tokens: 12,
+              output_tokens: 8,
+              session_cost: 0.0001,
+              model: "mock-model",
+            },
           },
         }));
         ws.send(rpcNotification("turn/completed", {
@@ -512,6 +631,87 @@ async function installDefaultE2EHarness(page: Page) {
           turn_id: turnId,
           reason: "done",
         }));
+        if (toolLike) {
+          setTimeout(() => {
+            ws.send(rpcNotification("tool/completed", {
+              session_id: sessionId,
+              turn_id: turnId,
+              tool_call_id: syncToolCallId,
+              tool_name: "shell",
+              success: true,
+              output_preview: "56",
+              duration_ms: 1500,
+            }));
+          }, 1_500);
+        }
+
+        if (isTtsLikePrompt(userText)) {
+          const taskId = `task-${assistantSeq}`;
+          const toolCallId = `tool-${assistantSeq}`;
+          const audioPath = `pf/${sessionId}/tts-output-${assistantSeq}.mp3`;
+          const sessionTasks = ensureTasks(sessionId);
+          const task: HarnessTask = {
+            id: taskId,
+            tool_name: "fm_tts",
+            tool_call_id: toolCallId,
+            status: "spawned",
+            started_at: startedAt,
+            completed_at: null,
+            output_files: [],
+            error: null,
+            session_key: sessionId,
+          };
+          sessionTasks.push(task);
+          ws.send(rpcNotification("task/updated", {
+            session_id: sessionId,
+            task_id: taskId,
+            tool_call_id: toolCallId,
+            state: "spawned",
+            title: "TTS generation",
+          }));
+
+          setTimeout(() => {
+            const completedAt = new Date().toISOString();
+            task.status = "completed";
+            task.completed_at = completedAt;
+            task.output_files = [audioPath];
+            const completionSeq = session.messages.length + 1;
+            session.messages.push({
+              seq: completionSeq,
+              role: "assistant",
+              content: "Audio ready",
+              timestamp: completedAt,
+              thread_id: turnId,
+              response_to_client_message_id: turnId,
+              message_id: `assistant-${completionSeq}`,
+              source: "background",
+              media: [audioPath],
+            });
+
+            ws.send(rpcNotification("task/updated", {
+              session_id: sessionId,
+              task_id: taskId,
+              tool_call_id: toolCallId,
+              state: "completed",
+              title: "TTS generation",
+            }));
+            ws.send(rpcNotification("turn/spawn_complete", {
+              session_id: sessionId,
+              turn_id: turnId,
+              thread_id: turnId,
+              response_to_client_message_id: turnId,
+              task_id: taskId,
+              tool_call_id: toolCallId,
+              seq: completionSeq,
+              message_id: `assistant-${completionSeq}`,
+              content: "Audio ready",
+              media: [audioPath],
+              source: "background",
+              cursor: { stream: "main", seq: completionSeq },
+              persisted_at: completedAt,
+            }));
+          }, 15_000);
+        }
         return;
       }
 
