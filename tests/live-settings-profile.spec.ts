@@ -1,16 +1,420 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { expect, test, type Page } from "@playwright/test";
-
-test.skip(process.env.OCTOS_LIVE_E2E !== "1", "requires a live octos API server");
+import { expect, test, type Page, type Route } from "@playwright/test";
 
 const LIVE_TIMEOUT = 30_000;
+const USE_LIVE_E2E = process.env.OCTOS_LIVE_E2E === "1";
+const ALLOW_LIVE_MUTATION = process.env.OCTOS_LIVE_E2E_MUTATE === "1";
 
 type LiveAuthStatus = {
   admin_token_login_enabled?: boolean;
   local_solo_enabled?: boolean;
 };
+
+function createMockProfile(): Record<string, unknown> {
+  return {
+    id: "admin",
+    name: "Admin",
+    enabled: true,
+    data_dir: null,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    status: {
+      running: true,
+      pid: 1234,
+      started_at: "2026-01-01T00:00:00Z",
+      uptime_secs: 3600,
+    },
+    config: {
+      llm: {
+        primary: {
+          family_id: "openai",
+          model_id: "gpt-5.4",
+          route: {
+            base_url: "https://api.mofa.ai/v1",
+            api_key_env: "API_RELAY_KEY",
+          },
+        },
+        fallbacks: [],
+      },
+      home: {
+        settings: {
+          city: "Tokyo",
+          temp_unit: "C",
+          clock_format: "24h",
+          idle_seconds: 60,
+          night_mode: "auto",
+          lang: "en",
+        },
+        events: [],
+        widgets: [],
+        metro_layout: {},
+      },
+      channels: [],
+      gateway: {
+        max_history: null,
+        max_iterations: null,
+        system_prompt: null,
+        max_concurrent_sessions: null,
+        browser_timeout_secs: null,
+        max_output_tokens: null,
+      },
+      env_vars: {},
+      hooks: [],
+      email: "admin@localhost",
+      api_type: null,
+      admin_mode: true,
+      sandbox: {
+        enabled: false,
+        mode: "off",
+        allow_network: false,
+        docker: {
+          image: "ubuntu:24.04",
+          cpu_limit: null,
+          memory_limit: null,
+          pids_limit: null,
+          mount_mode: "read_only",
+          extra_binds: [],
+        },
+        read_allow_paths: [],
+      },
+      adaptive_routing: null,
+      content_routing: null,
+      plugins: { require_signed: false },
+    },
+  };
+}
+
+async function fulfillJson(route: Route, body: unknown, status = 200) {
+  await route.fulfill({
+    status,
+    contentType: "application/json",
+    body: JSON.stringify(body),
+  });
+}
+
+async function installMockLiveSettingsRoutes(page: Page) {
+  let profile = createMockProfile();
+  const user = {
+    id: "admin",
+    email: "admin@localhost",
+    name: "Admin",
+    role: "admin",
+    created_at: "2026-01-01T00:00:00Z",
+    last_login_at: null,
+  };
+  const portal = {
+    kind: "admin",
+    home_profile_id: "admin",
+    home_route: "/",
+    can_access_admin_portal: true,
+    can_manage_users: true,
+    sub_account_limit: 10,
+    accessible_profiles: [
+      {
+        id: "admin",
+        name: "Admin",
+        parent_id: null,
+        relationship: "self_profile",
+        api_scope: "admin",
+        route_base: "/",
+        can_manage_sub_accounts: true,
+      },
+    ],
+  };
+  const ominixRuntime = {
+    state: "healthy",
+    url: "http://localhost:8080",
+    url_source: "env",
+    port: 8080,
+    home_dir: "/Users/yao",
+    ominix_dir: "/Users/yao/.ominix",
+    binary_path: "/Users/yao/.local/bin/ominix-api",
+    binary_installed: true,
+    metallib_path: "/Users/yao/.local/bin/mlx.metallib",
+    metallib_installed: true,
+    models_dir: "/Users/yao/.OminiX/models",
+    models_dir_exists: true,
+    plist_path: "/Users/yao/Library/LaunchAgents/io.ominix.ominix-api.plist",
+    plist_exists: true,
+    plist_port: 8080,
+    discovery_path: "/Users/yao/.ominix/api_url",
+    discovery_url: "http://localhost:8080",
+    service_registered: true,
+    service_running: true,
+    launchctl_skipped: false,
+    health: { healthy: true, http_status: 200, detail: { version: "0.4.2" } },
+    voice_models_ready: true,
+    voice_models: [
+      {
+        id: "qwen3-asr-1.7b",
+        role: "asr",
+        status: "ready",
+        ready: true,
+        name: "Qwen3 ASR",
+        size: "1.7 GB",
+      },
+      {
+        id: "qwen3-tts",
+        role: "tts",
+        status: "ready",
+        ready: true,
+        name: "Qwen3 TTS",
+        size: "2.1 GB",
+      },
+    ],
+    issues: [],
+    can_repair: true,
+    suggested_action: "ready",
+  };
+  const platformModels = [
+    {
+      id: "qwen3-asr-1.7b",
+      name: "Qwen3 ASR",
+      role: "asr",
+      status: "ready",
+      category: "speech",
+      storage: { total_size_display: "1.7 GB" },
+      runtime: { memory_required_mb: 4096 },
+    },
+    {
+      id: "qwen3-tts",
+      name: "Qwen3 TTS",
+      role: "tts",
+      status: "ready",
+      category: "speech",
+      storage: { total_size_display: "2.1 GB" },
+      runtime: { memory_required_mb: 4096 },
+    },
+  ];
+
+  await page.route("**/api/auth/status", (route) =>
+    fulfillJson(route, {
+      bootstrap_mode: false,
+      email_login_enabled: true,
+      admin_token_login_enabled: true,
+      local_solo_enabled: false,
+      allow_self_registration: false,
+    }),
+  );
+  await page.route("**/api/auth/me", (route) => fulfillJson(route, { user, profile, portal }));
+  await page.route("**/api/auth/verify", (route) =>
+    fulfillJson(route, { ok: true, token: "mock-live-token", user }),
+  );
+  await page.route("**/api/my/profile", async (route) => {
+    if (route.request().method() === "PUT") {
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      profile = {
+        ...profile,
+        ...(body.name !== undefined ? { name: body.name } : {}),
+        ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
+        ...(body.config !== undefined ? { config: body.config } : {}),
+        updated_at: new Date().toISOString(),
+      };
+    }
+    await fulfillJson(route, profile);
+  });
+  await page.route("**/api/my/profile/status", (route) =>
+    fulfillJson(route, {
+      running: true,
+      pid: 1234,
+      started_at: "2026-01-01T00:00:00Z",
+      uptime_secs: 3600,
+    }),
+  );
+  await page.route("**/api/my/profile/skills", (route) =>
+    fulfillJson(route, {
+      skills: [
+        {
+          name: "voice",
+          source_repo: "octos-org/system-skills",
+          tool_count: 2,
+          version: "0.1.0",
+        },
+      ],
+    }),
+  );
+  await page.route("**/api/my/profile/skills/registry", (route) =>
+    fulfillJson(route, {
+      packages: [
+        {
+          name: "voice",
+          repo: "octos-org/system-skills",
+          description: "Voice skill package",
+          author: "Octos",
+          license: "MIT",
+          version: "0.1.0",
+          provides_tools: true,
+          skills: ["voice"],
+          tags: ["voice", "speech"],
+          requires: [],
+        },
+      ],
+    }),
+  );
+  await page.route("**/api/my/provider-models", (route) =>
+    fulfillJson(route, ["gpt-5.4", "gpt-5.5-live", "gpt-4o-mini"]),
+  );
+  await page.route("**/api/my/test-provider", (route) =>
+    fulfillJson(route, { ok: true, message: "OK" }),
+  );
+  await page.route("**/api/admin/profiles", (route) => fulfillJson(route, [profile]));
+  await page.route("**/api/admin/users", (route) =>
+    fulfillJson(route, {
+      users: [
+        {
+          id: "admin",
+          email: "admin@localhost",
+          name: "Admin",
+          role: "admin",
+          created_at: "2026-01-01T00:00:00Z",
+          last_login_at: "2026-01-02T00:00:00Z",
+        },
+      ],
+    }),
+  );
+  await page.route("**/api/admin/allowed-emails", (route) =>
+    fulfillJson(route, {
+      entries: [
+        {
+          email: "allowed@localhost",
+          created_at: "2026-01-01T00:00:00Z",
+          registered: false,
+        },
+      ],
+    }),
+  );
+  await page.route("**/api/admin/operator/summary", (route) =>
+    fulfillJson(route, {
+      available: true,
+      collection: {
+        running_gateways: 1,
+        gateways_with_api_port: 1,
+        gateways_missing_api_port: 0,
+        scrape_failures: 0,
+        sources_observed: 1,
+        sources_with_metrics: 1,
+        sources_without_metrics: 0,
+        partial: false,
+      },
+      totals: {
+        session_persists: 4,
+        loop_errors: 0,
+        loop_retries: 0,
+        routing_decisions: 2,
+        credential_rotations: 0,
+        compaction_preservation_violations: 0,
+        workspace_validator_required_failures: 0,
+      },
+      breakdowns: {
+        routing_decisions: [{ tier: "cheap", count: 2 }],
+      },
+      sources: [
+        {
+          scope: "admin",
+          scrape_status: "ok",
+          available: true,
+          sample_count: 4,
+          totals: { session_persists: 4, loop_errors: 0 },
+        },
+      ],
+    }),
+  );
+  await page.route("**/api/admin/operator/tasks", (route) =>
+    fulfillJson(route, {
+      generated_at: "2026-01-01T00:00:00Z",
+      stale_threshold_secs: 300,
+      tasks: [
+        {
+          id: "task-1",
+          tool_name: "voice-bootstrap",
+          status: "completed",
+          started_at: "2026-01-01T00:00:00Z",
+          completed_at: "2026-01-01T00:00:02Z",
+        },
+      ],
+      totals_by_lifecycle: { queued: 0, running: 0, failed: 0 },
+      stale_count: 0,
+      missing_artifact_count: 0,
+      validator_failed_count: 0,
+      sources: [],
+      partial: false,
+    }),
+  );
+  await page.route("**/api/admin/monitor/status", (route) =>
+    fulfillJson(route, {
+      watchdog_enabled: true,
+      pid: 4321,
+      last_check_at: "2026-01-01T00:00:00Z",
+      alerts: [],
+    }),
+  );
+  await page.route("**/api/admin/deployment-mode", (route) =>
+    fulfillJson(route, { mode: "tenant", updated_at: "2026-01-01T00:00:00Z" }),
+  );
+  await page.route("**/api/admin/deployment-mode/detect", (route) =>
+    fulfillJson(route, { detected: "tenant", reason: "mock contract" }),
+  );
+  await page.route("**/api/admin/system/metrics", (route) =>
+    fulfillJson(route, {
+      cpu_percent: 7,
+      memory_percent: 33,
+      disk_percent: 44,
+      load_average: [1, 1, 1],
+    }),
+  );
+  await page.route("**/api/admin/token/status", (route) =>
+    fulfillJson(route, { rotated: false, active: true }),
+  );
+  await page.route("**/api/admin/platform-skills", (route) =>
+    fulfillJson(route, {
+      platform_skills: [{ name: "voice", installed: true }],
+      skills_dir: "/Users/yao/.octos/platform-skills",
+      ominix_api: {
+        url: "http://localhost:8080",
+        healthy: true,
+        service_registered: true,
+      },
+      models: {
+        dir: "/Users/yao/.OminiX/models",
+        asr: ["qwen3-asr-1.7b"],
+        tts: ["qwen3-tts"],
+      },
+    }),
+  );
+  await page.route("**/api/admin/ominix/runtime", (route) =>
+    fulfillJson(route, ominixRuntime),
+  );
+  await page.route("**/api/admin/platform-skills/ominix-api/health", (route) =>
+    fulfillJson(route, {
+      name: "ominix-api",
+      status: "healthy",
+      url: "http://localhost:8080",
+      detail: { version: "0.4.2", loaded_models: ["qwen3-asr-1.7b"] },
+    }),
+  );
+  await page.route("**/api/admin/platform-skills/ominix-api/models", (route) =>
+    fulfillJson(route, { models: platformModels }),
+  );
+  await page.route("**/api/admin/platform-skills/ominix-api/models/available", (route) =>
+    fulfillJson(route, {
+      models: platformModels.map((model) => ({
+        ...model,
+        enabled_for_octos: true,
+      })),
+    }),
+  );
+  await page.route(/\/api\/admin\/platform-skills\/ominix-api\/logs(?:\?.*)?$/, (route) => {
+    const url = new URL(route.request().url());
+    const lines = Number(url.searchParams.get("lines") ?? "80");
+    return fulfillJson(route, {
+      log_path: "/Users/yao/.ominix/api.log",
+      total_lines: lines,
+      lines: ["ominix-api booted", "catalog loaded", `${lines} log line request`],
+    });
+  });
+}
 
 function readLocalAuthToken(): string {
   const fromEnv = process.env.OCTOS_AUTH_TOKEN || process.env.AUTH_TOKEN || "";
@@ -34,6 +438,16 @@ async function readLiveAuthStatus(page: Page): Promise<LiveAuthStatus> {
 }
 
 async function ensureSoloSession(page: Page): Promise<{ token: string; profileId: string }> {
+  if (!USE_LIVE_E2E) {
+    await installMockLiveSettingsRoutes(page);
+    await page.addInitScript(() => {
+      localStorage.setItem("octos_session_token", "mock-live-token");
+      localStorage.setItem("octos_auth_token", "mock-live-token");
+      localStorage.setItem("selected_profile", "admin");
+    });
+    return { token: "mock-live-token", profileId: "admin" };
+  }
+
   await page.goto("/login", { waitUntil: "networkidle" });
   const authStatus = await readLiveAuthStatus(page);
 
@@ -79,6 +493,21 @@ async function ensureSoloSession(page: Page): Promise<{ token: string; profileId
   expect(session.token).toBeTruthy();
   expect(session.profileId).toBeTruthy();
   return session;
+}
+
+async function ensureWritableSession(page: Page): Promise<{ token: string; profileId: string }> {
+  if (USE_LIVE_E2E && ALLOW_LIVE_MUTATION) {
+    return await ensureSoloSession(page);
+  }
+
+  await installMockLiveSettingsRoutes(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("octos_session_token", "mock-live-token");
+    localStorage.setItem("octos_auth_token", "mock-live-token");
+    localStorage.setItem("selected_profile", "admin");
+  });
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  return { token: "mock-live-token", profileId: "admin" };
 }
 
 async function liveApi<T>(
@@ -194,8 +623,8 @@ async function clickSettingsTab(page: Page, label: string) {
   await tab.click();
 }
 
-test.describe("live Settings and profile smoke", () => {
-  test("loads Settings tabs without the mocked harness", async ({ page }) => {
+test.describe("Settings and profile contract smoke", () => {
+  test("loads Settings tabs against live or contract routes", async ({ page }) => {
     await ensureSoloSession(page);
     await page.goto("/settings", { waitUntil: "networkidle" });
     await expect(page.locator(".animate-spin")).toBeHidden({ timeout: LIVE_TIMEOUT });
@@ -208,7 +637,7 @@ test.describe("live Settings and profile smoke", () => {
     }
   });
 
-  test("loads profile Settings pages with live data", async ({ page }) => {
+  test("loads profile Settings pages with contract-shaped data", async ({ page }) => {
     await ensureSoloSession(page);
     await page.goto("/settings", { waitUntil: "networkidle" });
     await expect(page.locator(".animate-spin")).toBeHidden({ timeout: LIVE_TIMEOUT });
@@ -266,7 +695,7 @@ test.describe("live Settings and profile smoke", () => {
     await expectNoRuntimeOverlay(page);
   });
 
-  test("binds live LLM and Tools controls without the mocked harness", async ({ page }) => {
+  test("binds LLM and Tools controls to contract-shaped data", async ({ page }) => {
     await ensureSoloSession(page);
     await page.goto("/settings", { waitUntil: "networkidle" });
     await expect(page.locator(".animate-spin")).toBeHidden({ timeout: LIVE_TIMEOUT });
@@ -319,7 +748,7 @@ test.describe("live Settings and profile smoke", () => {
     await expectNoRuntimeOverlay(page);
   });
 
-  test("binds live Profile, Skills, Channels, and Sandbox controls without writes", async ({ page }) => {
+  test("binds Profile, Skills, Channels, and Sandbox controls without writes", async ({ page }) => {
     await ensureSoloSession(page);
     await page.goto("/settings", { waitUntil: "networkidle" });
     await expect(page.locator(".animate-spin")).toBeHidden({ timeout: LIVE_TIMEOUT });
@@ -380,7 +809,7 @@ test.describe("live Settings and profile smoke", () => {
     await expectNoRuntimeOverlay(page);
   });
 
-  test("loads admin Settings tabs and OminiX state without mocks", async ({ page }) => {
+  test("loads admin Settings tabs and OminiX state", async ({ page }) => {
     await ensureSoloSession(page);
     await page.goto("/settings", { waitUntil: "networkidle" });
     await expect(page.locator(".animate-spin")).toBeHidden({ timeout: LIVE_TIMEOUT });
@@ -427,7 +856,7 @@ test.describe("live Settings and profile smoke", () => {
     await expectNoRuntimeOverlay(page);
   });
 
-  test("binds admin Settings pages to live read-only data", async ({ page }) => {
+  test("binds admin Settings pages to contract-shaped read-only data", async ({ page }) => {
     await ensureSoloSession(page);
     await page.goto("/settings", { waitUntil: "networkidle" });
     await expect(page.locator(".animate-spin")).toBeHidden({ timeout: LIVE_TIMEOUT });
@@ -723,12 +1152,7 @@ test.describe("live Settings and profile smoke", () => {
   });
 
   test("persists Home config through the real profile endpoint", async ({ page }) => {
-    test.skip(
-      process.env.OCTOS_LIVE_E2E_MUTATE !== "1",
-      "writes to the live profile; enable only for explicit mutation smoke",
-    );
-
-    await ensureSoloSession(page);
+    await ensureWritableSession(page);
     const profile = await liveApi<Record<string, unknown>>(page, "/api/my/profile");
     const config = (profile.config ?? {}) as Record<string, unknown>;
     const originalHome = config.home;
@@ -782,12 +1206,7 @@ test.describe("live Settings and profile smoke", () => {
   });
 
   test("persists LLM primary model through the real profile endpoint", async ({ page }) => {
-    test.skip(
-      process.env.OCTOS_LIVE_E2E_MUTATE !== "1",
-      "writes to the live profile; enable only for explicit mutation smoke",
-    );
-
-    await ensureSoloSession(page);
+    await ensureWritableSession(page);
     const profile = await liveApi<Record<string, unknown>>(page, "/api/my/profile");
     const config = (profile.config ?? {}) as Record<string, unknown>;
     const llmConfig = (config.llm ?? {}) as Record<string, unknown>;

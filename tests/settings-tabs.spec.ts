@@ -899,8 +899,6 @@ test.describe("Settings page — tab smoke tests", () => {
     page,
   }) => {
     await goToSettings(page);
-    const profileLoaded = await hasProfile(page);
-    if (!profileLoaded) { test.skip(); return; }
 
     await clickTab(page, "LLM");
     await expect(
@@ -991,8 +989,6 @@ test.describe("Settings page — tab smoke tests", () => {
     page,
   }) => {
     await goToSettings(page);
-    const profileLoaded = await hasProfile(page);
-    if (!profileLoaded) { test.skip(); return; }
 
     await clickTab(page, "Skills");
     await expect(
@@ -1005,8 +1001,6 @@ test.describe("Settings page — tab smoke tests", () => {
 
   test("Channels tab renders Add Channel button", async ({ page }) => {
     await goToSettings(page);
-    const profileLoaded = await hasProfile(page);
-    if (!profileLoaded) { test.skip(); return; }
 
     await clickTab(page, "Channels");
     await expect(
@@ -1052,8 +1046,6 @@ test.describe("Settings page — tab smoke tests", () => {
 
   test("Sandbox tab renders configuration section", async ({ page }) => {
     await goToSettings(page);
-    const profileLoaded = await hasProfile(page);
-    if (!profileLoaded) { test.skip(); return; }
 
     await clickTab(page, "Sandbox");
     await expect(
@@ -1066,8 +1058,6 @@ test.describe("Settings page — tab smoke tests", () => {
 
   test("Tools tab renders Web Search APIs section", async ({ page }) => {
     await goToSettings(page);
-    const profileLoaded = await hasProfile(page);
-    if (!profileLoaded) { test.skip(); return; }
 
     await clickTab(page, "Tools");
     await expect(
@@ -1101,8 +1091,6 @@ test.describe("Settings page — tab smoke tests", () => {
 
   test("System tab shows Operator Overview (admin)", async ({ page }) => {
     await goToSettings(page);
-    const profileLoaded = await hasProfile(page);
-    if (!profileLoaded) { test.skip(); return; }
 
     await clickTab(page, "System");
     await expect(
@@ -1133,8 +1121,6 @@ test.describe("Settings page — tab smoke tests", () => {
 
   test("Server tab shows Deployment Mode (admin)", async ({ page }) => {
     await goToSettings(page);
-    const profileLoaded = await hasProfile(page);
-    if (!profileLoaded) { test.skip(); return; }
 
     await clickTab(page, "Server");
     await expect(
@@ -1404,8 +1390,6 @@ test.describe("Settings page — tab smoke tests", () => {
 
   test("tab switching changes content", async ({ page }) => {
     await goToSettings(page);
-    const profileLoaded = await hasProfile(page);
-    if (!profileLoaded) { test.skip(); return; }
 
     await clickTab(page, "Profile");
     await expect(
