@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { API_BASE } from "@/lib/constants";
 import {
   Radio,
@@ -14,7 +14,15 @@ import {
 } from "lucide-react";
 import {
   formatSettingsError,
+  acceptMatrixInvite,
+  dismissMatrixInvite,
+  getMatrixInvites,
+  getMyProfile,
+  rejectMatrixInvite,
+  testMatrixConnection,
   updateMyProfileConfig,
+  type MatrixConnectionTestResult,
+  type MatrixPendingInvite,
   type Profile,
 } from "./settings-api";
 import { ConfirmDialog } from "./confirm-dialog";
@@ -44,7 +52,7 @@ type ChannelType = (typeof CHANNEL_TYPES)[number];
 
 interface ChannelConfig {
   type: string;
-  mode?: "websocket" | "webhook" | "managed" | "external";
+  mode?: "websocket" | "webhook" | "managed" | "external" | "appservice" | "user";
   enabled?: boolean;
   token_env?: string;
   webhook_port?: number;
@@ -78,6 +86,15 @@ interface ChannelConfig {
   client_secret_env?: string;
   bridge_url?: string;
   base_url?: string;
+  // Matrix user-account (client) mode
+  user_id?: string;
+  access_token?: string;
+  password?: string;
+  device_name?: string;
+  rooms?: string | string[];
+  auto_join?: "off" | "allowlist" | "always";
+  auto_join_allowlist?: string | string[];
+  group_policy?: "open" | "allowlist" | "disabled";
 }
 
 // ── Default field values per channel type ──
@@ -114,6 +131,7 @@ function defaultsForType(type: ChannelType): Partial<ChannelConfig> {
       return { port: 9090, auth_token: "" };
     case "matrix":
       return {
+        mode: "appservice",
         homeserver: "",
         as_token: "",
         hs_token: "",
@@ -121,6 +139,15 @@ function defaultsForType(type: ChannelType): Partial<ChannelConfig> {
         sender_localpart: "octos",
         user_prefix: "octos_",
         allowed_senders: "",
+        user_id: "",
+        access_token: "",
+        password: "",
+        device_name: "octos",
+        rooms: "",
+        auto_join: "off",
+        auto_join_allowlist: "",
+        group_policy: "allowlist",
+        require_mention: true,
       };
     case "wechat":
       return { token_env: "WECHAT_BOT_TOKEN", base_url: "https://api.weixin.qq.com/cgi-bin" };
@@ -189,15 +216,22 @@ function cleanChannelDraft(draft: ChannelConfig): ChannelConfig {
   };
   for (const [key, value] of Object.entries(draft)) {
     if (key === "type" || key === "enabled") continue;
-    if (key === "allowed_senders" && draft.type === "matrix") {
-      const senders = Array.isArray(value)
+    if (
+      draft.type === "matrix" &&
+      (key === "allowed_senders" ||
+        key === "rooms" ||
+        key === "auto_join_allowlist")
+    ) {
+      // Backend expects these as string arrays (Vec<String>); convert the
+      // comma-separated form before persisting.
+      const items = Array.isArray(value)
         ? value
         : String(value ?? "")
             .split(",")
             .map((entry) => entry.trim())
             .filter(Boolean);
-      if (senders.length > 0) {
-        cleaned.allowed_senders = senders;
+      if (items.length > 0) {
+        (cleaned as unknown as Record<string, unknown>)[key] = items;
       }
       continue;
     }
@@ -206,6 +240,10 @@ function cleanChannelDraft(draft: ChannelConfig): ChannelConfig {
     }
   }
   return cleaned;
+}
+
+function isMatrixUserDraft(channel: ChannelConfig | null | undefined): channel is ChannelConfig {
+  return channel?.type === "matrix" && channel.mode === "user";
 }
 
 // ── Sub-component: form fields for each channel type ──
@@ -277,6 +315,21 @@ function ChannelFormFields({
         className="w-full rounded-xl bg-surface-container px-4 py-2.5 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition"
       />
     </div>
+  );
+
+  const checkbox = (label: string, key: keyof ChannelConfig) => (
+    <label
+      key={key}
+      className="flex items-center gap-3 rounded-xl bg-surface-container px-4 py-2.5 text-sm text-text"
+    >
+      <input
+        type="checkbox"
+        checked={Boolean(draft[key])}
+        onChange={(e) => onChange({ [key]: e.target.checked })}
+        className="h-4 w-4 accent-accent"
+      />
+      <span>{label}</span>
+    </label>
   );
 
   switch (draft.type) {
@@ -356,21 +409,104 @@ function ChannelFormFields({
       return (
         <>
           {field("Port", "port", { placeholder: "9090", type: "number" })}
-          {field("Auth token", "auth_token", { placeholder: "Optional shared secret" })}
+          {field("Auth token", "auth_token", { placeholder: "Optional shared secret", type: "password" })}
         </>
       );
-    case "matrix":
+    case "matrix": {
+      const matrixMode = draft.mode === "user" ? "user" : "appservice";
       return (
         <>
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-muted">Mode</label>
+            <div className="relative">
+              <select
+                value={matrixMode}
+                onChange={(e) => onChange({ mode: e.target.value as "appservice" | "user" })}
+                className="w-full appearance-none rounded-xl bg-surface-container px-4 py-2.5 pr-10 text-sm text-text outline-none border border-transparent focus:border-accent/30 transition"
+              >
+                <option value="appservice">Application service (bot bridge)</option>
+                <option value="user">User account (login as account)</option>
+              </select>
+              <ChevronDown
+                size={14}
+                className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted"
+              />
+            </div>
+            <p className="mt-1.5 text-[11px] text-muted/70">
+              {matrixMode === "user"
+                ? "Logs in as a regular Matrix account and long-polls /sync — works on any homeserver, no appservice registration."
+                : "Homeserver-side appservice registration with a virtual bot user."}
+            </p>
+          </div>
           {field("Homeserver", "homeserver", { placeholder: "https://matrix.example.com" })}
-          {field("Application service token", "as_token", { placeholder: "MATRIX_AS_TOKEN" })}
-          {field("Homeserver token", "hs_token", { placeholder: "MATRIX_HS_TOKEN" })}
-          {field("Server name", "server_name", { placeholder: "matrix.example.com" })}
-          {field("Sender localpart", "sender_localpart", { placeholder: "octos" })}
-          {field("User prefix", "user_prefix", { placeholder: "octos_" })}
-          {field("Allowed senders", "allowed_senders", { placeholder: "@user:matrix.example.com, @bot:matrix.example.com" })}
+          {matrixMode === "user" ? (
+            <>
+              {field("User ID / localpart", "user_id", { placeholder: "octos or @octos:octos.meldry.com" })}
+              {field("Access token", "access_token", { placeholder: "syt_… (or use password below)", type: "password" })}
+              {field("Password", "password", { placeholder: "Account password (if no access token)", type: "password" })}
+              {field("Device name", "device_name", { placeholder: "octos" })}
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-muted">Room policy</label>
+                <div className="relative">
+                  <select
+                    value={draft.group_policy ?? "allowlist"}
+                    onChange={(e) =>
+                      onChange({
+                        group_policy: e.target.value as "open" | "allowlist" | "disabled",
+                      })
+                    }
+                    className="w-full appearance-none rounded-xl bg-surface-container px-4 py-2.5 pr-10 text-sm text-text outline-none border border-transparent focus:border-accent/30 transition"
+                  >
+                    <option value="allowlist">Allowlist</option>
+                    <option value="open">Open</option>
+                    <option value="disabled">Disabled</option>
+                  </select>
+                  <ChevronDown
+                    size={14}
+                    className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted"
+                  />
+                </div>
+              </div>
+              {field("Allowed rooms", "rooms", { placeholder: "!room1:matrix.example.com, !room2:…" })}
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-muted">Invite handling</label>
+                <div className="relative">
+                  <select
+                    value={draft.auto_join ?? "off"}
+                    onChange={(e) =>
+                      onChange({
+                        auto_join: e.target.value as "off" | "allowlist" | "always",
+                      })
+                    }
+                    className="w-full appearance-none rounded-xl bg-surface-container px-4 py-2.5 pr-10 text-sm text-text outline-none border border-transparent focus:border-accent/30 transition"
+                  >
+                    <option value="off">Review manually</option>
+                    <option value="allowlist">Auto-join allowlist</option>
+                    <option value="always">Auto-join all</option>
+                  </select>
+                  <ChevronDown
+                    size={14}
+                    className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted"
+                  />
+                </div>
+              </div>
+              {field("Invite allowlist", "auto_join_allowlist", { placeholder: "!room:server, #alias:server, *" })}
+              {checkbox("Require mention", "require_mention")}
+              {field("Allowed senders", "allowed_senders", { placeholder: "@user:matrix.example.com, @bot:matrix.example.com" })}
+            </>
+          ) : (
+            <>
+              {field("Application service token", "as_token", { placeholder: "MATRIX_AS_TOKEN", type: "password" })}
+              {field("Homeserver token", "hs_token", { placeholder: "MATRIX_HS_TOKEN", type: "password" })}
+              {field("Server name", "server_name", { placeholder: "matrix.example.com" })}
+              {field("Sender localpart", "sender_localpart", { placeholder: "octos" })}
+              {field("User prefix", "user_prefix", { placeholder: "octos_" })}
+              {field("Allowed senders", "allowed_senders", { placeholder: "@user:matrix.example.com, @bot:matrix.example.com" })}
+            </>
+          )}
         </>
       );
+    }
     case "wechat":
       return (
         <>
@@ -397,6 +533,130 @@ function ChannelFormFields({
   }
 }
 
+function MatrixPendingInviteList({
+  invites,
+  busyKey,
+  onAccept,
+  onReject,
+  onDismiss,
+}: {
+  invites: MatrixPendingInvite[];
+  busyKey: string | null;
+  onAccept: (invite: MatrixPendingInvite) => void;
+  onReject: (invite: MatrixPendingInvite) => void;
+  onDismiss: (invite: MatrixPendingInvite) => void;
+}) {
+  if (invites.length === 0) return null;
+
+  return (
+    <div className="ml-12 rounded-lg border border-accent/20 bg-accent/5 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div>
+          <h4 className="text-xs font-semibold text-text-strong">Pending room invites</h4>
+          <p className="text-[11px] text-muted">{invites.length} waiting for admin review</p>
+        </div>
+      </div>
+      <div className="space-y-2">
+        {invites.map((invite) => {
+          const title = invite.room_name || invite.canonical_alias || invite.room_id;
+          const key = `${invite.channel_index}:${invite.room_id}`;
+          const busy = busyKey?.endsWith(key) ?? false;
+          return (
+            <div
+              key={key}
+              className="flex flex-wrap items-center gap-3 rounded-lg border border-border/60 bg-surface-dark/50 px-3 py-2"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-xs font-medium text-text-strong">{title}</div>
+                <div className="mt-0.5 truncate text-[11px] text-muted">{invite.room_id}</div>
+                {invite.inviter && (
+                  <div className="mt-0.5 truncate text-[11px] text-muted/80">Invited by {invite.inviter}</div>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  onClick={() => onAccept(invite)}
+                  disabled={busy}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-xs font-medium text-white hover:bg-accent-dim disabled:opacity-40 transition"
+                  title="Accept invite"
+                >
+                  {busyKey === `accept:${key}` ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+                  Accept
+                </button>
+                <button
+                  onClick={() => onReject(invite)}
+                  disabled={busy}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-red-500/30 px-3 text-xs font-medium text-red-300 hover:bg-red-500/10 disabled:opacity-40 transition"
+                  title="Reject invite"
+                >
+                  {busyKey === `reject:${key}` ? <Loader2 size={13} className="animate-spin" /> : <X size={13} />}
+                  Reject
+                </button>
+                <button
+                  onClick={() => onDismiss(invite)}
+                  disabled={busy}
+                  className="h-8 rounded-lg border border-border px-3 text-xs text-muted hover:text-text-strong hover:border-accent/30 disabled:opacity-40 transition"
+                  title="Dismiss locally"
+                >
+                  {busyKey === `dismiss:${key}` ? <Loader2 size={13} className="animate-spin" /> : "Dismiss"}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function MatrixConnectionTestStatus({
+  result,
+}: {
+  result: MatrixConnectionTestResult | null;
+}) {
+  if (!result) return null;
+  const inviteDetails = result.pending_invite_details ?? [];
+
+  return (
+    <div className="mt-3 rounded-lg border border-accent/20 bg-accent/10 px-3 py-2 text-xs text-text">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span className="inline-flex items-center gap-1.5 font-medium text-text-strong">
+          <Check size={13} className="text-accent" />
+          Connected
+        </span>
+        <span className="text-muted">{result.user_id}</span>
+        {result.device_id && <span className="text-muted">device {result.device_id}</span>}
+      </div>
+      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted">
+        <span>{result.homeserver}</span>
+        <span>{result.joined_rooms} joined rooms</span>
+        <span>{result.pending_invites} pending invites</span>
+        <span>{result.sync.has_next_batch ? "sync token ok" : "sync token missing"}</span>
+      </div>
+      {inviteDetails.length > 0 && (
+        <div className="mt-2 border-t border-accent/15 pt-2">
+          <div className="mb-1 text-[11px] font-medium text-text-strong">Pending invite details</div>
+          <div className="space-y-1.5">
+            {inviteDetails.map((invite) => {
+              const title = invite.room_name || invite.canonical_alias || invite.room_id;
+              return (
+                <div key={invite.room_id} className="min-w-0 text-[11px] text-muted">
+                  <div className="truncate font-medium text-text-strong">{title}</div>
+                  <div className="truncate">{invite.room_id}</div>
+                  {invite.canonical_alias && invite.canonical_alias !== title && (
+                    <div className="truncate">Alias {invite.canonical_alias}</div>
+                  )}
+                  {invite.inviter && <div className="truncate">Invited by {invite.inviter}</div>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main component ──
 
 export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
@@ -408,6 +668,13 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
   const [pendingRemoveIdx, setPendingRemoveIdx] = useState<number | null>(null);
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState<ChannelConfig | null>(null);
+  const [matrixInvites, setMatrixInvites] = useState<MatrixPendingInvite[]>([]);
+  const [matrixInviteBusyKey, setMatrixInviteBusyKey] = useState<string | null>(null);
+  const [matrixTestBusyKey, setMatrixTestBusyKey] = useState<string | null>(null);
+  const [matrixTestResult, setMatrixTestResult] = useState<{
+    key: string;
+    result: MatrixConnectionTestResult;
+  } | null>(null);
 
   // Add-channel form state
   const [showAddForm, setShowAddForm] = useState(false);
@@ -425,6 +692,80 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
 
   const updateEditDraft = (patch: Partial<ChannelConfig>) => {
     setEditDraft((d) => d ? { ...d, ...patch } : d);
+  };
+
+  const loadMatrixInvites = async () => {
+    try {
+      setMatrixInvites(await getMatrixInvites());
+    } catch (err) {
+      setError(formatSettingsError(err, "Failed to load Matrix invites."));
+    }
+  };
+
+  useEffect(() => {
+    const hasMatrixUserChannel = channels.some((ch) => ch.type === "matrix" && ch.mode === "user");
+    if (!hasMatrixUserChannel) {
+      setMatrixInvites([]);
+      return;
+    }
+    void loadMatrixInvites();
+    const timer = window.setInterval(() => {
+      void loadMatrixInvites();
+    }, 15_000);
+    return () => window.clearInterval(timer);
+    // profile.updated_at changes after channel edits; use it as the refresh key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile.id, profile.updated_at]);
+
+  const handleMatrixInviteAction = async (
+    invite: MatrixPendingInvite,
+    action: "accept" | "reject" | "dismiss",
+  ) => {
+    const key = `${action}:${invite.channel_index}:${invite.room_id}`;
+    setMatrixInviteBusyKey(key);
+    setError(null);
+    try {
+      if (action === "accept") {
+        await acceptMatrixInvite(invite.room_id, {
+          channel_index: invite.channel_index,
+          add_to_allowed_rooms: true,
+        });
+        const refreshed = await getMyProfile();
+        if (refreshed) onProfileUpdated?.(refreshed);
+      } else if (action === "reject") {
+        await rejectMatrixInvite(invite.room_id, { channel_index: invite.channel_index });
+      } else {
+        await dismissMatrixInvite(invite.room_id, { channel_index: invite.channel_index });
+      }
+      await loadMatrixInvites();
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      setError(formatSettingsError(err, `Failed to ${action} Matrix invite.`));
+    } finally {
+      setMatrixInviteBusyKey(null);
+    }
+  };
+
+  const handleMatrixConnectionTest = async (
+    channel: ChannelConfig,
+    channelIndex?: number,
+  ) => {
+    const key = channelIndex == null ? "new" : String(channelIndex);
+    setMatrixTestBusyKey(key);
+    setMatrixTestResult(null);
+    setError(null);
+    try {
+      const result = await testMatrixConnection({
+        channel_index: channelIndex,
+        channel: cleanChannelDraft(channel) as unknown as Record<string, unknown>,
+      });
+      setMatrixTestResult({ key, result });
+    } catch (err) {
+      setError(formatSettingsError(err, "Matrix connection test failed."));
+    } finally {
+      setMatrixTestBusyKey(null);
+    }
   };
 
   // Persist channel list via PUT /api/my/profile
@@ -543,6 +884,10 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
           <div className="space-y-2">
             {channels.map((channel, idx) => {
               const enabled = channel.enabled ?? true;
+              const channelInvites =
+                channel.type === "matrix" && channel.mode === "user"
+                  ? matrixInvites.filter((invite) => invite.channel_index === idx)
+                  : [];
               return (
                 <div key={idx} className="space-y-2">
                   <div className="flex items-center gap-4 rounded-xl bg-surface-container/60 px-4 py-3.5 border border-transparent hover:border-border transition">
@@ -606,6 +951,13 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
                       <WebhookUrlField channelType={channel.type} profileId={profile.id} />
                     </div>
                   )}
+                  <MatrixPendingInviteList
+                    invites={channelInvites}
+                    busyKey={matrixInviteBusyKey}
+                    onAccept={(invite) => void handleMatrixInviteAction(invite, "accept")}
+                    onReject={(invite) => void handleMatrixInviteAction(invite, "reject")}
+                    onDismiss={(invite) => void handleMatrixInviteAction(invite, "dismiss")}
+                  />
                   {editingIdx === idx && editDraft && (
                     <div className="ml-12 rounded-xl border border-border/70 bg-surface-dark/40 p-4">
                       <div className="grid gap-4 md:grid-cols-2">
@@ -630,7 +982,24 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
                         >
                           Cancel
                         </button>
+                        {isMatrixUserDraft(editDraft) && (
+                          <button
+                            onClick={() => void handleMatrixConnectionTest(editDraft, idx)}
+                            disabled={matrixTestBusyKey === String(idx)}
+                            className="inline-flex items-center gap-2 rounded-xl border border-accent/30 px-4 py-2 text-xs font-medium text-accent hover:bg-accent/10 disabled:opacity-40 transition"
+                          >
+                            {matrixTestBusyKey === String(idx) ? (
+                              <Loader2 size={14} className="animate-spin" />
+                            ) : (
+                              <Radio size={14} />
+                            )}
+                            Test Connection
+                          </button>
+                        )}
                       </div>
+                      {matrixTestResult?.key === String(idx) && (
+                        <MatrixConnectionTestStatus result={matrixTestResult.result} />
+                      )}
                     </div>
                   )}
                 </div>
@@ -712,7 +1081,24 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
             >
               Cancel
             </button>
+            {isMatrixUserDraft(draft) && (
+              <button
+                onClick={() => void handleMatrixConnectionTest(draft)}
+                disabled={matrixTestBusyKey === "new"}
+                className="inline-flex items-center gap-2 rounded-xl border border-accent/30 px-4 py-2.5 text-sm font-medium text-accent hover:bg-accent/10 disabled:opacity-40 transition"
+              >
+                {matrixTestBusyKey === "new" ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Radio size={14} />
+                )}
+                Test Connection
+              </button>
+            )}
           </div>
+          {matrixTestResult?.key === "new" && (
+            <MatrixConnectionTestStatus result={matrixTestResult.result} />
+          )}
         </div>
       )}
       <ConfirmDialog

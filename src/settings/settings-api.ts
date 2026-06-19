@@ -163,6 +163,41 @@ export interface Profile {
   status: ProfileStatus;
 }
 
+export interface MatrixPendingInvite {
+  channel_index: number;
+  room_id: string;
+  room_name?: string | null;
+  canonical_alias?: string | null;
+  inviter?: string | null;
+  membership_event_id?: string | null;
+  received_at: string;
+  last_seen_at: string;
+  dismissed_at?: string | null;
+}
+
+export interface MatrixConnectionTestResult {
+  ok: boolean;
+  message?: string;
+  homeserver: string;
+  user_id: string;
+  device_id?: string | null;
+  joined_rooms: number;
+  pending_invites: number;
+  pending_invite_details?: MatrixConnectionInviteDetail[];
+  sync: {
+    ok: boolean;
+    has_next_batch: boolean;
+  };
+}
+
+export interface MatrixConnectionInviteDetail {
+  room_id: string;
+  room_name?: string | null;
+  canonical_alias?: string | null;
+  inviter?: string | null;
+  membership_event_id?: string | null;
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -398,6 +433,60 @@ export async function restartMyGateway(): Promise<{ ok: boolean; message?: strin
   return await request<{ ok: boolean; message?: string }>("/api/my/profile/restart", {
     method: "POST",
   });
+}
+
+export async function getMatrixInvites(): Promise<MatrixPendingInvite[]> {
+  const resp = await request<{ invites: MatrixPendingInvite[] }>("/api/my/profile/matrix/invites");
+  return resp.invites ?? [];
+}
+
+export async function testMatrixConnection(body: {
+  channel_index?: number;
+  channel?: Record<string, unknown>;
+}): Promise<MatrixConnectionTestResult> {
+  return await request<MatrixConnectionTestResult>("/api/my/profile/matrix/test", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function acceptMatrixInvite(
+  roomId: string,
+  body: { channel_index?: number; add_to_allowed_rooms?: boolean } = {},
+): Promise<{ ok: boolean; message?: string; allowlist_updated?: boolean }> {
+  return await request<{ ok: boolean; message?: string; allowlist_updated?: boolean }>(
+    `/api/my/profile/matrix/invites/${encodeURIComponent(roomId)}/accept`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export async function rejectMatrixInvite(
+  roomId: string,
+  body: { channel_index?: number } = {},
+): Promise<{ ok: boolean; message?: string }> {
+  return await request<{ ok: boolean; message?: string }>(
+    `/api/my/profile/matrix/invites/${encodeURIComponent(roomId)}/reject`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export async function dismissMatrixInvite(
+  roomId: string,
+  body: { channel_index?: number } = {},
+): Promise<{ ok: boolean; message?: string; dismissed?: boolean }> {
+  return await request<{ ok: boolean; message?: string; dismissed?: boolean }>(
+    `/api/my/profile/matrix/invites/${encodeURIComponent(roomId)}/dismiss`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
 }
 
 export async function removeSkill(name: string): Promise<void> {
