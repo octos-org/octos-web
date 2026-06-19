@@ -70,6 +70,11 @@ export interface TurnStartExtras {
    *  flow). β-1 server logs the field; durable in-place ledger
    *  replace lands in a follow-up. */
   rewrite_for?: string;
+  /** #1478: explicit "this is a live video call" signal — the attached
+   *  image is the user's current camera frame, not an uploaded file. Set
+   *  by the voice screen when the camera is on. Omitted (≡ false) otherwise;
+   *  the server never infers live-video from attachment types. */
+  live_video?: boolean;
 }
 
 export interface SessionOpenedResult {

@@ -48,6 +48,10 @@ export interface SendOptions {
    *  gateway-mode `ApiChannel` and `octos chat` CLI use. */
   media: string[];
   clientMessageId?: string;
+  /** #1478: mark this turn as a live video call (camera on) so the server
+   *  treats the attached frame as the user's current camera view. Omitted /
+   *  false for ordinary sends. */
+  liveVideo?: boolean;
   /** Recording vs upload (audio surface). Unused on the WS path today. */
   audioUploadMode?: "recording" | "upload";
   /** M9-γ-4: Composer renders a `<GhostBubble>` overlay; skip the
@@ -89,7 +93,9 @@ export function sendMessage(opts: SendOptions): void {
  *  from `SendOptions`. Returns `undefined` when no extras are
  *  populated so the bridge omits all three fields and the on-wire
  *  shape stays byte-identical to a pre-β-1 text-only send. */
-function buildTurnStartExtras(opts: SendOptions): TurnStartExtras | undefined {
+export function buildTurnStartExtras(
+  opts: SendOptions,
+): TurnStartExtras | undefined {
   const extras: TurnStartExtras = {};
 
   if (opts.media.length > 0) {
@@ -127,10 +133,18 @@ function buildTurnStartExtras(opts: SendOptions): TurnStartExtras | undefined {
     extras.rewrite_for = opts.clientMessageId;
   }
 
+  // #1478: forward the explicit live-video flag (camera on) so the server
+  // treats the attached frame as a real-time camera view. Only set when true
+  // so non-video sends stay byte-identical on the wire.
+  if (opts.liveVideo) {
+    extras.live_video = true;
+  }
+
   if (
     (extras.media === undefined || extras.media.length === 0) &&
     (extras.topic === undefined || extras.topic.length === 0) &&
-    extras.rewrite_for === undefined
+    extras.rewrite_for === undefined &&
+    extras.live_video === undefined
   ) {
     return undefined;
   }
