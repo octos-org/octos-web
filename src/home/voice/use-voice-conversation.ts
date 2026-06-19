@@ -329,6 +329,10 @@ export function useVoiceConversation(
           text: "",
           media: paths,
           clientMessageId: turnId,
+          // #1478: this turn carries a live camera frame iff one was actually
+          // attached (camera on + grab succeeded) — tell the server so it
+          // treats the frame as a real-time view, never inferred from media.
+          liveVideo: sentFrame !== undefined,
           onComplete: () => {
             if (activeTurnIdRef.current === turnId) {
               activeTurnIdRef.current = null;

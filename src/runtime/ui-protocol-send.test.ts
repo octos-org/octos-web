@@ -62,6 +62,7 @@ vi.mock("./ui-protocol-bridge", async () => {
 
 import * as ThreadStore from "@/store/thread-store";
 import {
+  buildTurnStartExtras,
   interruptActiveTurn,
   sendMessage,
   __resetSendQueueForTest,
@@ -119,6 +120,24 @@ afterEach(() => {
   __resetUiProtocolRuntimeForTest();
   __resetSendQueueForTest();
   __bridgeFactoryOverride.current = null;
+});
+
+describe("buildTurnStartExtras live_video (#1478)", () => {
+  const base = { sessionId: SESSION, text: "", media: [] as string[] };
+
+  it("sets live_video only when the camera flag is on", () => {
+    expect(buildTurnStartExtras({ ...base, liveVideo: true })?.live_video).toBe(
+      true,
+    );
+  });
+
+  it("omits live_video (and the whole envelope) for an ordinary send", () => {
+    // No media / topic / rewrite / liveVideo → byte-identical to a plain send.
+    expect(buildTurnStartExtras({ ...base })).toBeUndefined();
+    expect(
+      buildTurnStartExtras({ ...base, liveVideo: false }),
+    ).toBeUndefined();
+  });
 });
 
 describe("sendMessage", () => {
