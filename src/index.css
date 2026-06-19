@@ -2876,17 +2876,20 @@ button, a, input, textarea {
 }
 
 .classic-home-voice-status.is-success,
-.metro-voice-status.is-success {
+.metro-voice-status.is-success,
+.metro-voice-wake.is-success {
   color: rgba(123, 211, 154, 0.9);
 }
 
 .classic-home-voice-status.is-warning,
-.metro-voice-status.is-warning {
+.metro-voice-status.is-warning,
+.metro-voice-wake.is-warning {
   color: rgba(245, 202, 118, 0.92);
 }
 
 .classic-home-voice-status.is-danger,
-.metro-voice-status.is-danger {
+.metro-voice-status.is-danger,
+.metro-voice-wake.is-danger {
   color: rgba(248, 113, 113, 0.9);
 }
 
@@ -3480,7 +3483,8 @@ button, a, input, textarea {
 }
 
 .metro-voice-transcript,
-.metro-voice-status {
+.metro-voice-status,
+.metro-voice-wake {
   font-size: 0.7rem;
   color: rgba(255, 255, 255, 0.35);
   text-align: center;
@@ -3488,6 +3492,10 @@ button, a, input, textarea {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.metro-voice-wake {
+  margin-top: -0.15rem;
 }
 
 /* ── Utility ─── */

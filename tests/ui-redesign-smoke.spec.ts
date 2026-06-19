@@ -648,7 +648,7 @@ test.describe("UI redesign shell smoke", () => {
 
     await expect(page).toHaveURL(/\/voice$/);
     await expect(page.getByText("Voice engine ready")).toBeVisible();
-    await expect(page.getByText("点光球开始说话")).toBeVisible();
+    await expect(page.getByRole("button", { name: "voice orb" })).toBeVisible();
   });
 
   test("classic home uses an aligned widget grid", async ({ page }) => {

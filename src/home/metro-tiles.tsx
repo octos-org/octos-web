@@ -28,6 +28,7 @@ import { SettingsGearButton, HomeSettingsPanel } from "./home-settings";
 import { SmartHomePanel } from "./smart-home";
 import { unlockAudio } from "./voice/audio-playback";
 import { useOminixRuntimeSummary } from "./use-ominix-runtime-summary";
+import type { WakeWordStatusView } from "./voice/use-wake-word-listener";
 import type { WidgetConfig, WidgetType } from "./widget-registry";
 
 interface MetroTileGridProps {
@@ -35,6 +36,7 @@ interface MetroTileGridProps {
   onMusicToggle: () => void;
   musicPlaying: boolean;
   nightActive: boolean;
+  wakeWordStatus?: WakeWordStatusView;
 }
 
 interface TileLayout {
@@ -468,9 +470,11 @@ function CalendarTile() {
 function VoiceTile({
   onOpen,
   onOpenSettings,
+  wakeWordStatus,
 }: {
   onOpen: () => void;
   onOpenSettings: () => void;
+  wakeWordStatus?: WakeWordStatusView;
 }) {
   const runtime = useOminixRuntimeSummary();
   const handleClick = useCallback(() => {
@@ -490,6 +494,11 @@ function VoiceTile({
         disabled={runtime.loading}
       />
       <p className={`metro-voice-status is-${runtime.tone}`}>{runtime.label}</p>
+      {wakeWordStatus && (
+        <p className={`metro-voice-wake is-${wakeWordStatus.tone}`}>
+          {wakeWordStatus.label}
+        </p>
+      )}
     </div>
   );
 }
@@ -673,6 +682,7 @@ export function MetroTileGrid({
   onMusicToggle,
   musicPlaying,
   nightActive,
+  wakeWordStatus,
 }: MetroTileGridProps) {
   const navigate = useNavigate();
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -743,6 +753,7 @@ export function MetroTileGrid({
         <VoiceTile
           onOpen={() => navigate("/voice")}
           onOpenSettings={() => navigate("/settings?tab=ominix")}
+          wakeWordStatus={wakeWordStatus}
         />
       );
       case "smart-home": return <SmartHomePanel variant="metro" />;
@@ -752,7 +763,7 @@ export function MetroTileGrid({
       case "photo": return <PhotoFrame />;
       default: return null;
     }
-  }, [nightActive, strings, navigate, onActivate, onMusicToggle, musicPlaying]);
+  }, [nightActive, strings, navigate, onActivate, onMusicToggle, musicPlaying, wakeWordStatus]);
 
   return (
     <div

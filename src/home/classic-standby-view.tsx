@@ -21,6 +21,7 @@ import { useWeather } from "./use-weather";
 import { VoiceOrb } from "./voice-orb";
 import { unlockAudio } from "./voice/audio-playback";
 import { useOminixRuntimeSummary } from "./use-ominix-runtime-summary";
+import type { WakeWordStatusView } from "./voice/use-wake-word-listener";
 import type { WidgetConfig, WidgetType } from "./widget-registry";
 
 interface ClassicStandbyViewProps {
@@ -28,6 +29,7 @@ interface ClassicStandbyViewProps {
   onMusicToggle: () => void;
   musicPlaying: boolean;
   nightActive: boolean;
+  wakeWordStatus?: WakeWordStatusView;
 }
 
 function isWidgetOn(widgets: WidgetConfig[], type: WidgetType): boolean {
@@ -40,6 +42,7 @@ export function ClassicStandbyView({
   onMusicToggle,
   musicPlaying,
   nightActive,
+  wakeWordStatus,
 }: ClassicStandbyViewProps) {
   const navigate = useNavigate();
   const clock = useClock();
@@ -175,6 +178,11 @@ export function ClassicStandbyView({
                 <p className={`classic-home-voice-status is-${voiceRuntime.tone}`}>
                   {voiceRuntime.label}
                 </p>
+                {wakeWordStatus && (
+                  <p className={`classic-home-voice-status is-${wakeWordStatus.tone}`}>
+                    {wakeWordStatus.label}
+                  </p>
+                )}
               </div>
             )}
           </section>

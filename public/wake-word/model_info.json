@@ -1,0 +1,14 @@
+{
+  "model_type": "tcn",
+  "mel_time": 98,
+  "version": "9.2",
+  "multi_model": true,
+  "models": [
+    {
+      "wake_word": "你好小章鱼",
+      "model_file": "nihaoxiaozhangyu.onnx",
+      "emb_frames": 1,
+      "cons_frames": 3
+    }
+  ]
+}
