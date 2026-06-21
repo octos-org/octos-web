@@ -324,6 +324,26 @@ export interface FileAttachedEvent {
   mime?: string;
 }
 
+/** #1477 voice rich output — a background visual artifact began generating for
+ *  the turn. The client shows a "generating" placeholder keyed off this typed
+ *  event instead of scraping an in-band `[[VISUAL:...]]` marker out of the
+ *  assistant text (the backend now keeps that marker off the wire entirely).
+ *  Cleared by the eventual `file/attached` (success) or `visual/failed`. */
+export interface VisualGeneratingEvent {
+  session_id: string;
+  turn_id: string;
+  /** `html` | `illustrated` | `image` | `infographic`. */
+  kind: string;
+}
+
+/** #1477 voice rich output — the background visual task failed / timed out, so
+ *  the client should clear the "generating" placeholder. */
+export interface VisualFailedEvent {
+  session_id: string;
+  turn_id: string;
+  reason?: string;
+}
+
 export interface TaskUpdatedEvent {
   session_id: string;
   /** Optional. Server's `TaskUpdatedEvent` struct does NOT carry

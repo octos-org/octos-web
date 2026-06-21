@@ -41,6 +41,8 @@ import type {
   TurnSpawnCompleteEvent,
   TurnStartedEvent,
   UiProtocolBridge,
+  VisualGeneratingEvent,
+  VisualFailedEvent,
 } from "./ui-protocol-bridge";
 import * as ThreadStore from "@/store/thread-store";
 import * as TaskStore from "@/store/task-store";
@@ -238,6 +240,12 @@ export interface RouterConfig {
   /** Override window event dispatch for tests / SSR. */
   dispatchEvent?: (event: Event) => void;
 }
+
+/** #1477 voice rich output: file extensions that denote a visual artifact
+ *  (illustrated HTML / image). Mirrors the voice hook's `HTML_EXT` +
+ *  `VISUAL_IMAGE_EXT`; used to tell a visual `file/attached` (the success
+ *  signal for the generating placeholder) apart from the reply audio. */
+const VISUAL_ARTIFACT_EXT = /\.(html?|png|jpe?g|gif|webp|svg)$/i;
 
 function dispatch(cfg: RouterConfig, event: Event): void {
   const fn = cfg.dispatchEvent ?? defaultDispatch;
@@ -701,6 +709,25 @@ export function handleFileAttached(
 ): void {
   if (!event.path || event.path.length === 0) {
     return;
+  }
+  // #1477 voice rich output: a visual artifact (HTML / image) landing is the
+  // SUCCESS signal for the "generating" placeholder. Fan it onto a
+  // `crew:visual_ready` DOM event carrying the turn_id so the voice hook can
+  // clear the placeholder only for the matching turn (the reply audio also
+  // arrives via `file/attached`, so gate on a visual extension). Dispatched
+  // independently of the placement logic below.
+  if (VISUAL_ARTIFACT_EXT.test(event.path)) {
+    dispatch(
+      cfg,
+      new CustomEvent("crew:visual_ready", {
+        detail: {
+          sessionId: cfg.sessionId,
+          topic: cfg.topic,
+          turnId: event.turn_id,
+          path: event.path,
+        },
+      }),
+    );
   }
   const file = {
     filename: filenameFromPath(event.path),
@@ -1704,6 +1731,46 @@ export interface RouterAttachment {
 }
 
 /**
+ * #1477 voice rich output: fan the typed `visual/generating` /
+ * `visual/failed` events onto `crew:visual_*` DOM events. Mirrors how the
+ * other bridge streams surface (e.g. `crew:turn_error`). The voice hook
+ * consumes these window events rather than subscribing to the bridge
+ * directly, so the "generating" placeholder is immune to the bridge-start
+ * race (the router is attached AT bridge startup, before the bridge becomes
+ * `active`) and to reconnects (the router re-attaches and keeps dispatching).
+ */
+function handleVisualGenerating(
+  cfg: RouterConfig,
+  event: VisualGeneratingEvent,
+): void {
+  dispatch(
+    cfg,
+    new CustomEvent("crew:visual_generating", {
+      detail: {
+        sessionId: cfg.sessionId,
+        topic: cfg.topic,
+        turnId: event.turn_id,
+        kind: event.kind,
+      },
+    }),
+  );
+}
+
+function handleVisualFailed(cfg: RouterConfig, event: VisualFailedEvent): void {
+  dispatch(
+    cfg,
+    new CustomEvent("crew:visual_failed", {
+      detail: {
+        sessionId: cfg.sessionId,
+        topic: cfg.topic,
+        turnId: event.turn_id,
+        reason: event.reason,
+      },
+    }),
+  );
+}
+
+/**
  * Subscribe the router to all relevant streams on a started bridge. The
  * caller owns bridge lifecycle (start/stop). Returns a detacher that
  * removes every listener registered here — call it before swapping the
@@ -1768,6 +1835,14 @@ export function attachRouter(
     handleRouterFailover(cfg, e),
   );
   const offQueueState = bridge.onQueueState((e) => handleQueueState(cfg, e));
+  // #1477 voice rich output: fan visual lifecycle onto `crew:visual_*` DOM
+  // events (see `handleVisualGenerating` / `handleVisualFailed`).
+  const offVisualGenerating = bridge.onVisualGenerating((e) =>
+    handleVisualGenerating(cfg, e),
+  );
+  const offVisualFailed = bridge.onVisualFailed((e) =>
+    handleVisualFailed(cfg, e),
+  );
 
   let detached = false;
   return {
@@ -1778,6 +1853,8 @@ export function attachRouter(
       offMessagePersisted();
       offSpawnComplete();
       offFileAttached();
+      offVisualGenerating();
+      offVisualFailed();
       offTaskUpdated();
       offTaskOutputDelta();
       offTurnLifecycle();
