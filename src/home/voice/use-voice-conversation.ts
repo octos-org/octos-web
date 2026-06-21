@@ -200,10 +200,11 @@ export function useVoiceConversation(
   const [generating, setGenerating] = useState(false);
 
   // Rich output: artifacts already surfaced (so re-renders / re-entry don't
-  // re-show them), a key for the marker we last flagged as "generating", and a
-  // safety timer to clear a stuck generating state.
+  // re-show them), the `turn_id` of the visual currently shown as "generating"
+  // (#1477 — so only THAT turn's failure / artifact clears the placeholder, not
+  // a stale sibling turn's), and a safety timer to clear a stuck state.
   const seenVisualsRef = useRef<Set<string>>(new Set());
-  const generatingKeyRef = useRef<string | null>(null);
+  const generatingTurnRef = useRef<string | null>(null);
   const generatingTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // Read camera-on inside the stable send callback without re-creating it.
@@ -497,7 +498,7 @@ export function useVoiceConversation(
     );
     setVisual(null);
     setGenerating(false);
-    generatingKeyRef.current = null;
+    generatingTurnRef.current = null;
     clearTimeout(generatingTimerRef.current);
     audioQueueRef.current = [];
     playingRef.current = false;
@@ -524,7 +525,7 @@ export function useVoiceConversation(
     audioQueueRef.current = [];
     playingRef.current = false;
     clearTimeout(generatingTimerRef.current);
-    generatingKeyRef.current = null;
+    generatingTurnRef.current = null;
     setVisual(null);
     setGenerating(false);
     void captureStop();
@@ -597,9 +598,10 @@ export function useVoiceConversation(
   }, [captureStop, threads, state]);
 
   // Rich output: surface visual artifacts as they land (decoupled from turn
-  // timing — HTML authoring / image gen can finish seconds after the reply),
-  // and reflect a "generating" state while a marker is seen but no artifact has
-  // arrived yet. Not gated on voice state, so a late artifact is still caught.
+  // timing — HTML authoring / image gen can finish seconds after the reply).
+  // Only SHOWS the latest artifact here; clearing the "generating" placeholder
+  // is turn-attributed in the typed-event effect below (#1477), so a late
+  // artifact from an EARLIER turn does not clear a newer turn's placeholder.
   useEffect(() => {
     const fresh = collectFreshVisuals(
       threads,
@@ -609,37 +611,61 @@ export function useVoiceConversation(
     if (fresh.length > 0) {
       for (const v of fresh) seenVisualsRef.current.add(v.path);
       setVisual(fresh[fresh.length - 1]);
-      setGenerating(false);
-      // Keep generatingKeyRef pointing at the just-satisfied marker (do NOT
-      // null it): the completed turn's marker text is still the newest in
-      // `threads`, so nulling here would let the scan below immediately
-      // re-enter the generating state on that stale marker. A genuinely new
-      // turn carries different marker text and still flags correctly.
-      clearTimeout(generatingTimerRef.current);
-      return;
-    }
-    // No artifact yet: if the newest post-baseline assistant reply carries a
-    // marker we haven't flagged, enter the generating state (with a safety
-    // timeout so a failed generation can't wedge it on forever).
-    for (let i = threads.length - 1; i >= turnBaselineRef.current; i--) {
-      const t = threads[i];
-      if (!t) continue;
-      const asst = t.responses.filter((m) => m.role === "assistant");
-      const text = asst.length > 0 ? asst[asst.length - 1].text : "";
-      if (text && hasVisualMarker(text)) {
-        if (generatingKeyRef.current !== text) {
-          generatingKeyRef.current = text;
-          setGenerating(true);
-          clearTimeout(generatingTimerRef.current);
-          generatingTimerRef.current = setTimeout(
-            () => setGenerating(false),
-            VISUAL_TIMEOUT_MS,
-          );
-        }
-        break;
-      }
     }
   }, [threads]);
+
+  // #1477 voice rich output: drive the "generating" placeholder off the typed
+  // `visual/generating` / `visual/failed` events instead of scraping an in-band
+  // `[[VISUAL:...]]` marker out of the assistant text (the backend no longer
+  // puts that marker on the wire). The placeholder is ATTRIBUTED to a turn_id:
+  // only the active turn's own success (`file/attached` of a visual artifact),
+  // failure (`visual/failed`), or the safety timeout clears it — so if visual A
+  // is still generating when the user starts visual B, A's late
+  // failure/attachment never clears B's placeholder.
+  // Consume the router's `crew:visual_*` DOM events rather than subscribing to
+  // the bridge directly. The router is attached AT bridge startup (before the
+  // bridge becomes `active`) and re-attaches on reconnect, so a window listener
+  // never races the async bridge start — a direct `getActiveBridge(...)`
+  // subscription here ran at mount, found no bridge yet, bailed, and never
+  // re-ran, so the placeholder never showed (#1477 follow-up). Filtered by
+  // sessionId; attributed by turn_id so a stale turn's success/failure cannot
+  // clear a newer turn's placeholder.
+  useEffect(() => {
+    const forThisSession = (d: unknown): d is { sessionId: string; turnId: string } =>
+      !!d &&
+      typeof d === "object" &&
+      (d as { sessionId?: unknown }).sessionId === sessionId;
+    const clearForTurn = (turnId: string) => {
+      if (generatingTurnRef.current !== turnId) return;
+      setGenerating(false);
+      generatingTurnRef.current = null;
+      clearTimeout(generatingTimerRef.current);
+    };
+    const onGenerating = (ev: Event) => {
+      const d = (ev as CustomEvent).detail;
+      if (!forThisSession(d)) return;
+      generatingTurnRef.current = d.turnId;
+      setGenerating(true);
+      clearTimeout(generatingTimerRef.current);
+      generatingTimerRef.current = setTimeout(() => {
+        // Safety net only — the active turn's success/failure never arrived.
+        setGenerating(false);
+        generatingTurnRef.current = null;
+      }, VISUAL_TIMEOUT_MS);
+    };
+    const onResolved = (ev: Event) => {
+      const d = (ev as CustomEvent).detail;
+      if (forThisSession(d)) clearForTurn(d.turnId);
+    };
+    window.addEventListener("crew:visual_generating", onGenerating);
+    window.addEventListener("crew:visual_failed", onResolved);
+    window.addEventListener("crew:visual_ready", onResolved);
+    return () => {
+      window.removeEventListener("crew:visual_generating", onGenerating);
+      window.removeEventListener("crew:visual_failed", onResolved);
+      window.removeEventListener("crew:visual_ready", onResolved);
+    };
+  }, [sessionId]);
 
   // Stop ONLY on real unmount. Use a ref so identity churn of `stop` across
   // re-renders never re-fires this cleanup (that was tearing the VAD down on

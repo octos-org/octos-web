@@ -28,6 +28,8 @@ import type {
   HydratedMessage,
   MessageDeltaEvent,
   FileAttachedEvent,
+  VisualGeneratingEvent,
+  VisualFailedEvent,
   MessagePersistedEvent,
   ProgressUpdatedEvent,
   QueueStateEvent,
@@ -84,6 +86,8 @@ export type {
   TurnInterruptResult,
   TurnSpawnCompleteEvent,
   FileAttachedEvent,
+  VisualGeneratingEvent,
+  VisualFailedEvent,
   TurnStartExtras,
   TurnStartInput,
   TurnStartMediaRef,
@@ -147,6 +151,10 @@ export const METHODS = {
   // row renders even when the richer-envelope reducers miss the
   // placement (slides soak 2026-05-24 failure mode).
   FILE_ATTACHED: "file/attached",
+  // #1477 voice rich output — typed visual lifecycle (replaces scraping an
+  // in-band `[[VISUAL:...]]` marker out of the assistant text).
+  VISUAL_GENERATING: "visual/generating",
+  VISUAL_FAILED: "visual/failed",
   APPROVAL_REQUESTED: "approval/requested",
   WARNING: "warning",
   // Synchronous tool-call lifecycle. Server emits these as
@@ -384,6 +392,12 @@ export interface UiProtocolBridge {
    *  but the placement reducer drops them, this signal lets the
    *  bubble surface a clickable button. */
   onFileAttached(handler: (e: FileAttachedEvent) => void): () => void;
+  /** #1477 voice rich output — a background visual artifact began generating. */
+  onVisualGenerating(
+    handler: (e: VisualGeneratingEvent) => void,
+  ): () => void;
+  /** #1477 voice rich output — a background visual task failed / timed out. */
+  onVisualFailed(handler: (e: VisualFailedEvent) => void): () => void;
   onTaskUpdated(handler: (e: TaskUpdatedEvent) => void): () => void;
   onTaskOutputDelta(handler: (e: TaskOutputDeltaEvent) => void): () => void;
   onTurnLifecycle(
@@ -801,6 +815,28 @@ function guardFileAttached(p: unknown): FileAttachedEvent | null {
         : undefined,
     mime:
       typeof p.mime === "string" && p.mime.length > 0 ? p.mime : undefined,
+  };
+}
+
+function guardVisualGenerating(p: unknown): VisualGeneratingEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.session_id)) return null;
+  if (!isString(p.turn_id)) return null;
+  if (!isString(p.kind)) return null;
+  return { session_id: p.session_id, turn_id: p.turn_id, kind: p.kind };
+}
+
+function guardVisualFailed(p: unknown): VisualFailedEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.session_id)) return null;
+  if (!isString(p.turn_id)) return null;
+  return {
+    session_id: p.session_id,
+    turn_id: p.turn_id,
+    reason:
+      typeof p.reason === "string" && p.reason.length > 0
+        ? p.reason
+        : undefined,
   };
 }
 
@@ -1413,6 +1449,9 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private readonly subMessagePersisted = new Subscribers<MessagePersistedEvent>();
   private readonly subSpawnComplete = new Subscribers<TurnSpawnCompleteEvent>();
   private readonly subFileAttached = new Subscribers<FileAttachedEvent>();
+  private readonly subVisualGenerating =
+    new Subscribers<VisualGeneratingEvent>();
+  private readonly subVisualFailed = new Subscribers<VisualFailedEvent>();
   private readonly subTaskUpdated = new Subscribers<TaskUpdatedEvent>();
   private readonly subTaskOutputDelta = new Subscribers<TaskOutputDeltaEvent>();
   private readonly subTurnLifecycle = new Subscribers<
@@ -1461,6 +1500,14 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     [METHODS.FILE_ATTACHED]: {
       guard: guardFileAttached,
       emit: (v) => this.subFileAttached.emit(v as FileAttachedEvent),
+    },
+    [METHODS.VISUAL_GENERATING]: {
+      guard: guardVisualGenerating,
+      emit: (v) => this.subVisualGenerating.emit(v as VisualGeneratingEvent),
+    },
+    [METHODS.VISUAL_FAILED]: {
+      guard: guardVisualFailed,
+      emit: (v) => this.subVisualFailed.emit(v as VisualFailedEvent),
     },
     [METHODS.TASK_UPDATED]: {
       guard: guardTaskUpdated,
@@ -1629,6 +1676,8 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.subMessagePersisted.clear();
     this.subSpawnComplete.clear();
     this.subFileAttached.clear();
+    this.subVisualGenerating.clear();
+    this.subVisualFailed.clear();
     this.subTaskUpdated.clear();
     this.subTaskOutputDelta.clear();
     this.subTurnLifecycle.clear();
@@ -1768,6 +1817,12 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   }
   onFileAttached(handler: Listener<FileAttachedEvent>): () => void {
     return this.subFileAttached.add(handler);
+  }
+  onVisualGenerating(handler: Listener<VisualGeneratingEvent>): () => void {
+    return this.subVisualGenerating.add(handler);
+  }
+  onVisualFailed(handler: Listener<VisualFailedEvent>): () => void {
+    return this.subVisualFailed.add(handler);
   }
   onTaskUpdated(handler: Listener<TaskUpdatedEvent>): () => void {
     return this.subTaskUpdated.add(handler);

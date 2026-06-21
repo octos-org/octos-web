@@ -38,6 +38,8 @@ import {
 import type {
   ApprovalRequestedEvent,
   FileAttachedEvent,
+  VisualGeneratingEvent,
+  VisualFailedEvent,
   MessageDeltaEvent,
   MessagePersistedEvent,
   ProgressUpdatedEvent,
@@ -2605,6 +2607,8 @@ class FakeBridge implements UiProtocolBridge {
   emitMessagePersisted?: (e: MessagePersistedEvent) => void;
   emitSpawnComplete?: (e: TurnSpawnCompleteEvent) => void;
   emitFileAttached?: (e: FileAttachedEvent) => void;
+  emitVisualGenerating?: (e: VisualGeneratingEvent) => void;
+  emitVisualFailed?: (e: VisualFailedEvent) => void;
   emitTaskUpdated?: (e: TaskUpdatedEvent) => void;
   emitTaskOutputDelta?: (e: TaskOutputDeltaEvent) => void;
   emitTurnLifecycle?: (
@@ -2653,6 +2657,18 @@ class FakeBridge implements UiProtocolBridge {
     this.emitFileAttached = h;
     return () => {
       this.emitFileAttached = undefined;
+    };
+  }
+  onVisualGenerating(h: (e: VisualGeneratingEvent) => void) {
+    this.emitVisualGenerating = h;
+    return () => {
+      this.emitVisualGenerating = undefined;
+    };
+  }
+  onVisualFailed(h: (e: VisualFailedEvent) => void) {
+    this.emitVisualFailed = h;
+    return () => {
+      this.emitVisualFailed = undefined;
     };
   }
   onTaskUpdated(h: (e: TaskUpdatedEvent) => void) {
@@ -2749,6 +2765,8 @@ describe("attachRouter", () => {
     expect(bridge.emitTaskOutputDelta).toBeDefined();
     expect(bridge.emitTurnLifecycle).toBeDefined();
     expect(bridge.emitApprovalRequested).toBeDefined();
+    expect(bridge.emitVisualGenerating).toBeDefined();
+    expect(bridge.emitVisualFailed).toBeDefined();
 
     att.detach();
     expect(bridge.emitMessageDelta).toBeUndefined();
@@ -2758,6 +2776,70 @@ describe("attachRouter", () => {
     expect(bridge.emitTaskOutputDelta).toBeUndefined();
     expect(bridge.emitTurnLifecycle).toBeUndefined();
     expect(bridge.emitApprovalRequested).toBeUndefined();
+    expect(bridge.emitVisualGenerating).toBeUndefined();
+    expect(bridge.emitVisualFailed).toBeUndefined();
+  });
+
+  // #1477 voice rich output: the router fans the typed visual lifecycle onto
+  // `crew:visual_*` DOM events. The voice hook listens on `window` (not the
+  // bridge) so it never races the async bridge start.
+  it("fans visual/generating + visual/failed onto crew:visual_* DOM events", () => {
+    const bridge = new FakeBridge();
+    const dispatched: Event[] = [];
+    attachRouter(bridge, {
+      sessionId: SESSION,
+      dispatchEvent: (e) => dispatched.push(e),
+    });
+
+    bridge.emitVisualGenerating?.({
+      session_id: SESSION,
+      turn_id: "cmid-v",
+      kind: "illustrated",
+    });
+    const gen = dispatched.find(
+      (e) => e.type === "crew:visual_generating",
+    ) as CustomEvent | undefined;
+    expect(gen).toBeDefined();
+    expect(gen!.detail.sessionId).toBe(SESSION);
+    expect(gen!.detail.turnId).toBe("cmid-v");
+    expect(gen!.detail.kind).toBe("illustrated");
+
+    bridge.emitVisualFailed?.({
+      session_id: SESSION,
+      turn_id: "cmid-v",
+      reason: "timed out after 180s",
+    });
+    const failed = dispatched.find(
+      (e) => e.type === "crew:visual_failed",
+    ) as CustomEvent | undefined;
+    expect(failed).toBeDefined();
+    expect(failed!.detail.turnId).toBe("cmid-v");
+    expect(failed!.detail.reason).toBe("timed out after 180s");
+  });
+
+  // A visual artifact landing via file/attached is the success signal — it
+  // fans onto `crew:visual_ready` carrying the turn_id. The reply audio (also
+  // file/attached) must NOT, so the placeholder is only cleared by a visual.
+  it("emits crew:visual_ready for a visual file/attached but not for audio", () => {
+    const dispatched: Event[] = [];
+    const cfg = {
+      sessionId: SESSION,
+      dispatchEvent: (e: Event) => dispatched.push(e),
+    };
+    handleFileAttached(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-r",
+      path: "visual-abc.html",
+    });
+    handleFileAttached(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-r",
+      path: "reply-123.wav",
+    });
+    const ready = dispatched.filter((e) => e.type === "crew:visual_ready");
+    expect(ready).toHaveLength(1);
+    expect((ready[0] as CustomEvent).detail.turnId).toBe("cmid-r");
+    expect((ready[0] as CustomEvent).detail.path).toBe("visual-abc.html");
   });
 
   it("turn lifecycle multiplexer routes started / completed / error correctly", () => {
