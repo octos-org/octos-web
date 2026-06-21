@@ -42,6 +42,7 @@ import type {
   TurnStartedEvent,
   UiProtocolBridge,
   VisualGeneratingEvent,
+  VisualSucceededEvent,
   VisualFailedEvent,
 } from "./ui-protocol-bridge";
 import * as ThreadStore from "@/store/thread-store";
@@ -240,12 +241,6 @@ export interface RouterConfig {
   /** Override window event dispatch for tests / SSR. */
   dispatchEvent?: (event: Event) => void;
 }
-
-/** #1477 voice rich output: file extensions that denote a visual artifact
- *  (illustrated HTML / image). Mirrors the voice hook's `HTML_EXT` +
- *  `VISUAL_IMAGE_EXT`; used to tell a visual `file/attached` (the success
- *  signal for the generating placeholder) apart from the reply audio. */
-const VISUAL_ARTIFACT_EXT = /\.(html?|png|jpe?g|gif|webp|svg)$/i;
 
 function dispatch(cfg: RouterConfig, event: Event): void {
   const fn = cfg.dispatchEvent ?? defaultDispatch;
@@ -710,25 +705,10 @@ export function handleFileAttached(
   if (!event.path || event.path.length === 0) {
     return;
   }
-  // #1477 voice rich output: a visual artifact (HTML / image) landing is the
-  // SUCCESS signal for the "generating" placeholder. Fan it onto a
-  // `crew:visual_ready` DOM event carrying the turn_id so the voice hook can
-  // clear the placeholder only for the matching turn (the reply audio also
-  // arrives via `file/attached`, so gate on a visual extension). Dispatched
-  // independently of the placement logic below.
-  if (VISUAL_ARTIFACT_EXT.test(event.path)) {
-    dispatch(
-      cfg,
-      new CustomEvent("crew:visual_ready", {
-        detail: {
-          sessionId: cfg.sessionId,
-          topic: cfg.topic,
-          turnId: event.turn_id,
-          path: event.path,
-        },
-      }),
-    );
-  }
+  // #1477 voice rich output: `file/attached` is a pure artifact-delivery
+  // signal — visual lifecycle SUCCESS is carried by the typed
+  // `visual/succeeded` event (see `handleVisualSucceeded`), so nothing visual
+  // is derived from a file extension here.
   const file = {
     filename: filenameFromPath(event.path),
     path: event.path,
@@ -1756,6 +1736,24 @@ function handleVisualGenerating(
   );
 }
 
+function handleVisualSucceeded(
+  cfg: RouterConfig,
+  event: VisualSucceededEvent,
+): void {
+  dispatch(
+    cfg,
+    new CustomEvent("crew:visual_succeeded", {
+      detail: {
+        sessionId: cfg.sessionId,
+        topic: cfg.topic,
+        turnId: event.turn_id,
+        kind: event.kind,
+        files: event.files ?? [],
+      },
+    }),
+  );
+}
+
 function handleVisualFailed(cfg: RouterConfig, event: VisualFailedEvent): void {
   dispatch(
     cfg,
@@ -1840,6 +1838,9 @@ export function attachRouter(
   const offVisualGenerating = bridge.onVisualGenerating((e) =>
     handleVisualGenerating(cfg, e),
   );
+  const offVisualSucceeded = bridge.onVisualSucceeded((e) =>
+    handleVisualSucceeded(cfg, e),
+  );
   const offVisualFailed = bridge.onVisualFailed((e) =>
     handleVisualFailed(cfg, e),
   );
@@ -1854,6 +1855,7 @@ export function attachRouter(
       offSpawnComplete();
       offFileAttached();
       offVisualGenerating();
+      offVisualSucceeded();
       offVisualFailed();
       offTaskUpdated();
       offTaskOutputDelta();

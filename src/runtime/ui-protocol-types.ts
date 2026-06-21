@@ -336,6 +336,20 @@ export interface VisualGeneratingEvent {
   kind: string;
 }
 
+/** #1477 voice rich output — the background visual task produced its
+ *  artifact(s). The structured success counterpart of VisualGeneratingEvent:
+ *  the client clears the "generating" placeholder off this, NOT off
+ *  `file/attached` (which stays a pure artifact-delivery signal). Emitted
+ *  alongside `file/attached` on the success branch. */
+export interface VisualSucceededEvent {
+  session_id: string;
+  turn_id: string;
+  /** `html` | `illustrated` | `image` | `infographic`. */
+  kind: string;
+  /** Workspace-relative filenames of the delivered artifact(s). */
+  files?: string[];
+}
+
 /** #1477 voice rich output — the background visual task failed / timed out, so
  *  the client should clear the "generating" placeholder. */
 export interface VisualFailedEvent {
