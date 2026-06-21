@@ -328,7 +328,8 @@ export interface FileAttachedEvent {
  *  the turn. The client shows a "generating" placeholder keyed off this typed
  *  event instead of scraping an in-band `[[VISUAL:...]]` marker out of the
  *  assistant text (the backend now keeps that marker off the wire entirely).
- *  Cleared by the eventual `file/attached` (success) or `visual/failed`. */
+ *  The lifecycle terminates on the typed `visual/succeeded` or `visual/failed`
+ *  — never on `file/attached` (a pure artifact-delivery signal). */
 export interface VisualGeneratingEvent {
   session_id: string;
   turn_id: string;
