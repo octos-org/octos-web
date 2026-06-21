@@ -29,6 +29,7 @@ import type {
   MessageDeltaEvent,
   FileAttachedEvent,
   VisualGeneratingEvent,
+  VisualSucceededEvent,
   VisualFailedEvent,
   MessagePersistedEvent,
   ProgressUpdatedEvent,
@@ -87,6 +88,7 @@ export type {
   TurnSpawnCompleteEvent,
   FileAttachedEvent,
   VisualGeneratingEvent,
+  VisualSucceededEvent,
   VisualFailedEvent,
   TurnStartExtras,
   TurnStartInput,
@@ -154,6 +156,7 @@ export const METHODS = {
   // #1477 voice rich output — typed visual lifecycle (replaces scraping an
   // in-band `[[VISUAL:...]]` marker out of the assistant text).
   VISUAL_GENERATING: "visual/generating",
+  VISUAL_SUCCEEDED: "visual/succeeded",
   VISUAL_FAILED: "visual/failed",
   APPROVAL_REQUESTED: "approval/requested",
   WARNING: "warning",
@@ -395,6 +398,10 @@ export interface UiProtocolBridge {
   /** #1477 voice rich output — a background visual artifact began generating. */
   onVisualGenerating(
     handler: (e: VisualGeneratingEvent) => void,
+  ): () => void;
+  /** #1477 voice rich output — a background visual artifact was produced. */
+  onVisualSucceeded(
+    handler: (e: VisualSucceededEvent) => void,
   ): () => void;
   /** #1477 voice rich output — a background visual task failed / timed out. */
   onVisualFailed(handler: (e: VisualFailedEvent) => void): () => void;
@@ -824,6 +831,22 @@ function guardVisualGenerating(p: unknown): VisualGeneratingEvent | null {
   if (!isString(p.turn_id)) return null;
   if (!isString(p.kind)) return null;
   return { session_id: p.session_id, turn_id: p.turn_id, kind: p.kind };
+}
+
+function guardVisualSucceeded(p: unknown): VisualSucceededEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.session_id)) return null;
+  if (!isString(p.turn_id)) return null;
+  if (!isString(p.kind)) return null;
+  const files = Array.isArray(p.files)
+    ? p.files.filter((f): f is string => typeof f === "string")
+    : undefined;
+  return {
+    session_id: p.session_id,
+    turn_id: p.turn_id,
+    kind: p.kind,
+    files,
+  };
 }
 
 function guardVisualFailed(p: unknown): VisualFailedEvent | null {
@@ -1451,6 +1474,8 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private readonly subFileAttached = new Subscribers<FileAttachedEvent>();
   private readonly subVisualGenerating =
     new Subscribers<VisualGeneratingEvent>();
+  private readonly subVisualSucceeded =
+    new Subscribers<VisualSucceededEvent>();
   private readonly subVisualFailed = new Subscribers<VisualFailedEvent>();
   private readonly subTaskUpdated = new Subscribers<TaskUpdatedEvent>();
   private readonly subTaskOutputDelta = new Subscribers<TaskOutputDeltaEvent>();
@@ -1504,6 +1529,10 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     [METHODS.VISUAL_GENERATING]: {
       guard: guardVisualGenerating,
       emit: (v) => this.subVisualGenerating.emit(v as VisualGeneratingEvent),
+    },
+    [METHODS.VISUAL_SUCCEEDED]: {
+      guard: guardVisualSucceeded,
+      emit: (v) => this.subVisualSucceeded.emit(v as VisualSucceededEvent),
     },
     [METHODS.VISUAL_FAILED]: {
       guard: guardVisualFailed,
@@ -1677,6 +1706,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.subSpawnComplete.clear();
     this.subFileAttached.clear();
     this.subVisualGenerating.clear();
+    this.subVisualSucceeded.clear();
     this.subVisualFailed.clear();
     this.subTaskUpdated.clear();
     this.subTaskOutputDelta.clear();
@@ -1721,6 +1751,14 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     }
     if (extras?.rewrite_for && extras.rewrite_for.length > 0) {
       params.rewrite_for = extras.rewrite_for;
+    }
+    // #1478/#1477: forward the explicit live-video flag so the server treats
+    // the attached frame as a real-time camera view and grounds the rich-output
+    // illustration on it. Without this mapping the flag set by
+    // `buildTurnStartExtras` was silently dropped before the wire, so the
+    // server always saw `live_video=false` and forwarded zero reference frames.
+    if (extras?.live_video) {
+      params.live_video = true;
     }
     return this.request<TurnStartResult>(METHODS.TURN_START, params);
   }
@@ -1820,6 +1858,9 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   }
   onVisualGenerating(handler: Listener<VisualGeneratingEvent>): () => void {
     return this.subVisualGenerating.add(handler);
+  }
+  onVisualSucceeded(handler: Listener<VisualSucceededEvent>): () => void {
+    return this.subVisualSucceeded.add(handler);
   }
   onVisualFailed(handler: Listener<VisualFailedEvent>): () => void {
     return this.subVisualFailed.add(handler);

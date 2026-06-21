@@ -328,12 +328,27 @@ export interface FileAttachedEvent {
  *  the turn. The client shows a "generating" placeholder keyed off this typed
  *  event instead of scraping an in-band `[[VISUAL:...]]` marker out of the
  *  assistant text (the backend now keeps that marker off the wire entirely).
- *  Cleared by the eventual `file/attached` (success) or `visual/failed`. */
+ *  The lifecycle terminates on the typed `visual/succeeded` or `visual/failed`
+ *  — never on `file/attached` (a pure artifact-delivery signal). */
 export interface VisualGeneratingEvent {
   session_id: string;
   turn_id: string;
   /** `html` | `illustrated` | `image` | `infographic`. */
   kind: string;
+}
+
+/** #1477 voice rich output — the background visual task produced its
+ *  artifact(s). The structured success counterpart of VisualGeneratingEvent:
+ *  the client clears the "generating" placeholder off this, NOT off
+ *  `file/attached` (which stays a pure artifact-delivery signal). Emitted
+ *  alongside `file/attached` on the success branch. */
+export interface VisualSucceededEvent {
+  session_id: string;
+  turn_id: string;
+  /** `html` | `illustrated` | `image` | `infographic`. */
+  kind: string;
+  /** Workspace-relative filenames of the delivered artifact(s). */
+  files?: string[];
 }
 
 /** #1477 voice rich output — the background visual task failed / timed out, so

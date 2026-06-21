@@ -34,6 +34,9 @@ import type {
   ApprovalRequestedEvent,
   ConnectionState,
   MessageDeltaEvent,
+  VisualSucceededEvent,
+  VisualGeneratingEvent,
+  VisualFailedEvent,
   MessagePersistedEvent,
   TaskOutputDeltaEvent,
   TaskUpdatedEvent,
@@ -1781,6 +1784,89 @@ describe("notification dispatch", () => {
     });
     expect(seen).toHaveLength(1);
     expect(seen[0].turn_id).toBe("t1");
+  });
+
+  // #1478/#1477: sendTurn must forward `extras.live_video` onto the wire
+  // `turn/start` params — without it the server never grounds the rich-output
+  // illustration on the camera frame (it sees live_video=false).
+  it("sendTurn forwards live_video extras onto the wire", async () => {
+    const { bridge, ws } = await freshConnected();
+    void bridge.sendTurn("turn-lv", [{ kind: "text", text: "" }], {
+      media: ["uploads/frame.jpg"],
+      live_video: true,
+    });
+    const req = findRequest(ws, METHODS.TURN_START);
+    expect(req.params?.live_video).toBe(true);
+    expect(req.params?.media).toEqual(["uploads/frame.jpg"]);
+  });
+
+  it("sendTurn omits live_video when not set (byte-identical legacy shape)", async () => {
+    const { bridge, ws } = await freshConnected();
+    void bridge.sendTurn("turn-plain", [{ kind: "text", text: "hi" }]);
+    const req = findRequest(ws, METHODS.TURN_START);
+    expect(req.params?.live_video).toBeUndefined();
+  });
+
+  // #1477 voice rich output: the typed visual lifecycle decodes from JSON-RPC
+  // straight to its typed subscriber (the router relies on this; success is no
+  // longer inferred from file/attached).
+  it("routes visual/generating, visual/succeeded, visual/failed to their handlers", async () => {
+    const { bridge, ws } = await freshConnected();
+    const gen: VisualGeneratingEvent[] = [];
+    const ok: VisualSucceededEvent[] = [];
+    const failed: VisualFailedEvent[] = [];
+    bridge.onVisualGenerating((e) => gen.push(e));
+    bridge.onVisualSucceeded((e) => ok.push(e));
+    bridge.onVisualFailed((e) => failed.push(e));
+
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.VISUAL_GENERATING,
+      params: { session_id: "sess-1", turn_id: "t1", kind: "illustrated" },
+    });
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.VISUAL_SUCCEEDED,
+      params: {
+        session_id: "sess-1",
+        turn_id: "t1",
+        kind: "illustrated",
+        files: ["visual-abc.html"],
+      },
+    });
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.VISUAL_FAILED,
+      params: { session_id: "sess-1", turn_id: "t1", reason: "timed out" },
+    });
+
+    expect(gen).toHaveLength(1);
+    expect(gen[0].kind).toBe("illustrated");
+    expect(ok).toHaveLength(1);
+    expect(ok[0].turn_id).toBe("t1");
+    expect(ok[0].kind).toBe("illustrated");
+    expect(ok[0].files).toEqual(["visual-abc.html"]);
+    expect(failed).toHaveLength(1);
+    expect(failed[0].reason).toBe("timed out");
+  });
+
+  // A visual/succeeded missing the required `kind` is rejected (fail-closed),
+  // surfaced as a warning, and not delivered.
+  it("rejects visual/succeeded without kind and warns", async () => {
+    const { bridge, ws } = await freshConnected();
+    const ok: VisualSucceededEvent[] = [];
+    const warnings: WarningEvent[] = [];
+    bridge.onVisualSucceeded((e) => ok.push(e));
+    bridge.onWarning((w) => warnings.push(w));
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.VISUAL_SUCCEEDED,
+      params: { session_id: "sess-1", turn_id: "t1" },
+    });
+    expect(ok).toHaveLength(0);
+    expect(
+      warnings.some((w) => w.reason === "invalid_event:visual/succeeded"),
+    ).toBe(true);
   });
 
   it("emits warning when message/delta is missing turn_id", async () => {

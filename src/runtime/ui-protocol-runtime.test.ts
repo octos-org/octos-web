@@ -94,6 +94,7 @@ function makeDeferredBridge(): DeferredBridge {
     onSpawnComplete: vi.fn(() => () => {}),
     onFileAttached: vi.fn(() => () => {}),
     onVisualGenerating: vi.fn(() => () => {}),
+    onVisualSucceeded: vi.fn(() => () => {}),
     onVisualFailed: vi.fn(() => () => {}),
     onTaskUpdated: vi.fn(() => () => {}),
     onTaskOutputDelta: vi.fn(() => () => {}),

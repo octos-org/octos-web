@@ -615,13 +615,13 @@ export function useVoiceConversation(
   }, [threads]);
 
   // #1477 voice rich output: drive the "generating" placeholder off the typed
-  // `visual/generating` / `visual/failed` events instead of scraping an in-band
-  // `[[VISUAL:...]]` marker out of the assistant text (the backend no longer
-  // puts that marker on the wire). The placeholder is ATTRIBUTED to a turn_id:
-  // only the active turn's own success (`file/attached` of a visual artifact),
-  // failure (`visual/failed`), or the safety timeout clears it — so if visual A
-  // is still generating when the user starts visual B, A's late
-  // failure/attachment never clears B's placeholder.
+  // visual lifecycle events instead of scraping an in-band `[[VISUAL:...]]`
+  // marker out of the assistant text (the backend no longer puts that marker on
+  // the wire). The placeholder is ATTRIBUTED to a turn_id: only the active
+  // turn's own success (`visual/succeeded`), failure (`visual/failed`), or the
+  // safety timeout clears it — so if visual A is still generating when the user
+  // starts visual B, A's late success/failure never clears B's placeholder.
+  // Success is a dedicated typed event, NOT inferred from `file/attached`.
   // Consume the router's `crew:visual_*` DOM events rather than subscribing to
   // the bridge directly. The router is attached AT bridge startup (before the
   // bridge becomes `active`) and re-attaches on reconnect, so a window listener
@@ -657,13 +657,16 @@ export function useVoiceConversation(
       const d = (ev as CustomEvent).detail;
       if (forThisSession(d)) clearForTurn(d.turnId);
     };
+    // Success + failure are both typed lifecycle events (#1477); the
+    // placeholder is never cleared by inferring success from a `file/attached`
+    // file extension.
     window.addEventListener("crew:visual_generating", onGenerating);
+    window.addEventListener("crew:visual_succeeded", onResolved);
     window.addEventListener("crew:visual_failed", onResolved);
-    window.addEventListener("crew:visual_ready", onResolved);
     return () => {
       window.removeEventListener("crew:visual_generating", onGenerating);
+      window.removeEventListener("crew:visual_succeeded", onResolved);
       window.removeEventListener("crew:visual_failed", onResolved);
-      window.removeEventListener("crew:visual_ready", onResolved);
     };
   }, [sessionId]);
 

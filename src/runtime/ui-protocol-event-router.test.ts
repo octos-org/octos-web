@@ -39,6 +39,7 @@ import type {
   ApprovalRequestedEvent,
   FileAttachedEvent,
   VisualGeneratingEvent,
+  VisualSucceededEvent,
   VisualFailedEvent,
   MessageDeltaEvent,
   MessagePersistedEvent,
@@ -2608,6 +2609,7 @@ class FakeBridge implements UiProtocolBridge {
   emitSpawnComplete?: (e: TurnSpawnCompleteEvent) => void;
   emitFileAttached?: (e: FileAttachedEvent) => void;
   emitVisualGenerating?: (e: VisualGeneratingEvent) => void;
+  emitVisualSucceeded?: (e: VisualSucceededEvent) => void;
   emitVisualFailed?: (e: VisualFailedEvent) => void;
   emitTaskUpdated?: (e: TaskUpdatedEvent) => void;
   emitTaskOutputDelta?: (e: TaskOutputDeltaEvent) => void;
@@ -2663,6 +2665,12 @@ class FakeBridge implements UiProtocolBridge {
     this.emitVisualGenerating = h;
     return () => {
       this.emitVisualGenerating = undefined;
+    };
+  }
+  onVisualSucceeded(h: (e: VisualSucceededEvent) => void) {
+    this.emitVisualSucceeded = h;
+    return () => {
+      this.emitVisualSucceeded = undefined;
     };
   }
   onVisualFailed(h: (e: VisualFailedEvent) => void) {
@@ -2777,13 +2785,14 @@ describe("attachRouter", () => {
     expect(bridge.emitTurnLifecycle).toBeUndefined();
     expect(bridge.emitApprovalRequested).toBeUndefined();
     expect(bridge.emitVisualGenerating).toBeUndefined();
+    expect(bridge.emitVisualSucceeded).toBeUndefined();
     expect(bridge.emitVisualFailed).toBeUndefined();
   });
 
   // #1477 voice rich output: the router fans the typed visual lifecycle onto
   // `crew:visual_*` DOM events. The voice hook listens on `window` (not the
   // bridge) so it never races the async bridge start.
-  it("fans visual/generating + visual/failed onto crew:visual_* DOM events", () => {
+  it("fans visual/generating + visual/succeeded + visual/failed onto crew:visual_* DOM events", () => {
     const bridge = new FakeBridge();
     const dispatched: Event[] = [];
     attachRouter(bridge, {
@@ -2804,6 +2813,21 @@ describe("attachRouter", () => {
     expect(gen!.detail.turnId).toBe("cmid-v");
     expect(gen!.detail.kind).toBe("illustrated");
 
+    // Structured success — replaces inferring success from a file extension.
+    bridge.emitVisualSucceeded?.({
+      session_id: SESSION,
+      turn_id: "cmid-v",
+      kind: "illustrated",
+      files: ["visual-abc.html"],
+    });
+    const ok = dispatched.find(
+      (e) => e.type === "crew:visual_succeeded",
+    ) as CustomEvent | undefined;
+    expect(ok).toBeDefined();
+    expect(ok!.detail.turnId).toBe("cmid-v");
+    expect(ok!.detail.kind).toBe("illustrated");
+    expect(ok!.detail.files).toEqual(["visual-abc.html"]);
+
     bridge.emitVisualFailed?.({
       session_id: SESSION,
       turn_id: "cmid-v",
@@ -2817,10 +2841,9 @@ describe("attachRouter", () => {
     expect(failed!.detail.reason).toBe("timed out after 180s");
   });
 
-  // A visual artifact landing via file/attached is the success signal — it
-  // fans onto `crew:visual_ready` carrying the turn_id. The reply audio (also
-  // file/attached) must NOT, so the placeholder is only cleared by a visual.
-  it("emits crew:visual_ready for a visual file/attached but not for audio", () => {
+  // file/attached is a pure artifact-delivery signal — it must NOT fan out any
+  // visual-lifecycle DOM event (success is carried by visual/succeeded).
+  it("does not derive any crew:visual_* event from file/attached", () => {
     const dispatched: Event[] = [];
     const cfg = {
       sessionId: SESSION,
@@ -2831,15 +2854,9 @@ describe("attachRouter", () => {
       turn_id: "cmid-r",
       path: "visual-abc.html",
     });
-    handleFileAttached(cfg, {
-      session_id: SESSION,
-      turn_id: "cmid-r",
-      path: "reply-123.wav",
-    });
-    const ready = dispatched.filter((e) => e.type === "crew:visual_ready");
-    expect(ready).toHaveLength(1);
-    expect((ready[0] as CustomEvent).detail.turnId).toBe("cmid-r");
-    expect((ready[0] as CustomEvent).detail.path).toBe("visual-abc.html");
+    expect(
+      dispatched.filter((e) => e.type.startsWith("crew:visual_")),
+    ).toHaveLength(0);
   });
 
   it("turn lifecycle multiplexer routes started / completed / error correctly", () => {
