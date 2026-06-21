@@ -1752,6 +1752,14 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     if (extras?.rewrite_for && extras.rewrite_for.length > 0) {
       params.rewrite_for = extras.rewrite_for;
     }
+    // #1478/#1477: forward the explicit live-video flag so the server treats
+    // the attached frame as a real-time camera view and grounds the rich-output
+    // illustration on it. Without this mapping the flag set by
+    // `buildTurnStartExtras` was silently dropped before the wire, so the
+    // server always saw `live_video=false` and forwarded zero reference frames.
+    if (extras?.live_video) {
+      params.live_video = true;
+    }
     return this.request<TurnStartResult>(METHODS.TURN_START, params);
   }
 

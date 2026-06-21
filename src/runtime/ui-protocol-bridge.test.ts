@@ -1786,6 +1786,27 @@ describe("notification dispatch", () => {
     expect(seen[0].turn_id).toBe("t1");
   });
 
+  // #1478/#1477: sendTurn must forward `extras.live_video` onto the wire
+  // `turn/start` params — without it the server never grounds the rich-output
+  // illustration on the camera frame (it sees live_video=false).
+  it("sendTurn forwards live_video extras onto the wire", async () => {
+    const { bridge, ws } = await freshConnected();
+    void bridge.sendTurn("turn-lv", [{ kind: "text", text: "" }], {
+      media: ["uploads/frame.jpg"],
+      live_video: true,
+    });
+    const req = findRequest(ws, METHODS.TURN_START);
+    expect(req.params?.live_video).toBe(true);
+    expect(req.params?.media).toEqual(["uploads/frame.jpg"]);
+  });
+
+  it("sendTurn omits live_video when not set (byte-identical legacy shape)", async () => {
+    const { bridge, ws } = await freshConnected();
+    void bridge.sendTurn("turn-plain", [{ kind: "text", text: "hi" }]);
+    const req = findRequest(ws, METHODS.TURN_START);
+    expect(req.params?.live_video).toBeUndefined();
+  });
+
   // #1477 voice rich output: the typed visual lifecycle decodes from JSON-RPC
   // straight to its typed subscriber (the router relies on this; success is no
   // longer inferred from file/attached).
