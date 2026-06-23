@@ -152,6 +152,39 @@ export function stripVisualMarker(text: string): string {
   return i >= 0 ? text.slice(0, i).trimEnd() : text;
 }
 
+/**
+ * UPCR-2026-025: whether a `crew:voice_exit` event should be acted on. It must
+ * target THIS voice session AND carry a turn id we have not already consumed —
+ * guarding against ledger replays / duplicate events (re-delivered on reconnect)
+ * re-triggering navigation for an already-handled turn. Exported for unit tests.
+ */
+export function shouldHandleExitEvent(
+  detail: { sessionId?: string; turnId?: string } | undefined,
+  sessionId: string,
+  consumed: Set<string>,
+): boolean {
+  if (!detail || detail.sessionId !== sessionId) return false;
+  const turnId = typeof detail.turnId === "string" ? detail.turnId : "";
+  if (turnId && consumed.has(turnId)) return false;
+  return true;
+}
+
+/**
+ * UPCR-2026-025: whether a farewell clip is still actively playing or queued —
+ * i.e. the goodbye may still be heard, so navigation must wait for the
+ * drainQueue grace-timer rather than be forced by the fallback timer. Note this
+ * deliberately does NOT treat `thinking` as active: a turn that produced NO
+ * farewell audio sits in `thinking`, and the fallback must still leave there.
+ * Exported for unit tests.
+ */
+export function farewellAudioActive(
+  playing: boolean,
+  queueLength: number,
+  state: VoiceState,
+): boolean {
+  return playing || queueLength > 0 || state === "speaking";
+}
+
 /** Collect ALL unseen assistant visual artifacts (image/HTML) in order. */
 export function collectFreshVisuals(
   threads: Thread[],
@@ -278,6 +311,9 @@ export function useVoiceConversation(
   const exitPendingRef = useRef(false);
   const exitedRef = useRef(false);
   const exitFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Turn ids whose `voice/exit` we've already acted on — dedups ledger replays /
+  // duplicate events so a stale exit can't re-trigger navigation.
+  const consumedExitTurnsRef = useRef<Set<string>>(new Set());
   const onExitRef = useRef<(() => void) | undefined>(undefined);
   onExitRef.current = onExit;
   const performExitRef = useRef<() => void>(() => {});
@@ -729,22 +765,50 @@ export function useVoiceConversation(
   useEffect(() => {
     const EXIT_FALLBACK_MS = 8000;
     const onExitEvent = (ev: Event) => {
-      const d = (ev as CustomEvent).detail as { sessionId?: string } | undefined;
-      if (!d || d.sessionId !== sessionId) return;
+      const d = (ev as CustomEvent).detail as
+        | { sessionId?: string; turnId?: string }
+        | undefined;
+      // Filter by session AND dedup by turn id (replay / duplicate guard).
+      if (!shouldHandleExitEvent(d, sessionId, consumedExitTurnsRef.current)) {
+        return;
+      }
+      const turnId = typeof d?.turnId === "string" ? d.turnId : "";
+      if (turnId) consumedExitTurnsRef.current.add(turnId);
       exitPendingRef.current = true;
       setExiting(true);
-      const speakingOrQueued =
-        playingRef.current ||
-        audioQueueRef.current.length > 0 ||
-        stateRef.current === "speaking" ||
-        stateRef.current === "thinking";
-      if (!speakingOrQueued) {
+      // If a farewell is playing/queued OR the reply is still arriving
+      // (`thinking`), wait — the drainQueue grace-timer leaves after the audio
+      // drains. Otherwise (idle/listening, nothing in flight) the farewell is
+      // already done or never came, so leave now.
+      const inFlight =
+        farewellAudioActive(
+          playingRef.current,
+          audioQueueRef.current.length,
+          stateRef.current,
+        ) || stateRef.current === "thinking";
+      if (!inFlight) {
         performExitRef.current();
         return;
       }
       clearTimeout(exitFallbackTimerRef.current);
       exitFallbackTimerRef.current = setTimeout(() => {
-        if (exitPendingRef.current) performExitRef.current();
+        if (!exitPendingRef.current) return;
+        // Review fix: a farewell may still be playing/queued past the fallback
+        // window (slow fetch/decode, long clip). Do NOT cut it off — defer to
+        // the drainQueue grace-timer, which performExit()s once the audio
+        // drains. Only force-exit when nothing is in flight (e.g. the model
+        // produced no farewell audio at all, so the turn is stuck in `thinking`
+        // with an empty queue).
+        if (
+          farewellAudioActive(
+            playingRef.current,
+            audioQueueRef.current.length,
+            stateRef.current,
+          )
+        ) {
+          return;
+        }
+        performExitRef.current();
       }, EXIT_FALLBACK_MS);
     };
     window.addEventListener("crew:voice_exit", onExitEvent);

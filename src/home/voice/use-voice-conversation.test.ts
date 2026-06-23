@@ -3,8 +3,10 @@ import {
   assembleTurnFiles,
   collectFreshAudio,
   collectFreshVisuals,
+  farewellAudioActive,
   hasVisualMarker,
   pickFreshAudio,
+  shouldHandleExitEvent,
   stripVisualMarker,
 } from "./use-voice-conversation";
 import type { Thread } from "@/store/thread-store";
@@ -130,5 +132,76 @@ describe("collectFreshVisuals", () => {
     expect(
       collectFreshVisuals(threads, new Set(["w/seen.png"]), new Set(["old"])),
     ).toEqual([{ path: "w/new.html", kind: "html" }]);
+  });
+});
+
+describe("shouldHandleExitEvent (voice/exit dedup)", () => {
+  const SESSION = "voice-123";
+
+  it("accepts a fresh turn for this session", () => {
+    const consumed = new Set<string>();
+    expect(
+      shouldHandleExitEvent(
+        { sessionId: SESSION, turnId: "t1" },
+        SESSION,
+        consumed,
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects a different session", () => {
+    expect(
+      shouldHandleExitEvent(
+        { sessionId: "other", turnId: "t1" },
+        SESSION,
+        new Set(),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects an already-consumed turn (replay / duplicate)", () => {
+    const consumed = new Set<string>(["t1"]);
+    expect(
+      shouldHandleExitEvent(
+        { sessionId: SESSION, turnId: "t1" },
+        SESSION,
+        consumed,
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects missing/empty detail", () => {
+    expect(shouldHandleExitEvent(undefined, SESSION, new Set())).toBe(false);
+  });
+
+  it("accepts when turnId is absent (cannot dedup, still session-scoped)", () => {
+    expect(
+      shouldHandleExitEvent({ sessionId: SESSION }, SESSION, new Set(["t1"])),
+    ).toBe(true);
+  });
+});
+
+describe("farewellAudioActive (fallback must not cut off the goodbye)", () => {
+  it("is active while a clip is playing", () => {
+    expect(farewellAudioActive(true, 0, "speaking")).toBe(true);
+  });
+
+  it("is active while clips remain queued", () => {
+    expect(farewellAudioActive(false, 2, "thinking")).toBe(true);
+  });
+
+  it("is active in the speaking state", () => {
+    expect(farewellAudioActive(false, 0, "speaking")).toBe(true);
+  });
+
+  it("is NOT active when idle with an empty queue (already done / none)", () => {
+    expect(farewellAudioActive(false, 0, "idle")).toBe(false);
+    expect(farewellAudioActive(false, 0, "listening")).toBe(false);
+  });
+
+  it("is NOT active in `thinking` with an empty queue, so the no-audio case can still exit", () => {
+    // A turn that produced no farewell audio sits in `thinking`; the fallback
+    // timer must be allowed to leave rather than hang forever.
+    expect(farewellAudioActive(false, 0, "thinking")).toBe(false);
   });
 });
