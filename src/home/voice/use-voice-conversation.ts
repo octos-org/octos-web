@@ -40,6 +40,9 @@ export interface VoiceConversation {
   generating: boolean;
   /** Dismiss the currently shown visual artifact. */
   dismissVisual: () => void;
+  /** UPCR-2026-025: true once an exit intent fired; the view shows a farewell
+   *  while the last reply audio finishes, then navigates home. */
+  exiting: boolean;
 }
 
 /** A rich-output artifact the assistant produced for this voice turn. */
@@ -176,6 +179,9 @@ export function collectFreshVisuals(
 export function useVoiceConversation(
   sessionId: string,
   historyTopic?: string,
+  /** UPCR-2026-025: called to leave the voice screen (e.g. navigate('/')) when
+   *  the user expresses an exit intent — invoked AFTER the farewell audio. */
+  onExit?: () => void,
 ): VoiceConversation {
   const threads = useThreads(sessionId, historyTopic);
   const capture = useVoiceCapture();
@@ -198,6 +204,7 @@ export function useVoiceConversation(
   const [lastAssistantText, setLastAssistantText] = useState("");
   const [visual, setVisual] = useState<VisualArtifact | null>(null);
   const [generating, setGenerating] = useState(false);
+  const [exiting, setExiting] = useState(false);
 
   // Rich output: artifacts already surfaced (so re-renders / re-entry don't
   // re-show them), the `turn_id` of the visual currently shown as "generating"
@@ -261,6 +268,19 @@ export function useVoiceConversation(
   const audioQueueRef = useRef<string[]>([]);
   const playingRef = useRef(false);
   const graceTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  // Voice exit intent (UPCR-2026-025): a `crew:voice_exit` DOM event sets
+  // `exitPendingRef`; the drainQueue grace-timer then leaves /voice AFTER the
+  // farewell audio finishes (so the goodbye is heard). `exitedRef` guards the
+  // one-shot teardown; `exitFallbackTimerRef` is a safety net for a missing /
+  // late farewell. `onExitRef` holds the latest navigation callback;
+  // `performExitRef` breaks the cycle with `stop` (set after `stop` each render).
+  const exitPendingRef = useRef(false);
+  const exitedRef = useRef(false);
+  const exitFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const onExitRef = useRef<(() => void) | undefined>(undefined);
+  onExitRef.current = onExit;
+  const performExitRef = useRef<() => void>(() => {});
 
   // Stable refs that break the circular dependency between beginListening ↔
   // drainQueue. Each stores itself into its own ref every render.
@@ -457,7 +477,13 @@ export function useVoiceConversation(
         !playingRef.current &&
         (stateRef.current === "speaking" || stateRef.current === "thinking")
       ) {
-        void beginListeningRef.current();
+        // UPCR-2026-025: the farewell audio has finished — if an exit intent is
+        // pending, leave /voice now instead of returning to listening.
+        if (exitPendingRef.current) {
+          performExitRef.current();
+        } else {
+          void beginListeningRef.current();
+        }
       }
     }, 1500);
   }, [playOne]);
@@ -503,6 +529,13 @@ export function useVoiceConversation(
     audioQueueRef.current = [];
     playingRef.current = false;
     clearTimeout(graceTimerRef.current);
+    // UPCR-2026-025: a fresh start clears any prior exit-pending state (e.g. an
+    // error-retry re-entry); a real exit unmounts the view so this never undoes
+    // an in-flight navigation.
+    exitPendingRef.current = false;
+    exitedRef.current = false;
+    clearTimeout(exitFallbackTimerRef.current);
+    setExiting(false);
     // Wait for the WS bridge to actually connect before we start listening.
     // Otherwise a fast first utterance races the (re)connect and the turn
     // never reaches the server — the "you must wait a few seconds after a
@@ -528,6 +561,7 @@ export function useVoiceConversation(
     generatingTurnRef.current = null;
     setVisual(null);
     setGenerating(false);
+    clearTimeout(exitFallbackTimerRef.current);
     void captureStop();
     cameraStop();
     clearSentFrame();
@@ -535,6 +569,20 @@ export function useVoiceConversation(
     stateRef.current = "idle";
     setState("idle");
   }, [captureStop, cameraStop, clearSentFrame, releaseAudio]);
+
+  // Leave the voice screen: one-shot. Tears down capture/audio/camera, then
+  // invokes the navigation callback (e.g. navigate('/')). Called from the exit
+  // event (already-idle case), the drain grace-timer (after the farewell), or
+  // the fallback timer — `exitedRef` makes the duplicate calls no-ops.
+  const performExit = useCallback(() => {
+    if (exitedRef.current) return;
+    exitedRef.current = true;
+    exitPendingRef.current = false;
+    clearTimeout(exitFallbackTimerRef.current);
+    stop();
+    onExitRef.current?.();
+  }, [stop]);
+  performExitRef.current = performExit;
 
   const toggleCamera = useCallback(() => {
     if (cameraActiveRef.current) {
@@ -670,6 +718,39 @@ export function useVoiceConversation(
     };
   }, [sessionId]);
 
+  // Voice exit intent (UPCR-2026-025): consume the router's `crew:voice_exit`
+  // DOM event (filtered by sessionId). Mark exit pending + show the farewell
+  // state; the drainQueue grace-timer performs the navigation after the reply
+  // audio drains, so the goodbye is heard first. If nothing is queued/playing
+  // (the farewell already finished, or the model sent no audio), leave now. A
+  // fallback timer covers the case where reply audio never arrives. Listening on
+  // `window` (not the bridge) avoids racing the async bridge start — the router
+  // re-attaches on reconnect and keeps dispatching (mirrors the visual hook).
+  useEffect(() => {
+    const EXIT_FALLBACK_MS = 8000;
+    const onExitEvent = (ev: Event) => {
+      const d = (ev as CustomEvent).detail as { sessionId?: string } | undefined;
+      if (!d || d.sessionId !== sessionId) return;
+      exitPendingRef.current = true;
+      setExiting(true);
+      const speakingOrQueued =
+        playingRef.current ||
+        audioQueueRef.current.length > 0 ||
+        stateRef.current === "speaking" ||
+        stateRef.current === "thinking";
+      if (!speakingOrQueued) {
+        performExitRef.current();
+        return;
+      }
+      clearTimeout(exitFallbackTimerRef.current);
+      exitFallbackTimerRef.current = setTimeout(() => {
+        if (exitPendingRef.current) performExitRef.current();
+      }, EXIT_FALLBACK_MS);
+    };
+    window.addEventListener("crew:voice_exit", onExitEvent);
+    return () => window.removeEventListener("crew:voice_exit", onExitEvent);
+  }, [sessionId]);
+
   // Stop ONLY on real unmount. Use a ref so identity churn of `stop` across
   // re-renders never re-fires this cleanup (that was tearing the VAD down on
   // every render). `[]` deps → cleanup runs once, at unmount.
@@ -700,5 +781,6 @@ export function useVoiceConversation(
     visual,
     generating,
     dismissVisual,
+    exiting,
   };
 }
