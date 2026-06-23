@@ -359,6 +359,16 @@ export interface VisualFailedEvent {
   reason?: string;
 }
 
+/** UPCR-2026-025 voice exit intent — the voice turn detected an end / goodbye /
+ *  mute intent (the model appended an in-band `[[EXIT]]` control marker, which
+ *  the backend strips from every model-/client-facing surface). The client
+ *  leaves the `/voice` screen and returns home — but only AFTER the turn's
+ *  farewell audio finishes playing, so the goodbye is heard before navigation. */
+export interface VoiceExitEvent {
+  session_id: string;
+  turn_id: string;
+}
+
 export interface TaskUpdatedEvent {
   session_id: string;
   /** Optional. Server's `TaskUpdatedEvent` struct does NOT carry

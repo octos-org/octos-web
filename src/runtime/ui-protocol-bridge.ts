@@ -31,6 +31,7 @@ import type {
   VisualGeneratingEvent,
   VisualSucceededEvent,
   VisualFailedEvent,
+  VoiceExitEvent,
   MessagePersistedEvent,
   ProgressUpdatedEvent,
   QueueStateEvent,
@@ -90,6 +91,7 @@ export type {
   VisualGeneratingEvent,
   VisualSucceededEvent,
   VisualFailedEvent,
+  VoiceExitEvent,
   TurnStartExtras,
   TurnStartInput,
   TurnStartMediaRef,
@@ -158,6 +160,9 @@ export const METHODS = {
   VISUAL_GENERATING: "visual/generating",
   VISUAL_SUCCEEDED: "visual/succeeded",
   VISUAL_FAILED: "visual/failed",
+  // UPCR-2026-025 voice exit intent — typed signal that the voice turn should
+  // end (replaces scraping an in-band `[[EXIT]]` marker out of the reply).
+  VOICE_EXIT: "voice/exit",
   APPROVAL_REQUESTED: "approval/requested",
   WARNING: "warning",
   // Synchronous tool-call lifecycle. Server emits these as
@@ -863,6 +868,13 @@ function guardVisualFailed(p: unknown): VisualFailedEvent | null {
   };
 }
 
+function guardVoiceExit(p: unknown): VoiceExitEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.session_id)) return null;
+  if (!isString(p.turn_id)) return null;
+  return { session_id: p.session_id, turn_id: p.turn_id };
+}
+
 /**
  * Guard for one row in `SessionHydrateResult.messages`. Fail-closed on
  * type / required-field violations. `message_id` and `source` are
@@ -1477,6 +1489,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private readonly subVisualSucceeded =
     new Subscribers<VisualSucceededEvent>();
   private readonly subVisualFailed = new Subscribers<VisualFailedEvent>();
+  private readonly subVoiceExit = new Subscribers<VoiceExitEvent>();
   private readonly subTaskUpdated = new Subscribers<TaskUpdatedEvent>();
   private readonly subTaskOutputDelta = new Subscribers<TaskOutputDeltaEvent>();
   private readonly subTurnLifecycle = new Subscribers<
@@ -1537,6 +1550,10 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     [METHODS.VISUAL_FAILED]: {
       guard: guardVisualFailed,
       emit: (v) => this.subVisualFailed.emit(v as VisualFailedEvent),
+    },
+    [METHODS.VOICE_EXIT]: {
+      guard: guardVoiceExit,
+      emit: (v) => this.subVoiceExit.emit(v as VoiceExitEvent),
     },
     [METHODS.TASK_UPDATED]: {
       guard: guardTaskUpdated,
@@ -1864,6 +1881,9 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   }
   onVisualFailed(handler: Listener<VisualFailedEvent>): () => void {
     return this.subVisualFailed.add(handler);
+  }
+  onVoiceExit(handler: Listener<VoiceExitEvent>): () => void {
+    return this.subVoiceExit.add(handler);
   }
   onTaskUpdated(handler: Listener<TaskUpdatedEvent>): () => void {
     return this.subTaskUpdated.add(handler);

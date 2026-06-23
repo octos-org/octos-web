@@ -37,6 +37,7 @@ import type {
   VisualSucceededEvent,
   VisualGeneratingEvent,
   VisualFailedEvent,
+  VoiceExitEvent,
   MessagePersistedEvent,
   TaskOutputDeltaEvent,
   TaskUpdatedEvent,
@@ -1866,6 +1867,39 @@ describe("notification dispatch", () => {
     expect(ok).toHaveLength(0);
     expect(
       warnings.some((w) => w.reason === "invalid_event:visual/succeeded"),
+    ).toBe(true);
+  });
+
+  it("routes voice/exit to its handler", async () => {
+    const { bridge, ws } = await freshConnected();
+    const exits: VoiceExitEvent[] = [];
+    bridge.onVoiceExit((e) => exits.push(e));
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.VOICE_EXIT,
+      params: { session_id: "sess-1", turn_id: "t1" },
+    });
+    expect(exits).toHaveLength(1);
+    expect(exits[0].session_id).toBe("sess-1");
+    expect(exits[0].turn_id).toBe("t1");
+  });
+
+  // A voice/exit missing the required turn_id is rejected (fail-closed),
+  // surfaced as a warning, and not delivered.
+  it("rejects voice/exit without turn_id and warns", async () => {
+    const { bridge, ws } = await freshConnected();
+    const exits: VoiceExitEvent[] = [];
+    const warnings: WarningEvent[] = [];
+    bridge.onVoiceExit((e) => exits.push(e));
+    bridge.onWarning((w) => warnings.push(w));
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.VOICE_EXIT,
+      params: { session_id: "sess-1" },
+    });
+    expect(exits).toHaveLength(0);
+    expect(
+      warnings.some((w) => w.reason === "invalid_event:voice/exit"),
     ).toBe(true);
   });
 
