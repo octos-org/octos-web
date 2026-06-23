@@ -51,8 +51,8 @@ export interface WakeWordStatusView {
 }
 
 const DEFAULT_WAKE_WORD = "你好小章鱼";
-const DEFAULT_THRESHOLD = 0.4;
-const DEFAULT_CONSECUTIVE_FRAMES = 3;
+const DEFAULT_THRESHOLD = 0.55;
+const DEFAULT_CONSECUTIVE_FRAMES = 1;
 const WORKLET_URL = "/wake-word/audio-input-processor.js";
 
 export function describeWakeWordListener(
@@ -227,10 +227,6 @@ export function useWakeWordListener({
       bufferRef.current = new Float32Array(0);
       setListenerState("starting");
 
-      const AudioContextCtor = getAudioContextCtor();
-      if (!AudioContextCtor) throw new Error("AudioContext unavailable");
-      const context = new AudioContextCtor({ latencyHint: "interactive" });
-      await context.resume().catch(() => undefined);
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
@@ -239,7 +235,16 @@ export function useWakeWordListener({
           autoGainControl: false,
         },
       });
+      streamRef.current = stream;
+
+      const AudioContextCtor = getAudioContextCtor();
+      if (!AudioContextCtor) throw new Error("AudioContext unavailable");
+      const context = new AudioContextCtor({ latencyHint: "interactive" });
+      contextRef.current = context;
+      await context.resume().catch(() => undefined);
+
       const source = context.createMediaStreamSource(stream);
+      sourceRef.current = source;
 
       const processSamples = (samples: Float32Array, inputRate: number) => {
         const incoming = resampleLinear(samples, inputRate);
@@ -287,9 +292,6 @@ export function useWakeWordListener({
         processorRef.current = processor;
       }
 
-      contextRef.current = context;
-      sourceRef.current = source;
-      streamRef.current = stream;
       setListenerState("listening");
     } catch (err) {
       await cleanupAudio();

@@ -138,6 +138,12 @@ export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
             : "语音引擎未就绪，请先在 Settings 里安装或修复 OMiniX。"}
         </div>
 
+        {runtime.ready && conv.error && (
+          <div className="voice-error-panel" role="alert">
+            {conv.error}
+          </div>
+        )}
+
         {!runtime.ready && !runtime.loading && (
           <button
             type="button"

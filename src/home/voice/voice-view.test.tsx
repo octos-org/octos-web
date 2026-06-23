@@ -11,6 +11,7 @@ const conversationMock = vi.hoisted(() => ({
   generating: false,
   exiting: false,
   visual: null as VoiceConversation["visual"],
+  error: null as string | null,
   start: vi.fn(),
   stop: vi.fn(),
   interrupt: vi.fn(),
@@ -45,7 +46,7 @@ vi.mock("./use-voice-conversation", () => ({
     state: conversationMock.state,
     lastUserText: "",
     lastAssistantText: "",
-    error: null,
+    error: conversationMock.error,
     start: conversationMock.start,
     stop: conversationMock.stop,
     interrupt: conversationMock.interrupt,
@@ -97,6 +98,7 @@ describe("VoiceView", () => {
     conversationMock.generating = false;
     conversationMock.exiting = false;
     conversationMock.visual = null;
+    conversationMock.error = null;
     conversationMock.start.mockReset();
     conversationMock.stop.mockReset();
     conversationMock.interrupt.mockReset();
@@ -125,6 +127,14 @@ describe("VoiceView", () => {
     render(<VoiceView sessionId="voice-test" onBack={vi.fn()} />);
 
     expect(screen.getByText("正在生成视觉内容…")).toBeTruthy();
+  });
+
+  it("shows microphone/VAD errors when the voice engine is ready", () => {
+    conversationMock.error = "VAD asset unavailable: /vad/silero_vad_legacy.onnx";
+
+    render(<VoiceView sessionId="voice-test" onBack={vi.fn()} />);
+
+    expect(screen.getByRole("alert").textContent).toContain("silero_vad_legacy.onnx");
   });
 
   it("toggles the camera when the camera button is clicked", () => {

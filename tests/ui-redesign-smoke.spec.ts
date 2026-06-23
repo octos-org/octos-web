@@ -512,7 +512,7 @@ test.describe("UI redesign shell smoke", () => {
       .poll(() => page.evaluate(() => localStorage.getItem("octos_home_burn_in_protection")))
       .toBe("true");
 
-    await page.getByRole("button", { name: "Close" }).click();
+    await panel.getByRole("button", { name: "Close", exact: true }).click();
     await expect(panel).toHaveCSS("visibility", "hidden");
   });
 

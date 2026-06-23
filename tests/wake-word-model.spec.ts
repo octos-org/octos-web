@@ -72,5 +72,5 @@ test("wake-word model scores the bundled sample above the trigger threshold", as
   });
 
   expect(result.wakeWord).toBe("你好小章鱼");
-  expect(result.score).toBeGreaterThan(0.4);
+  expect(result.score).toBeGreaterThan(0.55);
 });

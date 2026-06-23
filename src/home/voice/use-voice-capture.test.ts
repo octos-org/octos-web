@@ -32,6 +32,7 @@ describe("useVoiceCapture", () => {
       vadInstances.push(vad);
       return vad;
     });
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true }) as Response));
   });
 
   it("always passes a callable onSpeechRealStart to MicVAD", async () => {
@@ -66,4 +67,59 @@ describe("useVoiceCapture", () => {
     expect(onUtterance).not.toHaveBeenCalled();
     unmount();
   });
+
+  it("falls back to V5 when the preferred model fails to start", async () => {
+    const err = new Error("legacy not supported");
+    vadNewMock.mockReset();
+    vadNewMock.mockImplementation(async (options: Record<string, unknown>) => {
+      const vad = {
+        options,
+        start:
+          options.model === "legacy"
+            ? vi.fn(async () => {
+                throw err;
+              })
+            : vi.fn(async () => {}),
+        pause: vi.fn(async () => {}),
+        destroy: vi.fn(async () => {}),
+      };
+      vadInstances.push(vad);
+      return vad;
+    });
+
+    const { result, unmount } = renderHook(() => useVoiceCapture());
+
+    await act(async () => {
+      await result.current.start(vi.fn());
+    });
+
+    expect(vadNewMock).toHaveBeenCalledTimes(2);
+    expect(vadInstances[0].options.model).toBe("legacy");
+    expect(vadInstances[1].options.model).toBe("v5");
+    expect(result.current.capturing).toBe(true);
+    expect(result.current.error).toBeNull();
+    expect(vadInstances[1].start).toHaveBeenCalledTimes(1);
+    unmount();
+  });
+
+  it("captures VAD callback errors into hook error state", async () => {
+    const { result, unmount } = renderHook(() => useVoiceCapture());
+
+    await act(async () => {
+      await result.current.start(vi.fn(), {
+        onSpeechRealStart: () => {
+          throw new Error("wake callback boom");
+        },
+      });
+    });
+
+    await act(async () => {
+      (vadInstances[0].options.onSpeechRealStart as () => void)();
+      await Promise.resolve();
+    });
+
+    expect(result.current.error).toBe("wake callback boom");
+    unmount();
+  });
+
 });

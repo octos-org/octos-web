@@ -55,6 +55,18 @@
   color: rgba(245, 202, 118, .96);
   background: rgba(245, 202, 118, .08);
 }
+.voice-error-panel {
+  margin-top: 10px;
+  max-width: min(520px, 80vw);
+  border: 1px solid rgba(248, 113, 113, .28);
+  border-radius: 8px;
+  padding: 8px 11px;
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: center;
+  color: rgba(254, 202, 202, .92);
+  background: rgba(127, 29, 29, .22);
+}
 @keyframes vo-breathe { 0%,100%{transform:scale(1)} 50%{transform:scale(1.08)} }
 @keyframes vo-talk { 0%,100%{transform:scale(1)} 25%{transform:scale(1.14)} 60%{transform:scale(.95)} }
 @keyframes vo-ripple {
