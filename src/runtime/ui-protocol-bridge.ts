@@ -410,6 +410,9 @@ export interface UiProtocolBridge {
   ): () => void;
   /** #1477 voice rich output — a background visual task failed / timed out. */
   onVisualFailed(handler: (e: VisualFailedEvent) => void): () => void;
+  /** UPCR-2026-025 voice exit intent — the voice turn should end; the client
+   *  leaves /voice after the farewell audio finishes. */
+  onVoiceExit(handler: (e: VoiceExitEvent) => void): () => void;
   onTaskUpdated(handler: (e: TaskUpdatedEvent) => void): () => void;
   onTaskOutputDelta(handler: (e: TaskOutputDeltaEvent) => void): () => void;
   onTurnLifecycle(

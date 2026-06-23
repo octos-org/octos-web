@@ -96,6 +96,7 @@ function makeDeferredBridge(): DeferredBridge {
     onVisualGenerating: vi.fn(() => () => {}),
     onVisualSucceeded: vi.fn(() => () => {}),
     onVisualFailed: vi.fn(() => () => {}),
+    onVoiceExit: vi.fn(() => () => {}),
     onTaskUpdated: vi.fn(() => () => {}),
     onTaskOutputDelta: vi.fn(() => () => {}),
     onTurnLifecycle: vi.fn(() => () => {}),
