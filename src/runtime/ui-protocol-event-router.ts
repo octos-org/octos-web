@@ -44,6 +44,7 @@ import type {
   VisualGeneratingEvent,
   VisualSucceededEvent,
   VisualFailedEvent,
+  VoiceExitEvent,
 } from "./ui-protocol-bridge";
 import * as ThreadStore from "@/store/thread-store";
 import * as TaskStore from "@/store/task-store";
@@ -1769,6 +1770,26 @@ function handleVisualFailed(cfg: RouterConfig, event: VisualFailedEvent): void {
 }
 
 /**
+ * UPCR-2026-025 voice exit intent: fan the typed `voice/exit` event onto a
+ * `crew:voice_exit` DOM event. The voice hook consumes this window event and
+ * leaves the `/voice` screen — gating the actual navigation on its own reply-
+ * audio queue draining, so the farewell is heard first. Mirrors the visual
+ * lifecycle fan-out so it is immune to the bridge-start race and to reconnects.
+ */
+function handleVoiceExit(cfg: RouterConfig, event: VoiceExitEvent): void {
+  dispatch(
+    cfg,
+    new CustomEvent("crew:voice_exit", {
+      detail: {
+        sessionId: cfg.sessionId,
+        topic: cfg.topic,
+        turnId: event.turn_id,
+      },
+    }),
+  );
+}
+
+/**
  * Subscribe the router to all relevant streams on a started bridge. The
  * caller owns bridge lifecycle (start/stop). Returns a detacher that
  * removes every listener registered here — call it before swapping the
@@ -1844,6 +1865,9 @@ export function attachRouter(
   const offVisualFailed = bridge.onVisualFailed((e) =>
     handleVisualFailed(cfg, e),
   );
+  // UPCR-2026-025 voice exit intent: fan `voice/exit` onto a `crew:voice_exit`
+  // DOM event (see `handleVoiceExit`).
+  const offVoiceExit = bridge.onVoiceExit((e) => handleVoiceExit(cfg, e));
 
   let detached = false;
   return {
@@ -1857,6 +1881,7 @@ export function attachRouter(
       offVisualGenerating();
       offVisualSucceeded();
       offVisualFailed();
+      offVoiceExit();
       offTaskUpdated();
       offTaskOutputDelta();
       offTurnLifecycle();
