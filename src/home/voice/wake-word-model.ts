@@ -29,6 +29,26 @@ export interface WakeWordModel {
 }
 
 const WAKE_WORD_BASE_PATH = "/wake-word/";
+const ORT_WASM_BASE_PATH =
+  typeof window !== "undefined"
+    ? `${window.location.origin}/vad/`
+    : "/vad/";
+const WAKE_WORD_ASSET_TIMEOUT_MS = 5000;
+const WAKE_WORD_ASSETS = [
+  "model_info.json",
+  "nihaoxiaozhangyu.onnx",
+  "melspectrogram.onnx",
+] as const;
+const ORT_WASM_ASSETS = [
+  "ort-wasm-simd-threaded.mjs",
+  "ort-wasm-simd-threaded.wasm",
+  "ort-wasm-simd-threaded.jsep.mjs",
+  "ort-wasm-simd-threaded.jsep.wasm",
+  "ort-wasm-simd-threaded.asyncify.mjs",
+  "ort-wasm-simd-threaded.asyncify.wasm",
+  "ort-wasm-simd-threaded.jspi.mjs",
+  "ort-wasm-simd-threaded.jspi.wasm",
+] as const;
 let runtimeConfigured = false;
 
 function joinAsset(basePath: string, file: string): string {
@@ -37,20 +57,64 @@ function joinAsset(basePath: string, file: string): string {
 
 function configureWasmRuntime(): void {
   if (runtimeConfigured || typeof window === "undefined") return;
-  const base = `${window.location.origin}/vad/`;
-  ort.env.wasm.wasmPaths = {
-    mjs: `${base}ort-wasm-simd-threaded.mjs`,
-    wasm: `${base}ort-wasm-simd-threaded.wasm`,
-  };
+  ort.env.wasm.wasmPaths = ORT_WASM_BASE_PATH;
   ort.env.wasm.numThreads = 1;
   ort.env.wasm.proxy = false;
   runtimeConfigured = true;
+}
+
+async function checkAsset(url: string): Promise<void> {
+  const request = async (opts: {
+    method: "HEAD" | "GET";
+    headers?: Record<string, string>;
+  }) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, WAKE_WORD_ASSET_TIMEOUT_MS);
+    try {
+      return await fetch(url, {
+        ...opts,
+        cache: "no-store",
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  let response: Response | null = null;
+  try {
+    response = await request({ method: "HEAD" });
+  } catch (error) {
+    console.warn(`[wake-word] HEAD failed for ${url}, fallback GET`, error);
+  }
+  if (!response || !response.ok) {
+    response = await request({
+      method: "GET",
+      headers: { Range: "bytes=0-0" },
+    });
+  }
+  if (!response.ok) {
+    throw new Error(`wake-word asset unavailable: ${url} (${response.status})`);
+  }
+}
+
+async function ensureWakeWordAssets(basePath: string): Promise<void> {
+  const wakeAssets = WAKE_WORD_ASSETS.map((asset) =>
+    checkAsset(joinAsset(basePath, asset)),
+  );
+  const ortAssets = ORT_WASM_ASSETS.map((asset) =>
+    checkAsset(`${ORT_WASM_BASE_PATH}${asset}`),
+  );
+  await Promise.all([...wakeAssets, ...ortAssets]);
 }
 
 export async function loadWakeWordModel(
   basePath = WAKE_WORD_BASE_PATH,
 ): Promise<WakeWordModel> {
   configureWasmRuntime();
+  await ensureWakeWordAssets(basePath);
 
   const [infoResponse, session, melSession] = await Promise.all([
     fetch(joinAsset(basePath, "model_info.json")),
