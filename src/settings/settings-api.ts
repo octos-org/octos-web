@@ -126,6 +126,14 @@ export interface HomeProfileConfig {
   metro_layout?: Record<string, HomeProfileTileLayout>;
 }
 
+export interface CloudTtsConfig {
+  appid?: string;
+  voice?: string;
+  cluster?: string;
+  encoding?: string;
+  endpoint?: string;
+}
+
 export interface ProfileConfig {
   llm: {
     primary: LlmPrimary;
@@ -143,6 +151,8 @@ export interface ProfileConfig {
   adaptive_routing: unknown;
   content_routing: unknown;
   plugins: { require_signed: boolean };
+  tts_provider?: string;
+  tts_cloud?: CloudTtsConfig | null;
 }
 
 export interface ProfileStatus {
@@ -377,6 +387,12 @@ export function mergeProfileConfig(
   }
   if (patch.plugins) {
     next.plugins = { ...current.plugins, ...patch.plugins };
+  }
+  if (patch.tts_provider !== undefined) {
+    next.tts_provider = patch.tts_provider;
+  }
+  if (patch.tts_cloud !== undefined) {
+    next.tts_cloud = patch.tts_cloud;
   }
 
   return next;
