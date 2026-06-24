@@ -16,10 +16,13 @@ import {
 } from "./settings-api";
 
 const TOKEN_ENV = "VOLC_TTS_TOKEN";
+// `inherit` maps to a null `tts_provider` (no per-profile override → use the
+// server-level default). The other ids are explicit overrides.
 const ROUTES: { id: string; label: string; hint: string }[] = [
-  { id: "auto", label: "Auto", hint: "Cloud when a token is set, else on-device." },
+  { id: "inherit", label: "Inherit (server default)", hint: "Use the server-level TTS route." },
+  { id: "auto", label: "Auto", hint: "Cloud when credentials are set, else on-device." },
   { id: "local", label: "Local (on-device)", hint: "Local ominix-api engine." },
-  { id: "cloud", label: "Cloud (Volcano)", hint: "Volcano Engine cloud TTS." },
+  { id: "cloud", label: "Cloud (Volcano)", hint: "Volcano Engine cloud TTS (requires App ID + token)." },
 ];
 
 // Preset Volcano voices (voice_type IDs). Label = friendly name shown to the
@@ -50,7 +53,9 @@ export function VoiceTab({
   const cfg = profile.config;
   const storedToken = cfg.env_vars?.[TOKEN_ENV] ?? "";
 
-  const [route, setRoute] = useState(cfg.tts_provider ?? "auto");
+  // `null`/absent override → "inherit" (NOT "auto"): show the server-default
+  // option so we don't misrepresent the state or clobber inheritance on save.
+  const [route, setRoute] = useState(cfg.tts_provider ?? "inherit");
   const [cloud, setCloud] = useState<CloudTtsConfig>({ ...(cfg.tts_cloud ?? {}) });
   // empty input = leave the stored (masked) token untouched
   const [tokenInput, setTokenInput] = useState("");
@@ -61,7 +66,13 @@ export function VoiceTab({
 
   const showCloud = route === "auto" || route === "cloud";
   const tokenSet = isMasked(storedToken) || storedToken.length > 0;
-  const tokenWarning = route === "cloud" && !tokenSet && !tokenInput;
+  const tokenAvailable = tokenSet || tokenInput.length > 0;
+  const appidSet = !!cloud.appid?.trim();
+  // Cloud is an explicit choice → enforce complete creds (the backend would
+  // otherwise silently fall back to on-device). Auto may fall back, so it only
+  // gets a soft hint.
+  const cloudIncomplete = route === "cloud" && (!appidSet || !tokenAvailable);
+  const autoTokenHint = route === "auto" && !tokenAvailable;
 
   const setCloudField = (k: keyof CloudTtsConfig, v: string) =>
     setCloud((c) => ({ ...c, [k]: v }));
@@ -76,7 +87,8 @@ export function VoiceTab({
       // re-send the stored masked value so the backend restores the real one.
       if (tokenInput) envVars[TOKEN_ENV] = tokenInput;
       const updated = await updateMyProfileConfig(profile, {
-        tts_provider: route,
+        // `inherit` → null clears the override so the server default applies.
+        tts_provider: route === "inherit" ? null : route,
         tts_cloud: cloud,
         env_vars: envVars,
       });
@@ -214,22 +226,18 @@ export function VoiceTab({
                       className={INPUT_CLASS}
                     />
                   </Field>
-                  <Field label="Endpoint" htmlFor="volc-endpoint">
-                    <input
-                      id="volc-endpoint"
-                      value={cloud.endpoint ?? ""}
-                      placeholder="https://openspeech.bytedance.com/api/v1/tts"
-                      onChange={(e) => setCloudField("endpoint", e.target.value)}
-                      className={INPUT_CLASS}
-                    />
-                  </Field>
                 </div>
               )}
             </div>
 
-            {tokenWarning && (
+            {cloudIncomplete && (
+              <p role="alert" className="flex items-center gap-1.5 text-xs text-red-400">
+                <AlertCircle size={13} /> Cloud 模式需要同时填写 App ID 和 Token
+              </p>
+            )}
+            {autoTokenHint && (
               <p className="flex items-center gap-1.5 text-xs text-amber-400">
-                <AlertCircle size={13} /> 未填 token 将回退端侧
+                <AlertCircle size={13} /> 未填 token，Auto 将回退端侧
               </p>
             )}
           </div>
@@ -241,7 +249,7 @@ export function VoiceTab({
         <button
           type="button"
           onClick={save}
-          disabled={saving}
+          disabled={saving || cloudIncomplete}
           className="flex items-center gap-2 rounded-xl bg-accent px-5 py-2.5 text-sm font-medium text-white hover:bg-accent-dim disabled:opacity-30 transition"
         >
           {saving ? (

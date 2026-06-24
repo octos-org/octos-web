@@ -169,7 +169,11 @@ export function AdminSettingsPage() {
                     <LlmTab profile={profile} onProfileUpdated={setProfile} />
                   )}
                   {activeTab === "voice" && (
-                    <VoiceTab profile={profile} onProfileUpdated={setProfile} />
+                    <VoiceTab
+                      key={profile.id}
+                      profile={profile}
+                      onProfileUpdated={setProfile}
+                    />
                   )}
                   {activeTab === "skills" && <SkillsTab />}
                   {activeTab === "channels" && <ChannelsTab profile={profile} onProfileUpdated={setProfile} />}

@@ -151,7 +151,8 @@ export interface ProfileConfig {
   adaptive_routing: unknown;
   content_routing: unknown;
   plugins: { require_signed: boolean };
-  tts_provider?: string;
+  // `null` clears the per-profile override → inherit the server default.
+  tts_provider?: string | null;
   tts_cloud?: CloudTtsConfig | null;
 }
 
