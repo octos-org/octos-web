@@ -57,6 +57,11 @@ export function VoiceTab({
   // option so we don't misrepresent the state or clobber inheritance on save.
   const [route, setRoute] = useState(cfg.tts_provider ?? "inherit");
   const [cloud, setCloud] = useState<CloudTtsConfig>({ ...(cfg.tts_cloud ?? {}) });
+  // Whether the profile already had a cloud override, and whether the user has
+  // edited any cloud field this session. Used to avoid persisting an empty `{}`
+  // override (which would clobber the inherited server-level cloud config).
+  const hadCloud = cfg.tts_cloud != null;
+  const [cloudEdited, setCloudEdited] = useState(false);
   // empty input = leave the stored (masked) token untouched
   const [tokenInput, setTokenInput] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -74,8 +79,10 @@ export function VoiceTab({
   const cloudIncomplete = route === "cloud" && (!appidSet || !tokenAvailable);
   const autoTokenHint = route === "auto" && !tokenAvailable;
 
-  const setCloudField = (k: keyof CloudTtsConfig, v: string) =>
+  const setCloudField = (k: keyof CloudTtsConfig, v: string) => {
+    setCloudEdited(true);
     setCloud((c) => ({ ...c, [k]: v }));
+  };
 
   async function save() {
     setSaving(true);
@@ -86,10 +93,14 @@ export function VoiceTab({
       // Only overwrite the token when the user typed a new value; otherwise
       // re-send the stored masked value so the backend restores the real one.
       if (tokenInput) envVars[TOKEN_ENV] = tokenInput;
+      // Only persist a cloud override when one already existed or the user
+      // actually edited cloud fields — otherwise send `null` so we don't create
+      // an empty `{}` that would override the inherited server-level config.
+      const ttsCloud = hadCloud || cloudEdited ? cloud : null;
       const updated = await updateMyProfileConfig(profile, {
         // `inherit` → null clears the override so the server default applies.
         tts_provider: route === "inherit" ? null : route,
-        tts_cloud: cloud,
+        tts_cloud: ttsCloud,
         env_vars: envVars,
       });
       onProfileUpdated(updated);
