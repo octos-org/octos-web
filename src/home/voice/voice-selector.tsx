@@ -4,6 +4,7 @@
  */
 import { useEffect, useState } from "react";
 import { loadVoices, selectVoice, useVoiceStore } from "@/store/voice-store";
+import { getMyProfile } from "@/settings/settings-api";
 import type { VoiceInfo } from "@/api/voice";
 
 function labelFor(v: VoiceInfo): string {
@@ -14,10 +15,31 @@ export function VoiceSelector() {
   const { voices, current, status } = useVoiceStore();
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
+  // These pills switch the ON-DEVICE reply voice (timbre). When the cloud
+  // (Volcano) route is selected they have no effect — the cloud voice is set
+  // in Settings → Voice — so hide the whole switcher. `auto`/`local` keep it
+  // (auto may still resolve to on-device).
+  const [cloudRoute, setCloudRoute] = useState(false);
 
   useEffect(() => {
     if (status === "idle") void loadVoices();
   }, [status]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getMyProfile()
+      .then((p) => {
+        if (cancelled) return;
+        const route = p?.config.tts_provider;
+        setCloudRoute(route === "cloud" || route === "volcano");
+      })
+      .catch(() => {
+        /* keep the switcher visible if the profile can't be read */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function pick(id: string) {
     if (busy || id === current) return;
@@ -32,7 +54,7 @@ export function VoiceSelector() {
     }
   }
 
-  if (voices.length === 0) return null;
+  if (cloudRoute || voices.length === 0) return null;
 
   return (
     <div className="flex flex-col items-center gap-1">
