@@ -45,4 +45,15 @@ describe("VoiceTab", () => {
     expect(patch.tts_provider).toBe("cloud");
     expect(patch.tts_cloud.appid).toBe("123");
   });
+
+  it("should write a newly typed token into the save patch", async () => {
+    render(<VoiceTab profile={baseProfile} onProfileUpdated={() => {}} />);
+    fireEvent.change(screen.getByLabelText(/Token/i), {
+      target: { value: "newtoken123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    await waitFor(() => expect(apiMocks.updateMyProfileConfig).toHaveBeenCalled());
+    const [, patch] = apiMocks.updateMyProfileConfig.mock.calls[0];
+    expect(patch.env_vars.VOLC_TTS_TOKEN).toBe("newtoken123");
+  });
 });
