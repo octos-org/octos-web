@@ -15,6 +15,7 @@ import {
   Loader2,
   Settings as SettingsIcon,
   Palette,
+  Volume2,
 } from "lucide-react";
 import {
   WorkbenchPage,
@@ -35,8 +36,9 @@ import { SystemTab } from "./system-tab";
 import { ServerTab } from "./server-tab";
 import { OminixTab } from "./ominix-tab";
 import { AppearanceTab } from "./appearance-tab";
+import { VoiceTab } from "./voice-tab";
 
-type TabId = "profile" | "appearance" | "llm" | "skills" | "channels" | "sandbox" | "tools" | "users" | "system" | "server" | "ominix";
+type TabId = "profile" | "appearance" | "llm" | "voice" | "skills" | "channels" | "sandbox" | "tools" | "users" | "system" | "server" | "ominix";
 
 interface TabDef {
   id: TabId;
@@ -49,6 +51,7 @@ const TABS: TabDef[] = [
   { id: "profile", label: "Profile", icon: User },
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "llm", label: "LLM", icon: Cpu },
+  { id: "voice", label: "Voice", icon: Volume2 },
   { id: "skills", label: "Skills", icon: Puzzle },
   { id: "channels", label: "Channels", icon: Radio },
   { id: "sandbox", label: "Sandbox", icon: Shield },
@@ -164,6 +167,9 @@ export function AdminSettingsPage() {
                   {activeTab === "appearance" && <AppearanceTab />}
                   {activeTab === "llm" && (
                     <LlmTab profile={profile} onProfileUpdated={setProfile} />
+                  )}
+                  {activeTab === "voice" && (
+                    <VoiceTab profile={profile} onProfileUpdated={setProfile} />
                   )}
                   {activeTab === "skills" && <SkillsTab />}
                   {activeTab === "channels" && <ChannelsTab profile={profile} onProfileUpdated={setProfile} />}
