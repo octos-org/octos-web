@@ -22,6 +22,15 @@ const ROUTES: { id: string; label: string; hint: string }[] = [
   { id: "cloud", label: "Cloud (Volcano)", hint: "Volcano Engine cloud TTS." },
 ];
 
+// Preset Volcano voices (voice_type IDs). Label = friendly name shown to the
+// user; value = the `voice_type` written to `tts_cloud.voice`.
+const VOICES: { id: string; label: string }[] = [
+  { id: "zh_female_xiaohe_uranus_bigtts", label: "小何" },
+  { id: "zh_male_m191_uranus_bigtts", label: "云舟" },
+  { id: "zh_male_taocheng_uranus_bigtts", label: "小天" },
+  { id: "en_male_tim_uranus_bigtts", label: "Tim" },
+];
+
 const INPUT_CLASS =
   "w-full rounded-xl bg-surface-container px-4 py-2.5 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition";
 const SELECT_CLASS =
@@ -155,13 +164,25 @@ export function VoiceTab({
             </Field>
 
             <Field label="Voice" htmlFor="volc-voice">
-              <input
+              <select
                 id="volc-voice"
                 value={cloud.voice ?? ""}
-                placeholder="BV001_streaming"
                 onChange={(e) => setCloudField("voice", e.target.value)}
-                className={INPUT_CLASS}
-              />
+                className={SELECT_CLASS}
+              >
+                <option value="">Default (BV001_streaming)</option>
+                {VOICES.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.label}
+                  </option>
+                ))}
+                {cloud.voice && !VOICES.some((v) => v.id === cloud.voice) && (
+                  <option value={cloud.voice}>{cloud.voice}</option>
+                )}
+              </select>
+              {cloud.voice && (
+                <p className="mt-1.5 text-xs text-muted">{cloud.voice}</p>
+              )}
             </Field>
 
             <div>
