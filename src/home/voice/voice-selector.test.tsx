@@ -71,4 +71,26 @@ describe("VoiceSelector (pills)", () => {
     await waitFor(() => expect(screen.queryByRole("option")).toBeNull());
     expect(screen.queryByText("vivian")).toBeNull();
   });
+
+  it("hides the switcher on the auto route when cloud credentials are configured", async () => {
+    getMyProfile.mockResolvedValue({
+      config: {
+        tts_provider: "auto",
+        tts_cloud: { appid: "9155" },
+        env_vars: { VOLC_TTS_TOKEN: "ab***yz" },
+      },
+    });
+    render(<VoiceSelector />);
+    await waitFor(() => expect(screen.queryByRole("option")).toBeNull());
+  });
+
+  it("keeps the switcher on the auto route when cloud is not configured", async () => {
+    getMyProfile.mockResolvedValue({
+      config: { tts_provider: "auto", tts_cloud: { appid: "9155" }, env_vars: {} },
+    });
+    render(<VoiceSelector />);
+    // resolve the profile fetch, then confirm the pills are still shown
+    await waitFor(() => expect(getMyProfile).toHaveBeenCalled());
+    expect(screen.getAllByRole("option")).toHaveLength(2);
+  });
 });

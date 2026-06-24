@@ -15,10 +15,11 @@ export function VoiceSelector() {
   const { voices, current, status } = useVoiceStore();
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
-  // These pills switch the ON-DEVICE reply voice (timbre). When the cloud
-  // (Volcano) route is selected they have no effect — the cloud voice is set
-  // in Settings → Voice — so hide the whole switcher. `auto`/`local` keep it
-  // (auto may still resolve to on-device).
+  // These pills switch the ON-DEVICE reply voice (timbre). Hide them whenever
+  // adjusting them would have no effect — i.e. the EFFECTIVE route is cloud:
+  //   - `cloud`/`volcano`            → always cloud
+  //   - `auto` + cloud creds present → resolves to cloud (token + appid set)
+  // `local`, or `auto` without creds, keep the switcher (on-device is used).
   const [cloudRoute, setCloudRoute] = useState(false);
 
   useEffect(() => {
@@ -29,9 +30,15 @@ export function VoiceSelector() {
     let cancelled = false;
     getMyProfile()
       .then((p) => {
-        if (cancelled) return;
-        const route = p?.config.tts_provider;
-        setCloudRoute(route === "cloud" || route === "volcano");
+        if (cancelled || !p) return;
+        const route = p.config.tts_provider ?? "auto";
+        const cloudConfigured =
+          !!p.config.tts_cloud?.appid && !!p.config.env_vars?.["VOLC_TTS_TOKEN"];
+        setCloudRoute(
+          route === "cloud" ||
+            route === "volcano" ||
+            (route === "auto" && cloudConfigured),
+        );
       })
       .catch(() => {
         /* keep the switcher visible if the profile can't be read */
