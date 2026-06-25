@@ -23,7 +23,10 @@ interface VoiceViewProps {
 }
 
 export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
-  const conv = useVoiceConversation(sessionId, historyTopic);
+  // UPCR-2026-025: a spoken exit intent ("再见 / 退出 / 静音") leaves the voice
+  // screen via the same destination as the manual X button — the hook fires it
+  // only AFTER the farewell audio finishes.
+  const conv = useVoiceConversation(sessionId, historyTopic, onBack);
 
   // Auto-enter listening on mount: the user reached this full-screen view via a
   // navigation gesture, so unlock audio playback and begin capture immediately
@@ -107,7 +110,9 @@ export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
           <VoiceOrb state={conv.state} />
         </div>
 
-        <div className="mt-6 min-h-[20px] text-sm text-white/55">{STATE_WORD[conv.state]}</div>
+        <div className="mt-6 min-h-[20px] text-sm text-white/55">
+          {conv.exiting ? "再见 👋" : STATE_WORD[conv.state]}
+        </div>
 
         {/* Camera on but stream not ready yet, or it failed. */}
         {conv.cameraActive && !conv.cameraStream && (

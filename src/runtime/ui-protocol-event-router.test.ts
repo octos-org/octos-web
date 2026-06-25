@@ -41,6 +41,7 @@ import type {
   VisualGeneratingEvent,
   VisualSucceededEvent,
   VisualFailedEvent,
+  VoiceExitEvent,
   MessageDeltaEvent,
   MessagePersistedEvent,
   ProgressUpdatedEvent,
@@ -2611,6 +2612,7 @@ class FakeBridge implements UiProtocolBridge {
   emitVisualGenerating?: (e: VisualGeneratingEvent) => void;
   emitVisualSucceeded?: (e: VisualSucceededEvent) => void;
   emitVisualFailed?: (e: VisualFailedEvent) => void;
+  emitVoiceExit?: (e: VoiceExitEvent) => void;
   emitTaskUpdated?: (e: TaskUpdatedEvent) => void;
   emitTaskOutputDelta?: (e: TaskOutputDeltaEvent) => void;
   emitTurnLifecycle?: (
@@ -2677,6 +2679,12 @@ class FakeBridge implements UiProtocolBridge {
     this.emitVisualFailed = h;
     return () => {
       this.emitVisualFailed = undefined;
+    };
+  }
+  onVoiceExit(h: (e: VoiceExitEvent) => void) {
+    this.emitVoiceExit = h;
+    return () => {
+      this.emitVoiceExit = undefined;
     };
   }
   onTaskUpdated(h: (e: TaskUpdatedEvent) => void) {
@@ -2839,6 +2847,26 @@ describe("attachRouter", () => {
     expect(failed).toBeDefined();
     expect(failed!.detail.turnId).toBe("cmid-v");
     expect(failed!.detail.reason).toBe("timed out after 180s");
+  });
+
+  // UPCR-2026-025 voice exit intent: the router fans the typed `voice/exit`
+  // event onto a `crew:voice_exit` DOM event. The voice hook listens on
+  // `window` and leaves /voice after its reply-audio queue drains.
+  it("fans voice/exit onto a crew:voice_exit DOM event", () => {
+    const bridge = new FakeBridge();
+    const dispatched: Event[] = [];
+    attachRouter(bridge, {
+      sessionId: SESSION,
+      dispatchEvent: (e) => dispatched.push(e),
+    });
+
+    bridge.emitVoiceExit?.({ session_id: SESSION, turn_id: "cmid-x" });
+    const exit = dispatched.find(
+      (e) => e.type === "crew:voice_exit",
+    ) as CustomEvent | undefined;
+    expect(exit).toBeDefined();
+    expect(exit!.detail.sessionId).toBe(SESSION);
+    expect(exit!.detail.turnId).toBe("cmid-x");
   });
 
   // file/attached is a pure artifact-delivery signal — it must NOT fan out any
