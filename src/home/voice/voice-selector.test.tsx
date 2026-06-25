@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const loadVoices = vi.fn();
 const selectVoice = vi.fn();
+const getMyProfile = vi.fn();
 let mockStore = {
   voices: [
     { id: "doubao", aliases: ["vivian"] },
@@ -18,6 +19,10 @@ vi.mock("@/store/voice-store", () => ({
   selectVoice: (id: string) => selectVoice(id),
 }));
 
+vi.mock("@/settings/settings-api", () => ({
+  getMyProfile: () => getMyProfile(),
+}));
+
 import { VoiceSelector } from "./voice-selector";
 
 describe("VoiceSelector (pills)", () => {
@@ -25,6 +30,8 @@ describe("VoiceSelector (pills)", () => {
     cleanup();
     loadVoices.mockReset();
     selectVoice.mockReset().mockResolvedValue(undefined);
+    // Default: on-device route → switcher visible.
+    getMyProfile.mockReset().mockResolvedValue({ config: { tts_provider: "local" } });
     mockStore = {
       voices: [
         { id: "doubao", aliases: ["vivian"] },
@@ -56,5 +63,34 @@ describe("VoiceSelector (pills)", () => {
     render(<VoiceSelector />);
     fireEvent.click(screen.getByText("vivian")); // already current
     expect(selectVoice).not.toHaveBeenCalled();
+  });
+
+  it("hides the on-device switcher when the cloud route is selected", async () => {
+    getMyProfile.mockResolvedValue({ config: { tts_provider: "cloud" } });
+    render(<VoiceSelector />);
+    await waitFor(() => expect(screen.queryByRole("option")).toBeNull());
+    expect(screen.queryByText("vivian")).toBeNull();
+  });
+
+  it("hides the switcher on the auto route when cloud credentials are configured", async () => {
+    getMyProfile.mockResolvedValue({
+      config: {
+        tts_provider: "auto",
+        tts_cloud: { appid: "9155" },
+        env_vars: { VOLC_TTS_TOKEN: "ab***yz" },
+      },
+    });
+    render(<VoiceSelector />);
+    await waitFor(() => expect(screen.queryByRole("option")).toBeNull());
+  });
+
+  it("keeps the switcher on the auto route when cloud is not configured", async () => {
+    getMyProfile.mockResolvedValue({
+      config: { tts_provider: "auto", tts_cloud: { appid: "9155" }, env_vars: {} },
+    });
+    render(<VoiceSelector />);
+    // resolve the profile fetch, then confirm the pills are still shown
+    await waitFor(() => expect(getMyProfile).toHaveBeenCalled());
+    expect(screen.getAllByRole("option")).toHaveLength(2);
   });
 });

@@ -4,6 +4,7 @@
  */
 import { useEffect, useState } from "react";
 import { loadVoices, selectVoice, useVoiceStore } from "@/store/voice-store";
+import { getMyProfile } from "@/settings/settings-api";
 import type { VoiceInfo } from "@/api/voice";
 
 function labelFor(v: VoiceInfo): string {
@@ -14,10 +15,38 @@ export function VoiceSelector() {
   const { voices, current, status } = useVoiceStore();
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
+  // These pills switch the ON-DEVICE reply voice (timbre). Hide them whenever
+  // adjusting them would have no effect — i.e. the EFFECTIVE route is cloud:
+  //   - `cloud`/`volcano`            → always cloud
+  //   - `auto` + cloud creds present → resolves to cloud (token + appid set)
+  // `local`, or `auto` without creds, keep the switcher (on-device is used).
+  const [cloudRoute, setCloudRoute] = useState(false);
 
   useEffect(() => {
     if (status === "idle") void loadVoices();
   }, [status]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getMyProfile()
+      .then((p) => {
+        if (cancelled || !p) return;
+        const route = p.config.tts_provider ?? "auto";
+        const cloudConfigured =
+          !!p.config.tts_cloud?.appid && !!p.config.env_vars?.["VOLC_TTS_TOKEN"];
+        setCloudRoute(
+          route === "cloud" ||
+            route === "volcano" ||
+            (route === "auto" && cloudConfigured),
+        );
+      })
+      .catch(() => {
+        /* keep the switcher visible if the profile can't be read */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function pick(id: string) {
     if (busy || id === current) return;
@@ -32,7 +61,7 @@ export function VoiceSelector() {
     }
   }
 
-  if (voices.length === 0) return null;
+  if (cloudRoute || voices.length === 0) return null;
 
   return (
     <div className="flex flex-col items-center gap-1">
