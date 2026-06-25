@@ -14,10 +14,7 @@ import {
 } from "./helpers";
 
 test.describe("TTS file delivery", () => {
-  const hasTTS = process.env.HAS_TTS === "1";
-
   test.beforeEach(async ({ page }) => {
-    test.skip(!hasTTS, "TTS not configured (set HAS_TTS=1)");
     await login(page);
   });
 
@@ -122,14 +119,16 @@ test.describe("TTS file delivery", () => {
       );
       return bubbles.some((node) => {
         const text = node.textContent || "";
-        return /后台|背景运行|语音合成已在后台运行|TTS 任务已启动|自动发送|自动推送/u.test(text);
+        return /后台|背景运行|语音合成已在后台运行|TTS 任务已启动|自动发送|自动推送|TTS task accepted|Audio generation is running/iu.test(text);
       });
     }, undefined, { timeout: 30_000 });
 
     // Immediately send a follow-up question
     console.log("Sending follow-up question...");
     const start = Date.now();
+    await expect(input).toBeEnabled({ timeout: 15_000 });
     await input.fill("1+1等于几？一个字回答");
+    await expect(sendBtn).toBeEnabled({ timeout: 10_000 });
     await sendBtn.click();
 
     await page.waitForFunction(() => {
@@ -139,7 +138,7 @@ test.describe("TTS file delivery", () => {
       return bubbles.some((node) => {
         const text = (node.textContent || "").trim();
         if (!text) return false;
-        if (/fm_tts|\.mp3|TTS 任务已启动|背景运行/u.test(text)) return false;
+        if (/fm_tts|\.mp3|TTS 任务已启动|背景运行|TTS task accepted|Audio generation is running/iu.test(text)) return false;
         return /(^|[^0-9])2([^0-9]|$)|二/u.test(text);
       });
     }, undefined, { timeout: 30_000 });
@@ -153,7 +152,7 @@ test.describe("TTS file delivery", () => {
       const match = bubbles.find((node) => {
         const text = (node.textContent || "").trim();
         if (!text) return false;
-        if (/fm_tts|\.mp3|TTS 任务已启动|背景运行/u.test(text)) return false;
+        if (/fm_tts|\.mp3|TTS 任务已启动|背景运行|TTS task accepted|Audio generation is running/iu.test(text)) return false;
         return /(^|[^0-9])2([^0-9]|$)|二/u.test(text);
       });
       return (match?.textContent || "").trim();
@@ -161,7 +160,7 @@ test.describe("TTS file delivery", () => {
 
     console.log(`Follow-up response in ${elapsed}ms: "${followupText.slice(0, 100)}"`);
     expect(followupText.length).toBeGreaterThan(0);
-    expect(followupText).not.toMatch(/fm_tts|\.mp3|TTS 任务已启动|背景运行/u);
+    expect(followupText).not.toMatch(/fm_tts|\.mp3|TTS 任务已启动|背景运行|TTS task accepted|Audio generation is running/iu);
     expect(followupText).toMatch(/(^|[^0-9])2([^0-9]|$)|二/u);
     // Should NOT be blocked by the TTS background task
     expect(elapsed).toBeLessThan(30_000);

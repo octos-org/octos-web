@@ -19,6 +19,54 @@
 .voice-orb.is-error .voice-orb-core {
   background: radial-gradient(circle at 35% 30%, #ffb3b3, #ff5a5a 60%, #b02a2a);
   box-shadow: 0 0 50px 4px rgba(255,80,80,.5); }
+.voice-runtime-pill {
+  margin-top: 18px;
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, .58);
+  background: rgba(255, 255, 255, .06);
+}
+.voice-runtime-pill.is-success {
+  border-color: rgba(45, 212, 121, .3);
+  color: rgba(123, 211, 154, .95);
+  background: rgba(45, 212, 121, .08);
+}
+.voice-runtime-pill.is-warning {
+  border-color: rgba(245, 202, 118, .3);
+  color: rgba(245, 202, 118, .95);
+  background: rgba(245, 202, 118, .08);
+}
+.voice-runtime-pill.is-danger {
+  border-color: rgba(248, 113, 113, .32);
+  color: rgba(248, 113, 113, .95);
+  background: rgba(248, 113, 113, .08);
+}
+.voice-runtime-action {
+  margin-top: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgba(245, 202, 118, .24);
+  border-radius: 999px;
+  padding: 8px 13px;
+  font-size: 13px;
+  color: rgba(245, 202, 118, .96);
+  background: rgba(245, 202, 118, .08);
+}
+.voice-error-panel {
+  margin-top: 10px;
+  max-width: min(520px, 80vw);
+  border: 1px solid rgba(248, 113, 113, .28);
+  border-radius: 8px;
+  padding: 8px 11px;
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: center;
+  color: rgba(254, 202, 202, .92);
+  background: rgba(127, 29, 29, .22);
+}
 @keyframes vo-breathe { 0%,100%{transform:scale(1)} 50%{transform:scale(1.08)} }
 @keyframes vo-talk { 0%,100%{transform:scale(1)} 25%{transform:scale(1.14)} 60%{transform:scale(.95)} }
 @keyframes vo-ripple {

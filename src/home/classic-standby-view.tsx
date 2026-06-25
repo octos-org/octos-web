@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   CalendarDays,
   Home,
@@ -16,9 +17,11 @@ import { useNews, timeAgo } from "./use-news";
 import { PhotoFrame } from "./photo-frame";
 import { SmartHomePanel } from "./smart-home";
 import { TimerWidget } from "./timer-widget";
-import { useVoiceInput } from "./use-voice-input";
 import { useWeather } from "./use-weather";
 import { VoiceOrb } from "./voice-orb";
+import { unlockAudio } from "./voice/audio-playback";
+import { useOminixRuntimeSummary } from "./use-ominix-runtime-summary";
+import type { WakeWordStatusView } from "./voice/use-wake-word-listener";
 import type { WidgetConfig, WidgetType } from "./widget-registry";
 
 interface ClassicStandbyViewProps {
@@ -26,6 +29,7 @@ interface ClassicStandbyViewProps {
   onMusicToggle: () => void;
   musicPlaying: boolean;
   nightActive: boolean;
+  wakeWordStatus?: WakeWordStatusView;
 }
 
 function isWidgetOn(widgets: WidgetConfig[], type: WidgetType): boolean {
@@ -38,32 +42,27 @@ export function ClassicStandbyView({
   onMusicToggle,
   musicPlaying,
   nightActive,
+  wakeWordStatus,
 }: ClassicStandbyViewProps) {
+  const navigate = useNavigate();
   const clock = useClock();
   const weather = useWeather();
-  const { strings, tempUnit, clockFormat, widgets, newsFeedUrl, lang, burnInProtection } =
+  const { strings, tempUnit, clockFormat, widgets, newsFeedUrl, burnInProtection } =
     useHomeSettings();
   const burnIn = useBurnInProtection(burnInProtection);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const news = useNews(newsFeedUrl);
   const events = useEvents();
-
-  const voice = useVoiceInput({
-    onResult: (text) => onActivate(text),
-    lang: lang === "zh" ? "zh-CN" : "en-US",
-  });
+  const voiceRuntime = useOminixRuntimeSummary();
 
   const handleOrbClick = useCallback(() => {
-    if (!voice.isSupported) {
-      onActivate("");
+    if (!voiceRuntime.ready) {
+      if (!voiceRuntime.loading) navigate("/settings?tab=ominix");
       return;
     }
-    if (voice.orbState === "listening") {
-      voice.stop();
-    } else if (voice.orbState === "idle") {
-      voice.start();
-    }
-  }, [voice, onActivate]);
+    unlockAudio();
+    navigate("/voice");
+  }, [navigate, voiceRuntime.loading, voiceRuntime.ready]);
 
   const dateStr = `${strings.weekdays[clock.date.getDay()]}, ${
     strings.months[clock.date.getMonth()]
@@ -171,19 +170,21 @@ export function ClassicStandbyView({
 
             {isWidgetOn(widgets, "voice-orb") && (
               <div className="classic-home-voice-panel">
-                <VoiceOrb state={voice.orbState} onClick={handleOrbClick} />
-                {voice.orbState === "listening" && voice.transcript && (
-                  <p className="mt-2 max-w-[200px] truncate text-center text-sm text-white/40">
-                {voice.transcript}
-              </p>
+                <VoiceOrb
+                  state={voiceRuntime.ready ? "idle" : "processing"}
+                  onClick={handleOrbClick}
+                  disabled={voiceRuntime.loading}
+                />
+                <p className={`classic-home-voice-status is-${voiceRuntime.tone}`}>
+                  {voiceRuntime.label}
+                </p>
+                {wakeWordStatus && (
+                  <p className={`classic-home-voice-status is-${wakeWordStatus.tone}`}>
+                    {wakeWordStatus.label}
+                  </p>
+                )}
+              </div>
             )}
-            {(!voice.isSupported || voice.error) && (
-              <p className="mt-2 max-w-[220px] text-center text-xs text-white/35">
-                {voice.error ?? strings.voiceNotSupported}
-              </p>
-            )}
-          </div>
-        )}
           </section>
         )}
 

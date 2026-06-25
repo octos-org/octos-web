@@ -23,6 +23,7 @@
  */
 
 import { useMemo, useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { ScopedRuntimeBridge } from "@/runtime/runtime-provider";
 import {
   SessionContext,
@@ -44,6 +45,12 @@ import {
   useHomeSettings,
 } from "./home-settings-context";
 import { useClock } from "./use-clock";
+import { useOminixRuntimeSummary } from "./use-ominix-runtime-summary";
+import { unlockAudio } from "./voice/audio-playback";
+import {
+  describeWakeWordListener,
+  useWakeWordListener,
+} from "./voice/use-wake-word-listener";
 
 type Mode = "standby" | "conversation";
 
@@ -106,6 +113,7 @@ function useNightMode(): boolean {
  * Lives inside the scoped SessionContext + ScopedRuntimeBridge.
  */
 function HomeAssistantShell() {
+  const navigate = useNavigate();
   const [mode, setMode] = useState<Mode>("standby");
   const [prefill, setPrefill] = useState<string | undefined>(undefined);
   const musicController = useMemo(() => createBilibiliMusicController(), []);
@@ -113,6 +121,28 @@ function HomeAssistantShell() {
     musicController.getSnapshot(),
   );
   const nightActive = useNightMode();
+  const voiceRuntime = useOminixRuntimeSummary();
+
+  const handleWakeDetected = useCallback(() => {
+    unlockAudio();
+    navigate("/voice");
+  }, [navigate]);
+
+  const wakeWord = useWakeWordListener({
+    enabled: mode === "standby" && voiceRuntime.ready,
+    onDetected: handleWakeDetected,
+  });
+  const wakeWordStatus = useMemo(
+    () =>
+      voiceRuntime.ready
+        ? describeWakeWordListener(
+            wakeWord.state,
+            wakeWord.wakeWord,
+            wakeWord.error,
+          )
+        : undefined,
+    [voiceRuntime.ready, wakeWord.error, wakeWord.state, wakeWord.wakeWord],
+  );
 
   const activate = useCallback((cardPrefill?: string) => {
     setPrefill(cardPrefill);
@@ -161,6 +191,7 @@ function HomeAssistantShell() {
           onMusicToggle={toggleMusic}
           musicPlaying={musicSnapshot.playing}
           nightActive={nightActive}
+          wakeWordStatus={wakeWordStatus}
         />
       </div>
 

@@ -19,7 +19,7 @@ test.describe("Adaptive routing", () => {
     const hedgeRadio = page.locator("[role='radio']").filter({ hasText: "Hedge" });
     await expect(hedgeRadio).toBeVisible({ timeout: 3_000 });
     const isDisabled = await hedgeRadio.isDisabled();
-    test.skip(isDisabled, "Adaptive routing not available on this server profile");
+    expect(isDisabled, "Adaptive routing should be available in e2e harness").toBe(false);
 
     await hedgeRadio.click();
     await page.waitForTimeout(1000);
@@ -30,7 +30,7 @@ test.describe("Adaptive routing", () => {
     const hedgeRadio = page.locator("[role='radio']").filter({ hasText: "Hedge" });
     await expect(hedgeRadio).toBeVisible({ timeout: 3_000 });
     const isDisabled = await hedgeRadio.isDisabled();
-    test.skip(isDisabled, "Adaptive routing not available on this server profile");
+    expect(isDisabled, "Adaptive routing should be available in e2e harness").toBe(false);
 
     await hedgeRadio.click();
     await page.waitForTimeout(1000);

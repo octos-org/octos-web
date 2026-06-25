@@ -30,6 +30,10 @@ const files = [
   [ort, "ort-wasm-simd-threaded.wasm"],
   [ort, "ort-wasm-simd-threaded.jsep.mjs"],
   [ort, "ort-wasm-simd-threaded.jsep.wasm"],
+  [ort, "ort-wasm-simd-threaded.asyncify.mjs"],
+  [ort, "ort-wasm-simd-threaded.asyncify.wasm"],
+  [ort, "ort-wasm-simd-threaded.jspi.mjs"],
+  [ort, "ort-wasm-simd-threaded.jspi.wasm"],
 ];
 
 let copied = 0;

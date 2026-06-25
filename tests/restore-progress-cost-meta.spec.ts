@@ -1,5 +1,5 @@
 /**
- * Live smoke test for PR fix/restore-progress-cost-meta-events.
+ * Smoke test for PR fix/restore-progress-cost-meta-events.
  *
  * Exercises the three regressions in one happy path:
  *
@@ -12,36 +12,14 @@
  *      duration) renders via `message.meta` stamped on
  *      `finalizeAssistant` from the per-turn snapshot.
  *
- * Sets up auth like `mini5-history-timing-probe.spec.ts` in the sibling
- * octos repo — `OCTOS_USER_TOKEN` env var, OCTOS_TEST_URL for the
- * target. Skips when no token is provided so CI can run the full
- * suite without infra dependencies.
+ * Runs through the current chat UI protocol. The default e2e harness emits the
+ * same event shapes so this spec can run without external infra.
  */
 
-import { test, expect, type Page } from "@playwright/test";
-
-const BASE_URL = process.env.OCTOS_TEST_URL || "";
-const TOKEN = process.env.OCTOS_USER_TOKEN || "";
-const PROFILE = process.env.OCTOS_PROFILE || "admin";
+import { test, expect } from "@playwright/test";
+import { createNewSession, getInput, getSendButton, login, SEL } from "./helpers";
 
 test.describe("restore progress / cost / meta events", () => {
-  test.skip(!BASE_URL || !TOKEN, "OCTOS_TEST_URL + OCTOS_USER_TOKEN required");
-
-  async function seed(page: Page) {
-    await page.addInitScript(
-      ([t, p]) => {
-        try {
-          localStorage.setItem("octos_session_token", t as string);
-          localStorage.setItem("selected_profile", p as string);
-          localStorage.removeItem("octos_auth_token");
-        } catch {
-          // some sandbox modes block storage; nothing to do.
-        }
-      },
-      [TOKEN, PROFILE],
-    );
-  }
-
   test("send a message, see spinner / cost-bar / bubble footer", async ({
     page,
   }) => {
@@ -72,25 +50,15 @@ test.describe("restore progress / cost / meta events", () => {
       }
     });
 
-    await seed(page);
-    await page.goto(`${BASE_URL}/chat`, { waitUntil: "domcontentloaded" });
-
-    // Wait for the chat input to be ready (the SPA has booted and the
-    // WS bridge has connected).
-    await page.waitForSelector("[data-testid='chat-input']", { timeout: 30_000 });
-
-    // Start a new session to keep the test isolated.
-    await page.click("[data-testid='new-chat-button']").catch(() => {
-      // Some surfaces auto-create on first send; if the button is
-      // absent that's fine.
-    });
+    await login(page);
+    await createNewSession(page);
 
     // Send a prompt that should trigger a tool call (shell) so the
     // spinner fires. "What time is it?" is cheap and reliable on the
     // mini5 deployment.
-    const input = page.locator("[data-testid='chat-input']").first();
+    const input = getInput(page);
     await input.fill("What is 7 times 8? Use the shell tool.");
-    await page.locator("[data-testid='send-button']").click();
+    await getSendButton(page).click();
 
     // Wait for the spinner row to appear — this is the regression #1
     // surface (`crew:tool_progress` dispatched by the router).
@@ -124,9 +92,7 @@ test.describe("restore progress / cost / meta events", () => {
     // Regression #2 (bubble footer): a finalised assistant bubble
     // should now have meta — assert the data-testid surface contains
     // something looking like a token count or model marker.
-    const lastAssistant = page
-      .locator("[data-testid='assistant-message']")
-      .last();
+    const lastAssistant = page.locator(SEL.assistantMessage).last();
     await expect(lastAssistant).toBeVisible({ timeout: 30_000 });
 
     // Counter assertions — at least one fan-out must have fired for

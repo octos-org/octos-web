@@ -16,6 +16,7 @@ interface SettingsMockOptions {
   operatorTasksError?: { status: number; body: unknown };
   ominixServiceActionErrors?: Partial<Record<"start" | "stop" | "restart", { status: number; body: unknown }>>;
   ominixHealthError?: { status: number; body: unknown };
+  ominixRuntimeOverride?: Record<string, unknown>;
   accessibleProfiles?: AccessibleProfileMock[];
   canAccessAdminPortal?: boolean;
 }
@@ -94,6 +95,8 @@ async function installAdminSettingsMocks(
   const profileHeaders: Array<string | null> = [];
   const profileUpdateBodies: unknown[] = [];
   const serviceActions: string[] = [];
+  let repairActions = 0;
+  let bootstrapActions = 0;
   const logLineRequests: number[] = [];
   const accessibleProfiles = options.accessibleProfiles ?? [
     {
@@ -183,6 +186,113 @@ async function installAdminSettingsMocks(
       }),
     }),
   );
+
+  const ominixRuntime = {
+    state: "healthy",
+    url: "http://localhost:8080",
+    url_source: "env",
+    port: 8080,
+    home_dir: "/Users/yao",
+    ominix_dir: "/Users/yao/.ominix",
+    binary_path: "/Users/yao/.local/bin/ominix-api",
+    binary_installed: true,
+    metallib_path: "/Users/yao/.local/bin/mlx.metallib",
+    metallib_installed: true,
+    models_dir: "/Users/yao/.OminiX/models",
+    models_dir_exists: true,
+    plist_path: "/Users/yao/Library/LaunchAgents/io.ominix.ominix-api.plist",
+    plist_exists: true,
+    plist_port: 8080,
+    discovery_path: "/Users/yao/.ominix/api_url",
+    discovery_url: "http://localhost:8080",
+    service_registered: true,
+    service_running: true,
+    launchctl_skipped: false,
+    health: { healthy: true, http_status: 200, detail: { version: "0.4.2" } },
+    voice_models_ready: true,
+    voice_models: [
+      {
+        id: "qwen3-asr-1.7b",
+        role: "asr",
+        status: "ready",
+        ready: true,
+        name: "Qwen3 ASR",
+        size: "1.7 GB",
+      },
+      {
+        id: "qwen3-tts",
+        role: "tts",
+        status: "ready",
+        ready: true,
+        name: "Qwen3 TTS",
+        size: "2.1 GB",
+      },
+    ],
+    issues: [],
+    can_repair: true,
+    suggested_action: "ready",
+    ...(options.ominixRuntimeOverride ?? {}),
+  };
+
+  await page.route("**/api/admin/ominix/runtime", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(ominixRuntime),
+    }),
+  );
+
+  await page.route("**/api/admin/ominix/repair", async (route) => {
+    repairActions += 1;
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        message: "OMiniX API is healthy at http://localhost:8080",
+        dry_run: false,
+        actions: ["kept launchd service"],
+        status: ominixRuntime,
+      }),
+    });
+  });
+
+  await page.route("**/api/admin/ominix/bootstrap", async (route) => {
+    bootstrapActions += 1;
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        message: "OMiniX API and core voice models are ready",
+        actions: ["kept qwen3-asr-1.7b", "downloaded qwen3-tts"],
+        status: {
+          ...ominixRuntime,
+          state: "healthy",
+          voice_models_ready: true,
+          suggested_action: "ready",
+        },
+        models_ready: true,
+        models: [
+          {
+            id: "qwen3-asr-1.7b",
+            role: "asr",
+            ready: true,
+            action: "kept",
+            status_before: "ready",
+            status_after: "ready",
+            size: "1.7 GB",
+          },
+          {
+            id: "qwen3-tts",
+            role: "tts",
+            ready: true,
+            action: "downloaded",
+            status_before: "not_downloaded",
+            status_after: "ready",
+            size: "2.1 GB",
+          },
+        ],
+      }),
+    });
+  });
 
   await page.route("**/api/admin/platform-skills/ominix-api/models", (route) =>
     route.fulfill({
@@ -341,6 +451,8 @@ async function installAdminSettingsMocks(
     getProfileHeaders: () => profileHeaders,
     getProfileUpdateBodies: () => profileUpdateBodies,
     getServiceActions: () => serviceActions,
+    getRepairActions: () => repairActions,
+    getBootstrapActions: () => bootstrapActions,
     getLogLineRequests: () => logLineRequests,
   };
 }
@@ -787,8 +899,6 @@ test.describe("Settings page — tab smoke tests", () => {
     page,
   }) => {
     await goToSettings(page);
-    const profileLoaded = await hasProfile(page);
-    if (!profileLoaded) { test.skip(); return; }
 
     await clickTab(page, "LLM");
     await expect(
@@ -879,8 +989,6 @@ test.describe("Settings page — tab smoke tests", () => {
     page,
   }) => {
     await goToSettings(page);
-    const profileLoaded = await hasProfile(page);
-    if (!profileLoaded) { test.skip(); return; }
 
     await clickTab(page, "Skills");
     await expect(
@@ -893,8 +1001,6 @@ test.describe("Settings page — tab smoke tests", () => {
 
   test("Channels tab renders Add Channel button", async ({ page }) => {
     await goToSettings(page);
-    const profileLoaded = await hasProfile(page);
-    if (!profileLoaded) { test.skip(); return; }
 
     await clickTab(page, "Channels");
     await expect(
@@ -940,8 +1046,6 @@ test.describe("Settings page — tab smoke tests", () => {
 
   test("Sandbox tab renders configuration section", async ({ page }) => {
     await goToSettings(page);
-    const profileLoaded = await hasProfile(page);
-    if (!profileLoaded) { test.skip(); return; }
 
     await clickTab(page, "Sandbox");
     await expect(
@@ -954,8 +1058,6 @@ test.describe("Settings page — tab smoke tests", () => {
 
   test("Tools tab renders Web Search APIs section", async ({ page }) => {
     await goToSettings(page);
-    const profileLoaded = await hasProfile(page);
-    if (!profileLoaded) { test.skip(); return; }
 
     await clickTab(page, "Tools");
     await expect(
@@ -989,8 +1091,6 @@ test.describe("Settings page — tab smoke tests", () => {
 
   test("System tab shows Operator Overview (admin)", async ({ page }) => {
     await goToSettings(page);
-    const profileLoaded = await hasProfile(page);
-    if (!profileLoaded) { test.skip(); return; }
 
     await clickTab(page, "System");
     await expect(
@@ -1021,8 +1121,6 @@ test.describe("Settings page — tab smoke tests", () => {
 
   test("Server tab shows Deployment Mode (admin)", async ({ page }) => {
     await goToSettings(page);
-    const profileLoaded = await hasProfile(page);
-    if (!profileLoaded) { test.skip(); return; }
 
     await clickTab(page, "Server");
     await expect(
@@ -1046,8 +1144,11 @@ test.describe("Settings page — tab smoke tests", () => {
     await expect(
       page.locator("h3", { hasText: "OminiX API" }),
     ).toBeVisible({ timeout: TIMEOUT });
-    await expect(page.getByText("Healthy")).toBeVisible({ timeout: TIMEOUT });
+    await expect(page.getByText("Healthy", { exact: true })).toBeVisible({
+      timeout: TIMEOUT,
+    });
     await expect(page.getByText("LaunchAgent registered")).toBeVisible();
+    await expect(page.getByText("Runtime healthy")).toBeVisible();
     await expect(page.getByText("Qwen3 ASR").first()).toBeVisible();
     await expect(page.getByText("Qwen3 TTS").first()).toBeVisible();
     await expect(
@@ -1096,6 +1197,60 @@ test.describe("Settings page — tab smoke tests", () => {
     ).toBeVisible({ timeout: TIMEOUT });
     await page.getByRole("button", { name: "Confirm" }).click();
     await expect.poll(() => mocks.getServiceActions()).toEqual(["restart"]);
+
+    await page.getByRole("button", { name: "Repair" }).click();
+    await expect.poll(() => mocks.getRepairActions()).toBe(1);
+  });
+
+  test("OminiX tab bootstraps core voice models when API is healthy but models are missing", async ({
+    page,
+  }) => {
+    const mocks = await installAdminSettingsMocks(page, {
+      ominixRuntimeOverride: {
+        state: "models_missing",
+        voice_models_ready: false,
+        suggested_action: "bootstrap_voice_models",
+        issues: [
+          {
+            code: "missing_voice_model",
+            severity: "warning",
+            message: "Core voice model qwen3-tts is not ready",
+            fixable: true,
+          },
+        ],
+        voice_models: [
+          {
+            id: "qwen3-asr-1.7b",
+            role: "asr",
+            status: "ready",
+            ready: true,
+            name: "Qwen3 ASR",
+            size: "1.7 GB",
+          },
+          {
+            id: "qwen3-tts",
+            role: "tts",
+            status: "not_downloaded",
+            ready: false,
+            name: "Qwen3 TTS",
+            size: "2.1 GB",
+          },
+        ],
+      },
+    });
+    await seedAdminSession(page);
+
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: TIMEOUT });
+    await clickTab(page, "OminiX");
+
+    await expect(
+      page.getByText("missing_voice_model", { exact: true }),
+    ).toBeVisible({ timeout: TIMEOUT });
+    await page.getByRole("button", { name: "Prepare Voice Models" }).click();
+
+    await expect.poll(() => mocks.getBootstrapActions()).toBe(1);
+    await expect.poll(() => mocks.getRepairActions()).toBe(0);
   });
 
   test("OminiX service actions surface backend error details", async ({ page }) => {
@@ -1235,8 +1390,6 @@ test.describe("Settings page — tab smoke tests", () => {
 
   test("tab switching changes content", async ({ page }) => {
     await goToSettings(page);
-    const profileLoaded = await hasProfile(page);
-    if (!profileLoaded) { test.skip(); return; }
 
     await clickTab(page, "Profile");
     await expect(

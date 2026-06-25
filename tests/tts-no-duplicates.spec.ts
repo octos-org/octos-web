@@ -82,7 +82,6 @@ function findDuplicates(
 
 test.describe("TTS duplicate message detection", () => {
   test.beforeEach(async ({ page }) => {
-    test.skip(process.env.HAS_TTS !== "1", "TTS not configured (set HAS_TTS=1)");
     await login(page);
     // Always start in a fresh session
     await createNewSession(page);
@@ -315,7 +314,7 @@ test.describe("TTS duplicate message detection", () => {
     expect(audioAttachments.length).toBe(1);
   });
 
-  test("message store has no duplicate historySeq", async ({ page }) => {
+  test("rendered history has no duplicate recovered messages", async ({ page }) => {
     // Send TTS request
     console.log("Step 1: Send TTS request and wait");
     await sendAndWait(page, "用杨幂声音说：测试消息", {
@@ -325,60 +324,27 @@ test.describe("TTS duplicate message detection", () => {
     // Wait for file delivery and sync
     await page.waitForTimeout(15_000);
 
-    // Check the message store directly for duplicate historySeqs
-    console.log("Step 2: Check message store for duplicates");
-    const storeState = await page.evaluate(() => {
-      // Access the message store's internal state via the React hook
-      const sessionId = localStorage.getItem("octos_current_session") || "";
-      // The store exposes getMessages publicly
-      const store = (window as any).__OCTOS_MSG_STORE__;
-      if (!store) return { error: "store not accessible", messages: [] };
-
-      return {
-        sessionId,
-        messages: store.getMessages(sessionId).map(
-          (m: any) => ({
-            id: m.id,
-            role: m.role,
-            text: (m.text || "").slice(0, 80),
-            historySeq: m.historySeq,
-            status: m.status,
-            files: m.files?.length || 0
-          }),
-        )
-      };
-    });
-
-    expect(storeState.error).toBeUndefined();
-
-    console.log(`  Session: ${storeState.sessionId}`);
-    for (const m of storeState.messages) {
+    // Check the rendered history for the duplicate-row symptoms that duplicate
+    // historySeqs used to cause. The ThreadStore internals are not exposed as a
+    // public test hook in the browser bundle.
+    console.log("Step 2: Check rendered history for duplicates");
+    const threadBubbles = await getRenderedThreadBubbles(page);
+    const audioAttachments = await getRenderedAudioAttachments(page);
+    for (const [index, bubble] of threadBubbles.entries()) {
       console.log(
-        `  [seq=${m.historySeq ?? "none"}] ${m.role} (${m.status}): ${m.text} files=${m.files}`,
+        `  [${index}] ${bubble.role}: ${bubble.text.slice(0, 100)} audio=${bubble.audioAttachments.length}`,
       );
     }
+    const assistantBubbles = threadBubbles
+      .filter((bubble) => bubble.role === "assistant")
+      .map((bubble) => ({ text: bubble.text }));
+    const duplicateAssistantText = findDuplicates(assistantBubbles);
+    const duplicateAudio = findDuplicateAudioAttachments(audioAttachments);
 
-    // Check for duplicate historySeq values
-    const seqs = storeState.messages
-      .map((m: any) => m.historySeq)
-      .filter((s: any) => typeof s === "number");
-    const uniqueSeqs = new Set(seqs);
-    if (seqs.length !== uniqueSeqs.size) {
-      const dupeSeqs = seqs.filter(
-        (s: number, i: number) => seqs.indexOf(s) !== i,
-      );
-      console.log(`  DUPLICATE historySeq values: ${dupeSeqs}`);
-    }
-    expect(seqs.length).toBe(uniqueSeqs.size);
-
-    // Check for duplicate text content
-    const assistantTexts = storeState.messages
-      .filter((m: any) => m.role === "assistant" && m.text)
-      .map((m: any) => m.text);
-    const uniqueTexts = new Set(assistantTexts);
-    if (assistantTexts.length !== uniqueTexts.size) {
-      console.log("  DUPLICATE assistant texts found in store");
-    }
-    expect(assistantTexts.length).toBe(uniqueTexts.size);
+    expect(threadBubbles[0]?.role).toBe("user");
+    expect(threadBubbles.filter((bubble) => bubble.role === "user")).toHaveLength(1);
+    expect(duplicateAssistantText).toHaveLength(0);
+    expect(duplicateAudio).toHaveLength(0);
+    expect(audioAttachments).toHaveLength(1);
   });
 });

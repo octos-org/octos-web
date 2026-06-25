@@ -133,6 +133,32 @@ async function installWorkbenchMocks(
     size_bytes: contentEntry.size_bytes,
     modified_at: contentEntry.created_at,
   };
+  const ominixRuntime = {
+    state: "healthy",
+    url: "http://localhost:8081",
+    url_source: "env",
+    port: 8081,
+    home_dir: "/Users/test",
+    ominix_dir: "/Users/test/.ominix",
+    binary_path: "/Users/test/.local/bin/ominix-api",
+    binary_installed: true,
+    metallib_path: "/Users/test/.local/bin/mlx.metallib",
+    metallib_installed: true,
+    models_dir: "/Users/test/.OminiX/models",
+    models_dir_exists: true,
+    plist_path: "/Users/test/Library/LaunchAgents/io.ominix.ominix-api.plist",
+    plist_exists: true,
+    plist_port: 8081,
+    discovery_path: "/Users/test/.ominix/api_url",
+    discovery_url: "http://localhost:8081",
+    service_registered: true,
+    service_running: true,
+    launchctl_skipped: false,
+    health: { healthy: true, http_status: 200, detail: { version: "test" } },
+    issues: [],
+    can_repair: true,
+    suggested_action: "ready",
+  };
 
   await page.addInitScript(() => {
     localStorage.setItem("octos_session_token", "ui-smoke-token");
@@ -246,9 +272,18 @@ async function installWorkbenchMocks(
       await fulfillJson(route, {
         platform_skills: [{ name: "voice", installed: true }],
         skills_dir: "/tmp/skills",
-        ominix_api: { url: "http://localhost:8080", healthy: true, service_registered: true },
+        ominix_api: {
+          url: "http://localhost:8081",
+          healthy: true,
+          service_registered: true,
+          runtime: ominixRuntime,
+        },
         models: { dir: "/tmp/models", asr: ["qwen3-asr-1.7b"], tts: ["qwen3-tts"] },
       });
+      return;
+    }
+    if (path === "/api/admin/ominix/runtime") {
+      await fulfillJson(route, ominixRuntime);
       return;
     }
     if (path === "/api/integrations/bilibili/first-video") {
@@ -477,7 +512,7 @@ test.describe("UI redesign shell smoke", () => {
       .poll(() => page.evaluate(() => localStorage.getItem("octos_home_burn_in_protection")))
       .toBe("true");
 
-    await page.getByRole("button", { name: "Close" }).click();
+    await panel.getByRole("button", { name: "Close", exact: true }).click();
     await expect(panel).toHaveCSS("visibility", "hidden");
   });
 
@@ -595,6 +630,25 @@ test.describe("UI redesign shell smoke", () => {
     await expect(climatePanel).toBeVisible();
     await expect(climatePanel.getByLabel("Bedroom AC Fan")).toBeVisible();
     await expect(climatePanel.getByRole("button", { name: "Cool", exact: true })).toBeVisible();
+  });
+
+  test("home voice tile opens the OminiX voice surface with runtime status", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 948, height: 749 });
+    await page.addInitScript(() => {
+      localStorage.setItem("octos_home_ui_style", "metro");
+      localStorage.setItem("octos_home_night_mode", "off");
+      localStorage.removeItem("octos_home_metro_layout");
+    });
+    await page.goto("/home", { waitUntil: "networkidle" });
+
+    await expect(page.getByText("Voice engine ready")).toBeVisible();
+    await page.locator(".metro-tile-voice .home-voice-orb").click();
+
+    await expect(page).toHaveURL(/\/voice$/);
+    await expect(page.getByText("Voice engine ready")).toBeVisible();
+    await expect(page.getByRole("button", { name: "voice orb" })).toBeVisible();
   });
 
   test("classic home uses an aligned widget grid", async ({ page }) => {
