@@ -216,4 +216,22 @@ describe("VoiceView", () => {
     render(<VoiceView sessionId="voice-test" onBack={vi.fn()} />);
     expect(screen.queryByText("Voice engine ready")).toBeNull();
   });
+
+  it("stays silent while the runtime is still checking", () => {
+    runtimeMock.label = "Checking voice engine";
+    runtimeMock.tone = "default";
+    runtimeMock.ready = false;
+    runtimeMock.loading = true;
+    runtimeMock.needsAttention = false;
+
+    render(<VoiceView sessionId="voice-test" onBack={vi.fn()} />);
+
+    // No not-ready guidance while still checking — the state is silent. (The
+    // orb keeps its not-ready affordance, but its click is a no-op until the
+    // check resolves, so no explicit settings CTA is shown either.)
+    expect(
+      screen.queryByText("语音引擎未就绪，请先在 Settings 里安装或修复 OMiniX。"),
+    ).toBeNull();
+    expect(screen.queryByText(/打开 OMiniX 设置/)).toBeNull();
+  });
 });

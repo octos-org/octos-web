@@ -139,7 +139,9 @@ export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
             ? conv.exiting
               ? "再见 👋"
               : STATE_WORD[conv.state]
-            : "语音引擎未就绪，请先在 Settings 里安装或修复 OMiniX。"}
+            : runtime.loading
+              ? /* still checking — stay silent, the pill is hidden too */ ""
+              : "语音引擎未就绪，请先在 Settings 里安装或修复 OMiniX。"}
         </div>
 
         {runtime.ready && conv.error && (
