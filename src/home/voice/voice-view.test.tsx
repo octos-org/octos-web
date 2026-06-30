@@ -26,6 +26,7 @@ const runtimeMock = vi.hoisted((): {
   loading: boolean;
   canRepair: boolean;
   state: string;
+  needsAttention: boolean;
   refresh: ReturnType<typeof vi.fn>;
 } => ({
   label: "Voice engine ready",
@@ -34,6 +35,7 @@ const runtimeMock = vi.hoisted((): {
   loading: false,
   canRepair: true,
   state: "healthy",
+  needsAttention: false,
   refresh: vi.fn(),
 }));
 
@@ -111,6 +113,7 @@ describe("VoiceView", () => {
     runtimeMock.loading = false;
     runtimeMock.canRepair = true;
     runtimeMock.state = "healthy";
+    runtimeMock.needsAttention = false;
     runtimeMock.refresh.mockReset();
   });
 
@@ -195,13 +198,22 @@ describe("VoiceView", () => {
     runtimeMock.loading = false;
     runtimeMock.canRepair = true;
     runtimeMock.state = "missing_plist";
+    runtimeMock.needsAttention = true;
 
     render(<VoiceView sessionId="voice-test" onBack={vi.fn()} />);
 
     expect(screen.getByText("语音引擎未就绪，请先在 Settings 里安装或修复 OMiniX。")).toBeTruthy();
+    // The readiness pill surfaces only in a problem state.
+    expect(screen.getByText("Voice engine needs repair")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "open OMiniX settings" }));
 
     expect(conversationMock.start).not.toHaveBeenCalled();
     expect(navigateMock).toHaveBeenCalledWith("/settings?tab=ominix");
+  });
+
+  it("does not show the readiness pill when the engine is ready", () => {
+    // Defaults from beforeEach: ready + needsAttention=false.
+    render(<VoiceView sessionId="voice-test" onBack={vi.fn()} />);
+    expect(screen.queryByText("Voice engine ready")).toBeNull();
   });
 });

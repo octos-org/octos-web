@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
-  fetchOminixRuntimeStatus,
-  type OminixRuntimeStatus,
+  fetchVoiceReadiness,
+  type VoiceReadiness,
 } from "@/settings/settings-api";
 
 export type OminixRuntimeTone = "default" | "success" | "warning" | "danger";
@@ -13,10 +13,20 @@ export interface OminixRuntimeSummary {
   loading: boolean;
   canRepair: boolean;
   state: string;
+  /**
+   * Whether the UI should surface the voice status at all. Only a problem
+   * state (`warning`/`danger`) warrants a notification — a ready engine is
+   * used silently, and the transient "checking" state stays quiet too. UI
+   * surfaces should render the status label only when this is true.
+   */
+  needsAttention: boolean;
   refresh: () => Promise<void>;
 }
 
-type OminixRuntimeSnapshot = Omit<OminixRuntimeSummary, "refresh">;
+type OminixRuntimeSnapshot = Omit<
+  OminixRuntimeSummary,
+  "refresh" | "needsAttention"
+>;
 
 const POLL_MS = 10_000;
 
@@ -38,72 +48,69 @@ function emit(summary: OminixRuntimeSnapshot) {
   listeners.forEach((listener) => listener(summary));
 }
 
-export function summarizeOminixRuntime(runtime: OminixRuntimeStatus): OminixRuntimeSnapshot {
-  if (runtime.health.healthy && runtime.voice_models_ready !== false) {
+/**
+ * Collapse the three-leg pipeline readiness into the UI snapshot. The check
+ * confirms the WHOLE voice path is usable under the caller's current config —
+ * ASR (always on-device), LLM, and TTS validated per its effective route
+ * (cloud credentials for Volcano, or the on-device GPT-SoVITS engine). When a
+ * leg blocks, its `detail` becomes the label so the UI names the exact gap
+ * instead of a generic "models not ready".
+ *
+ * `canRepair` is true only for on-device-engine gaps (ASR model / local TTS),
+ * which the OMiniX repair flow can fix; LLM and cloud-credential gaps are a
+ * settings task, not a repair, so they report `canRepair: false`.
+ */
+export function summarizeVoiceReadiness(readiness: VoiceReadiness): OminixRuntimeSnapshot {
+  if (readiness.ready) {
     return {
       label: "Voice engine ready",
       tone: "success",
       ready: true,
       loading: false,
-      canRepair: runtime.can_repair,
-      state: runtime.state,
+      canRepair: false,
+      state: "ready",
     };
   }
 
-  if (
-    runtime.suggested_action === "bootstrap_voice_models" ||
-    (runtime.health.healthy && runtime.voice_models_ready === false)
-  ) {
+  // Report the first failing leg, in pipeline order: ASR → LLM → TTS.
+  if (!readiness.asr.ready) {
     return {
-      label: "Voice models not ready",
+      label: readiness.asr.detail,
       tone: "warning",
       ready: false,
       loading: false,
       canRepair: true,
-      state: runtime.state,
+      state: "asr_not_ready",
     };
   }
 
-  if (runtime.can_repair) {
+  if (!readiness.llm.ready) {
     return {
-      label: "Voice engine needs repair",
+      label: readiness.llm.detail,
       tone: "warning",
       ready: false,
       loading: false,
-      canRepair: true,
-      state: runtime.state,
+      canRepair: false,
+      state: "llm_not_ready",
     };
   }
 
-  if (
-    runtime.suggested_action === "install_ominix_api_binary" ||
-    !runtime.binary_installed
-  ) {
-    return {
-      label: "Voice engine not installed",
-      tone: "warning",
-      ready: false,
-      loading: false,
-      canRepair: true,
-      state: runtime.state,
-    };
-  }
-
+  const localTts = readiness.tts.mode === "local";
   return {
-    label: "Voice engine unavailable",
-    tone: "danger",
+    label: readiness.tts.detail,
+    tone: "warning",
     ready: false,
     loading: false,
-    canRepair: false,
-    state: runtime.state,
+    canRepair: localTts,
+    state: `tts_not_ready_${readiness.tts.mode}`,
   };
 }
 
 export function refreshOminixRuntimeSummary(): Promise<void> {
   if (inFlight) return inFlight;
-  inFlight = fetchOminixRuntimeStatus()
-    .then((runtime) => {
-      emit(summarizeOminixRuntime(runtime));
+  inFlight = fetchVoiceReadiness()
+    .then((readiness) => {
+      emit(summarizeVoiceReadiness(readiness));
     })
     .catch(() => {
       emit({
@@ -143,5 +150,9 @@ export function useOminixRuntimeSummary() {
     };
   }, []);
 
-  return { ...summary, refresh: refreshOminixRuntimeSummary };
+  return {
+    ...summary,
+    needsAttention: summary.tone === "warning" || summary.tone === "danger",
+    refresh: refreshOminixRuntimeSummary,
+  };
 }

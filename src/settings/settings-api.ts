@@ -927,6 +927,37 @@ export async function fetchOminixRuntimeStatus(): Promise<OminixRuntimeStatus> {
   return await request<OminixRuntimeStatus>(`${OMINIX_RUNTIME_BASE}/runtime`);
 }
 
+/** Readiness of one voice-pipeline leg. */
+export interface VoiceLeg {
+  ready: boolean;
+  /** Human-readable status, surfaced as the label when this leg blocks. */
+  detail: string;
+}
+
+/** Readiness of the TTS leg, plus the effective route for this profile. */
+export interface VoiceTtsLeg {
+  ready: boolean;
+  /** "cloud" (Volcano) or "local" (on-device GPT-SoVITS). */
+  mode: "cloud" | "local" | string;
+  detail: string;
+}
+
+/**
+ * Per-tenant voice-assistant pre-flight: ASR + LLM + (route-aware) TTS.
+ * `ready` is true only when all three legs are usable under the caller's
+ * current config (e.g. cloud TTS counts its credentials, not a local model).
+ */
+export interface VoiceReadiness {
+  ready: boolean;
+  asr: VoiceLeg;
+  llm: VoiceLeg;
+  tts: VoiceTtsLeg;
+}
+
+export async function fetchVoiceReadiness(): Promise<VoiceReadiness> {
+  return await request<VoiceReadiness>("/api/voice/readiness");
+}
+
 export async function repairOminixRuntime(): Promise<OminixRepairResponse> {
   return await request<OminixRepairResponse>(`${OMINIX_RUNTIME_BASE}/repair`, {
     method: "POST",

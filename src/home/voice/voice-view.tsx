@@ -126,9 +126,13 @@ export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
           <VoiceOrb state={runtime.ready ? conv.state : "error"} />
         </div>
 
-        <div className={`voice-runtime-pill is-${runtime.tone}`}>
-          {runtime.label}
-        </div>
+        {/* Surface the readiness pill only when something is wrong; a ready
+            engine is used silently. */}
+        {runtime.needsAttention && (
+          <div className={`voice-runtime-pill is-${runtime.tone}`}>
+            {runtime.label}
+          </div>
+        )}
 
         <div className="mt-6 min-h-[20px] text-sm text-white/55">
           {runtime.ready
