@@ -2808,6 +2808,97 @@ describe.each(FLAG_STATES)(
     }
   });
 
+  it("merges hydrate media into an existing REST-seeded user message", () => {
+    ThreadStore.replayHistory(SID, [
+      {
+        role: "user",
+        content: "describe this image",
+        timestamp: "2026-07-01T02:53:00Z",
+        thread_id: "cmid-image",
+        client_message_id: "cmid-image",
+      },
+    ]);
+
+    ThreadStore.setHydrateSnapshot(SID, undefined, {
+      messages: [
+        {
+          seq: 0,
+          role: "user",
+          content: "describe this image",
+          thread_id: "cmid-image",
+          client_message_id: "cmid-image",
+          persisted_at: "2026-07-01T02:53:00Z",
+          media: ["uploads/pasted-photo.jpg"],
+        },
+      ],
+    });
+
+    const threads = ThreadStore.getThreads(SID);
+    expect(threads).toHaveLength(1);
+    expect(threads[0].userMsg.text).toBe("describe this image");
+    expect(threads[0].userMsg.files.map((f) => f.path)).toEqual([
+      "uploads/pasted-photo.jpg",
+    ]);
+  });
+
+  it("replays hydrate tool envelopes onto the existing assistant bubble", () => {
+    ThreadStore.replayHistory(SID, [
+      {
+        seq: 0,
+        role: "user",
+        content: "run a shell command",
+        timestamp: "2026-07-01T02:53:00Z",
+        thread_id: "cmid-tools",
+        client_message_id: "cmid-tools",
+      },
+      {
+        seq: 4,
+        role: "assistant",
+        content: "The command finished.",
+        timestamp: "2026-07-01T02:53:05Z",
+        thread_id: "cmid-tools",
+      },
+    ]);
+
+    ThreadStore.setHydrateSnapshot(SID, undefined, {
+      replayed_tool_envelopes: [
+        {
+          thread_id: "cmid-tools",
+          seq: 1,
+          payload: {
+            type: "tool_start",
+            data: { tool_call_id: "tc-shell-1", name: "shell" },
+          },
+        },
+        {
+          thread_id: "cmid-tools",
+          seq: 2,
+          payload: {
+            type: "tool_progress",
+            data: { tool_call_id: "tc-shell-1", message: "running" },
+          },
+        },
+        {
+          thread_id: "cmid-tools",
+          seq: 3,
+          payload: {
+            type: "tool_end",
+            data: { tool_call_id: "tc-shell-1", status: "complete" },
+          },
+        },
+      ],
+    });
+
+    const response = ThreadStore.getThreads(SID)[0].responses[0];
+    expect(response.toolCalls).toHaveLength(1);
+    expect(response.toolCalls[0].id).toBe("tc-shell-1");
+    expect(response.toolCalls[0].name).toBe("shell");
+    expect(response.toolCalls[0].status).toBe("complete");
+    expect(response.toolCalls[0].progress.map((entry) => entry.message)).toEqual([
+      "running",
+    ]);
+  });
+
   /**
    * Confirm the seed is idempotent: a subsequent `replayHistory` call
    * (REST retries fire at 2s/5s/12s) replaces state wholesale, so a

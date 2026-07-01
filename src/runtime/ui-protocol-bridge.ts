@@ -25,6 +25,7 @@ import type {
   ApprovalRespondResult,
   ApprovalScope,
   ConnectionState,
+  Envelope,
   HydratedMessage,
   MessageDeltaEvent,
   FileAttachedEvent,
@@ -603,6 +604,71 @@ interface ProjectionEnvelope {
   };
 }
 
+function guardHydrateToolEnvelope(p: unknown): Envelope | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.thread_id)) return null;
+  if (typeof p.seq !== "number" || !Number.isFinite(p.seq) || p.seq < 0) {
+    return null;
+  }
+  if (!isPlainObject(p.payload)) return null;
+  const payloadType = p.payload.type;
+  if (
+    payloadType !== "tool_start" &&
+    payloadType !== "tool_progress" &&
+    payloadType !== "tool_end"
+  ) {
+    return null;
+  }
+  if (!isPlainObject(p.payload.data)) return null;
+  const data = p.payload.data;
+  if (!isString(data.tool_call_id)) return null;
+  if (payloadType === "tool_start") {
+    if (!isString(data.name)) return null;
+    return {
+      thread_id: p.thread_id,
+      seq: p.seq,
+      client_message_id:
+        typeof p.client_message_id === "string" ? p.client_message_id : undefined,
+      payload: {
+        type: "tool_start",
+        data: {
+          tool_call_id: data.tool_call_id,
+          name: data.name,
+          ...(data.arguments !== undefined ? { arguments: data.arguments } : {}),
+        },
+      },
+    };
+  }
+  if (payloadType === "tool_progress") {
+    if (typeof data.message !== "string") return null;
+    return {
+      thread_id: p.thread_id,
+      seq: p.seq,
+      client_message_id:
+        typeof p.client_message_id === "string" ? p.client_message_id : undefined,
+      payload: {
+        type: "tool_progress",
+        data: { tool_call_id: data.tool_call_id, message: data.message },
+      },
+    };
+  }
+  if (data.status !== "complete" && data.status !== "error") return null;
+  return {
+    thread_id: p.thread_id,
+    seq: p.seq,
+    client_message_id:
+      typeof p.client_message_id === "string" ? p.client_message_id : undefined,
+    payload: {
+      type: "tool_end",
+      data: {
+        tool_call_id: data.tool_call_id,
+        status: data.status,
+        ...(typeof data.error === "string" ? { error: data.error } : {}),
+      },
+    },
+  };
+}
+
 function guardProjectionEnvelope(p: unknown): ProjectionEnvelope | null {
   if (!isPlainObject(p)) return null;
   if (!isString(p.turn_id)) return null;
@@ -985,11 +1051,21 @@ export function guardSessionHydrate(p: unknown): SessionHydrateResult | null {
     }
   }
 
+  let replayedToolEnvelopes: Envelope[] | undefined;
+  if (Array.isArray(p.replayed_tool_envelopes)) {
+    replayedToolEnvelopes = [];
+    for (const e of p.replayed_tool_envelopes) {
+      const guarded = guardHydrateToolEnvelope(e);
+      if (guarded) replayedToolEnvelopes.push(guarded);
+    }
+  }
+
   return {
     session_id: p.session_id,
     cursor,
     messages,
     replayed_envelopes: replayedEnvelopes,
+    replayed_tool_envelopes: replayedToolEnvelopes,
   };
 }
 
