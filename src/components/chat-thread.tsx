@@ -1356,6 +1356,20 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
     };
   }, [recording]);
 
+  useEffect(() => {
+    if (recording !== "video") return;
+    const video = videoPreviewRef.current;
+    const stream = mediaStreamRef.current;
+    if (!video || !stream) return;
+
+    video.srcObject = stream;
+    void video.play().catch(() => {});
+
+    return () => {
+      if (video.srcObject === stream) video.srcObject = null;
+    };
+  }, [recording]);
+
   const startRecording = useCallback(async (mode: "voice" | "video") => {
     try {
       const constraints: MediaStreamConstraints =
@@ -1364,10 +1378,6 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
           : { audio: true, video: { facingMode: "user", width: 640, height: 480 } };
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       mediaStreamRef.current = stream;
-      if (mode === "video" && videoPreviewRef.current) {
-        videoPreviewRef.current.srcObject = stream;
-        videoPreviewRef.current.play();
-      }
       const recordMime =
         mode === "voice"
           ? MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
@@ -1938,7 +1948,7 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
         )}
         {recording === "video" && (
           <div className="message-attachment-card mb-2 overflow-hidden rounded-[10px]">
-            <video ref={videoPreviewRef} muted className="h-48 w-full object-cover" />
+            <video ref={videoPreviewRef} muted playsInline className="h-48 w-full object-cover" />
           </div>
         )}
         {/* File previews */}
