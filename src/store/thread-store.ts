@@ -2551,6 +2551,7 @@ export interface HydrateEnvelope {
 export interface HydrateSnapshot {
   messages?: HydrateMessageRow[];
   replayed_envelopes?: HydrateEnvelope[];
+  replayed_tool_envelopes?: Envelope[];
 }
 
 /**
@@ -2583,6 +2584,106 @@ function hydrateRowToMessageInfo(row: HydrateMessageRow): MessageInfo | null {
     timestamp,
     media: row.media,
   };
+}
+
+function mergeMediaIntoMessage(target: ThreadMessage, media?: string[]): boolean {
+  if (!media || media.length === 0) return false;
+  const seen = new Set(target.files.map((file) => file.path));
+  let changed = false;
+  for (const path of media) {
+    if (seen.has(path)) continue;
+    target.files.push(fileFromMediaPath(path));
+    seen.add(path);
+    changed = true;
+  }
+  return changed;
+}
+
+function rowTimestampMs(row: HydrateMessageRow): number | null {
+  if (!row.persisted_at) return null;
+  const timestamp = new Date(row.persisted_at).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function hydrateRowMatchesResponse(
+  row: HydrateMessageRow,
+  response: ThreadMessage,
+): boolean {
+  if (typeof row.seq === "number" && response.historySeq === row.seq) {
+    return true;
+  }
+  if (row.content === undefined || response.text !== row.content) return false;
+  const timestamp = rowTimestampMs(row);
+  return timestamp === null || response.timestamp === timestamp;
+}
+
+function mergeHydrateMediaIntoExisting(
+  sessionId: string,
+  topic: string | undefined,
+  rows: HydrateMessageRow[],
+): boolean {
+  if (rows.length === 0) return false;
+  const state = sessionsByKey.get(storeKey(sessionId, topic));
+  if (!state) return false;
+  let changed = false;
+
+  for (const row of rows) {
+    if (!row.media || row.media.length === 0) continue;
+    if (row.role === "user") {
+      const anchor = row.client_message_id ?? row.thread_id;
+      const thread = anchor ? state.byId.get(anchor) : undefined;
+      if (!thread) continue;
+      changed = mergeMediaIntoMessage(thread.userMsg, row.media) || changed;
+      continue;
+    }
+
+    const thread = row.thread_id ? state.byId.get(row.thread_id) : undefined;
+    if (!thread) continue;
+    for (const response of thread.responses) {
+      if (hydrateRowMatchesResponse(row, response)) {
+        changed = mergeMediaIntoMessage(response, row.media) || changed;
+        break;
+      }
+    }
+  }
+
+  return changed;
+}
+
+function replayHydrateToolEnvelopes(envelopes: Envelope[] | undefined): void {
+  if (!envelopes || envelopes.length === 0) return;
+  const ordered = [...envelopes].sort((a, b) => {
+    if (a.thread_id === b.thread_id) return a.seq - b.seq;
+    return a.thread_id.localeCompare(b.thread_id);
+  });
+
+  for (const envelope of ordered) {
+    const payload = envelope.payload;
+    if (payload.type === "tool_start") {
+      addToolCall(
+        envelope.thread_id,
+        payload.data.tool_call_id,
+        payload.data.name,
+        payload.data.arguments,
+      );
+      continue;
+    }
+    if (payload.type === "tool_progress") {
+      appendToolProgress(
+        envelope.thread_id,
+        payload.data.tool_call_id,
+        payload.data.message,
+      );
+      continue;
+    }
+    if (payload.type === "tool_end") {
+      setToolCallStatus(
+        envelope.thread_id,
+        payload.data.tool_call_id,
+        payload.data.status === "error" ? "error" : "complete",
+      );
+    }
+  }
 }
 
 /**
@@ -2835,7 +2936,13 @@ export function applyHydrateDedup(
   // `m10-harden-reload-midstream` catches when both the legacy
   // companion AND the envelope land in the same hydrate response.
   seedFromHydrateMessages(sessionId, topic, messages, envelopes);
-  if (envelopes.length === 0) return;
+  if (mergeHydrateMediaIntoExisting(sessionId, topic, messages)) {
+    notify();
+  }
+  if (envelopes.length === 0) {
+    replayHydrateToolEnvelopes(hydrate.replayed_tool_envelopes);
+    return;
+  }
 
   // Build the seq → row metadata index, including media so we can
   // identify per-file companion rows by media-subset against an
@@ -3030,6 +3137,7 @@ export function applyHydrateDedup(
       topic,
     });
   }
+  replayHydrateToolEnvelopes(hydrate.replayed_tool_envelopes);
   notify();
 }
 

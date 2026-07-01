@@ -251,6 +251,7 @@ function runHydrateFor(
     setHydrateSnapshot(sessionId, topic, {
       messages: hydrate.messages,
       replayed_envelopes: hydrate.replayed_envelopes,
+      replayed_tool_envelopes: hydrate.replayed_tool_envelopes,
     });
   })();
 }
