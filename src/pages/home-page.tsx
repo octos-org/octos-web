@@ -223,9 +223,11 @@ function WarmWorkbenchHomePage() {
                   navigate("/voice");
                 }}
                 meta={
-                  <WorkbenchStatusPill tone={voiceRuntime.tone}>
-                    {voiceRuntime.label}
-                  </WorkbenchStatusPill>
+                  voiceRuntime.needsAttention ? (
+                    <WorkbenchStatusPill tone={voiceRuntime.tone}>
+                      {voiceRuntime.label}
+                    </WorkbenchStatusPill>
+                  ) : undefined
                 }
               />
               <WorkbenchRouteCard

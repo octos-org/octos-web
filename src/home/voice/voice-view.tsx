@@ -126,16 +126,22 @@ export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
           <VoiceOrb state={runtime.ready ? conv.state : "error"} />
         </div>
 
-        <div className={`voice-runtime-pill is-${runtime.tone}`}>
-          {runtime.label}
-        </div>
+        {/* Surface the readiness pill only when something is wrong; a ready
+            engine is used silently. */}
+        {runtime.needsAttention && (
+          <div className={`voice-runtime-pill is-${runtime.tone}`}>
+            {runtime.label}
+          </div>
+        )}
 
         <div className="mt-6 min-h-[20px] text-sm text-white/55">
           {runtime.ready
             ? conv.exiting
               ? "再见 👋"
               : STATE_WORD[conv.state]
-            : "语音引擎未就绪，请先在 Settings 里安装或修复 OMiniX。"}
+            : runtime.loading
+              ? /* still checking — stay silent, the pill is hidden too */ ""
+              : "语音引擎未就绪，请先在 Settings 里安装或修复 OMiniX。"}
         </div>
 
         {runtime.ready && conv.error && (

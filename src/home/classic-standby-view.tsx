@@ -175,9 +175,11 @@ export function ClassicStandbyView({
                   onClick={handleOrbClick}
                   disabled={voiceRuntime.loading}
                 />
-                <p className={`classic-home-voice-status is-${voiceRuntime.tone}`}>
-                  {voiceRuntime.label}
-                </p>
+                {voiceRuntime.needsAttention && (
+                  <p className={`classic-home-voice-status is-${voiceRuntime.tone}`}>
+                    {voiceRuntime.label}
+                  </p>
+                )}
                 {wakeWordStatus && (
                   <p className={`classic-home-voice-status is-${wakeWordStatus.tone}`}>
                     {wakeWordStatus.label}

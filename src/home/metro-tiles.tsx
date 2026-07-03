@@ -493,7 +493,9 @@ function VoiceTile({
         onClick={handleClick}
         disabled={runtime.loading}
       />
-      <p className={`metro-voice-status is-${runtime.tone}`}>{runtime.label}</p>
+      {runtime.needsAttention && (
+        <p className={`metro-voice-status is-${runtime.tone}`}>{runtime.label}</p>
+      )}
       {wakeWordStatus && (
         <p className={`metro-voice-wake is-${wakeWordStatus.tone}`}>
           {wakeWordStatus.label}

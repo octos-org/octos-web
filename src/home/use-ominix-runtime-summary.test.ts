@@ -1,36 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
-  summarizeOminixRuntime,
+  summarizeVoiceReadiness,
   type OminixRuntimeSummary,
 } from "./use-ominix-runtime-summary";
-import type { OminixRuntimeStatus } from "@/settings/settings-api";
+import type { VoiceReadiness } from "@/settings/settings-api";
 
-function runtime(overrides: Partial<OminixRuntimeStatus>): OminixRuntimeStatus {
+function readiness(overrides: Partial<VoiceReadiness> = {}): VoiceReadiness {
   return {
-    state: "healthy",
-    url: "http://127.0.0.1:8081",
-    url_source: "env",
-    port: 8081,
-    home_dir: "/tmp",
-    ominix_dir: "/tmp/.ominix",
-    binary_path: "/tmp/bin/ominix-api",
-    binary_installed: true,
-    metallib_path: "/tmp/bin/mlx.metallib",
-    metallib_installed: true,
-    models_dir: "/tmp/models",
-    models_dir_exists: true,
-    plist_path: "/tmp/Library/LaunchAgents/io.ominix.ominix-api.plist",
-    plist_exists: true,
-    plist_port: 8081,
-    discovery_path: "/tmp/.ominix/api_url",
-    discovery_url: "http://127.0.0.1:8081",
-    service_registered: true,
-    service_running: true,
-    launchctl_skipped: false,
-    health: { healthy: true, http_status: 200 },
-    issues: [],
-    can_repair: true,
-    suggested_action: "ready",
+    ready: true,
+    asr: { ready: true, detail: "On-device ASR ready" },
+    llm: { ready: true, detail: "LLM provider: openai" },
+    tts: { ready: true, mode: "local", detail: "On-device GPT-SoVITS ready" },
     ...overrides,
   };
 }
@@ -39,9 +19,9 @@ function stripRefresh(summary: Omit<OminixRuntimeSummary, "refresh">) {
   return summary;
 }
 
-describe("summarizeOminixRuntime", () => {
-  it("marks a healthy runtime as ready", () => {
-    expect(stripRefresh(summarizeOminixRuntime(runtime({})))).toMatchObject({
+describe("summarizeVoiceReadiness", () => {
+  it("marks a fully-ready pipeline as ready", () => {
+    expect(stripRefresh(summarizeVoiceReadiness(readiness()))).toMatchObject({
       label: "Voice engine ready",
       tone: "success",
       ready: true,
@@ -49,61 +29,72 @@ describe("summarizeOminixRuntime", () => {
     });
   });
 
-  it("marks a healthy runtime with missing voice models as not ready", () => {
-    expect(
-      stripRefresh(summarizeOminixRuntime(
-        runtime({
-          state: "models_missing",
-          voice_models_ready: false,
-          suggested_action: "bootstrap_voice_models",
-        }),
-      )),
-    ).toMatchObject({
-      label: "Voice models not ready",
+  it("blocks on ASR first and offers repair (ASR is always on-device)", () => {
+    const summary = summarizeVoiceReadiness(
+      readiness({
+        ready: false,
+        asr: { ready: false, detail: "On-device ASR model not ready" },
+        // Even with a downstream TTS failure, ASR is reported first.
+        tts: { ready: false, mode: "local", detail: "No on-device voice available" },
+      }),
+    );
+    expect(stripRefresh(summary)).toMatchObject({
+      label: "On-device ASR model not ready",
       tone: "warning",
       ready: false,
       canRepair: true,
-      state: "models_missing",
+      state: "asr_not_ready",
     });
   });
 
-  it("marks a repairable runtime as warning", () => {
-    expect(
-      stripRefresh(summarizeOminixRuntime(
-        runtime({
-          state: "missing_plist",
-          health: { healthy: false },
-          service_registered: false,
-          can_repair: true,
-          suggested_action: "repair",
-        }),
-      )),
-    ).toMatchObject({
-      label: "Voice engine needs repair",
+  it("blocks on LLM with no repair affordance (configure, not repair)", () => {
+    const summary = summarizeVoiceReadiness(
+      readiness({
+        ready: false,
+        llm: { ready: false, detail: "LLM provider not configured" },
+      }),
+    );
+    expect(stripRefresh(summary)).toMatchObject({
+      label: "LLM provider not configured",
       tone: "warning",
       ready: false,
-      canRepair: true,
-      state: "missing_plist",
+      canRepair: false,
+      state: "llm_not_ready",
     });
   });
 
-  it("marks a missing binary runtime as installable", () => {
-    expect(
-      stripRefresh(summarizeOminixRuntime(
-        runtime({
-          state: "missing_binary",
-          health: { healthy: false },
-          binary_installed: false,
-          can_repair: false,
-          suggested_action: "install_ominix_api_binary",
-        }),
-      )),
-    ).toMatchObject({
-      label: "Voice engine not installed",
+  it("flags missing cloud TTS credentials without offering repair", () => {
+    const summary = summarizeVoiceReadiness(
+      readiness({
+        ready: false,
+        tts: {
+          ready: false,
+          mode: "cloud",
+          detail: "Cloud TTS selected but credentials missing (appid + VOLC_TTS_TOKEN)",
+        },
+      }),
+    );
+    expect(stripRefresh(summary)).toMatchObject({
+      label: "Cloud TTS selected but credentials missing (appid + VOLC_TTS_TOKEN)",
       tone: "warning",
       ready: false,
+      canRepair: false,
+      state: "tts_not_ready_cloud",
+    });
+  });
+
+  it("offers repair when the on-device TTS engine is the gap", () => {
+    const summary = summarizeVoiceReadiness(
+      readiness({
+        ready: false,
+        tts: { ready: false, mode: "local", detail: "No on-device voice available" },
+      }),
+    );
+    expect(stripRefresh(summary)).toMatchObject({
+      label: "No on-device voice available",
+      ready: false,
       canRepair: true,
-      state: "missing_binary",
+      state: "tts_not_ready_local",
     });
   });
 });
