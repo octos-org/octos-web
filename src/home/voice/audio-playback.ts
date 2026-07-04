@@ -14,6 +14,11 @@
 
 let ctx: AudioContext | null = null;
 let current: AudioBufferSourceNode | null = null;
+// Completion callback for `current`, kept alongside it so `stopAudio` can
+// fire it on interrupt. `playOne` (use-voice-conversation.ts) awaits this
+// callback; orphaning it wedges the reply drain loop's `playingRef` latch
+// and permanently silences every later reply.
+let currentOnEnded: (() => void) | null = null;
 
 function getCtx(): AudioContext | null {
   if (ctx) return ctx;
@@ -33,23 +38,33 @@ export function unlockAudio(): void {
   if (c && c.state === "suspended") void c.resume();
 }
 
-/** Stop whatever is currently playing. */
+/** Stop whatever is currently playing. Fires the interrupted clip's
+ *  `onEnded` callback (exactly once) so callers awaiting playback
+ *  completion resolve — nulling the handler without invoking it left
+ *  `playOne`'s promise pending forever and no later reply ever played. */
 export function stopAudio(): void {
-  if (current) {
-    try {
-      current.onended = null;
-      current.stop();
-    } catch {
-      // already stopped / ended
-    }
-    current = null;
+  if (!current) return;
+  const src = current;
+  const onEnded = currentOnEnded;
+  current = null;
+  currentOnEnded = null;
+  // Detach the DOM handler first: stop() makes the source fire `ended`
+  // asynchronously, and we invoke the completion callback ourselves below —
+  // detaching keeps it to exactly one invocation.
+  src.onended = null;
+  try {
+    src.stop();
+  } catch {
+    // already stopped / ended
   }
+  onEnded?.();
 }
 
 /** Decode + play an audio blob through the unlocked context. Resolves true if
- *  playback started, false if Web Audio is unavailable. `onEnded` fires when
- *  the clip finishes (not when interrupted via `stopAudio`). Throws if decode
- *  or start fails — caller handles fallback. */
+ *  playback started, false if Web Audio is unavailable. `onEnded` fires
+ *  exactly once per started clip — when it finishes, when it is interrupted
+ *  via `stopAudio`, or when a newer clip supersedes it. Throws if decode or
+ *  start fails — caller handles fallback. */
 export async function playAudioBlob(
   blob: Blob,
   onEnded: () => void,
@@ -70,10 +85,14 @@ export async function playAudioBlob(
   src.buffer = audioBuf;
   src.connect(c.destination);
   src.onended = () => {
-    if (current === src) current = null;
+    if (current === src) {
+      current = null;
+      currentOnEnded = null;
+    }
     onEnded();
   };
   current = src;
+  currentOnEnded = onEnded;
   src.start();
   return true;
 }

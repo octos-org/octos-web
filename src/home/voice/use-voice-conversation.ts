@@ -301,6 +301,13 @@ export function useVoiceConversation(
   const audioQueueRef = useRef<string[]>([]);
   const playingRef = useRef(false);
   const graceTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Drain-loop supersession token. interrupt()/stop() bump it after clearing
+  // the queue; a drain loop whose generation no longer matches was superseded
+  // mid-clip (its playOne resolved via stopAudio) and must NOT schedule the
+  // return-to-listening grace timer — the interrupt path has already chosen
+  // the next state, and a stale 1.5s timer could otherwise catch the user's
+  // follow-up turn in `thinking` and knock it back to listening.
+  const drainGenRef = useRef(0);
 
   // Voice exit intent (UPCR-2026-025): a `crew:voice_exit` DOM event sets
   // `exitPendingRef`; the drainQueue grace-timer then leaves /voice AFTER the
@@ -317,6 +324,13 @@ export function useVoiceConversation(
   const onExitRef = useRef<(() => void) | undefined>(undefined);
   onExitRef.current = onExit;
   const performExitRef = useRef<() => void>(() => {});
+
+  // Cancellation token for start()'s async bridge-connect wait (same idiom
+  // as use-voice-capture's startGenRef). stop() bumps it; start() re-checks
+  // after every await, so leaving /voice mid-poll can never reach
+  // beginListening() after teardown — that re-acquired the microphone under
+  // a fresh VAD generation nothing tears down (post-unmount mic leak).
+  const startGenRef = useRef(0);
 
   // Stable refs that break the circular dependency between beginListening ↔
   // drainQueue. Each stores itself into its own ref every render.
@@ -497,6 +511,7 @@ export function useVoiceConversation(
   // for late sentences before returning to listening.
   const drainQueue = useCallback(async (): Promise<void> => {
     if (playingRef.current) return; // a drain loop is already running
+    const drainGen = drainGenRef.current;
     playingRef.current = true;
     try {
       while (audioQueueRef.current.length > 0) {
@@ -506,6 +521,11 @@ export function useVoiceConversation(
     } finally {
       playingRef.current = false;
     }
+    // interrupt()/stop() superseded this drain while a clip was in flight —
+    // they already chose the next state (listening / idle), so scheduling the
+    // grace timer here would be stale (and could later beginListening() into
+    // the follow-up turn's `thinking`).
+    if (drainGenRef.current !== drainGen) return;
     clearTimeout(graceTimerRef.current);
     graceTimerRef.current = setTimeout(() => {
       if (
@@ -531,6 +551,10 @@ export function useVoiceConversation(
   drainQueueRef.current = drainQueue;
 
   const start = useCallback(async () => {
+    // Capture this start's generation. A later stop() (unmount, exit) or a
+    // newer start() bumps the counter; every await below re-checks it and
+    // abandons, so a stale start can never re-acquire the microphone.
+    const gen = ++startGenRef.current;
     // Unlock audio playback now, while we're still close to the user's entry
     // gesture (the click that mounted the voice view). Replies arrive tens of
     // seconds later and would otherwise be blocked by the autoplay policy.
@@ -582,11 +606,21 @@ export function useVoiceConversation(
       const b = getActiveBridge(sessionId, historyTopic);
       if (b?.getConnectionState?.() === "connected") break;
       await new Promise((r) => setTimeout(r, 200));
+      // stop() ran while we were waiting (the user left /voice) — abandon
+      // before beginListening() re-acquires the mic with no owner left to
+      // tear it down.
+      if (startGenRef.current !== gen) return;
     }
+    if (startGenRef.current !== gen) return;
     await beginListening();
   }, [beginListening, sessionId, historyTopic]);
 
   const stop = useCallback(() => {
+    // Invalidate any in-flight start() (it re-checks this after each await).
+    startGenRef.current++;
+    // Supersede any suspended drain loop so it exits without scheduling a
+    // stale grace timer (releaseAudio() below resolves its awaited clip).
+    drainGenRef.current++;
     clearTimeout(replyTimerRef.current);
     clearTimeout(graceTimerRef.current);
     activeTurnIdRef.current = null;
@@ -631,6 +665,10 @@ export function useVoiceConversation(
   const interrupt = useCallback(() => {
     if (stateRef.current === "speaking") {
       audioQueueRef.current = [];
+      // Supersede the drain loop BEFORE releaseAudio() resolves its awaited
+      // clip: when it resumes it must exit without scheduling a stale grace
+      // timer — we return to listening right here.
+      drainGenRef.current++;
       clearTimeout(graceTimerRef.current);
       releaseAudio();
       void beginListeningRef.current();
@@ -638,6 +676,9 @@ export function useVoiceConversation(
       clearTimeout(replyTimerRef.current);
       clearTimeout(graceTimerRef.current);
       audioQueueRef.current = [];
+      // A drain loop can be alive in `thinking` too (its first clip is still
+      // in the fetch phase) — supersede it the same way.
+      drainGenRef.current++;
       speechInterruptArmedRef.current = false;
       requestTurnInterrupt("user tapped orb while thinking");
       void captureStop();
