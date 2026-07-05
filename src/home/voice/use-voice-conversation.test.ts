@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { act, renderHook } from "@testing-library/react";
 import {
   assembleTurnFiles,
   collectFreshAudio,
@@ -8,8 +9,103 @@ import {
   pickFreshAudio,
   shouldHandleExitEvent,
   stripVisualMarker,
+  useVoiceConversation,
 } from "./use-voice-conversation";
 import type { Thread } from "@/store/thread-store";
+
+// ---------------------------------------------------------------------------
+// Hook-level harness (start() cancellation — post-unmount mic re-acquire).
+// The pure-function suites below don't touch these mocks.
+// ---------------------------------------------------------------------------
+
+const {
+  captureStartMock,
+  captureStopMock,
+  getActiveBridgeMock,
+} = vi.hoisted(() => ({
+  captureStartMock: vi.fn(async () => {}),
+  captureStopMock: vi.fn(async () => {}),
+  getActiveBridgeMock: vi.fn((): unknown => undefined),
+}));
+
+vi.mock("./use-voice-capture", () => ({
+  // Stable object — the hook destructures start/stop and depends on their
+  // identity staying constant across renders (mirrors the real hook's
+  // useCallback([])-stable fns).
+  useVoiceCapture: () => ({
+    capturing: false,
+    start: captureStartMock,
+    stop: captureStopMock,
+    error: null,
+  }),
+}));
+
+const cameraMock = vi.hoisted(() => ({
+  active: false,
+  stream: null,
+  error: null,
+  start: vi.fn(async () => {}),
+  stop: vi.fn(),
+  grabFrame: vi.fn(async () => null),
+}));
+
+vi.mock("./use-camera-frame", () => ({
+  useCameraFrame: () => cameraMock,
+}));
+
+// Behavioural audio-playback mock mirroring the real module's contract:
+// `playAudioBlob` parks the clip's completion callback (playback "runs" until
+// something fires it); `stopAudio` fires it exactly once, so `playOne`'s
+// await resolves on interrupt just like the real implementation.
+const audioMock = vi.hoisted(() => {
+  const state = { onEnded: null as null | (() => void) };
+  return {
+    state,
+    playAudioBlob: vi.fn(async (_blob: Blob, onEnded: () => void) => {
+      state.onEnded = onEnded;
+      return true;
+    }),
+    stopAudio: vi.fn(() => {
+      const f = state.onEnded;
+      state.onEnded = null;
+      f?.();
+    }),
+    unlockAudio: vi.fn(),
+  };
+});
+
+vi.mock("./audio-playback", () => ({
+  playAudioBlob: audioMock.playAudioBlob,
+  stopAudio: audioMock.stopAudio,
+  unlockAudio: audioMock.unlockAudio,
+}));
+
+const threadsMock = vi.hoisted(() => ({ value: [] as unknown[] }));
+
+vi.mock("@/store/thread-store", () => ({
+  useThreads: () => threadsMock.value,
+}));
+
+vi.mock("@/runtime/ui-protocol-send", () => ({
+  interruptActiveTurn: vi.fn(async () => true),
+  sendMessage: vi.fn(),
+}));
+
+vi.mock("@/runtime/ui-protocol-runtime", () => ({
+  getActiveBridge: getActiveBridgeMock,
+}));
+
+vi.mock("@/api/chat", () => ({
+  uploadFiles: vi.fn(async () => []),
+}));
+
+vi.mock("@/api/files", () => ({
+  buildFileUrl: (p: string) => p,
+}));
+
+vi.mock("@/api/client", () => ({
+  buildApiHeaders: () => ({}),
+}));
 
 describe("assembleTurnFiles", () => {
   const audio = new File(["a"], "utterance.wav", { type: "audio/wav" });
@@ -203,5 +299,164 @@ describe("farewellAudioActive (fallback must not cut off the goodbye)", () => {
     // A turn that produced no farewell audio sits in `thinking`; the fallback
     // timer must be allowed to leave rather than hang forever.
     expect(farewellAudioActive(false, 0, "thinking")).toBe(false);
+  });
+});
+
+describe("start() cancellation (post-unmount mic re-acquire)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    captureStartMock.mockClear();
+    captureStopMock.mockClear();
+    getActiveBridgeMock.mockReset();
+    getActiveBridgeMock.mockReturnValue(undefined);
+  });
+
+  it("does NOT re-acquire the microphone when the hook unmounts during the bridge-connect wait", async () => {
+    vi.useFakeTimers();
+    // /voice mints a fresh session per entry, so the bridge is still
+    // connecting at mount — start() sits in its ~12s poll.
+    getActiveBridgeMock.mockReturnValue(undefined);
+
+    const { result, unmount } = renderHook(() =>
+      useVoiceConversation("voice-cancel-test"),
+    );
+
+    let startPromise!: Promise<void>;
+    act(() => {
+      startPromise = result.current.start();
+    });
+    // A few poll iterations pass, then the user leaves /voice mid-wait.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+    });
+    unmount(); // unmount cleanup runs stop()
+
+    // Ride out the rest of the poll + the 12s ceiling. Pre-fix,
+    // beginListening() ran here — re-acquiring the mic under a fresh VAD
+    // generation that nothing tears down.
+    await vi.advanceTimersByTimeAsync(13000);
+    await startPromise;
+
+    expect(captureStartMock).not.toHaveBeenCalled();
+  });
+
+  it("still begins listening once the bridge connects when start() was not cancelled", async () => {
+    getActiveBridgeMock.mockReturnValue({
+      getConnectionState: () => "connected",
+    });
+
+    const { result, unmount } = renderHook(() =>
+      useVoiceConversation("voice-happy-test"),
+    );
+
+    await act(async () => {
+      await result.current.start();
+    });
+
+    expect(captureStartMock).toHaveBeenCalledTimes(1);
+    unmount();
+  });
+});
+
+describe("interrupt() supersedes the drain loop (stale grace timer)", () => {
+  // codex P2 on the playback-interrupt fix: resolving the interrupted clip's
+  // promise lets the old drainQueue() continuation run to completion — it
+  // must NOT then schedule its return-to-listening grace timer, because
+  // interrupt() already chose the next state. Pre-fix the stale timer could
+  // fire ~1.5s later, see the user's follow-up turn in `thinking`, and knock
+  // it back to `listening` (disrupting the in-flight turn).
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    threadsMock.value = [];
+    audioMock.state.onEnded = null;
+    audioMock.playAudioBlob.mockClear();
+    audioMock.stopAudio.mockClear();
+    captureStartMock.mockClear();
+    captureStopMock.mockClear();
+    getActiveBridgeMock.mockReset();
+    getActiveBridgeMock.mockReturnValue(undefined);
+  });
+
+  const flushMicrotasks = async () => {
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+  };
+
+  it("a stale post-interrupt grace timer must not knock the next turn back to listening", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        blob: async () => new Blob(["a"]),
+      })),
+    );
+    getActiveBridgeMock.mockReturnValue({
+      getConnectionState: () => "connected",
+    });
+
+    const { result, rerender } = renderHook(() =>
+      useVoiceConversation("voice-interrupt-test"),
+    );
+
+    // Enter listening (bridge already connected → no poll wait).
+    await act(async () => {
+      await result.current.start();
+    });
+    expect(result.current.state).toBe("listening");
+
+    // First utterance → thinking.
+    const onUtterance1 = captureStartMock.mock.calls[0][0] as (
+      wav: Blob,
+    ) => void;
+    await act(async () => {
+      onUtterance1(new Blob(["u1"]));
+      await flushMicrotasks();
+    });
+    expect(result.current.state).toBe("thinking");
+
+    // Reply audio lands → the drain loop starts playing it (the mock parks
+    // the clip's completion callback, i.e. playback is in flight).
+    threadsMock.value = [
+      {
+        id: "turn-1",
+        userMsg: { text: "hi" },
+        pendingAssistant: null,
+        responses: [
+          { role: "assistant", text: "reply", files: [{ path: "w/r1.wav" }] },
+        ],
+      },
+    ];
+    rerender();
+    await act(async () => {
+      await flushMicrotasks();
+    });
+    expect(result.current.state).toBe("speaking");
+
+    // User taps the orb mid-playback: discard the clip, back to listening.
+    const listenCallsBeforeInterrupt = captureStartMock.mock.calls.length;
+    await act(async () => {
+      result.current.interrupt();
+      await flushMicrotasks();
+    });
+    expect(result.current.state).toBe("listening");
+
+    // The user immediately speaks again — the follow-up turn is `thinking`
+    // well inside the superseded drain's 1.5s grace window.
+    const onUtterance2 = captureStartMock.mock.calls[
+      listenCallsBeforeInterrupt
+    ][0] as (wav: Blob) => void;
+    await act(async () => {
+      onUtterance2(new Blob(["u2"]));
+      await flushMicrotasks();
+    });
+    expect(result.current.state).toBe("thinking");
+
+    // Ride past the grace window: the stale timer must not fire
+    // beginListening() against the in-flight turn.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+    expect(result.current.state).toBe("thinking");
   });
 });

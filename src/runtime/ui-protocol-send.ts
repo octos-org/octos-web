@@ -20,7 +20,7 @@
 import * as ThreadStore from "@/store/thread-store";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { getActiveBridge, startBridgeForSession } from "./ui-protocol-runtime";
-import { BridgeStoppedError } from "./ui-protocol-bridge";
+import { BridgeStoppedError, BridgeTimeoutError } from "./ui-protocol-bridge";
 import type { TurnStartExtras, TurnStartMediaRef } from "./ui-protocol-types";
 import { request } from "@/api/client";
 
@@ -661,10 +661,15 @@ async function sendMessageV1(
     //
     //  - `turn/started` already seen: do NOT impose any grace
     //    ceiling. The server accepted the turn; the lifecycle
-    //    channel is the source of truth.
+    //    channel is the source of truth. This covers BOTH the
+    //    transport-drop path AND a `BridgeTimeoutError` on the RPC
+    //    reply (WS blip lost the response frame while the turn keeps
+    //    running server-side) — pre-fix the timeout path finalized
+    //    the bubble as error and released the send queue early.
     //
-    //  - Non-`BridgeStoppedError` (RPC permission_denied,
-    //    validation error, etc.): finalize immediately.
+    //  - Other errors (RPC permission_denied, validation error, a
+    //    timeout with no `turn/started` evidence, etc.): finalize
+    //    immediately.
     const finalizeAsError = () => {
       if (completed) return;
       ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
@@ -672,20 +677,21 @@ async function sendMessageV1(
       fireComplete();
     };
     const isTransportClose = err instanceof BridgeStoppedError;
+    const isRpcTimeout = err instanceof BridgeTimeoutError;
     const terminalConnState =
       lastConnState === "closed" || lastConnState === "error";
-    if (isTransportClose && !turnStartedSeen && !terminalConnState) {
+    if ((isTransportClose || isRpcTimeout) && turnStartedSeen) {
+      // Server accepted the turn before the transport dropped / the
+      // RPC reply went missing. Don't finalize — the 15-min safety
+      // timer + the lifecycle channel will handle completion (or
+      // release the gate on bridge teardown via offState).
+    } else if (isTransportClose && !terminalConnState) {
       // Reconnectable mid-flight drop: give the bridge a chance to
       // reconnect and deliver `turn/started` via lifecycle.
       graceTimer = setTimeout(() => {
         graceTimer = null;
         finalizeAsError();
       }, 45_000);
-    } else if (isTransportClose && turnStartedSeen) {
-      // Server accepted the turn before the transport dropped.
-      // Don't finalize — the 15-min safety timer + the lifecycle
-      // channel will handle completion (or release the gate on
-      // bridge teardown via offState).
     } else {
       finalizeAsError();
     }

@@ -71,6 +71,7 @@ import {
   __resetUiProtocolRuntimeForTest,
   __setActiveBridgeForTest,
 } from "./ui-protocol-runtime";
+import { BridgeTimeoutError } from "./ui-protocol-bridge";
 import type { UiProtocolBridge } from "./ui-protocol-bridge";
 
 const SESSION = "sess-send";
@@ -489,6 +490,98 @@ describe("sendMessage", () => {
     expect(threads).toHaveLength(1);
     expect(threads[0].pendingAssistant).toBeNull();
     expect(threads[0].responses[0]?.status).toBe("error");
+  });
+
+  // WS blip false-error: a `BridgeTimeoutError` on the turn/start RPC
+  // (response frame lost mid-blip) must NOT finalize the bubble as error
+  // when `turn/started` was ALREADY observed — the server is still
+  // running the turn, and the live lifecycle stream is the source of
+  // truth. Pre-fix, only `BridgeStoppedError` honoured `turnStartedSeen`;
+  // the timeout path finalized-as-error and released the send queue early.
+  it("BridgeTimeoutError after turn/started does NOT finalize the turn as error", async () => {
+    const bridge = makeBridge();
+    __setActiveBridgeForTest(SESSION, bridge);
+    const onComplete = vi.fn();
+
+    let lifecycleHandler:
+      | ((e: { turn_id: string; reason?: string; error?: unknown }) => void)
+      | undefined;
+    (bridge.onTurnLifecycle as ReturnType<typeof vi.fn>).mockImplementation(
+      (h: (e: { turn_id: string; reason?: string; error?: unknown }) => void) => {
+        lifecycleHandler = h;
+        return () => {
+          lifecycleHandler = undefined;
+        };
+      },
+    );
+
+    let rejectSendTurn: ((err: unknown) => void) | null = null;
+    (bridge.sendTurn as ReturnType<typeof vi.fn>).mockImplementation(
+      () =>
+        new Promise((_res, rej) => {
+          rejectSendTurn = rej;
+        }),
+    );
+
+    sendMessage({
+      sessionId: SESSION,
+      text: "long turn",
+      media: [],
+      clientMessageId: "cmid-blip",
+      onComplete,
+    });
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(lifecycleHandler).toBeDefined();
+
+    // Server accepted the turn: bare `turn/started` (no reason/error keys).
+    lifecycleHandler?.({ turn_id: "cmid-blip" });
+
+    // WS blip: the RPC reply is lost; the per-RPC timeout rejects sendTurn.
+    rejectSendTurn?.(new BridgeTimeoutError("turn/start", 30000));
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+
+    // The still-running turn is NOT finalized as error, and the per-session
+    // queue gate stays held for the live lifecycle stream.
+    const threads = ThreadStore.getThreads(SESSION);
+    expect(threads[0].responses[0]?.status).not.toBe("error");
+    expect(onComplete).not.toHaveBeenCalled();
+
+    // The live event stream drives the bubble to completion.
+    lifecycleHandler?.({ turn_id: "cmid-blip", reason: "stop" });
+    expect(onComplete).toHaveBeenCalledTimes(1);
+  });
+
+  // Counterpart guard: with NO `turn/started` observed, an RPC timeout has
+  // no evidence the server ever accepted the turn — it must keep finalizing
+  // as error immediately (the pre-existing behaviour).
+  it("BridgeTimeoutError with no turn/started still finalizes as error", async () => {
+    const bridge = makeBridge();
+    __setActiveBridgeForTest(SESSION, bridge);
+    const onComplete = vi.fn();
+
+    let rejectSendTurn: ((err: unknown) => void) | null = null;
+    (bridge.sendTurn as ReturnType<typeof vi.fn>).mockImplementation(
+      () =>
+        new Promise((_res, rej) => {
+          rejectSendTurn = rej;
+        }),
+    );
+
+    sendMessage({
+      sessionId: SESSION,
+      text: "never started",
+      media: [],
+      clientMessageId: "cmid-timeout-dead",
+      onComplete,
+    });
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+
+    rejectSendTurn?.(new BridgeTimeoutError("turn/start", 30000));
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+
+    const threads = ThreadStore.getThreads(SESSION);
+    expect(threads[0].responses[0]?.status).toBe("error");
+    expect(onComplete).toHaveBeenCalledTimes(1);
   });
 
   // M10 follow-up Bug B: 3 rapid sends serialise behind the prior turn's
