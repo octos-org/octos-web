@@ -1340,7 +1340,6 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
   const [recordingTime, setRecordingTime] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const videoPreviewRef = useRef<HTMLVideoElement>(null);
 
@@ -1389,12 +1388,20 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
             ? "video/webm;codecs=vp9,opus"
             : "video/webm";
       const recorder = new MediaRecorder(stream, { mimeType: recordMime });
-      chunksRef.current = [];
+      // Per-recorder chunk buffer captured in this closure (#245 P2). A
+      // shared `chunksRef` raced teardown: `stopRecording` nulls the recorder
+      // ref synchronously, but `stop()`'s trailing `dataavailable` fires
+      // asynchronously afterwards — if the user started a NEW recording in
+      // between (which would have reset the shared buffer), that stale chunk
+      // contaminated the new recording's blob. A local array isolates each
+      // recording: a late chunk from an old recorder lands in ITS OWN (now
+      // unused) buffer, and this recorder's `onstop` builds only from its own.
+      const chunks: Blob[] = [];
       recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
+        if (e.data.size > 0) chunks.push(e.data);
       };
       recorder.onstop = async () => {
-        const rawBlob = new Blob(chunksRef.current, { type: recordMime });
+        const rawBlob = new Blob(chunks, { type: recordMime });
         let blob: Blob;
         let ext: string;
         let fileType: string;

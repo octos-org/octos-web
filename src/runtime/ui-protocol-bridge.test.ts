@@ -2322,6 +2322,129 @@ describe("rpc correlation", () => {
     await vi.advanceTimersByTimeAsync(5001);
     expect(captured).toBeInstanceOf(BridgeTimeoutError);
   });
+
+  it("does not time out an RPC queued during reconnect before it is sent", async () => {
+    // #245 P2: the RPC timeout must start at SEND time, not enqueue time.
+    // A turn queued while the socket is down (waiting for reconnect) must not
+    // time out while parked in `sendQueue` — its clock only starts once the
+    // frame goes on the wire after the reconnect handshake.
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(
+      makeBridgeOpts({ rpcTimeoutMs: 5000 }),
+    );
+    void bridge.start({ sessionId: "sess-1" });
+    await Promise.resolve();
+    const ws1 = lastInstance();
+    ws1.triggerOpen();
+    await Promise.resolve();
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      id: findRequest(ws1, METHODS.SESSION_OPEN).id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+
+    // Socket drops → the bridge is reconnecting; this send is QUEUED.
+    ws1.triggerClose(1006, "abnormal");
+    await Promise.resolve();
+    const promise = bridge.sendTurn("turn-1", [{ kind: "text", text: "hi" }]);
+    let captured: unknown;
+    let resolved = false;
+    promise.then(
+      () => {
+        resolved = true;
+      },
+      (err) => {
+        captured = err;
+      },
+    );
+
+    // Wait well past rpcTimeoutMs while still disconnected (the reconnect
+    // backoff creates ws2 at ~1000ms but it never gets to open). The queued
+    // turn must NOT have timed out — pre-fix the request-time timer fired here.
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(captured).toBeUndefined();
+    expect(resolved).toBe(false);
+
+    // Complete the reconnect handshake — the queued turn now goes on the wire.
+    const ws2 = lastInstance();
+    expect(ws2).not.toBe(ws1);
+    ws2.triggerOpen();
+    await Promise.resolve();
+    ws2.triggerMessage({
+      jsonrpc: "2.0",
+      id: findRequest(ws2, METHODS.SESSION_OPEN).id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+    const turnReq = findRequest(ws2, METHODS.TURN_START);
+    expect(turnReq).toBeDefined();
+
+    // The server acks the (now-sent) turn → the Promise resolves; it never
+    // spuriously timed out.
+    ws2.triggerMessage({
+      jsonrpc: "2.0",
+      id: turnReq.id,
+      result: { turn_id: "turn-1" },
+    });
+    await Promise.resolve();
+    expect(captured).toBeUndefined();
+    expect(resolved).toBe(true);
+  });
+
+  it("a superseded socket does not dispatch late frames after reconnect", async () => {
+    // #245 P2: after a reconnect the PRIOR socket must go silent. A late or
+    // buffered frame arriving on the old socket used to still reach
+    // `onWsMessage` (its handler was never detached / identity-checked), so
+    // the same envelope the new socket also replays got dispatched twice.
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const deltas: unknown[] = [];
+    bridge.onMessageDelta((e) => deltas.push(e));
+    void bridge.start({ sessionId: "sess-1" });
+    await Promise.resolve();
+    const ws1 = lastInstance();
+    ws1.triggerOpen();
+    await Promise.resolve();
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      id: findRequest(ws1, METHODS.SESSION_OPEN).id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+
+    // Reconnect: ws1 drops, ws2 comes up and re-opens the session.
+    ws1.triggerClose(1006, "abnormal");
+    await vi.advanceTimersByTimeAsync(1000);
+    const ws2 = lastInstance();
+    expect(ws2).not.toBe(ws1);
+    ws2.triggerOpen();
+    await Promise.resolve();
+    ws2.triggerMessage({
+      jsonrpc: "2.0",
+      id: findRequest(ws2, METHODS.SESSION_OPEN).id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+
+    // A late/buffered frame on the OLD socket must NOT dispatch.
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.MESSAGE_DELTA,
+      params: { session_id: "sess-1", turn_id: "t1", text: "orphan" },
+    });
+    await Promise.resolve();
+    expect(deltas).toHaveLength(0);
+
+    // The live socket still dispatches normally.
+    ws2.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.MESSAGE_DELTA,
+      params: { session_id: "sess-1", turn_id: "t1", text: "live" },
+    });
+    await Promise.resolve();
+    expect(deltas).toHaveLength(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
