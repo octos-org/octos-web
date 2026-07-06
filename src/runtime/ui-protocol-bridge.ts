@@ -53,6 +53,7 @@ import type {
   TurnStartInput,
   TurnStartResult,
   TurnStartedEvent,
+  UiCursor,
   UiProgressMetadata,
   UiRetryBackoff,
   UiTokenCostUpdate,
@@ -1466,6 +1467,17 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
    *  resets the flag in `onWsOpen`) or fails (the bounded reconnect
    *  loop takes over and eventually re-latches the abandonment). */
   private visibilityReconnectInFlight = false;
+  /** #245 P2: the highest durable ledger cursor we have seen for this
+   *  session — seeded from the `session/open` ack's `opened.cursor` and
+   *  advanced by the cursor-bearing live frames (`message/persisted`,
+   *  `turn/completed`, `turn/spawn_complete`). Sent back as `after` on a
+   *  REOPEN so the server replays only what happened during the gap
+   *  (`replay_after_with_head`), instead of the reconnect relying solely on
+   *  a full `session/hydrate` refetch. One monotonic stream per session, so
+   *  the highest `seq` wins. Null until the first open acks — a cursorless
+   *  open is "live only / full snapshot" server-side, which is exactly what
+   *  the initial open wants. */
+  private lastCursor: UiCursor | null = null;
   /** Issue #137: bound visibilitychange listener. Stashed so `stop()`
    *  can remove it; React strict-mode and SPA session-switch flows
    *  call start() → stop() → start() back-to-back. */
@@ -2090,13 +2102,28 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
         session_id: this.requireSessionId(),
       };
       if (this.profileId) params.profile_id = this.profileId;
+      // #245 P2: on a REOPEN (not the initial open), ask the server to replay
+      // everything after the last durable cursor we saw, so events emitted
+      // during the disconnect stream back through the normal live path. The
+      // initial open sends no `after` — a cursorless open is "live only /
+      // full snapshot" server-side. `hasEverOpened` is still the pre-open
+      // value here (it flips after the ack below).
+      if (this.hasEverOpened && this.lastCursor !== null) {
+        params.after = this.lastCursor;
+      }
       // session/open is the lifecycle gate: state stays at `connecting`
       // until the server acks. Failure here forces a reconnect so the next
       // attempt re-runs the handshake with a fresh socket.
-      await this.request<SessionOpenResult>(METHODS.SESSION_OPEN, params, {
-        bypassQueue: true,
-      });
+      const openResult = await this.request<SessionOpenResult>(
+        METHODS.SESSION_OPEN,
+        params,
+        { bypassQueue: true },
+      );
       if (this.stopped) return;
+      // Seed/advance the cursor from the open ack — the server stamps
+      // `opened.cursor` with the authoritative head, so even a session with
+      // no cursor-bearing live frames yet has an `after` for its next reopen.
+      this.advanceCursor(openResult?.opened?.cursor);
       this.reconnectAttempts = 0;
       this.reconnectAbandoned = false;
       // Issue #137: a successful (re)open clears the latch reason and
@@ -2253,6 +2280,31 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       return;
     }
     handler.emit(result);
+    // #245 P2: advance the reconnect cursor from any cursor-bearing frame
+    // (message/persisted, turn/completed, turn/spawn_complete). Deltas carry
+    // no cursor, so this tracks the last DURABLE position — exactly what the
+    // server's `after` replay filters on (`entry.seq > after.seq`).
+    this.advanceCursor((result as { cursor?: unknown }).cursor);
+  }
+
+  /** Advance `lastCursor` to the highest durable ledger position seen
+   *  (#245 P2). Ignores malformed cursors and any that don't move forward;
+   *  a single monotonic stream per session means the highest `seq` wins. */
+  private advanceCursor(cursor: unknown): void {
+    if (!isPlainObject(cursor)) return;
+    const { stream, seq } = cursor as { stream?: unknown; seq?: unknown };
+    if (
+      typeof stream !== "string" ||
+      stream.length === 0 ||
+      typeof seq !== "number" ||
+      !Number.isFinite(seq) ||
+      seq < 0
+    ) {
+      return;
+    }
+    if (this.lastCursor === null || seq > this.lastCursor.seq) {
+      this.lastCursor = { stream, seq };
+    }
   }
 
   private onWsError(): void {
