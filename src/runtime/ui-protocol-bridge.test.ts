@@ -2391,6 +2391,60 @@ describe("rpc correlation", () => {
     expect(captured).toBeUndefined();
     expect(resolved).toBe(true);
   });
+
+  it("a superseded socket does not dispatch late frames after reconnect", async () => {
+    // #245 P2: after a reconnect the PRIOR socket must go silent. A late or
+    // buffered frame arriving on the old socket used to still reach
+    // `onWsMessage` (its handler was never detached / identity-checked), so
+    // the same envelope the new socket also replays got dispatched twice.
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const deltas: unknown[] = [];
+    bridge.onMessageDelta((e) => deltas.push(e));
+    void bridge.start({ sessionId: "sess-1" });
+    await Promise.resolve();
+    const ws1 = lastInstance();
+    ws1.triggerOpen();
+    await Promise.resolve();
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      id: findRequest(ws1, METHODS.SESSION_OPEN).id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+
+    // Reconnect: ws1 drops, ws2 comes up and re-opens the session.
+    ws1.triggerClose(1006, "abnormal");
+    await vi.advanceTimersByTimeAsync(1000);
+    const ws2 = lastInstance();
+    expect(ws2).not.toBe(ws1);
+    ws2.triggerOpen();
+    await Promise.resolve();
+    ws2.triggerMessage({
+      jsonrpc: "2.0",
+      id: findRequest(ws2, METHODS.SESSION_OPEN).id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+
+    // A late/buffered frame on the OLD socket must NOT dispatch.
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.MESSAGE_DELTA,
+      params: { session_id: "sess-1", turn_id: "t1", text: "orphan" },
+    });
+    await Promise.resolve();
+    expect(deltas).toHaveLength(0);
+
+    // The live socket still dispatches normally.
+    ws2.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.MESSAGE_DELTA,
+      params: { session_id: "sess-1", turn_id: "t1", text: "live" },
+    });
+    await Promise.resolve();
+    expect(deltas).toHaveLength(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

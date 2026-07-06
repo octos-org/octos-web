@@ -2033,19 +2033,53 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       throw err instanceof Error ? err : new Error(String(err));
     }
 
+    // Supersede any prior socket BEFORE adopting the new one (#245 P2). A
+    // reconnect (or a visibility-driven reopen that bypasses `onWsClose`)
+    // could leave the previous socket attached: its live `onmessage` would
+    // double-dispatch frames the new socket also replays, its late `onclose`
+    // would null the CURRENT `this.ws` and re-enter `scheduleReconnect`, and
+    // its `onopen` would re-run `startKeepalive` and clobber the live
+    // keepalive timer (single-slot field). Detaching the old socket's
+    // handlers + closing it (and cancelling the keepalive) makes it silent.
+    this.detachSocket(this.ws);
+    this.cancelKeepalive();
+
     this.ws = ws;
+    // Every handler is identity-guarded: if `this.ws` has moved on to a newer
+    // socket by the time a late event fires, this (now-superseded) socket must
+    // not dispatch, re-null the live socket, or touch the keepalive.
     ws.onopen = () => {
+      if (this.ws !== ws) return;
       void this.onWsOpen();
     };
     ws.onmessage = (ev) => {
+      if (this.ws !== ws) return;
       this.onWsMessage(ev);
     };
     ws.onerror = () => {
+      if (this.ws !== ws) return;
       this.onWsError();
     };
     ws.onclose = (ev) => {
+      if (this.ws !== ws) return;
       this.onWsClose(ev);
     };
+  }
+
+  /** Detach a socket's handlers and close it so a late event from a
+   *  superseded generation cannot reach the bridge (#245 P2). Safe on
+   *  `null` and on an already-closing socket. */
+  private detachSocket(ws: WebSocket | null): void {
+    if (!ws) return;
+    ws.onopen = null;
+    ws.onmessage = null;
+    ws.onerror = null;
+    ws.onclose = null;
+    try {
+      ws.close(4001, "superseded");
+    } catch {
+      // ignore — the socket may already be closing/closed.
+    }
   }
 
   private async onWsOpen(): Promise<void> {
