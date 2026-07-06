@@ -551,7 +551,14 @@ interface PendingRpc {
   method: string;
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
+  /** Timeout handle, or `null` until the frame is actually sent. The RPC
+   *  timeout clock starts at SEND time (armed by `armPendingTimeout`), not
+   *  when the request was enqueued — otherwise a frame parked in `sendQueue`
+   *  during a slow reconnect could time out before it ever went on the wire
+   *  (#245 P2). */
   timer: unknown;
+  /** Timeout duration, retained so the timer can be armed later, at send. */
+  timeoutMs: number;
 }
 
 type Listener<T> = (value: T) => void;
@@ -2528,47 +2535,64 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     const timeoutMs = opts?.timeoutMs ?? this.cfg.rpcTimeoutMs;
 
     return new Promise<T>((resolve, reject) => {
-      const timer = this.cfg.setTimeout(() => {
-        if (!this.pending.delete(id)) return;
-        // Issue #109.2: drop the matching queued frame so a late
-        // reconnect-flush does not re-send a request whose Promise we
-        // just rejected with `BridgeTimeoutError`. Pre-fix, the
-        // `pending[id]` entry was deleted but the raw frame in
-        // `sendQueue` survived — after reconnect, the frame fired,
-        // the server processed it, but the client had no pending
-        // resolver. Worst case: a duplicate `turn/start` materialised
-        // on the server seconds after the user's UI gave up.
-        this.dropQueuedRpc(id);
-        reject(new BridgeTimeoutError(method, timeoutMs));
-      }, timeoutMs);
+      // The timeout is NOT armed here — only once the frame actually goes on
+      // the wire (`armPendingTimeout`). A frame that has to wait in
+      // `sendQueue` for a reconnect must not burn its timeout budget while
+      // parked (#245 P2). If the reconnect is ultimately abandoned,
+      // `rejectAllPending` settles this entry, so a never-sent frame does not
+      // hang forever.
       this.pending.set(id, {
         method,
         resolve: resolve as (v: unknown) => void,
         reject,
-        timer,
+        timer: null,
+        timeoutMs,
       });
 
       if (opts?.bypassQueue) {
         // session/open during onopen needs to bypass the queue — at that
         // moment state is still `connecting` so the queue path would defer
         // it forever, blocking the handshake completion.
-        const sent = this.rawSend(text);
-        if (!sent) {
+        if (this.rawSend(text)) {
+          this.armPendingTimeout(id);
+        } else {
           this.pending.delete(id);
-          this.cfg.clearTimeout(timer);
           reject(new BridgeStoppedError("socket not open for handshake"));
         }
         return;
       }
 
       if (this.state === "connected") {
-        if (!this.rawSend(text)) {
+        if (this.rawSend(text)) {
+          this.armPendingTimeout(id);
+        } else {
           this.enqueueFrame({ text, rpcId: id });
         }
         return;
       }
       this.enqueueFrame({ text, rpcId: id });
     });
+  }
+
+  /**
+   * Arm the RPC timeout for a pending request AT SEND TIME (idempotent —
+   * a no-op if the entry is gone or the timer is already running). Keeping
+   * the clock off until the frame leaves `sendQueue` is what stops a request
+   * from timing out during a long reconnect before it was ever transmitted
+   * (#245 P2). The timeout callback drops the queued frame (Issue #109.2) so
+   * a late flush cannot re-send a request whose Promise we already rejected.
+   */
+  private armPendingTimeout(id: string): void {
+    const pending = this.pending.get(id);
+    if (!pending || pending.timer !== null) return;
+    const { method, timeoutMs } = pending;
+    pending.timer = this.cfg.setTimeout(() => {
+      const p = this.pending.get(id);
+      if (!p) return;
+      this.pending.delete(id);
+      this.dropQueuedRpc(id);
+      p.reject(new BridgeTimeoutError(method, timeoutMs));
+    }, timeoutMs);
   }
 
   private sendNotification(method: string, params: unknown): void {
@@ -2638,6 +2662,11 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       const next = this.sendQueue[0];
       if (!this.rawSend(next.text)) return;
       this.sendQueue.shift();
+      // The frame just went on the wire — start its RPC timeout NOW, not
+      // when it was originally enqueued (#245 P2).
+      if (next.rpcId !== undefined) {
+        this.armPendingTimeout(next.rpcId);
+      }
     }
   }
 }
