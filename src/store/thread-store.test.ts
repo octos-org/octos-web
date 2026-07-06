@@ -124,6 +124,32 @@ describe.each(FLAG_STATES)("thread-store [$label]", ({ projectionV1 }) => {
     expect(thread.pendingAssistant?.text).toBe("Hello, world");
   });
 
+  it("reset_pending_for_replay_clears_streamed_text_so_replayed_deltas_do_not_double", () => {
+    // #245 P2: on a reconnect reopen the server's `after` replay re-emits the
+    // in-flight turn's deltas (no client dedup on message/delta). Clearing the
+    // pending streamed text first lets the replay rebuild it ONCE.
+    makeUser("hi", "cmid-1");
+    ThreadStore.appendAssistantToken("cmid-1", "Hello");
+    ThreadStore.appendAssistantToken("cmid-1", ", world");
+    expect(ThreadStore.getThreads(SESSION)[0].pendingAssistant?.text).toBe(
+      "Hello, world",
+    );
+
+    // Mid-turn reconnect: reset clears the streamed text but keeps the slot
+    // streaming (so replayed deltas are not dropped as phantom chunks).
+    ThreadStore.resetPendingAssistantForReplay(SESSION);
+    const afterReset = ThreadStore.getThreads(SESSION)[0].pendingAssistant;
+    expect(afterReset?.text).toBe("");
+    expect(afterReset?.status).toBe("streaming");
+
+    // The server replays the same two deltas → rebuild once, not doubled.
+    ThreadStore.appendAssistantToken("cmid-1", "Hello");
+    ThreadStore.appendAssistantToken("cmid-1", ", world");
+    expect(ThreadStore.getThreads(SESSION)[0].pendingAssistant?.text).toBe(
+      "Hello, world",
+    );
+  });
+
   it("routes_tool_progress_to_correct_tool_call_via_tool_id", () => {
     makeUser("search", "cmid-1");
     ThreadStore.addToolCall("cmid-1", "tc_a", "deep_search");

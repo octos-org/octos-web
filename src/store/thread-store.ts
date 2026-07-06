@@ -772,6 +772,43 @@ export function appendAssistantToken(threadId: string, token: string): void {
   }
 }
 
+/**
+ * #245 P2 (part 2/2): clear the in-flight streamed assistant text on a
+ * reconnect REOPEN so the server's `after` replay can rebuild it exactly once.
+ *
+ * The bridge now sends an `after` cursor on reopen, so the server replays the
+ * disconnect gap as live-shaped frames. Durable frames dedup on the client
+ * (`message/persisted` by seq, `turn/spawn_complete` by message_id) and tool
+ * frames are idempotent (`addToolCall` on `(turn_id, tool_call_id)`), but
+ * `message/delta` has NO identity dedup — `appendAssistantToken` blindly
+ * appends. A mid-turn reconnect would therefore re-stream the already-seen
+ * deltas into the surviving `pendingAssistant`, doubling its text
+ * ("abc" -> "abcabc"). Clearing just the streamed text (the slot and its tool
+ * calls are kept, so the pending stays un-finalized and the phantom-chunk
+ * guard does not fire) lets the replayed deltas rebuild it once. If the turn
+ * completed during the gap, no deltas replay and the empty pending is
+ * finalized by the replayed `turn/completed` / covered by the hydrate refetch.
+ *
+ * Runs for EVERY reopen, including topic-scoped bridges (which the hydrate
+ * refetch skips) — the bridge sends `after` regardless of topic.
+ */
+export function resetPendingAssistantForReplay(
+  sessionId: string,
+  topic?: string,
+): void {
+  const state = sessionsByKey.get(storeKey(sessionId, topic));
+  if (!state) return;
+  let changed = false;
+  for (const thread of state.threads) {
+    const pending = thread.pendingAssistant;
+    if (pending && pending.text.length > 0) {
+      pending.text = "";
+      changed = true;
+    }
+  }
+  if (changed) notify();
+}
+
 export function replaceAssistantText(threadId: string, text: string): void {
   const found = ensureOrphanThread(threadId);
   if (!found) return;

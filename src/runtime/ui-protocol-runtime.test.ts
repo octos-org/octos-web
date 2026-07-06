@@ -39,6 +39,7 @@ import {
   startBridgeForSession,
   stopActiveBridge,
 } from "./ui-protocol-runtime";
+import * as ThreadStore from "@/store/thread-store";
 import type { UiProtocolBridge } from "./ui-protocol-bridge";
 import type { ConnectionState } from "./ui-protocol-types";
 
@@ -151,6 +152,7 @@ beforeEach(() => {
 
 afterEach(() => {
   __resetUiProtocolRuntimeForTest();
+  ThreadStore.__resetForTests();
 });
 
 describe("startBridgeForSession race safety", () => {
@@ -340,6 +342,37 @@ describe("reload-bug fix: re-hydrate session on WS reconnect", () => {
       .mock.calls;
     expect(calls[0]).toEqual([["messages"]]);
     expect(calls[1]).toEqual([["messages"]]);
+  });
+
+  it("clears in-flight streamed text on reopen so the after-replay rebuilds it once", async () => {
+    // #245 P2: the bridge sends an `after` cursor on reopen, so the server
+    // replays the disconnect gap as live frames — including message/delta,
+    // which the client does not dedup. The runtime must clear the pending
+    // streamed text on reopen so the replayed deltas rebuild it once instead
+    // of doubling ("partial" -> "partialpartial").
+    const a = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(a.bridge);
+    const startA = startBridgeForSession("sess-A");
+    a.resolveStart();
+    await startA;
+    a.setConnected();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // A turn is mid-stream when the socket drops: pending holds partial text.
+    ThreadStore.addUserMessage("sess-A", { text: "hi", clientMessageId: "cmid-1" });
+    ThreadStore.appendAssistantToken("cmid-1", "partial");
+    expect(ThreadStore.getThreads("sess-A")[0].pendingAssistant?.text).toBe(
+      "partial",
+    );
+
+    // Post-reconnect session/open ack → runtime resets the streamed text.
+    a.fireReopened();
+    await Promise.resolve();
+    const pending = ThreadStore.getThreads("sess-A")[0].pendingAssistant;
+    expect(pending?.text).toBe("");
+    // Slot preserved and still streaming (replayed deltas won't be dropped).
+    expect(pending?.status).toBe("streaming");
   });
 
   it("applies the post-reopen hydrate result to ThreadStore for replay dedup", async () => {
