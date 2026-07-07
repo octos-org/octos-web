@@ -16,6 +16,31 @@ Then open **http://localhost:50080/app/** and click the local sign-in button. (I
 
 This repo is for **developing or customizing the client**. octos-web is one of two first-party clients for the octos server; the other is [octos-tui](https://github.com/octos-org/octos-tui) for the terminal.
 
+## Octos Cloud
+
+Don't want to run anything yourself? **Octos Cloud** is the hosted, multi-tenant way in — and the account experience (signup, email-code sign-in, your tenant's dashboard) is delivered by this web client:
+
+1. Go to your Octos Cloud operator's signup portal.
+2. Register with your email.
+3. Choose a custom node name.
+4. Run the generated setup command on your device.
+
+That setup command is personalized for your machine and includes the values needed to connect your device to the Octos cloud relay. After setup, your Octos instance is accessible on the public internet under your node name.
+
+When you click `Send Code` on the portal, check your Spam folder if the email does not arrive right away. It is also a good idea to add the Octos sending domain/address to your address book so future login and setup emails are delivered reliably.
+
+After signup, the portal shows your node details, public URL, and the setup command to run on your device:
+
+<img src="images/octos-cloud-signup.png" alt="Octos Cloud signup response" width="50%" />
+
+Octos Cloud is the best choice if you want:
+
+- the fastest time to first working system
+- public access without running your own VPS
+- a hosted signup and tunnel flow
+
+Multi-tenant accounts, per-user isolation, and the admin surfaces for them are web-client territory; the terminal client stays single-user. **Operators**: the server-side infrastructure behind this — the portal host, relay, and wildcard TLS — is deployed from the octos repo; see [self-hosted cloud + tenant pair](https://github.com/octos-org/octos#option-3-self-hosted-cloud--tenant-pair).
+
 ## Surfaces
 
 | Route | What it is |
