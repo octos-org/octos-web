@@ -462,8 +462,29 @@ function tryPromotePendingFromPersisted(
   // Phase 5b empty-placeholder fix's intent — keep the bubble alive
   // until something renders — while shortcutting the "delta never
   // shows up" failure mode now that the wire carries text directly.
+  //
+  // #245 P2 (codex fold 2): EXCEPT for a thread frozen by the
+  // post-reopen delta suppression. Its pending text is known-stale —
+  // deltas were deliberately dropped after the reconnect — so here the
+  // wire content is the authoritative text and must REPLACE the frozen
+  // partial before finalisation ("streamed text is authoritative" only
+  // holds when the stream was actually applied). Without this, the
+  // durable frame finalises the truncated pre-reconnect text.
   const wireContent = (event.content ?? "").trim();
-  if (
+  if (thread.suppressDeltasUntilDurable && wireContent.length > 0) {
+    // Projection-safe variant (codex fold 3): `replaceAssistantText`
+    // would dual-write the replacement as an appended `assistant_delta`
+    // and corrupt projection-mode text on top of the pre-freeze delta.
+    ThreadStore.replaceFrozenPendingFromPersisted(
+      threadId,
+      event.content ?? "",
+      {
+        messageId: event.message_id,
+        persistedAt: event.persisted_at,
+        media: eventMedia,
+      },
+    );
+  } else if (
     thread.pendingAssistant.text.trim().length === 0 &&
     wireContent.length > 0
   ) {

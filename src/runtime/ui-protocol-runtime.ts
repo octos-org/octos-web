@@ -14,7 +14,10 @@ import {
 } from "./ui-protocol-bridge";
 import type { ConnectionState } from "./ui-protocol-types";
 import { attachRouter, type RouterAttachment } from "./ui-protocol-event-router";
-import { setHydrateSnapshot } from "@/store/thread-store";
+import {
+  setHydrateSnapshot,
+  suppressPendingDeltasForReplay,
+} from "@/store/thread-store";
 
 interface ActiveBridge {
   sessionId: string;
@@ -176,6 +179,14 @@ export async function startBridgeForSession(
       // bridge down before publishing its own. Use the same generation
       // guard the initial hydrate uses.
       if (myGeneration !== generation) return;
+      // #245 P2: the bridge now sends an `after` cursor on reopen, so the
+      // server replays the gap as live frames — including `message/delta`,
+      // which has no client-side identity. Freeze each in-flight bubble's
+      // delta stream FIRST (replayed deltas would double it; clearing would
+      // truncate it) — the turn's durable frames deliver canonical text and
+      // lift the freeze. Runs for ALL reopens (topic-scoped bridges
+      // included), unlike the topic-gated hydrate below.
+      suppressPendingDeltasForReplay(sessionId, topic);
       runHydrateFor(sessionId, topic, bridge, myGeneration);
     });
   }

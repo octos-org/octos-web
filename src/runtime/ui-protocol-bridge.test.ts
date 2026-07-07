@@ -2445,6 +2445,141 @@ describe("rpc correlation", () => {
     await Promise.resolve();
     expect(deltas).toHaveLength(1);
   });
+
+  it("sends the last-seen cursor as `after` on reopen, but not on the initial open", async () => {
+    // #245 P2: the initial session/open is cursorless (server serves live /
+    // full snapshot); a REOPEN sends `after` = the highest durable cursor
+    // seen, so the server replays only the disconnect gap.
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    void bridge.start({ sessionId: "sess-1" });
+    await Promise.resolve();
+    const ws1 = lastInstance();
+    ws1.triggerOpen();
+    await Promise.resolve();
+    const open1 = findRequest(ws1, METHODS.SESSION_OPEN);
+    // The initial open must NOT carry `after`.
+    expect((open1.params as Record<string, unknown>).after).toBeUndefined();
+    // Ack seeds the cursor from the server's authoritative head.
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      id: open1.id,
+      result: { opened: { session_id: "sess-1", cursor: { stream: "sess-1", seq: 5 } } },
+    });
+    await Promise.resolve();
+
+    // A durable frame advances the cursor to seq 18.
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.MESSAGE_PERSISTED,
+      params: {
+        session_id: "sess-1",
+        turn_id: "t1",
+        thread_id: "th1",
+        seq: 18,
+        role: "assistant",
+        message_id: "m1",
+        source: "assistant",
+        cursor: { stream: "sess-1", seq: 18 },
+        persisted_at: "2026-05-04T00:00:00Z",
+        text: "hello",
+      },
+    });
+    await Promise.resolve();
+
+    // Reconnect → the reopen's session/open must carry after = {sess-1, 18}.
+    ws1.triggerClose(1006, "abnormal");
+    await vi.advanceTimersByTimeAsync(1000);
+    const ws2 = lastInstance();
+    expect(ws2).not.toBe(ws1);
+    ws2.triggerOpen();
+    await Promise.resolve();
+    const open2 = findRequest(ws2, METHODS.SESSION_OPEN);
+    expect((open2.params as Record<string, unknown>).after).toEqual({
+      stream: "sess-1",
+      seq: 18,
+    });
+  });
+
+  it("a bridge restarted for another session does not send the stale cursor", async () => {
+    // #245 P2 (codex): `lastCursor` must not survive start → stop → start.
+    // The server rejects an `after` whose stream doesn't match the session
+    // (cursor_stream_mismatch), so a reused bridge would wedge its reopen.
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    void bridge.start({ sessionId: "sess-1" });
+    await Promise.resolve();
+    const ws1 = lastInstance();
+    ws1.triggerOpen();
+    await Promise.resolve();
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      id: findRequest(ws1, METHODS.SESSION_OPEN).id,
+      result: { opened: { session_id: "sess-1", cursor: { stream: "sess-1", seq: 42 } } },
+    });
+    await Promise.resolve();
+    await bridge.stop();
+
+    // Restart the SAME instance on a different session. Its open ack seeds a
+    // LOWER seq than the stale sess-1 cursor (42) — the max-seq comparison
+    // alone would keep the stale one.
+    void bridge.start({ sessionId: "sess-2" });
+    await Promise.resolve();
+    const ws2 = lastInstance();
+    ws2.triggerOpen();
+    await Promise.resolve();
+    const open2 = findRequest(ws2, METHODS.SESSION_OPEN);
+    expect((open2.params as Record<string, unknown>).session_id).toBe("sess-2");
+    // Fresh lifecycle → no `after` on its initial open (and never sess-1's).
+    expect((open2.params as Record<string, unknown>).after).toBeUndefined();
+    ws2.triggerMessage({
+      jsonrpc: "2.0",
+      id: open2.id,
+      result: { opened: { session_id: "sess-2", cursor: { stream: "sess-2", seq: 3 } } },
+    });
+    await Promise.resolve();
+
+    // The restarted lifecycle's REOPEN must send sess-2's cursor — never the
+    // higher-seq sess-1 leftover (the server would reject the stream
+    // mismatch and wedge the reconnect).
+    ws2.triggerClose(1006, "abnormal");
+    await vi.advanceTimersByTimeAsync(1000);
+    const ws3 = lastInstance();
+    ws3.triggerOpen();
+    await Promise.resolve();
+    const open3 = findRequest(ws3, METHODS.SESSION_OPEN);
+    expect((open3.params as Record<string, unknown>).after).toEqual({
+      stream: "sess-2",
+      seq: 3,
+    });
+  });
+
+  it("seeds the reopen `after` from the open ack even with no durable frames", async () => {
+    // #245 P2: even a session that saw no cursor-bearing live frames still
+    // has an `after` for its next reopen — seeded from the open ack's head.
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    void bridge.start({ sessionId: "sess-1" });
+    await Promise.resolve();
+    const ws1 = lastInstance();
+    ws1.triggerOpen();
+    await Promise.resolve();
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      id: findRequest(ws1, METHODS.SESSION_OPEN).id,
+      result: { opened: { session_id: "sess-1", cursor: { stream: "sess-1", seq: 3 } } },
+    });
+    await Promise.resolve();
+
+    ws1.triggerClose(1006, "abnormal");
+    await vi.advanceTimersByTimeAsync(1000);
+    const ws2 = lastInstance();
+    ws2.triggerOpen();
+    await Promise.resolve();
+    expect(
+      (findRequest(ws2, METHODS.SESSION_OPEN).params as Record<string, unknown>).after,
+    ).toEqual({ stream: "sess-1", seq: 3 });
+  });
 });
 
 // ---------------------------------------------------------------------------
