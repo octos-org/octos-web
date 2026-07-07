@@ -250,6 +250,51 @@ describe("router event mapping", () => {
     expect(thread.responses[0].historySeq).toBe(50);
   });
 
+  it("tryPromote replaces a replay-frozen pending with the wire content", () => {
+    // #245 P2 (codex fold 2): after a mid-turn reconnect the store freezes
+    // the pending's delta stream (replayed deltas have no identity), so its
+    // text is known-stale. "Streamed text is authoritative" must NOT apply —
+    // pre-fix, promotion finalised the truncated pre-reconnect partial and
+    // the canonical wire content was discarded.
+    const cmid = "cmid-frozen-promote";
+    seedThread(cmid, "ask");
+    ThreadStore.appendAssistantToken(cmid, "partial ans");
+    // Mid-turn reconnect: the runtime freezes threads with in-flight text.
+    ThreadStore.suppressPendingDeltasForReplay(SESSION);
+    // New deltas streamed during/after the gap are dropped by the freeze…
+    ThreadStore.appendAssistantToken(cmid, "wer continues");
+    expect(ThreadStore.getThreads(SESSION)[0].pendingAssistant?.text).toBe(
+      "partial ans",
+    );
+    // …and the durable persisted row carries the canonical full text.
+    handleMessagePersisted(
+      { sessionId: SESSION },
+      {
+        session_id: SESSION,
+        turn_id: cmid,
+        thread_id: cmid,
+        seq: 51,
+        role: "assistant",
+        message_id: "msg-frozen",
+        source: "assistant",
+        cursor: { stream: SESSION, seq: 51 },
+        persisted_at: "2026-07-08T00:00:00Z",
+        content: "partial answer continues to the real end.",
+      },
+    );
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.pendingAssistant).toBeNull(); // finalised
+    expect(thread.responses).toHaveLength(1);
+    // The canonical wire content wins over the frozen stale partial.
+    expect(thread.responses[0].text).toBe(
+      "partial answer continues to the real end.",
+    );
+    // Freeze lifted by the durable frame (finalize cleared the flag); the
+    // finalized thread drops late tokens via the ordinary phantom-chunk
+    // guard, same as any completed turn.
+    expect(thread.suppressDeltasUntilDurable).toBeFalsy();
+  });
+
   it("message/persisted (assistant, no media, empty pending) leaves pending alive for the late delta", () => {
     // M10 Phase 5b empty-placeholder fix: when an assistant
     // `message/persisted` lands BEFORE the streamed `message/delta`
