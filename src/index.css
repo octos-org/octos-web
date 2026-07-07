@@ -1,6 +1,34 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/* ── Self-hosted variable fonts (Ivory Obsidian type stack) ── */
+@font-face {
+  font-family: "Hanken Grotesk Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("./assets/fonts/hanken-grotesk-latin-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("./assets/fonts/inter-latin-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "JetBrains Mono Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 800;
+  src: url("./assets/fonts/jetbrains-mono-latin-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 /* ── Dark theme (default) ─ Evening hearth ── */
 @theme {
   /* Surfaces */
@@ -14,6 +42,8 @@
   --color-accent: #d4a574;
   --color-accent-dim: #b08654;
   --color-accent-container: rgba(212, 165, 116, 0.14);
+  /* Text placed on a solid accent fill (buttons, active tabs). */
+  --color-on-accent: #100d09;
 
   /* Borders & dividers */
   --color-border: rgba(244, 232, 214, 0.11);
@@ -39,6 +69,13 @@
   --color-blockquote-border: #d19b6c;
   --color-sidebar: #15110e;
   --color-highlight: #d9ad63;
+
+  /* Type roles (generate font-display / font-body / font-label utilities).
+     Hanken Grotesk = editorial display, Inter = functional body,
+     JetBrains Mono = labels/metadata. */
+  --font-display: "Hanken Grotesk Variable", "SF Pro Display", "PingFang SC", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-body: "Inter Variable", "SF Pro Text", "PingFang SC", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-label: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 
 /* ── Light theme ────────────────────────────────────── */
@@ -246,6 +283,7 @@
   --color-accent: #3B82F6;
   --color-accent-dim: #2563EB;
   --color-accent-container: rgba(59, 130, 246, 0.12);
+  --color-on-accent: #ffffff;
 
   --color-border: rgba(255, 255, 255, 0.08);
   --color-outline: rgba(255, 255, 255, 0.12);
@@ -281,6 +319,7 @@
   --color-accent: #3B82F6;
   --color-accent-dim: #2563EB;
   --color-accent-container: rgba(59, 130, 246, 0.08);
+  --color-on-accent: #ffffff;
 
   --color-border: rgba(0, 0, 0, 0.06);
   --color-outline: rgba(0, 0, 0, 0.10);
@@ -304,6 +343,151 @@
   --color-highlight: #F9D53F;
 
   --workbench-panel-shadow: 0 14px 34px rgba(5, 16, 38, 0.12);
+}
+
+/* ── Ivory Obsidian (design-system flagship) ──
+   Dark = "Obsidian": warm graphite monochrome with bone accents. */
+[data-ui-style="ivory-obsidian"] {
+  --color-surface: #171614;
+  --color-surface-light: #201f1d;
+  --color-surface-dark: #100f0e;
+  --color-surface-container: #23221f;
+  --color-surface-elevated: #2a2926;
+
+  --color-accent: #d0c5b5;
+  --color-accent-dim: #a89d8d;
+  --color-accent-container: rgba(208, 197, 181, 0.13);
+  --color-on-accent: #17110c;
+
+  --color-border: rgba(237, 235, 230, 0.1);
+  --color-outline: rgba(237, 235, 230, 0.17);
+
+  --color-muted: #a19a8e;
+  --color-text: #e5e3df;
+  --color-text-strong: #faf9f7;
+
+  --color-user-bubble: rgba(208, 197, 181, 0.12);
+  --color-assistant-bubble: #1e1d1b;
+
+  --color-link: #cbbfae;
+  --color-heading: #e6e2db;
+  --color-heading-accent: #d0c5b5;
+  --color-code-inline: #d0c5b5;
+  --color-code-block-bg: #0f0e0d;
+  --color-code-header-bg: #181716;
+  --color-code-text: #e4e2dc;
+  --color-blockquote-border: #655d51;
+  --color-sidebar: #121110;
+  --color-highlight: #d4b878;
+
+  --workbench-panel-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 18px 42px rgba(0, 0, 0, 0.32);
+}
+
+/* Light = "Ivory": architectural warm-neutral studio — hairline borders,
+   obsidian ink, muted-earth metadata. This is the flagship look. */
+[data-ui-style="ivory-obsidian"][data-theme="light"] {
+  --color-surface: #faf9f7;
+  --color-surface-light: #ffffff;
+  --color-surface-dark: #e9e8e6;
+  --color-surface-container: #efeeec;
+  --color-surface-elevated: #ffffff;
+
+  --color-accent: #1c1b1b;
+  --color-accent-dim: #474746;
+  --color-accent-container: rgba(28, 27, 27, 0.07);
+  --color-on-accent: #faf9f7;
+
+  --color-border: rgba(26, 28, 27, 0.12);
+  --color-outline: rgba(26, 28, 27, 0.22);
+
+  --color-muted: #655d51;
+  --color-text: #1a1c1b;
+  --color-text-strong: #000000;
+
+  --color-user-bubble: rgba(101, 93, 81, 0.09);
+  --color-assistant-bubble: #ffffff;
+
+  --color-link: #4d463a;
+  --color-heading: #1a1c1b;
+  --color-heading-accent: #474746;
+  --color-code-inline: #6a6255;
+  --color-code-block-bg: #1c1b1b;
+  --color-code-header-bg: #2a2928;
+  --color-code-text: #e3e2e0;
+  --color-blockquote-border: #d0c5b5;
+  --color-sidebar: #f4f3f1;
+  --color-highlight: #8a7a5c;
+
+  --workbench-panel-shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 12px 24px -4px rgba(0, 0, 0, 0.04);
+}
+
+/* Ivory Obsidian reads in the design's body face rather than SF Pro. */
+[data-ui-style="ivory-obsidian"] body {
+  font-family: var(--font-body);
+}
+
+/* `.workbench-button-primary` pins dark text for the tan warm accents; with
+   obsidian ink (light) the label must flip to ivory. Dark keeps the bone
+   accent readable with the existing dark label, including on hover. */
+[data-ui-style="ivory-obsidian"] .workbench-button-primary:hover {
+  color: #100d09;
+}
+[data-ui-style="ivory-obsidian"][data-theme="light"] .workbench-button-primary,
+[data-ui-style="ivory-obsidian"][data-theme="light"] .workbench-button-primary:hover {
+  color: #faf9f7;
+}
+
+/* Hard-coded `text-white` on accent fills predates this skin: white is
+   unreadable on the dark-theme bone accent (and the settings-shell hack
+   below forces near-black, which vanishes on the light-theme ink). */
+[data-ui-style="ivory-obsidian"] .bg-accent.text-white {
+  color: var(--color-on-accent);
+}
+[data-ui-style="ivory-obsidian"][data-theme="light"] .settings-shell .bg-accent.text-white {
+  color: #faf9f7 !important;
+}
+
+/* /home and /voice (.home-root) are hard-coded dark surfaces that ignore
+   data-theme, but they leak a handful of shared accent utilities. Under
+   ivory light the ink accent would be invisible there — keep the bone
+   accent for those subtrees. */
+[data-ui-style="ivory-obsidian"][data-theme="light"] .home-root {
+  --color-accent: #d0c5b5;
+  --color-accent-dim: #a89d8d;
+  --color-accent-container: rgba(208, 197, 181, 0.13);
+  --color-on-accent: #17110c;
+}
+
+/* Monochrome link color needs a standing affordance; other skins get it
+   from hue alone. */
+[data-ui-style="ivory-obsidian"] .prose a {
+  border-bottom-color: color-mix(in srgb, currentColor 40%, transparent);
+}
+
+/* The workbench/settings shells bake warm-hearth hues (tan/sage/clay)
+   into their gradients regardless of skin; neutralize them to pure
+   tokens under Ivory Obsidian. */
+[data-ui-style="ivory-obsidian"] .workbench-shell,
+[data-ui-style="ivory-obsidian"] .settings-shell,
+[data-ui-style="ivory-obsidian"][data-theme="light"] .workbench-shell,
+[data-ui-style="ivory-obsidian"][data-theme="light"] .settings-shell {
+  background: linear-gradient(180deg, var(--color-surface), var(--color-surface-dark));
+}
+[data-ui-style="ivory-obsidian"][data-theme="light"] .settings-shell .workbench-topbar {
+  background: color-mix(in srgb, var(--color-surface-elevated) 86%, var(--color-surface-dark) 14%);
+}
+[data-ui-style="ivory-obsidian"] .settings-shell .settings-rail {
+  background: linear-gradient(
+    180deg,
+    var(--color-surface),
+    var(--color-surface-container)
+  );
+}
+[data-ui-style="ivory-obsidian"] .settings-shell .glass-section {
+  background: var(--color-surface-container);
+}
+[data-ui-style="ivory-obsidian"][data-theme="light"] .settings-shell .glass-section {
+  background: var(--color-surface-elevated);
 }
 
 /* ── Base ───────────────────────────────────────────── */
@@ -4284,5 +4468,358 @@ button, a, input, textarea {
 
   .smart-home-panel-metro .smart-home-device-compact {
     min-height: 38px;
+  }
+}
+
+/* ── Studio family ──────────────────────────────────────
+   Chrome for the Ivory Obsidian launcher (/) and the /studio workspace.
+   Token-driven, so every skin/theme combination renders correctly; the
+   flagship look is ivory-obsidian light. Shape language: 12px controls,
+   16px cards, hairline borders, ambient dual shadows. */
+
+.studio-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.studio-glass-nav {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-surface) 82%, transparent);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+}
+
+.studio-display {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+  color: var(--color-text-strong);
+}
+
+.studio-headline {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  color: var(--color-text-strong);
+}
+
+.studio-kicker {
+  /* The design's label-md role: JetBrains Mono 12px, 0.05em tracking. */
+  font-family: var(--font-label);
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+.studio-card {
+  background: var(--color-surface-light);
+  border: 0.5px solid var(--color-border);
+  border-radius: 16px;
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
+}
+
+.studio-card-interactive {
+  cursor: pointer;
+}
+
+.studio-card-interactive:hover {
+  border-color: var(--color-outline);
+  box-shadow: var(--workbench-panel-shadow);
+}
+
+.studio-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.625rem;
+  border: 0.5px solid var(--color-border);
+  border-radius: 9999px;
+  background: var(--color-surface-container);
+  font-family: var(--font-label);
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+
+.studio-chip[data-active="true"] {
+  background: var(--color-accent);
+  border-color: transparent;
+  color: var(--color-on-accent);
+}
+
+.studio-tab {
+  padding-bottom: 0.625rem;
+  font-size: 0.9375rem;
+  color: var(--color-muted);
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.studio-tab:hover {
+  color: var(--color-text-strong);
+}
+
+.studio-tab[data-active="true"] {
+  /* Design: active tab is plain ink + medium weight, no underline. */
+  color: var(--color-text-strong);
+  font-weight: 500;
+}
+
+.studio-button-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  height: 2.5rem;
+  padding: 0 1rem;
+  border-radius: 12px;
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: background 0.2s ease;
+}
+
+.studio-button-primary:hover {
+  background: color-mix(in srgb, var(--color-accent) 85%, var(--color-surface));
+}
+
+.studio-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  height: 2.5rem;
+  padding: 0 1rem;
+  border: 0.5px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface-light);
+  color: var(--color-text);
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.studio-button:hover {
+  background: var(--color-surface-container);
+  border-color: var(--color-outline);
+}
+
+.studio-ghost-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  border-radius: 8px;
+  color: var(--color-muted);
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: color 0.15s ease;
+}
+
+.studio-ghost-button:hover {
+  color: var(--color-text-strong);
+}
+
+.studio-input {
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-surface-dark) 40%, transparent);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.9375rem;
+  color: var(--color-text);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.studio-input::placeholder {
+  color: var(--color-muted);
+}
+
+.studio-input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  background: var(--color-surface-light);
+}
+
+/* Unlayered padding above beats Tailwind's layered pl-* utilities, so
+   icon-prefixed inputs opt in via attribute instead. */
+.studio-input[data-with-icon] {
+  padding-left: 2rem;
+}
+
+.studio-list-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.5rem;
+  border-radius: 12px;
+  text-align: left;
+  transition: background 0.15s ease;
+}
+
+.studio-list-row:hover {
+  background: var(--color-surface-container);
+}
+
+.studio-skill-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 1rem 0.75rem;
+  border: 0.5px solid var(--color-border);
+  border-radius: 12px;
+  background: linear-gradient(160deg, var(--color-surface-light), var(--color-surface-container));
+  text-align: center;
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.studio-skill-tile:hover {
+  transform: translateY(-2px);
+  border-color: var(--color-outline);
+  box-shadow: var(--workbench-panel-shadow);
+}
+
+.studio-skill-tile-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 9999px;
+  background: var(--color-accent-container);
+  color: var(--color-text-strong);
+  transition: background 0.2s ease;
+}
+
+.studio-skill-tile:hover .studio-skill-tile-icon {
+  background: color-mix(in srgb, var(--color-accent) 18%, var(--color-surface-container));
+}
+
+.studio-skill-tile-label {
+  font-family: var(--font-label);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.35;
+  letter-spacing: 0.05em;
+  color: var(--color-text-strong);
+}
+
+.studio-pane {
+  background: var(--color-surface);
+  border-color: var(--color-border);
+}
+
+.studio-scrim {
+  position: fixed;
+  inset: 0;
+  /* Below the glass nav (z-40): the nav — including the pane toggles —
+     must stay clickable while a studio drawer is open. */
+  z-index: 30;
+  background: color-mix(in srgb, var(--color-surface-dark) 55%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+
+.studio-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 2rem 1rem;
+  border: 1px dashed var(--color-border);
+  border-radius: 16px;
+  color: var(--color-muted);
+  text-align: center;
+}
+
+/* Stitch nav links: quiet text, ink underline when active. */
+.studio-nav-link {
+  display: inline-flex;
+  align-items: center;
+  height: 100%;
+  padding-top: 2px;
+  border-bottom: 2px solid transparent;
+  font-size: 0.9375rem;
+  color: var(--color-muted);
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.studio-nav-link:hover {
+  color: var(--color-text-strong);
+}
+
+.studio-nav-link[data-active] {
+  color: var(--color-text-strong);
+  border-bottom-color: var(--color-accent);
+}
+
+/* Card overflow menu (the design's more_horiz affordance). */
+.studio-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 30;
+  min-width: 11rem;
+  padding: 0.375rem;
+  border: 0.5px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface-light);
+  box-shadow: var(--workbench-panel-shadow);
+}
+
+.studio-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: 8px;
+  padding: 0.5rem 0.625rem;
+  font-size: 0.875rem;
+  color: var(--color-text);
+  text-align: left;
+  transition: background 0.12s ease;
+}
+
+.studio-menu-item:hover {
+  background: var(--color-surface-container);
+}
+
+/* Generated-asset rows reveal their download affordance on hover
+   (per the design); touch devices keep it visible. */
+.studio-asset-action {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.studio-list-row:hover .studio-asset-action,
+.studio-asset-action:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .studio-asset-action {
+    opacity: 1;
   }
 }
