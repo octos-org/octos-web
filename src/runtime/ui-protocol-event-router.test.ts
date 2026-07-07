@@ -328,6 +328,7 @@ describe("router event mapping", () => {
         cursor: { stream: SESSION, seq: 61 },
         persisted_at: "2026-07-08T00:00:00Z",
         content: "partial answer continues to the real end.",
+        media: ["/files/chart.png"],
       },
     );
     // Legacy store finalized canonically…
@@ -341,6 +342,9 @@ describe("router event mapping", () => {
     expect(projThread?.assistant?.text).toBe(
       "partial answer continues to the real end.",
     );
+    // Media-bearing persisted rows keep their file association in the
+    // projection (codex fold 4) — like the normal persisted-row shim.
+    expect(projThread?.assistant?.meta?.media).toEqual(["/files/chart.png"]);
   });
 
   it("message/persisted (assistant, no media, empty pending) leaves pending alive for the late delta", () => {

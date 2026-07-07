@@ -481,6 +481,7 @@ function tryPromotePendingFromPersisted(
       {
         messageId: event.message_id,
         persistedAt: event.persisted_at,
+        media: eventMedia,
       },
     );
   } else if (

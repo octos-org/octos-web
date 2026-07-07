@@ -891,7 +891,7 @@ export function replaceAssistantText(threadId: string, text: string): void {
 export function replaceFrozenPendingFromPersisted(
   threadId: string,
   text: string,
-  meta: { messageId: string; persistedAt: string },
+  meta: { messageId: string; persistedAt: string; media?: string[] },
 ): void {
   const found = ensureOrphanThread(threadId);
   if (!found) return;
@@ -908,6 +908,7 @@ export function replaceFrozenPendingFromPersisted(
       // forever. Replay dedup is already handled upstream — a re-emitted
       // persisted row for the same wire seq is dropped by the store's
       // seq gate before any shim emission happens.
+      const media = meta.media ?? [];
       shimIngest(key, threadId, {
         type: "assistant_persisted",
         data: {
@@ -915,6 +916,10 @@ export function replaceFrozenPendingFromPersisted(
           meta: {
             message_id: meta.messageId,
             persisted_at: meta.persistedAt,
+            // Mirror the normal persisted-row shim: media-bearing rows
+            // keep their file association in projection mode (codex
+            // fold 4).
+            ...(media.length > 0 ? { media: media.slice() } : {}),
           },
         },
       });
