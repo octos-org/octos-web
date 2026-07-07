@@ -873,6 +873,56 @@ export function replaceAssistantText(threadId: string, text: string): void {
 }
 
 /**
+ * #245 P2 (codex fold 3): replace a replay-frozen pending's text with the
+ * canonical content of its persisted row — projection-safely.
+ *
+ * `replaceAssistantText` dual-writes its replacement as an `assistant_delta`,
+ * which the projection APPENDS; on the frozen-reconnect path a pre-freeze
+ * delta is already in the projection log, so the append corrupts
+ * projection-mode text ("partial anspartial answer…") and nothing overwrites
+ * it afterwards (`finalizeAssistant` emits only tool_end/turn_completed, and
+ * the promotion path skips `appendPersistedMessage`'s assistant_persisted
+ * emission) — the corruption would be permanent. This variant emits the
+ * replacement as the `assistant_persisted` it actually is: the projection
+ * reducer OVERWRITES `assistantText` on that payload, and the caller's
+ * follow-up `finalizeAssistant` emits `turn_completed`, matching the normal
+ * wire order (persisted → completed).
+ */
+export function replaceFrozenPendingFromPersisted(
+  threadId: string,
+  text: string,
+  meta: { messageId: string; persistedAt: string },
+): void {
+  const found = ensureOrphanThread(threadId);
+  if (!found) return;
+  if (isFinalizedAndIdle(found.thread)) return;
+  const slot = ensurePendingAssistant(found.thread);
+  slot.text = text;
+  notify();
+  if (isProjectionV1Enabled()) {
+    const key = shimResolveKey(threadId);
+    if (key) {
+      // Deliberately uses the shim's contiguous local seq (NOT the wire
+      // seq): the projection buffers out-of-order envelopes per thread,
+      // so a sparse wire seq would park this overwrite in the buffer
+      // forever. Replay dedup is already handled upstream — a re-emitted
+      // persisted row for the same wire seq is dropped by the store's
+      // seq gate before any shim emission happens.
+      shimIngest(key, threadId, {
+        type: "assistant_persisted",
+        data: {
+          text,
+          meta: {
+            message_id: meta.messageId,
+            persisted_at: meta.persistedAt,
+          },
+        },
+      });
+    }
+  }
+}
+
+/**
  * Add or update a tool call on the in-flight assistant bubble.
  *
  * Tool retries collapse: if the most recent toolCall on this thread shares

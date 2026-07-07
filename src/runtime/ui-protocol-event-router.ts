@@ -472,7 +472,17 @@ function tryPromotePendingFromPersisted(
   // durable frame finalises the truncated pre-reconnect text.
   const wireContent = (event.content ?? "").trim();
   if (thread.suppressDeltasUntilDurable && wireContent.length > 0) {
-    ThreadStore.replaceAssistantText(threadId, event.content ?? "");
+    // Projection-safe variant (codex fold 3): `replaceAssistantText`
+    // would dual-write the replacement as an appended `assistant_delta`
+    // and corrupt projection-mode text on top of the pre-freeze delta.
+    ThreadStore.replaceFrozenPendingFromPersisted(
+      threadId,
+      event.content ?? "",
+      {
+        messageId: event.message_id,
+        persistedAt: event.persisted_at,
+      },
+    );
   } else if (
     thread.pendingAssistant.text.trim().length === 0 &&
     wireContent.length > 0
