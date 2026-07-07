@@ -1,16 +1,26 @@
 # octos-web
 
-The web client for [octos](https://github.com/octos-org/octos) — a React SPA that talks to an `octos serve` backend over **UI Protocol v1** (JSON-RPC over WebSocket). Chat with your agent, talk to it by voice or video, build slide decks and sites with it, and administer the whole server — from a browser.
+The web app for [octos](https://github.com/octos-org/octos). Chat with your agent, talk to it by voice or video, build slide decks and sites with it, and administer the whole server — from a browser.
 
-octos-web is one of two first-party clients for the octos server; the other is [octos-tui](https://github.com/octos-org/octos-tui) for the terminal. Both speak the same protocol.
+## Just want to use it?
 
-**Stack:** React 19 · TypeScript · Vite 7 · Tailwind CSS 4 · react-router 7 · Vitest + Playwright.
+**You don't need this repo.** A production build of the web app ships inside the octos server itself:
+
+```bash
+brew install octos-org/tap/octos    # or: npm install -g @octos-org/octos
+octos init                          # pick an AI provider, paste its API key
+octos serve --solo                  # password-free local sign-in
+```
+
+Then open **http://localhost:50080/app/** and click the local sign-in button. (Installed octos as a background service via its install script? The app is at `http://localhost:8080/app/`.) Full walkthrough: the [octos Start here guide](https://github.com/octos-org/octos#start-here).
+
+This repo is for **developing or customizing the client**. octos-web is one of two first-party clients for the octos server; the other is [octos-tui](https://github.com/octos-org/octos-tui) for the terminal.
 
 ## Surfaces
 
 | Route | What it is |
 |---|---|
-| `/` | Project launcher — every chat, deck, and site as a project card (Ivory Obsidian design system) |
+| `/` | Project launcher — every chat, deck, and site as a project card |
 | `/home` | Home-assistant standby — clock, weather/news/calendar/photo/smart-home widgets, night mode, wake-word |
 | `/voice` | Voice assistant — on-device VAD, streamed TTS with barge-in, user-selectable voices, live video chat |
 | `/chat` | The chat workbench — streaming turns, tool activity, approvals, file uploads, rich media |
@@ -20,24 +30,34 @@ octos-web is one of two first-party clients for the octos server; the other is [
 | `/settings` | Admin dashboard — LLM providers & failover, users, channels, sandbox, tools, system metrics & live logs, server watchdog, skills hub, voice, appearance |
 | `/login` | Email-code login, or password-free solo login against `octos serve --solo` |
 
-## Quickstart
+## Develop the client
 
-Prereqs: Node 20+, and an octos server.
+Prereqs: Node 20+, and an octos server (install above). The client is a React SPA talking to the server over UI Protocol v1 (see [How it connects](#how-it-connects)).
+
+**Stack:** React 19 · TypeScript · Vite 7 · Tailwind CSS 4 · react-router 7 · Vitest + Playwright.
 
 ```bash
-# 1. Run the backend on :50080 (from the octos repo)
-octos serve                 # or: octos serve --solo   (password-free local login)
+# 1. Run the backend on :50080 (from anywhere)
+octos serve --solo          # --solo = password-free local login; plain `octos serve` needs email-code (SMTP)
 
-# 2. Run the web client
+# 2. Run the web client in dev mode
 npm ci
 npm run dev                 # Vite dev server on http://localhost:5173
 ```
 
-The dev server proxies `/api` (including the WebSocket upgrade) to `http://localhost:50080`, so the app is same-origin out of the box. Sign in with an email code, or one click on the solo button when the server runs `--solo`.
+The dev server proxies `/api` (including the WebSocket upgrade) to `http://localhost:50080`, so the app is same-origin out of the box. Sign in with one click on the solo button (email-code login needs the server's SMTP configured).
 
-`predev` copies the VAD/onnx wasm assets (`scripts/copy-vad-assets.mjs`) — it runs automatically before `dev` and `build`.
+### If something looks wrong
+
+| Symptom | Fix |
+|---|---|
+| Blank app / WebSocket won't connect | Is the server running on **:50080**? (A service install listens on :8080 — point the proxy or your browser at the right one.) |
+| Login code never arrives | The local server has no SMTP — run `octos serve --solo` and use the solo button instead. |
+| `npm ci` or `npm run dev` fails | Check `node --version` — Vite 7 needs Node 20+. |
 
 ## Build, lint, test
+
+`predev`/`prebuild` copy the VAD/onnx wasm assets (`scripts/copy-vad-assets.mjs`) automatically.
 
 ```bash
 npm run build          # tsc -b && vite build  → dist/
