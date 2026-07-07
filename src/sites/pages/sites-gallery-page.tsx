@@ -13,11 +13,10 @@ import { Link, useNavigate } from "react-router-dom";
 import { SITE_PRESETS, type SitePreset } from "../types";
 import { useSiteProjects } from "../store";
 import {
-  WorkbenchPage,
   WorkbenchSectionHeader,
   WorkbenchStatusPill,
-  WorkbenchTopbar,
 } from "@/components/workbench-shell";
+import { StudioNav } from "@/components/studio-nav";
 
 function formatShortDate(value: number): string {
   return new Date(value).toLocaleDateString(undefined, {
@@ -97,35 +96,36 @@ export function SitesGalleryPage() {
   }
 
   return (
-    <WorkbenchPage>
-      <WorkbenchTopbar
-        backTo="/"
-        icon={Globe}
-        context="Creation Workspace"
-        title="Site Studio"
-        subtitle="Project library and scaffold presets"
-        badge={
-          <WorkbenchStatusPill>
-            {projects.length} project{projects.length !== 1 ? "s" : ""}
-          </WorkbenchStatusPill>
-        }
-        actions={
-          <div className="workbench-topbar-search relative min-w-0 max-sm:w-full">
-            <Search
-              size={14}
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-muted"
-            />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search sites..."
-              className="workbench-input w-64 py-1.5 pl-9 pr-3 text-sm placeholder-muted max-sm:w-full"
-            />
-          </div>
-        }
-      />
+    <div className="studio-shell h-screen overflow-y-auto">
+      <StudioNav />
 
-      <main className="flex-1 overflow-y-auto">
+      <main>
+        <header className="mx-auto w-full max-w-7xl px-6 pb-2 pt-8 max-sm:px-3">
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div className="min-w-0">
+              <p className="studio-kicker">Creation Workspace</p>
+              <h1 className="studio-display mt-1 text-4xl">Site Studio</h1>
+              <p className="mt-2 text-muted">
+                Project library and scaffold presets ·{" "}
+                {projects.length} project{projects.length !== 1 ? "s" : ""}
+              </p>
+            </div>
+            <div className="relative min-w-0 max-sm:w-full">
+              <Search
+                size={15}
+                aria-hidden="true"
+                className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted"
+              />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search sites..."
+                data-with-icon
+                  className="studio-input h-10 w-64 max-sm:w-full"
+              />
+            </div>
+          </div>
+        </header>
         <div className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-6 py-6 max-sm:px-3">
           <section className="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.65fr)]">
             <div className="workbench-panel p-5">
@@ -280,6 +280,6 @@ export function SitesGalleryPage() {
           </section>
         </div>
       </main>
-    </WorkbenchPage>
+    </div>
   );
 }
