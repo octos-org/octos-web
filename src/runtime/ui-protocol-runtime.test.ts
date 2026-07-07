@@ -344,12 +344,13 @@ describe("reload-bug fix: re-hydrate session on WS reconnect", () => {
     expect(calls[1]).toEqual([["messages"]]);
   });
 
-  it("clears in-flight streamed text on reopen so the after-replay rebuilds it once", async () => {
+  it("freezes in-flight streamed text on reopen so replayed deltas cannot double it", async () => {
     // #245 P2: the bridge sends an `after` cursor on reopen, so the server
     // replays the disconnect gap as live frames — including message/delta,
-    // which the client does not dedup. The runtime must clear the pending
-    // streamed text on reopen so the replayed deltas rebuild it once instead
-    // of doubling ("partial" -> "partialpartial").
+    // which carries no client-side identity. The runtime must freeze the
+    // pending bubble on reopen: text preserved (a clear would truncate when
+    // the replay doesn't cover it — codex review), replayed duplicates
+    // dropped ("partial" must not become "partialpartial").
     const a = makeDeferredBridge();
     createBridgeSpy.mockReturnValueOnce(a.bridge);
     const startA = startBridgeForSession("sess-A");
@@ -366,12 +367,13 @@ describe("reload-bug fix: re-hydrate session on WS reconnect", () => {
       "partial",
     );
 
-    // Post-reconnect session/open ack → runtime resets the streamed text.
+    // Post-reconnect session/open ack → runtime freezes the delta stream.
     a.fireReopened();
     await Promise.resolve();
+    // The replay re-emits the same delta — it must NOT double.
+    ThreadStore.appendAssistantToken("cmid-1", "partial");
     const pending = ThreadStore.getThreads("sess-A")[0].pendingAssistant;
-    expect(pending?.text).toBe("");
-    // Slot preserved and still streaming (replayed deltas won't be dropped).
+    expect(pending?.text).toBe("partial");
     expect(pending?.status).toBe("streaming");
   });
 

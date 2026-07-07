@@ -1718,6 +1718,12 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.visibilityReconnectInFlight = false;
     this.hasEverOpened = false;
     this.authExpiredDispatched = false;
+    // #245 P2 (codex): a bridge reused via start → stop → start must not
+    // carry the previous lifecycle's cursor — the server rejects an `after`
+    // whose stream doesn't match the (new) session, and a same-session
+    // restart wants the fresh open ack to reseed. `advanceCursor` also
+    // replaces on stream change as a second line of defense.
+    this.lastCursor = null;
     this.installVisibilityListener();
     await this.openSocket();
   }
@@ -2302,7 +2308,14 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     ) {
       return;
     }
-    if (this.lastCursor === null || seq > this.lastCursor.seq) {
+    if (
+      this.lastCursor === null ||
+      // A different stream means a different session/topic scope (one
+      // monotonic stream per session) — replace outright rather than
+      // comparing seqs across unrelated streams (#245 P2, codex).
+      this.lastCursor.stream !== stream ||
+      seq > this.lastCursor.seq
+    ) {
       this.lastCursor = { stream, seq };
     }
   }

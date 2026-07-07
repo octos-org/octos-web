@@ -2501,6 +2501,59 @@ describe("rpc correlation", () => {
     });
   });
 
+  it("a bridge restarted for another session does not send the stale cursor", async () => {
+    // #245 P2 (codex): `lastCursor` must not survive start → stop → start.
+    // The server rejects an `after` whose stream doesn't match the session
+    // (cursor_stream_mismatch), so a reused bridge would wedge its reopen.
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    void bridge.start({ sessionId: "sess-1" });
+    await Promise.resolve();
+    const ws1 = lastInstance();
+    ws1.triggerOpen();
+    await Promise.resolve();
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      id: findRequest(ws1, METHODS.SESSION_OPEN).id,
+      result: { opened: { session_id: "sess-1", cursor: { stream: "sess-1", seq: 42 } } },
+    });
+    await Promise.resolve();
+    await bridge.stop();
+
+    // Restart the SAME instance on a different session. Its open ack seeds a
+    // LOWER seq than the stale sess-1 cursor (42) — the max-seq comparison
+    // alone would keep the stale one.
+    void bridge.start({ sessionId: "sess-2" });
+    await Promise.resolve();
+    const ws2 = lastInstance();
+    ws2.triggerOpen();
+    await Promise.resolve();
+    const open2 = findRequest(ws2, METHODS.SESSION_OPEN);
+    expect((open2.params as Record<string, unknown>).session_id).toBe("sess-2");
+    // Fresh lifecycle → no `after` on its initial open (and never sess-1's).
+    expect((open2.params as Record<string, unknown>).after).toBeUndefined();
+    ws2.triggerMessage({
+      jsonrpc: "2.0",
+      id: open2.id,
+      result: { opened: { session_id: "sess-2", cursor: { stream: "sess-2", seq: 3 } } },
+    });
+    await Promise.resolve();
+
+    // The restarted lifecycle's REOPEN must send sess-2's cursor — never the
+    // higher-seq sess-1 leftover (the server would reject the stream
+    // mismatch and wedge the reconnect).
+    ws2.triggerClose(1006, "abnormal");
+    await vi.advanceTimersByTimeAsync(1000);
+    const ws3 = lastInstance();
+    ws3.triggerOpen();
+    await Promise.resolve();
+    const open3 = findRequest(ws3, METHODS.SESSION_OPEN);
+    expect((open3.params as Record<string, unknown>).after).toEqual({
+      stream: "sess-2",
+      seq: 3,
+    });
+  });
+
   it("seeds the reopen `after` from the open ack even with no durable frames", async () => {
     // #245 P2: even a session that saw no cursor-bearing live frames still
     // has an `after` for its next reopen — seeded from the open ack's head.

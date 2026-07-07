@@ -124,10 +124,13 @@ describe.each(FLAG_STATES)("thread-store [$label]", ({ projectionV1 }) => {
     expect(thread.pendingAssistant?.text).toBe("Hello, world");
   });
 
-  it("reset_pending_for_replay_clears_streamed_text_so_replayed_deltas_do_not_double", () => {
-    // #245 P2: on a reconnect reopen the server's `after` replay re-emits the
-    // in-flight turn's deltas (no client dedup on message/delta). Clearing the
-    // pending streamed text first lets the replay rebuild it ONCE.
+  it("suppress_pending_deltas_for_replay_freezes_text_until_a_durable_frame", () => {
+    // #245 P2: on a reconnect reopen the server's `after` replay re-emits
+    // deltas with no client-side identity. Appending would double the text;
+    // clearing would truncate it whenever the replay window doesn't reach
+    // back to the earlier deltas (codex review, both directions). The store
+    // freezes the bubble instead: tokens are dropped until a durable frame
+    // (persisted assistant row / finalize) delivers canonical text.
     makeUser("hi", "cmid-1");
     ThreadStore.appendAssistantToken("cmid-1", "Hello");
     ThreadStore.appendAssistantToken("cmid-1", ", world");
@@ -135,18 +138,48 @@ describe.each(FLAG_STATES)("thread-store [$label]", ({ projectionV1 }) => {
       "Hello, world",
     );
 
-    // Mid-turn reconnect: reset clears the streamed text but keeps the slot
-    // streaming (so replayed deltas are not dropped as phantom chunks).
-    ThreadStore.resetPendingAssistantForReplay(SESSION);
-    const afterReset = ThreadStore.getThreads(SESSION)[0].pendingAssistant;
-    expect(afterReset?.text).toBe("");
-    expect(afterReset?.status).toBe("streaming");
-
-    // The server replays the same two deltas → rebuild once, not doubled.
+    // Mid-turn reconnect: the pending text is PRESERVED (not cleared, not
+    // blanked), and replayed duplicate deltas do not double it.
+    ThreadStore.suppressPendingDeltasForReplay(SESSION);
     ThreadStore.appendAssistantToken("cmid-1", "Hello");
     ThreadStore.appendAssistantToken("cmid-1", ", world");
+    const frozen = ThreadStore.getThreads(SESSION)[0].pendingAssistant;
+    expect(frozen?.text).toBe("Hello, world");
+    expect(frozen?.status).toBe("streaming");
+
+    // The durable persisted assistant row lifts the freeze and carries the
+    // canonical full text.
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      role: "assistant",
+      content: "Hello, world — and more streamed during the gap",
+      thread_id: "cmid-1",
+      seq: 7,
+      message_id: "m-canonical",
+      timestamp: new Date().toISOString(),
+    } as never);
+    const thread = ThreadStore.getThreads(SESSION)[0];
+    expect(
+      thread.responses.some((r) =>
+        r.text.includes("more streamed during the gap"),
+      ),
+    ).toBe(true);
+    // Freeze lifted: the still-pending slot streams again.
+    ThreadStore.appendAssistantToken("cmid-1", " tail");
     expect(ThreadStore.getThreads(SESSION)[0].pendingAssistant?.text).toBe(
-      "Hello, world",
+      "Hello, world tail",
+    );
+  });
+
+  it("suppress_without_replay_coverage_does_not_blank_or_truncate_the_bubble", () => {
+    // Codex P2 scenario: a cursorless reopen (or a cursor past this thread's
+    // deltas) replays NOTHING for this thread. The old clear-based approach
+    // left the bubble blank; the freeze must keep the text visible.
+    makeUser("hi", "cmid-1");
+    ThreadStore.appendAssistantToken("cmid-1", "partial answer");
+    ThreadStore.suppressPendingDeltasForReplay(SESSION);
+    // No replay arrives at all — text stays.
+    expect(ThreadStore.getThreads(SESSION)[0].pendingAssistant?.text).toBe(
+      "partial answer",
     );
   });
 
