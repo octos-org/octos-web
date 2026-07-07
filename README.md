@@ -65,14 +65,17 @@ The protocol contract lives in the octos repo (`crates/octos-core/src/ui_protoco
 | Env var | Purpose |
 |---|---|
 | `BASE_URL` | Vite base path for subpath deploys (e.g. `/octos-web/`) |
-| `VITE_SKIP_AUTH` | Skip the auth guard — static/demo deploys only |
-| `VITE_PUBLIC_API_ORIGIN` | Absolute API origin when not same-origin |
-| `VITE_WEBHOOK_ORIGIN` | Origin shown for channel webhook URLs |
+| `VITE_SKIP_AUTH` | Build-time: skip the auth guard — static/demo builds only |
+| `VITE_WEBHOOK_ORIGIN` / `VITE_PUBLIC_API_ORIGIN` | Origin used when displaying channel webhook URLs in settings (fallback order) |
 | `VITE_SMART_HOME_API_BASE` | Smart-home widget backend (dev proxy: `/smart-home-api` → `:8787`) |
+
+API and WebSocket traffic is always **same-origin** (`/api/...`) — serve the
+bundle behind the same host as `octos serve` (or a reverse proxy to it);
+there is no env var that repoints the API.
 
 ## Deploying
 
-- **Static canary** — `.github/workflows/deploy.yml` publishes the app to GitHub Pages (`BASE_URL=/octos-web/`, SPA `404.html` fallback) with auth skipped, plus the `book/` mdBook of sample research reports under `/book`.
+- **Static canary** — `.github/workflows/deploy.yml` publishes the app to GitHub Pages (`BASE_URL=/octos-web/`, SPA `404.html` fallback), plus the `book/` mdBook of sample research reports under `/book`. The workflow does not set `VITE_SKIP_AUTH`, so the Pages build still shows the login screen; export it yourself for an auth-free demo build.
 - **Production** — build with `npm run build` and serve `dist/` from any static host or reverse proxy in front of `octos serve` (the octos repo's deploy docs cover the fleet setup). The app is a pure static bundle; all state lives in the server.
 
 ## Repository layout
