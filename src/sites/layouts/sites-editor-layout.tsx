@@ -7,8 +7,8 @@ import { useResizablePanel } from "@/hooks/use-resizable-panel";
 import {
   WorkbenchStatusPill,
   WorkbenchThemeButton,
-  WorkbenchTopbar,
 } from "@/components/workbench-shell";
+import { StudioTopbar } from "@/components/studio-topbar";
 
 import { useSites } from "../context/sites-context";
 import { ProjectFiles } from "../components/project-files";
@@ -108,8 +108,8 @@ export function SitesEditorLayout({
         : { label: "Ready", tone: "default" as const };
 
   return (
-    <div className="workbench-shell flex h-screen flex-col">
-      <WorkbenchTopbar
+    <div className="studio-shell flex h-screen flex-col">
+      <StudioTopbar
         backTo="/sites"
         icon={Globe}
         context="Site Workspace"

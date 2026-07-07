@@ -1,38 +1,54 @@
 import { useState, useEffect, useCallback } from "react";
 
 type Theme = "dark" | "light";
-export type UiStyle = "warm" | "warm-sage" | "warm-daylight" | "legacy-blue";
+
+const UI_STYLES = [
+  "ivory-obsidian",
+  "warm",
+  "warm-sage",
+  "warm-daylight",
+  "legacy-blue",
+] as const;
+export type UiStyle = (typeof UI_STYLES)[number];
+
+function isUiStyle(value: unknown): value is UiStyle {
+  return (
+    typeof value === "string" && (UI_STYLES as readonly string[]).includes(value)
+  );
+}
 
 const STORAGE_KEY = "octos-theme";
 const UI_STYLE_STORAGE_KEY = "octos-ui-style";
+// Present once a ui-style has been persisted by a build that knows about
+// Ivory Obsidian; gates the one-time "warm" → "ivory-obsidian" rebrand below.
+const UI_STYLE_MIGRATION_KEY = "octos-ui-style-migrated-ivory";
 const THEME_CHANGE_EVENT = "octos-theme-change";
 const UI_STYLE_CHANGE_EVENT = "octos-ui-style-change";
 
 /**
- * Resolve the active theme from the stored preference, falling back to the
- * system `prefers-color-scheme` and finally to dark. Pure: reads storage and
- * media queries but mutates nothing.
+ * Resolve the active theme from the stored preference, then an explicit
+ * system dark preference, finally the light "Ivory" flagship. Pure: reads
+ * storage and media queries but mutates nothing.
  */
 export function resolveInitialTheme(): Theme {
   const stored = localStorage.getItem(STORAGE_KEY);
   if (stored === "light" || stored === "dark") return stored;
-  // Respect system preference
-  if (window.matchMedia("(prefers-color-scheme: light)").matches) return "light";
-  return "dark";
+  if (window.matchMedia("(prefers-color-scheme: dark)").matches) return "dark";
+  return "light";
 }
 
 export function resolveInitialUiStyle(): UiStyle {
   const stored = localStorage.getItem(UI_STYLE_STORAGE_KEY);
-  if (
-    stored === "warm" ||
-    stored === "warm-sage" ||
-    stored === "warm-daylight" ||
-    stored === "legacy-blue"
-  ) {
-    return stored;
+  // One-time rebrand: "warm" was the implicit default before Ivory Obsidian
+  // shipped, so carry those users to the new flagship. Choosing any style in
+  // Settings afterwards re-persists it alongside the migration marker and
+  // sticks — including choosing "warm" back.
+  if (stored === "warm" && !localStorage.getItem(UI_STYLE_MIGRATION_KEY)) {
+    return "ivory-obsidian";
   }
+  if (isUiStyle(stored)) return stored;
   if (stored === "classic" || stored === "classic-blue") return "legacy-blue";
-  return "warm";
+  return "ivory-obsidian";
 }
 
 /** Reflect a theme onto `<html>` and persist it. */
@@ -44,6 +60,7 @@ export function applyTheme(theme: Theme): void {
 export function applyUiStyle(uiStyle: UiStyle): void {
   document.documentElement.setAttribute("data-ui-style", uiStyle);
   localStorage.setItem(UI_STYLE_STORAGE_KEY, uiStyle);
+  localStorage.setItem(UI_STYLE_MIGRATION_KEY, "1");
 }
 
 /**
@@ -83,12 +100,7 @@ export function useTheme() {
   useEffect(() => {
     const onUiStyleChange = (event: Event) => {
       const next = event instanceof CustomEvent ? event.detail : null;
-      if (
-        next === "warm" ||
-        next === "warm-sage" ||
-        next === "warm-daylight" ||
-        next === "legacy-blue"
-      ) {
+      if (isUiStyle(next)) {
         setUiStyleState(next);
       }
     };

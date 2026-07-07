@@ -1,95 +1,232 @@
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useState, type ReactNode } from "react";
-import { HomeNav } from "@/components/home-nav";
 import {
-  Activity,
+  Archive,
+  ArchiveRestore,
   ArrowRight,
+  Clock,
   Globe,
   LogOut,
   MessageSquare,
-  Mic,
   Moon,
-  MonitorSmartphone,
+  MoreHorizontal,
+  Plus,
   Presentation,
   Settings,
+  Sparkles,
+  Star,
   Sun,
 } from "lucide-react";
 import { useAuth } from "@/auth/auth-context";
 import { useTheme } from "@/hooks/use-theme";
-import { unlockAudio } from "@/home/voice/audio-playback";
-import { useOminixRuntimeSummary } from "@/home/use-ominix-runtime-summary";
+import { StudioNav } from "@/components/studio-nav";
 import {
-  WorkbenchPage,
-  WorkbenchRouteCard,
-  WorkbenchSectionHeader,
-  WorkbenchStatusPill,
-} from "@/components/workbench-shell";
+  recordProjectOpened,
+  useProjects,
+  type ProjectSummary,
+} from "@/store/project-store";
+import { useSlidesProjects } from "@/slides/store";
 
-function readStoredCount(key: string): number {
-  try {
-    const raw = localStorage.getItem(key);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed.length : 0;
-  } catch {
-    return 0;
-  }
+function formatRelativeTime(ms: number): string {
+  const delta = Date.now() - ms;
+  if (delta < 60_000) return "just now";
+  if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m ago`;
+  if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h ago`;
+  if (delta < 7 * 86_400_000) return `${Math.floor(delta / 86_400_000)}d ago`;
+  return new Date(ms).toLocaleDateString();
 }
 
-function useLocalProjectCounts() {
-  const [counts] = useState(() => ({
-    slides: readStoredCount("octos-slides-projects"),
-    sites: readStoredCount("octos-sites-projects"),
-  }));
-
-  return counts;
-}
-
-function QuickAction({
-  children,
-  onClick,
+/** The design's more_horiz overflow menu on recent-project cards. */
+function ProjectMenu({
+  project,
+  onToggleFavorite,
+  onSetArchived,
 }: {
-  children: ReactNode;
-  onClick: () => void;
+  project: ProjectSummary;
+  onToggleFavorite: () => void;
+  onSetArchived: (archived: boolean) => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    // First item takes focus so the menu keyboard contract works.
+    menuRef.current?.querySelector("button")?.focus();
+    function closeIfOutside(target: EventTarget | null) {
+      if (rootRef.current && !rootRef.current.contains(target as Node)) {
+        setOpen(false);
+      }
+    }
+    function onDocPointerDown(event: MouseEvent) {
+      closeIfOutside(event.target);
+    }
+    // Keyboard path: activating another card's trigger never fires a
+    // mousedown, but it does move focus — close on focus leaving us.
+    function onDocFocusIn(event: FocusEvent) {
+      closeIfOutside(event.target);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+        return;
+      }
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        const items = Array.from(
+          menuRef.current?.querySelectorAll<HTMLButtonElement>("button") ?? [],
+        );
+        if (items.length === 0) return;
+        event.preventDefault();
+        const index = items.indexOf(
+          document.activeElement as HTMLButtonElement,
+        );
+        const delta = event.key === "ArrowDown" ? 1 : -1;
+        items[(index + delta + items.length) % items.length]?.focus();
+      }
+    }
+    document.addEventListener("mousedown", onDocPointerDown);
+    document.addEventListener("focusin", onDocFocusIn);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onDocPointerDown);
+      document.removeEventListener("focusin", onDocFocusIn);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="workbench-button flex items-center justify-between gap-3 px-4 text-left text-sm font-semibold"
-    >
-      <span>{children}</span>
-      <ArrowRight size={16} aria-hidden="true" />
-    </button>
+    <div className="relative shrink-0" ref={rootRef}>
+      <button
+        type="button"
+        ref={triggerRef}
+        className="studio-ghost-button p-1"
+        aria-label={`Project options for ${project.title}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen((o) => !o);
+        }}
+      >
+        <MoreHorizontal size={16} aria-hidden="true" />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          ref={menuRef}
+          className="studio-menu"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className="studio-menu-item"
+            onClick={() => {
+              onToggleFavorite();
+              setOpen(false);
+            }}
+          >
+            <Star size={14} aria-hidden="true" />
+            {project.favorite ? "Unfavorite" : "Favorite"}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="studio-menu-item"
+            onClick={() => {
+              onSetArchived(!project.archived);
+              setOpen(false);
+            }}
+          >
+            {project.archived ? (
+              <ArchiveRestore size={14} aria-hidden="true" />
+            ) : (
+              <Archive size={14} aria-hidden="true" />
+            )}
+            {project.archived ? "Restore" : "Archive"}
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
-function HomeStatusTile({
-  icon: Icon,
-  title,
-  description,
-  ariaLabel,
-  tone,
-  onClick,
+function ProjectCard({
+  project,
+  variant,
+  onOpen,
+  onToggleFavorite,
+  onSetArchived,
 }: {
-  icon: typeof Activity;
-  title: ReactNode;
-  description: string;
-  ariaLabel: string;
-  tone: "link" | "accent";
-  onClick: () => void;
+  project: ProjectSummary;
+  /** "recent" gets the overflow menu; "favorite" gets the filled star. */
+  variant: "recent" | "favorite";
+  onOpen: () => void;
+  onToggleFavorite: () => void;
+  onSetArchived: (archived: boolean) => void;
 }) {
+  // A div with role="button" rather than <button>: the card hosts nested
+  // interactive controls (menu / star), which cannot legally live inside
+  // a real button element.
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={ariaLabel}
-      data-testid="home-status-tile"
-      className="workbench-card p-4 text-left transition hover:border-accent/45 hover:bg-surface-elevated"
+    <div
+      role="button"
+      tabIndex={0}
+      aria-label={`Open ${project.title}`}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        // Only when the card itself is focused — Enter/Space on the
+        // nested controls must keep their own semantics.
+        if (event.target !== event.currentTarget) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
+      className="studio-card studio-card-interactive flex h-48 min-w-0 flex-col justify-between p-6"
     >
-      <Icon size={18} className={tone === "link" ? "text-link" : "text-accent"} />
-      <div className="mt-3 text-2xl font-semibold text-text-strong">{title}</div>
-      <div className="mt-1 text-xs text-muted">{description}</div>
-    </button>
+      <div className="flex min-w-0 flex-col gap-2">
+        <div className="flex items-start justify-between gap-3">
+          <h3 className="studio-headline line-clamp-2 min-w-0 text-2xl leading-tight">
+            {project.title}
+          </h3>
+        {variant === "favorite" ? (
+          <button
+            type="button"
+            aria-label="Remove from favorites"
+            aria-pressed="true"
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleFavorite();
+            }}
+            className="studio-ghost-button shrink-0 p-1"
+          >
+            <Star
+              size={16}
+              className="fill-current text-text-strong"
+              aria-hidden="true"
+            />
+          </button>
+        ) : (
+          <ProjectMenu
+            project={project}
+            onToggleFavorite={onToggleFavorite}
+            onSetArchived={onSetArchived}
+          />
+        )}
+        </div>
+        <span className="studio-chip max-w-full self-start overflow-hidden">
+          {project.meta}
+        </span>
+      </div>
+      <div className="flex items-center gap-1.5 text-xs text-muted">
+        <Clock size={14} aria-hidden="true" />
+        Modified {formatRelativeTime(project.updatedAt)}
+      </div>
+    </div>
   );
 }
 
@@ -103,145 +240,251 @@ export function HomePage() {
   return <WarmWorkbenchHomePage />;
 }
 
+type LauncherTab = "all" | "shared" | "archive";
+
 function WarmWorkbenchHomePage() {
   const navigate = useNavigate();
-  const counts = useLocalProjectCounts();
-  const voiceRuntime = useOminixRuntimeSummary();
+  const { projects, toggleFavorite, setArchived } = useProjects();
+  const { create: createDeck } = useSlidesProjects();
+  const [chooserOpen, setChooserOpen] = useState(false);
+  const [tab, setTab] = useState<LauncherTab>("all");
+  const createRef = useRef<HTMLElement>(null);
+
+  const recentProjects = projects.filter((p) => !p.archived).slice(0, 12);
+  const archivedProjects = projects.filter((p) => p.archived).slice(0, 12);
+  const favoriteProjects = projects.filter((p) => p.favorite && !p.archived);
+
+  const startStudioSession = () => {
+    const id = `web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // Register the session in the shared titles record right away so the
+    // launcher lists it even if the user never visits /chat (the studio
+    // workspace only updates the record once the server names it).
+    try {
+      const raw = localStorage.getItem("octos_session_titles");
+      const parsed: unknown = raw ? JSON.parse(raw) : {};
+      const titles =
+        parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>)
+          : {};
+      localStorage.setItem(
+        "octos_session_titles",
+        JSON.stringify({ ...titles, [id]: "Studio Project" }),
+      );
+    } catch {
+      // Listing is best-effort; the session itself still works.
+    }
+    navigate(`/studio/${id}`);
+  };
+
+  const startSlideDeck = () => {
+    const project = createDeck("Untitled Deck");
+    navigate(`/slides/${project.id}`);
+  };
+
+  const openCreate = () => {
+    setChooserOpen(true);
+    const reduceMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+    createRef.current?.scrollIntoView({
+      behavior: reduceMotion ? "auto" : "smooth",
+      block: "center",
+    });
+  };
+
+  const renderProjectGrid = (
+    items: ProjectSummary[],
+    variant: "recent" | "favorite",
+  ) => (
+    <div
+      className={`grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3${
+        variant === "favorite"
+          ? " opacity-80 transition-opacity hover:opacity-100"
+          : ""
+      }`}
+    >
+      {items.map((project) => (
+        <ProjectCard
+          key={project.id}
+          project={project}
+          variant={variant}
+          onOpen={() => {
+            recordProjectOpened(project.id);
+            navigate(project.href);
+          }}
+          onToggleFavorite={() => toggleFavorite(project.id)}
+          onSetArchived={(archived) => setArchived(project.id, archived)}
+        />
+      ))}
+    </div>
+  );
 
   return (
-    <WorkbenchPage>
-      <HomeNav />
+    <div className="studio-shell h-screen overflow-y-auto">
+      <StudioNav
+        actions={
+          <button
+            type="button"
+            className="studio-button-primary mr-1 h-10 max-md:hidden"
+            onClick={openCreate}
+          >
+            Create Project
+          </button>
+        }
+      />
 
-      <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-7xl flex-col gap-7 px-6 py-7 max-sm:px-3">
-          <header className="grid gap-5 border-b border-border pb-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="shell-kicker">Command Center</p>
-                <WorkbenchStatusPill tone="accent">Local workbench</WorkbenchStatusPill>
-              </div>
-              <h1 className="mt-3 text-3xl font-semibold text-text-strong max-sm:text-2xl">
-                Octos Workspace
-              </h1>
-              <p className="mt-3 max-w-2xl text-sm leading-6 text-muted">
-                Jump back into active sessions, creative workspaces, and local
-                runtime controls from one dense surface.
-              </p>
-              <div className="mt-5 grid max-w-2xl grid-cols-1 gap-2 sm:grid-cols-3">
-                <QuickAction onClick={() => navigate("/chat")}>Start chat</QuickAction>
-                <QuickAction onClick={() => navigate("/slides")}>Create deck</QuickAction>
-                <QuickAction onClick={() => navigate("/sites")}>Create site</QuickAction>
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <HomeStatusTile
-                icon={Activity}
-                title="Ready"
-                description="Open chat"
-                ariaLabel="Open chat status"
-                tone="link"
-                onClick={() => navigate("/chat")}
-              />
-              <HomeStatusTile
-                icon={Presentation}
-                title={counts.slides}
-                description="Local decks"
-                ariaLabel="Open deck count"
-                tone="accent"
-                onClick={() => navigate("/slides")}
-              />
-              <HomeStatusTile
-                icon={Globe}
-                title={counts.sites}
-                description="Local sites"
-                ariaLabel="Open site count"
-                tone="link"
-                onClick={() => navigate("/sites")}
-              />
-              <HomeStatusTile
-                icon={MonitorSmartphone}
-                title="Touch"
-                description="Display mode"
-                ariaLabel="Open display console"
-                tone="accent"
-                onClick={() => navigate("/home")}
-              />
-            </div>
+      <div>
+        <main className="mx-auto flex w-full max-w-[1024px] flex-col gap-16 px-10 py-14 max-sm:px-4">
+          <header className="flex flex-col items-center gap-3 text-center">
+            <h1 className="studio-display text-5xl max-sm:text-4xl">
+              Octos Home
+            </h1>
+            <p className="max-w-2xl text-lg text-muted">
+              Your digital sanctuary for deep work. Organize, collaborate, and
+              launch your next big idea.
+            </p>
           </header>
 
-          <section>
-            <WorkbenchSectionHeader
-              title="Production Surfaces"
-              description="Work areas with persistent outputs"
-            />
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              <WorkbenchRouteCard
-                icon={MessageSquare}
-                title="Chat"
-                description="Session stack and task output"
-                to="/chat"
-                meta="Conversation runtime"
-              />
-              <WorkbenchRouteCard
-                icon={Presentation}
-                title="Slides"
-                description="Deck generation and preview"
-                to="/slides"
-                meta={`${counts.slides} local deck${counts.slides === 1 ? "" : "s"}`}
-              />
-              <WorkbenchRouteCard
-                icon={Globe}
-                title="Sites"
-                description="Site scaffold and file output"
-                to="/sites"
-                meta={`${counts.sites} local site${counts.sites === 1 ? "" : "s"}`}
-              />
-            </div>
+          <section ref={createRef} className="flex flex-col items-center gap-4">
+            <button
+              type="button"
+              onClick={() => setChooserOpen((open) => !open)}
+              aria-expanded={chooserOpen}
+              className="studio-card studio-card-interactive group flex w-full max-w-3xl flex-col items-center justify-center gap-2 p-8 text-center"
+            >
+              <span className="flex h-12 w-12 items-center justify-center rounded-full bg-surface-container text-muted transition-colors group-hover:bg-accent group-hover:text-on-accent">
+                <Plus size={22} aria-hidden="true" />
+              </span>
+              <span className="studio-headline mt-2 block text-2xl">
+                Create new project
+              </span>
+              <span className="block text-sm text-muted">
+                Start with a blank canvas or choose a template.
+              </span>
+            </button>
+            {chooserOpen && (
+              <div className="grid w-full max-w-3xl grid-cols-1 gap-3 sm:grid-cols-3">
+                <button
+                  type="button"
+                  onClick={startStudioSession}
+                  className="studio-skill-tile"
+                >
+                  <span className="studio-skill-tile-icon">
+                    <Sparkles size={18} aria-hidden="true" />
+                  </span>
+                  <span className="studio-skill-tile-label">
+                    Studio session
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={startSlideDeck}
+                  className="studio-skill-tile"
+                >
+                  <span className="studio-skill-tile-icon">
+                    <Presentation size={18} aria-hidden="true" />
+                  </span>
+                  <span className="studio-skill-tile-label">Slide deck</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => navigate("/sites")}
+                  className="studio-skill-tile"
+                >
+                  <span className="studio-skill-tile-icon">
+                    <Globe size={18} aria-hidden="true" />
+                  </span>
+                  <span className="studio-skill-tile-label">Site</span>
+                </button>
+              </div>
+            )}
           </section>
 
-          <section>
-            <WorkbenchSectionHeader
-              title="Runtime Controls"
-              description="Touch display, voice, and administrative surfaces"
-            />
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              <WorkbenchRouteCard
-                icon={MonitorSmartphone}
-                title="Display"
-                description="Ambient touch console"
-                to="/home"
-                meta="Metro grid"
-              />
-              <WorkbenchRouteCard
-                icon={Mic}
-                title="Voice"
-                description="Hands-free session control"
-                onClick={() => {
-                  // Unlock the Web Audio context inside this click gesture so
-                  // the voice reply can play after the async response arrives.
-                  unlockAudio();
-                  navigate("/voice");
-                }}
-                meta={
-                  voiceRuntime.needsAttention ? (
-                    <WorkbenchStatusPill tone={voiceRuntime.tone}>
-                      {voiceRuntime.label}
-                    </WorkbenchStatusPill>
-                  ) : undefined
-                }
-              />
-              <WorkbenchRouteCard
-                icon={Settings}
-                title="Settings"
-                description="Profiles, models, and local services"
-                to="/settings"
-                meta="Admin control"
-              />
+          <div className="flex flex-col gap-8">
+            <div className="flex w-full gap-8 border-b border-border pb-0">
+              <button
+                type="button"
+                className="studio-tab"
+                data-active={tab === "all"}
+                aria-pressed={tab === "all"}
+                onClick={() => setTab("all")}
+              >
+                All Projects
+              </button>
+              <button
+                type="button"
+                className="studio-tab"
+                data-active={tab === "shared"}
+                aria-pressed={tab === "shared"}
+                onClick={() => setTab("shared")}
+              >
+                Shared with Me
+              </button>
+              <button
+                type="button"
+                className="studio-tab"
+                data-active={tab === "archive"}
+                aria-pressed={tab === "archive"}
+                onClick={() => setTab("archive")}
+              >
+                Archive
+              </button>
             </div>
-          </section>
-        </div>
+
+            {tab === "all" && (
+              <>
+                <section className="flex flex-col gap-8">
+                  <h2 className="studio-headline text-3xl">Recent Projects</h2>
+                  {recentProjects.length > 0 ? (
+                    renderProjectGrid(recentProjects, "recent")
+                  ) : (
+                    <div className="studio-empty-state">
+                      No projects yet — create your first one above.
+                    </div>
+                  )}
+                </section>
+
+                {favoriteProjects.length > 0 && (
+                  <section className="flex flex-col gap-8">
+                    <h2 className="studio-headline flex items-center gap-2 text-3xl">
+                      <Star
+                        size={24}
+                        className="fill-current text-text-strong"
+                        aria-hidden="true"
+                      />
+                      Favorite Projects
+                    </h2>
+                    {renderProjectGrid(favoriteProjects, "favorite")}
+                  </section>
+                )}
+              </>
+            )}
+
+            {tab === "shared" && (
+              <section className="flex flex-col gap-8">
+                <h2 className="studio-headline text-3xl">Shared with Me</h2>
+                <div className="studio-empty-state">
+                  Nothing shared yet — sharing arrives with multi-user Octos.
+                </div>
+              </section>
+            )}
+
+            {tab === "archive" && (
+              <section className="flex flex-col gap-8">
+                <h2 className="studio-headline text-3xl">Archived Projects</h2>
+                {archivedProjects.length > 0 ? (
+                  renderProjectGrid(archivedProjects, "recent")
+                ) : (
+                  <div className="studio-empty-state">
+                    No archived projects yet.
+                  </div>
+                )}
+              </section>
+            )}
+          </div>
+        </main>
       </div>
-    </WorkbenchPage>
+    </div>
   );
 }
 
@@ -270,7 +513,9 @@ function LegacyHomeNav() {
 
       <button
         type="button"
-        onClick={() => setUiStyle("warm")}
+        // "Return to the modern shell" — since the Ivory Obsidian rebrand
+        // that shell is the flagship style, not "warm".
+        onClick={() => setUiStyle("ivory-obsidian")}
         className="flex items-center gap-2 rounded-xl bg-surface-container px-4 py-2.5 text-sm text-text hover:bg-surface-elevated"
       >
         Workbench

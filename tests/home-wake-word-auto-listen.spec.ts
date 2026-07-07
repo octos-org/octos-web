@@ -26,6 +26,19 @@ test("Home auto-listens and opens voice mode when the wake phrase is heard", asy
   await context.grantPermissions(["microphone"]);
   await login(page);
 
+  await page.route("**/api/voice/readiness", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ready: true,
+        asr: { ready: true, detail: "ASR model present" },
+        llm: { ready: true, detail: "LLM configured" },
+        tts: { ready: true, mode: "local", detail: "Local TTS engine ready" },
+      }),
+    });
+  });
+
   await page.route("**/api/admin/ominix/runtime", async (route) => {
     await route.fulfill({
       status: 200,
@@ -65,9 +78,11 @@ test("Home auto-listens and opens voice mode when the wake phrase is heard", asy
   });
 
   await page.goto("/home", { waitUntil: "networkidle" });
-  await expect(page.getByText("Voice engine ready").first()).toBeVisible({
-    timeout: 20_000,
-  });
+  // A ready pipeline is label-silent by design (Jun 30: readiness surfaces
+  // only on problems) — wait for the ambient home to settle instead; the
+  // wake phrase in the fake audio stream must then auto-open /voice.
+  await expect(page.locator(".home-root")).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText("Voice engine ready")).toHaveCount(0);
   await expect(page).toHaveURL(/\/voice/, { timeout: 60_000 });
   await expect(page.getByLabel("voice orb")).toBeVisible({ timeout: 20_000 });
 });

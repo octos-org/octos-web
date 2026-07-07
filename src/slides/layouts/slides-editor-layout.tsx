@@ -16,8 +16,8 @@ import { ProjectFiles } from "../components/project-files";
 import {
   WorkbenchStatusPill,
   WorkbenchThemeButton,
-  WorkbenchTopbar,
 } from "@/components/workbench-shell";
+import { StudioTopbar } from "@/components/studio-topbar";
 
 export function SlidesEditorLayout({
   previewPanel,
@@ -129,8 +129,8 @@ export function SlidesEditorLayout({
   }
 
   return (
-    <div className="workbench-shell flex h-screen flex-col gap-2 p-2">
-      <WorkbenchTopbar
+    <div className="studio-shell flex h-screen flex-col gap-2 p-2">
+      <StudioTopbar
         backTo="/slides"
         icon={Presentation}
         context="Slides Workspace"

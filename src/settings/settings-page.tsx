@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/auth/auth-context";
 import {
@@ -18,11 +18,10 @@ import {
   Volume2,
 } from "lucide-react";
 import {
-  WorkbenchPage,
   WorkbenchStatusPill,
   WorkbenchThemeButton,
-  WorkbenchTopbar,
 } from "@/components/workbench-shell";
+import { StudioTopbar } from "@/components/studio-topbar";
 import { getMyProfile, type Profile } from "./settings-api";
 import { setSelectedProfileId as persistSelectedProfile } from "@/api/client";
 import { ProfileTab } from "./profile-tab";
@@ -92,13 +91,21 @@ export function AdminSettingsPage() {
     return () => { cancelled = true; };
   }, [selectedProfileId]);
 
-  useEffect(() => {
-    const nextTab = asTabId(searchParams.get("tab"));
-    if (!nextTab) return;
-    const tab = TABS.find((entry) => entry.id === nextTab);
-    if (tab?.adminOnly && !portal?.can_access_admin_portal) return;
-    setActiveTab(nextTab);
-  }, [portal?.can_access_admin_portal, searchParams]);
+  // Render-phase adjustment (the docs' "adjusting state when props change"
+  // pattern): adopt a ?tab= change from the URL exactly once per params
+  // change, so back/forward and deep links work without effect cascades.
+  const [lastTabParam, setLastTabParam] = useState<string | null>(null);
+  const tabParam = searchParams.get("tab");
+  if (tabParam !== lastTabParam) {
+    setLastTabParam(tabParam);
+    const nextTab = asTabId(tabParam);
+    if (nextTab && nextTab !== activeTab) {
+      const tab = TABS.find((entry) => entry.id === nextTab);
+      if (!tab?.adminOnly || portal?.can_access_admin_portal) {
+        setActiveTab(nextTab);
+      }
+    }
+  }
 
   const selectTab = (id: TabId) => {
     setActiveTab(id);
@@ -111,8 +118,8 @@ export function AdminSettingsPage() {
   const isAdminOnlyTab = activeTab === "system" || activeTab === "server" || activeTab === "users" || activeTab === "ominix";
 
   return (
-    <WorkbenchPage className="settings-shell">
-      <WorkbenchTopbar
+    <div className="studio-shell settings-shell flex h-screen flex-col overflow-hidden">
+      <StudioTopbar
         onBack={() => navigate(-1)}
         icon={SettingsIcon}
         context="Octos Control"
@@ -219,6 +226,6 @@ export function AdminSettingsPage() {
           </main>
         </div>
       )}
-    </WorkbenchPage>
+    </div>
   );
 }

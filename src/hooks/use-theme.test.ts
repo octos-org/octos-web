@@ -13,12 +13,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { initTheme, resolveInitialTheme, resolveInitialUiStyle } from "./use-theme";
 
-function stubMatchMedia(lightMatches: boolean) {
+function stubMatchMedia(scheme: "light" | "dark" | "none") {
   vi.stubGlobal(
     "matchMedia",
     (query: string) =>
       ({
-        matches: query.includes("light") ? lightMatches : false,
+        matches: scheme !== "none" && query.includes(scheme),
         media: query,
         addEventListener: () => {},
         removeEventListener: () => {},
@@ -39,7 +39,7 @@ describe("initTheme", () => {
 
   it("should apply the stored light theme on a direct load with no React component", () => {
     localStorage.setItem("octos-theme", "light");
-    stubMatchMedia(false);
+    stubMatchMedia("none");
 
     initTheme();
 
@@ -48,25 +48,15 @@ describe("initTheme", () => {
 
   it("should apply the stored dark theme", () => {
     localStorage.setItem("octos-theme", "dark");
-    stubMatchMedia(true);
+    stubMatchMedia("light");
 
     initTheme();
 
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
   });
 
-  it("should fall back to the system light preference when nothing is stored", () => {
-    stubMatchMedia(true);
-
-    expect(resolveInitialTheme()).toBe("light");
-
-    initTheme();
-
-    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
-  });
-
-  it("should default to dark when nothing is stored and the system is not light", () => {
-    stubMatchMedia(false);
+  it("should respect an explicit system dark preference when nothing is stored", () => {
+    stubMatchMedia("dark");
 
     expect(resolveInitialTheme()).toBe("dark");
 
@@ -75,9 +65,19 @@ describe("initTheme", () => {
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
   });
 
+  it("should default to the light Ivory flagship when the system expresses no dark preference", () => {
+    stubMatchMedia("none");
+
+    expect(resolveInitialTheme()).toBe("light");
+
+    initTheme();
+
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+  });
+
   it("should apply the stored legacy blue UI style before React mounts", () => {
     localStorage.setItem("octos-ui-style", "legacy-blue");
-    stubMatchMedia(false);
+    stubMatchMedia("none");
 
     initTheme();
 
@@ -86,12 +86,45 @@ describe("initTheme", () => {
 
   it("should preserve warm palette variants before React mounts", () => {
     localStorage.setItem("octos-ui-style", "warm-sage");
-    stubMatchMedia(false);
+    stubMatchMedia("none");
 
     expect(resolveInitialUiStyle()).toBe("warm-sage");
 
     initTheme();
 
     expect(document.documentElement.getAttribute("data-ui-style")).toBe("warm-sage");
+  });
+
+  it("should default fresh installs to Ivory Obsidian", () => {
+    stubMatchMedia("none");
+
+    expect(resolveInitialUiStyle()).toBe("ivory-obsidian");
+
+    initTheme();
+
+    expect(document.documentElement.getAttribute("data-ui-style")).toBe("ivory-obsidian");
+    // initTheme persisted the choice, so the rebrand marker is now set.
+    expect(localStorage.getItem("octos-ui-style-migrated-ivory")).toBe("1");
+  });
+
+  it("should rebrand implicit-default warm users to Ivory Obsidian exactly once", () => {
+    localStorage.setItem("octos-ui-style", "warm");
+    stubMatchMedia("none");
+
+    expect(resolveInitialUiStyle()).toBe("ivory-obsidian");
+
+    initTheme();
+    expect(document.documentElement.getAttribute("data-ui-style")).toBe("ivory-obsidian");
+
+    // Choosing warm again after the migration must stick.
+    localStorage.setItem("octos-ui-style", "warm");
+    expect(resolveInitialUiStyle()).toBe("warm");
+  });
+
+  it("should keep the stored Ivory Obsidian style", () => {
+    localStorage.setItem("octos-ui-style", "ivory-obsidian");
+    stubMatchMedia("none");
+
+    expect(resolveInitialUiStyle()).toBe("ivory-obsidian");
   });
 });

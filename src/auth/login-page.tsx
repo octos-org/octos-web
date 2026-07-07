@@ -158,7 +158,7 @@ export function LoginPage() {
             onClick={() => setMode("otp")}
             className={`flex-1 rounded-lg py-2 text-sm font-medium transition ${
               mode === "otp"
-                ? "bg-accent text-[#100d09]"
+                ? "bg-accent text-on-accent"
                 : "bg-surface-container text-muted hover:text-text-strong"
             }`}
           >
@@ -169,7 +169,7 @@ export function LoginPage() {
               onClick={() => setMode("token")}
               className={`flex-1 rounded-lg py-2 text-sm font-medium transition ${
                 mode === "token"
-                  ? "bg-accent text-[#100d09]"
+                  ? "bg-accent text-on-accent"
                   : "bg-surface-container text-muted hover:text-text-strong"
               }`}
             >
