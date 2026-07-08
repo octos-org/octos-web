@@ -14,6 +14,7 @@ import { SlidesEditorPage } from "./slides/pages/slides-editor-page";
 import { SlidesPresentPage } from "./slides/pages/slides-present-page";
 import { SitesGalleryPage } from "./sites/pages/sites-gallery-page";
 import { SitesEditorPage } from "./sites/pages/sites-editor-page";
+import { StudioPage } from "./studio/studio-page";
 
 function ChatPage() {
   return (
@@ -41,12 +42,13 @@ export function App() {
             <Route path="/home" element={<HomeAssistantPage />} />
             <Route path="/voice" element={<VoicePage />} />
             <Route path="/chat/*" element={<ChatPage />} />
-            {/* Stale Studio deep links → home. The Studio feature was
-                deprecated in M9-β-2 (atomic SSE delete left it as a
-                "temporarily unavailable" stub with no surviving entry
-                points); this redirect keeps any bookmarked
-                `/studio/...` URL from 404'ing. */}
-            <Route path="/studio/*" element={<Navigate to="/" replace />} />
+            {/* Studio revived (Ivory Obsidian workspace): /studio/:projectId
+                hosts the 3-pane workspace pinned to a `web-*` chat session.
+                Legacy M9-era `studio-*` ids (deprecated in M9-β-2) are
+                redirected home by StudioPage itself; a bare /studio has no
+                project to show and also lands home. */}
+            <Route path="/studio/:projectId" element={<StudioPage />} />
+            <Route path="/studio" element={<Navigate to="/" replace />} />
             <Route path="/settings" element={<AdminSettingsPage />} />
             <Route path="/slides" element={<SlidesGalleryPage />} />
             <Route path="/slides/:id/present" element={<SlidesPresentPage />} />

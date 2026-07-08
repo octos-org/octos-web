@@ -234,6 +234,15 @@ async function installWorkbenchMocks(
       await fulfillJson(route, mockProfile);
       return;
     }
+    if (path === "/api/voice/readiness") {
+      await fulfillJson(route, {
+        ready: true,
+        asr: { ready: true, detail: "ASR model present" },
+        llm: { ready: true, detail: "LLM configured" },
+        tts: { ready: true, mode: "local", detail: "Local TTS engine ready" },
+      });
+      return;
+    }
     if (path === "/api/status") {
       await fulfillJson(route, {
         version: "ui-smoke",
@@ -393,34 +402,32 @@ test.describe("UI redesign shell smoke", () => {
     });
   }
 
-  test("home shell exposes the shared route navigation", async ({ page }) => {
+  test("home shell exposes the Stitch glass navigation", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto("/", { waitUntil: "networkidle" });
 
-    for (const label of [
-      "Home",
-      "Chat",
-      "Slides",
-      "Sites",
-      "Display",
-      "Voice",
-      "Settings",
-    ]) {
+    for (const label of ["Dashboard", "Chat", "Slides", "Sites", "Settings"]) {
       await expect(
         page.getByRole("link", { name: label, exact: true }),
       ).toBeVisible();
     }
+    // Runtime shortcuts live as icon buttons on the right of the nav.
+    await expect(page.getByRole("button", { name: "Display" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Voice" })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Create Project" }),
+    ).toBeVisible();
   });
 
-  test("home status tiles navigate instead of looking inert", async ({ page }) => {
+  test("glass nav links and shortcuts navigate", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto("/", { waitUntil: "networkidle" });
 
-    await page.getByTestId("home-status-tile").filter({ hasText: "Local decks" }).click();
+    await page.getByRole("link", { name: "Slides", exact: true }).click();
     await expect(page).toHaveURL(/\/slides$/);
 
     await page.goto("/", { waitUntil: "networkidle" });
-    await page.getByTestId("home-status-tile").filter({ hasText: "Display mode" }).click();
+    await page.getByRole("button", { name: "Display" }).click();
     await expect(page).toHaveURL(/\/home$/);
   });
 
@@ -432,7 +439,7 @@ test.describe("UI redesign shell smoke", () => {
 
     const offscreenControls = await page.evaluate(() => {
       const controls = Array.from(
-        document.querySelectorAll(".workbench-topbar a, .workbench-topbar button"),
+        document.querySelectorAll(".studio-glass-nav a, .studio-glass-nav button"),
       );
       return controls
         .map((control) => {
@@ -459,37 +466,47 @@ test.describe("UI redesign shell smoke", () => {
     expect(offscreenControls).toEqual([]);
   });
 
-  test("workbench topbar route icons are readable and not edge-clipped", async ({
+  test("glass nav controls stay readable and inside the viewport at tablet width", async ({
     page,
   }) => {
     await page.setViewportSize({ width: 728, height: 694 });
     await page.goto("/", { waitUntil: "networkidle" });
 
     const geometry = await page.evaluate(() => {
-      const nav = document.querySelector(".workbench-route-nav");
-      const firstLink = document.querySelector(".workbench-route-link");
-      const firstIcon = firstLink?.querySelector("svg");
-      const brandIcon = document.querySelector(".workbench-brand img");
-      const navStyle = nav ? getComputedStyle(nav) : null;
-      const firstIconRect = firstIcon?.getBoundingClientRect();
+      const nav = document.querySelector(".studio-glass-nav");
+      const brandIcon = nav?.querySelector("img");
       const brandIconRect = brandIcon?.getBoundingClientRect();
+      const controls = Array.from(
+        nav?.querySelectorAll("a, button") ?? [],
+      ).map((el) => el.getBoundingClientRect());
+      const visible = controls.filter((r) => r.width > 0 && r.height > 0);
       return {
-        maskImage: navStyle?.maskImage ?? "",
-        webkitMaskImage: navStyle?.webkitMaskImage ?? "",
-        routeIconWidth: firstIconRect?.width ?? 0,
-        routeIconLeft: firstIconRect?.left ?? 0,
-        navLeft: nav?.getBoundingClientRect().left ?? 0,
+        hasNav: Boolean(nav),
         brandIconWidth: brandIconRect?.width ?? 0,
         brandIconHeight: brandIconRect?.height ?? 0,
+        offscreen: visible.filter(
+          (r) => r.left < -1 || r.right > window.innerWidth + 1,
+        ).length,
+        visibleCount: visible.length,
       };
     });
 
-    expect(geometry.maskImage).toBe("none");
-    expect(geometry.webkitMaskImage).toBe("none");
-    expect(geometry.routeIconWidth).toBeGreaterThanOrEqual(18);
-    expect(geometry.routeIconLeft).toBeGreaterThanOrEqual(geometry.navLeft);
-    expect(geometry.brandIconWidth).toBeGreaterThanOrEqual(24);
-    expect(geometry.brandIconHeight).toBeGreaterThanOrEqual(24);
+    expect(geometry.hasNav).toBe(true);
+    expect(geometry.brandIconWidth).toBeGreaterThanOrEqual(20);
+    expect(geometry.brandIconHeight).toBeGreaterThanOrEqual(20);
+    expect(geometry.visibleCount).toBeGreaterThanOrEqual(4);
+    expect(geometry.offscreen).toBe(0);
+
+    // Below md the text links collapse into the nav menu — every route
+    // must remain reachable through it.
+    await page.getByRole("button", { name: "Open navigation" }).click();
+    for (const label of ["Dashboard", "Chat", "Slides", "Sites", "Settings"]) {
+      await expect(
+        page.getByRole("menuitem", { name: label, exact: true }),
+      ).toBeVisible();
+    }
+    await page.getByRole("menuitem", { name: "Slides", exact: true }).click();
+    await expect(page).toHaveURL(/\/slides$/);
   });
 
   test("home settings drawer hides closed controls from visual audits", async ({
@@ -643,12 +660,17 @@ test.describe("UI redesign shell smoke", () => {
     });
     await page.goto("/home", { waitUntil: "networkidle" });
 
-    await expect(page.getByText("Voice engine ready")).toBeVisible();
-    await page.locator(".metro-tile-voice .home-voice-orb").click();
+    // A ready pipeline stays silent by design (Jun 30: readiness surfaces
+    // only on problems) — the tile shows the orb with no warning label.
+    const voiceOrb = page.locator(".metro-tile-voice .home-voice-orb");
+    await expect(voiceOrb).toBeVisible();
+    await expect(page.getByText("Voice engine ready")).toHaveCount(0);
+    await expect(page.locator(".metro-tile-voice [data-tone='warning']")).toHaveCount(0);
+    await voiceOrb.click();
 
     await expect(page).toHaveURL(/\/voice$/);
-    await expect(page.getByText("Voice engine ready")).toBeVisible();
     await expect(page.getByRole("button", { name: "voice orb" })).toBeVisible();
+    await expect(page.getByText("Voice engine ready")).toHaveCount(0);
   });
 
   test("classic home uses an aligned widget grid", async ({ page }) => {
@@ -893,13 +915,14 @@ test.describe("UI redesign shell smoke", () => {
     await expect(page.locator(".legacy-blue-home")).toBeVisible();
     await page.getByRole("button", { name: "Workbench" }).click();
 
-    await expect(page.locator(".workbench-shell")).toBeVisible();
+    // Post-rebrand the modern shell is the Ivory Obsidian launcher.
+    await expect(page.locator(".studio-shell")).toBeVisible();
     await expect(page.locator(".legacy-blue-home")).toHaveCount(0);
     await expect
       .poll(() => page.evaluate(() => localStorage.getItem("octos-ui-style")))
-      .toBe("warm");
+      .toBe("ivory-obsidian");
     await expect(
-      page.getByRole("heading", { name: "Octos Workspace" }),
+      page.getByRole("heading", { name: "Octos Home" }),
     ).toBeVisible();
   });
 

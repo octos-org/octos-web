@@ -125,6 +125,15 @@ export interface Thread {
   /** In-flight assistant message for the current turn (becomes part of
    *  `responses` when `finalizeAssistant` is called). */
   pendingAssistant: ThreadMessage | null;
+  /** #245 P2: set on a reconnect reopen while this thread had in-flight
+   *  streamed text. While set, `appendAssistantToken` drops tokens for this
+   *  thread — the server's `after` replay re-emits deltas with no client
+   *  identity, so appending would double text, and clearing instead would
+   *  truncate whenever the replay window doesn't reach back to the thread's
+   *  earlier deltas. Freezing the bubble is the only lossless option; the
+   *  turn's durable frames (message/persisted, finalize, spawn-complete)
+   *  deliver the canonical text and clear the flag. */
+  suppressDeltasUntilDurable?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -756,6 +765,16 @@ export function appendAssistantToken(threadId: string, token: string): void {
     });
     return;
   }
+  // #245 P2: post-reopen delta freeze — replayed deltas have no identity,
+  // so until a durable frame re-anchors this thread, appending would
+  // double the text (see `suppressPendingDeltasForReplay`).
+  if (found.thread.suppressDeltasUntilDurable) {
+    recordRuntimeCounter("octos_thread_phantom_chunk_dropped_total", {
+      surface: "thread_store",
+      kind: "replay_suppressed_token",
+    });
+    return;
+  }
   const slot = ensurePendingAssistant(found.thread);
   slot.text += token;
   notify();
@@ -769,6 +788,54 @@ export function appendAssistantToken(threadId: string, token: string): void {
         data: { text: token },
       });
     }
+  }
+}
+
+/**
+ * #245 P2 (part 2/2): freeze in-flight streamed text on a reconnect REOPEN.
+ *
+ * The bridge sends an `after` cursor on reopen, so the server replays the
+ * disconnect gap as live-shaped frames. Durable frames dedup on the client
+ * (`message/persisted` by seq, `turn/spawn_complete` by message_id) and tool
+ * frames are idempotent (`addToolCall` on `(turn_id, tool_call_id)`), but
+ * `message/delta` carries NO identity on the wire — the client cannot tell a
+ * replayed delta from a new one. Appending replayed deltas doubles the text;
+ * clearing the text and rebuilding from the replay truncates it whenever the
+ * replay window does not reach back to the thread's earlier deltas (the
+ * cursor is session-wide, so any durable frame that landed mid-stream —
+ * a tool row, a background spawn-complete — moves it past them; a cursorless
+ * reopen replays nothing at all). Codex review, both directions.
+ *
+ * So: neither append nor clear. Mark each thread that has in-flight streamed
+ * text and DROP its delta tokens (replayed and live alike) until the next
+ * durable frame for that thread — `message/persisted`, `finalizeAssistant`,
+ * or a spawn-complete envelope — which carries the canonical full text and
+ * clears the flag via `clearReplayDeltaSuppression`. The bubble freezes at
+ * its pre-disconnect text instead of doubling, blanking, or truncating, and
+ * snaps to the authoritative text when the turn persists.
+ *
+ * Runs for EVERY reopen, including topic-scoped bridges (which the hydrate
+ * refetch skips) — the bridge sends `after` regardless of topic.
+ */
+export function suppressPendingDeltasForReplay(
+  sessionId: string,
+  topic?: string,
+): void {
+  const state = sessionsByKey.get(storeKey(sessionId, topic));
+  if (!state) return;
+  for (const thread of state.threads) {
+    const pending = thread.pendingAssistant;
+    if (pending && pending.text.length > 0) {
+      thread.suppressDeltasUntilDurable = true;
+    }
+  }
+}
+
+/** Lift the post-reopen delta freeze for a thread once a durable frame
+ *  (persisted row, finalize, spawn-complete) has delivered canonical text. */
+function clearReplayDeltaSuppression(thread: Thread): void {
+  if (thread.suppressDeltasUntilDurable) {
+    thread.suppressDeltasUntilDurable = false;
   }
 }
 
@@ -800,6 +867,61 @@ export function replaceAssistantText(threadId: string, text: string): void {
       shimIngest(key, threadId, {
         type: "assistant_delta",
         data: { text },
+      });
+    }
+  }
+}
+
+/**
+ * #245 P2 (codex fold 3): replace a replay-frozen pending's text with the
+ * canonical content of its persisted row — projection-safely.
+ *
+ * `replaceAssistantText` dual-writes its replacement as an `assistant_delta`,
+ * which the projection APPENDS; on the frozen-reconnect path a pre-freeze
+ * delta is already in the projection log, so the append corrupts
+ * projection-mode text ("partial anspartial answer…") and nothing overwrites
+ * it afterwards (`finalizeAssistant` emits only tool_end/turn_completed, and
+ * the promotion path skips `appendPersistedMessage`'s assistant_persisted
+ * emission) — the corruption would be permanent. This variant emits the
+ * replacement as the `assistant_persisted` it actually is: the projection
+ * reducer OVERWRITES `assistantText` on that payload, and the caller's
+ * follow-up `finalizeAssistant` emits `turn_completed`, matching the normal
+ * wire order (persisted → completed).
+ */
+export function replaceFrozenPendingFromPersisted(
+  threadId: string,
+  text: string,
+  meta: { messageId: string; persistedAt: string; media?: string[] },
+): void {
+  const found = ensureOrphanThread(threadId);
+  if (!found) return;
+  if (isFinalizedAndIdle(found.thread)) return;
+  const slot = ensurePendingAssistant(found.thread);
+  slot.text = text;
+  notify();
+  if (isProjectionV1Enabled()) {
+    const key = shimResolveKey(threadId);
+    if (key) {
+      // Deliberately uses the shim's contiguous local seq (NOT the wire
+      // seq): the projection buffers out-of-order envelopes per thread,
+      // so a sparse wire seq would park this overwrite in the buffer
+      // forever. Replay dedup is already handled upstream — a re-emitted
+      // persisted row for the same wire seq is dropped by the store's
+      // seq gate before any shim emission happens.
+      const media = meta.media ?? [];
+      shimIngest(key, threadId, {
+        type: "assistant_persisted",
+        data: {
+          text,
+          meta: {
+            message_id: meta.messageId,
+            persisted_at: meta.persistedAt,
+            // Mirror the normal persisted-row shim: media-bearing rows
+            // keep their file association in projection mode (codex
+            // fold 4).
+            ...(media.length > 0 ? { media: media.slice() } : {}),
+          },
+        },
       });
     }
   }
@@ -1376,6 +1498,10 @@ export function appendCompletionBubble(
     return false;
   }
   const { thread } = host;
+
+  // #245 P2: a spawn-complete envelope is a durable frame — lift the
+  // post-reopen delta freeze for its host thread.
+  clearReplayDeltaSuppression(thread);
 
   // Identity / upgrade-in-place. A replayed envelope on reconnect
   // MUST NOT produce a duplicate row. Two stable identities exist:
@@ -2047,6 +2173,9 @@ export function finalizeAssistant(
     thread.responses.push(finalized);
     sortResponsesInThread(thread);
     thread.pendingAssistant = null;
+    // #245 P2: the turn reached a durable end — lift the post-reopen
+    // delta freeze so the next turn on this thread streams normally.
+    clearReplayDeltaSuppression(thread);
     // WEB-NEW-17: mark the finalised row's seq so a follow-up
     // `message/persisted` with the same seq (re-emitted on reconnect or
     // through `session/hydrate` replay) is suppressed at the dedup gate
@@ -3171,6 +3300,13 @@ export function appendPersistedMessage(
       pendingAssistant: null,
     };
     insertThreadInTimestampOrder(state, thread);
+  }
+
+  // #245 P2: a persisted row IS the durable frame the post-reopen delta
+  // freeze waits for (even when the row dedups below — canonical text is
+  // already present in that case).
+  if (message.role === "assistant") {
+    clearReplayDeltaSuppression(thread);
   }
 
   if (message.role === "user") {

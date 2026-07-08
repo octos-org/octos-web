@@ -9,6 +9,12 @@ const STYLE_OPTIONS: Array<{
   swatches: string[];
 }> = [
   {
+    id: "ivory-obsidian",
+    label: "Ivory Obsidian",
+    description: "The studio flagship — architectural ivory, obsidian ink, and bone accents.",
+    swatches: ["#faf9f7", "#efeeec", "#1c1b1b", "#655d51"],
+  },
+  {
     id: "warm",
     label: "Warm Hearth",
     description: "Current family-console palette with restrained brown and sage accents.",

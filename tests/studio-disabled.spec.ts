@@ -8,7 +8,7 @@ async function fulfillJson(route: Route, body: unknown) {
   });
 }
 
-test.describe("Studio-disabled home flow", () => {
+test.describe("Legacy Studio handling", () => {
   test.beforeEach(async ({ page }) => {
     await page.route(/\/api\/auth\/status$/, (route) =>
       fulfillJson(route, {
@@ -60,23 +60,50 @@ test.describe("Studio-disabled home flow", () => {
     });
   });
 
-  test("does not expose Studio project entry points on the first page", async ({ page }) => {
+  test("launcher exposes the new project entry points but never legacy Studio data", async ({ page }) => {
     await page.goto("/");
 
-    await expect(page.getByRole("button", { name: /New project/i })).toHaveCount(0);
-    await expect(page.getByRole("heading", { name: "Projects" })).toHaveCount(0);
-    await expect(page.getByText("Create your first project")).toHaveCount(0);
+    // The revived Studio launches through the launcher's create card…
+    await expect(page.getByRole("button", { name: /Create new project/i })).toBeVisible();
+    // …but the deprecated "octos-studio-projects" records must never render.
     await expect(page.getByText("Legacy Studio project")).toHaveCount(0);
 
-    await expect(page.getByRole("button", { name: /Start chat/i })).toBeVisible();
-    await expect(page.getByRole("button", { name: /Slides/i })).toBeVisible();
-    await expect(page.getByRole("button", { name: /Sites/i })).toBeVisible();
+    // Production surfaces stay reachable from the glass nav.
+    await expect(page.getByRole("link", { name: "Chat", exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Slides", exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Sites", exact: true })).toBeVisible();
+  });
+
+  test("serves the revived studio workspace for web- ids", async ({ page }) => {
+    await page.goto("/studio/web-e2e-positive");
+
+    await expect(page).toHaveURL(/\/studio\/web-e2e-positive$/);
+    await expect(page.getByTestId("studio-page")).toBeVisible();
+    await expect(page.getByTestId("studio-title")).toBeVisible();
+  });
+
+  test("launcher create flow lands in a fresh studio workspace", async ({ page }) => {
+    await page.goto("/");
+
+    await page.getByRole("button", { name: /Create new project/i }).click();
+    await page.getByRole("button", { name: "Studio session", exact: true }).click();
+
+    await expect(page).toHaveURL(/\/studio\/web-/);
+    await expect(page.getByTestId("studio-page")).toBeVisible();
   });
 
   test("redirects stale Studio deep links to home", async ({ page }) => {
+    // Legacy `studio-*` ids still redirect to `/`; only new-style
+    // `web-*` ids open the revived /studio/:projectId workspace.
     await page.goto("/studio/studio-legacy");
 
     await expect(page).toHaveURL(/\/$/);
-    await expect(page.getByRole("button", { name: /Start chat/i })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Octos Home" })).toBeVisible();
+
+    // A bare /studio path (no project id) also lands back on the launcher.
+    await page.goto("/studio");
+
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByRole("heading", { name: "Octos Home" })).toBeVisible();
   });
 });
