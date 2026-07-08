@@ -67,6 +67,36 @@
   color: rgba(254, 202, 202, .92);
   background: rgba(127, 29, 29, .22);
 }
+.voice-transcript-stack {
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 12px;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, transparent 0, black 24px, black 100%);
+}
+.voice-transcript-turn {
+  text-align: center;
+  transform: translateY(var(--voice-turn-y, 0)) scale(var(--voice-turn-scale, 1));
+  opacity: var(--voice-turn-opacity, 1);
+  filter: blur(var(--voice-turn-blur, 0));
+  transition:
+    opacity .34s ease,
+    transform .34s ease,
+    filter .34s ease;
+}
+.voice-transcript-user {
+  margin-bottom: 7px;
+  font-size: 14px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, .46);
+}
+.voice-transcript-assistant {
+  font-size: 18px;
+  line-height: 1.55;
+  color: rgba(255, 255, 255, .9);
+}
 @keyframes vo-breathe { 0%,100%{transform:scale(1)} 50%{transform:scale(1.08)} }
 @keyframes vo-talk { 0%,100%{transform:scale(1)} 25%{transform:scale(1.14)} 60%{transform:scale(.95)} }
 @keyframes vo-ripple {

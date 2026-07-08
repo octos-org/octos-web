@@ -1,9 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect, type CSSProperties } from "react";
 import { Camera, CameraOff, Settings, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useVoiceConversation, type VoiceState } from "./use-voice-conversation";
 import { VoiceOrb } from "./voice-orb";
-import { VoiceSelector } from "./voice-selector";
 import { CameraPreview } from "./camera-preview";
 import { VisualPanel } from "./visual-panel";
 import { unlockAudio } from "./audio-playback";
@@ -34,22 +33,21 @@ export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
 
   // Auto-enter listening on mount: the user reached this full-screen view via a
   // navigation gesture, so unlock audio playback and begin capture immediately
-  // instead of requiring an extra orb tap. One-shot guarded so StrictMode's
-  // double-invoke (and any re-render) can't start the turn twice.
-  const startedRef = useRef(false);
+  // instead of requiring an extra orb tap. Do not suppress StrictMode's second
+  // effect pass: useVoiceConversation owns an unmount cleanup, so the first
+  // dev-only pass can be stopped before the second pass becomes the live one.
   useEffect(() => {
-    if (!startedRef.current && runtime.ready) {
-      startedRef.current = true;
+    if (runtime.ready) {
       unlockAudio();
       void conv.start();
     }
-    return () => conv.stop();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runtime.ready]);
 
   const openOminixSettings = () => {
     navigate("/settings?tab=ominix");
   };
+  const visibleTurns = conv.turns.slice(-3);
 
   const onOrbClick = () => {
     if (!runtime.ready) {
@@ -169,13 +167,37 @@ export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
           <div className="mt-1 text-xs text-red-300/70">摄像头不可用，已切回纯语音</div>
         )}
 
-        <div className="mt-4 max-w-[80%] text-center">
-          {conv.lastUserText && (
-            <div className="mb-2 text-sm text-white/45">{conv.lastUserText}</div>
-          )}
-          {conv.lastAssistantText && (
-            <div className="text-lg leading-relaxed text-white/90">{conv.lastAssistantText}</div>
-          )}
+        <div className="voice-transcript-stack absolute inset-x-0 bottom-6 mx-auto w-full max-w-[min(760px,86vw)] px-6">
+          {visibleTurns.map((turn, index) => {
+            const age = visibleTurns.length - index - 1;
+            const hasUserText = turn.userText || turn.awaitingTranscript;
+            const hasAssistantText = turn.assistantText.length > 0;
+            return (
+              <div
+                key={turn.id}
+                className="voice-transcript-turn"
+                style={
+                  {
+                    "--voice-turn-y": `${age * -8}px`,
+                    "--voice-turn-opacity": String(1 - age * 0.34),
+                    "--voice-turn-scale": String(1 - age * 0.035),
+                    "--voice-turn-blur": `${age * 0.18}px`,
+                  } as CSSProperties
+                }
+              >
+                {hasUserText && (
+                  <div className="voice-transcript-user">
+                    {turn.userText || "正在识别…"}
+                  </div>
+                )}
+                {hasAssistantText && (
+                  <div className="voice-transcript-assistant">
+                    {turn.assistantText}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
 
         {/* Rich output: generating indicator while a visual is being produced.
@@ -185,13 +207,6 @@ export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
           <div className="mt-5 flex items-center gap-2 text-sm text-white/60">
             <span className="h-2 w-2 animate-ping rounded-full bg-white/70" />
             正在生成视觉内容…
-          </div>
-        )}
-
-        {/* Quick voice switcher — same store as the settings panel. */}
-        {conv.state !== "idle" && (
-          <div className="absolute inset-x-0 bottom-6 px-6">
-            <VoiceSelector />
           </div>
         )}
       </div>

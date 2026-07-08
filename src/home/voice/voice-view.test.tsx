@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { VoiceView } from "./voice-view";
 import type { VoiceConversation } from "./use-voice-conversation";
@@ -11,6 +12,7 @@ const conversationMock = vi.hoisted(() => ({
   generating: false,
   exiting: false,
   visual: null as VoiceConversation["visual"],
+  turns: [] as VoiceConversation["turns"],
   error: null as string | null,
   start: vi.fn(),
   stop: vi.fn(),
@@ -48,6 +50,7 @@ vi.mock("./use-voice-conversation", () => ({
     state: conversationMock.state,
     lastUserText: "",
     lastAssistantText: "",
+    turns: conversationMock.turns,
     error: conversationMock.error,
     start: conversationMock.start,
     stop: conversationMock.stop,
@@ -68,10 +71,6 @@ vi.mock("./voice-orb", () => ({
   VoiceOrb: ({ state }: { state: string }) => (
     <div data-testid="voice-orb-state">{state}</div>
   ),
-}));
-
-vi.mock("./voice-selector", () => ({
-  VoiceSelector: () => <div data-testid="voice-selector" />,
 }));
 
 vi.mock("./camera-preview", () => ({
@@ -100,6 +99,7 @@ describe("VoiceView", () => {
     conversationMock.generating = false;
     conversationMock.exiting = false;
     conversationMock.visual = null;
+    conversationMock.turns = [];
     conversationMock.error = null;
     conversationMock.start.mockReset();
     conversationMock.stop.mockReset();
@@ -124,12 +124,74 @@ describe("VoiceView", () => {
     expect(conversationMock.start).toHaveBeenCalledTimes(1);
   });
 
+  it("retries auto-start during StrictMode effect replay", () => {
+    render(
+      <StrictMode>
+        <VoiceView sessionId="voice-test" onBack={vi.fn()} />
+      </StrictMode>,
+    );
+
+    expect(conversationMock.start).toHaveBeenCalledTimes(2);
+    expect(conversationMock.stop).not.toHaveBeenCalled();
+  });
+
   it("shows the generating indicator even while a prior visual is docked", () => {
     conversationMock.generating = true;
     conversationMock.visual = { path: "w/old.html", kind: "html" };
     render(<VoiceView sessionId="voice-test" onBack={vi.fn()} />);
 
     expect(screen.getByText("正在生成视觉内容…")).toBeTruthy();
+  });
+
+  it("renders recent ASR and assistant history", () => {
+    conversationMock.turns = [
+      {
+        id: "t1",
+        userText: "第一句",
+        assistantText: "第一个回答",
+        awaitingTranscript: false,
+      },
+      {
+        id: "t2",
+        userText: "第二句",
+        assistantText: "第二个回答",
+        awaitingTranscript: false,
+      },
+      {
+        id: "t3",
+        userText: "第三句",
+        assistantText: "第三个回答",
+        awaitingTranscript: false,
+      },
+      {
+        id: "t4",
+        userText: "第四句",
+        assistantText: "第四个回答",
+        awaitingTranscript: false,
+      },
+    ];
+
+    render(<VoiceView sessionId="voice-test" onBack={vi.fn()} />);
+
+    expect(screen.queryByText("第一句")).toBeNull();
+    expect(screen.getByText("第二句")).toBeTruthy();
+    expect(screen.getByText("第三个回答")).toBeTruthy();
+    expect(screen.getByText("第四个回答")).toBeTruthy();
+  });
+
+  it("renders ASR text before an assistant reply exists", () => {
+    conversationMock.turns = [
+      {
+        id: "t1",
+        userText: "帮我记住我喜欢乌龙茶",
+        assistantText: "",
+        awaitingTranscript: false,
+      },
+    ];
+
+    render(<VoiceView sessionId="voice-test" onBack={vi.fn()} />);
+
+    expect(screen.getByText("帮我记住我喜欢乌龙茶")).toBeTruthy();
   });
 
   it("shows microphone/VAD errors when the voice engine is ready", () => {

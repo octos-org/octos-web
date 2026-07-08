@@ -3318,6 +3318,62 @@ describe("regression B: progress/updated fans out into crew:cost (+ crew:message
     expect(dispatched).toHaveLength(0);
   });
 
+  it("voice_transcript fills the pending voice user bubble before persistence", () => {
+    ThreadStore.addUserMessage(SESSION, {
+      text: "",
+      clientMessageId: "cmid-voice-asr",
+      files: [{ filename: "utterance.wav", path: "/u/utterance.wav", caption: "" }],
+    });
+    const dispatched: Event[] = [];
+
+    handleProgressUpdated(
+      { sessionId: SESSION, dispatchEvent: (e) => dispatched.push(e) },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-voice-asr",
+        metadata: {
+          kind: "voice_transcript",
+          transcript: "我想先看到这句话",
+          client_message_id: "cmid-voice-asr",
+        },
+      },
+    );
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.userMsg.text).toBe("我想先看到这句话");
+    const transcriptEvent = dispatched.find(
+      (e) => e.type === "crew:voice_transcript",
+    ) as CustomEvent | undefined;
+    expect(transcriptEvent?.detail.transcript).toBe("我想先看到这句话");
+  });
+
+  it("voice_no_speech removes the empty optimistic voice turn", () => {
+    ThreadStore.addUserMessage(SESSION, {
+      text: "",
+      clientMessageId: "cmid-voice-empty",
+      files: [{ filename: "utterance.wav", path: "/u/utterance.wav", caption: "" }],
+    });
+    const dispatched: Event[] = [];
+
+    handleProgressUpdated(
+      { sessionId: SESSION, dispatchEvent: (e) => dispatched.push(e) },
+      {
+        session_id: SESSION,
+        turn_id: "cmid-voice-empty",
+        metadata: {
+          kind: "voice_no_speech",
+          client_message_id: "cmid-voice-empty",
+        },
+      },
+    );
+
+    expect(ThreadStore.getThreads(SESSION)).toHaveLength(0);
+    const noSpeechEvent = dispatched.find(
+      (e) => e.type === "crew:voice_no_speech",
+    ) as CustomEvent | undefined;
+    expect(noSpeechEvent?.detail.threadId).toBe("cmid-voice-empty");
+  });
+
   it("status_word dispatches crew:status_word with the rotating word", () => {
     // Server-side StatusIndicator rotates a creative status word every
     // ~8s and emits `progress/updated{kind:"status_word"}` carrying the

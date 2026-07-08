@@ -2,12 +2,15 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import {
   assembleTurnFiles,
+  buildVoiceTurns,
   collectFreshAudio,
+  collectFreshAudioWithTurnIds,
   collectFreshVisuals,
   farewellAudioActive,
   hasVisualMarker,
   pickFreshAudio,
   shouldHandleExitEvent,
+  shouldHandleNoSpeechEvent,
   stripVisualMarker,
   useVoiceConversation,
 } from "./use-voice-conversation";
@@ -22,10 +25,12 @@ const {
   captureStartMock,
   captureStopMock,
   getActiveBridgeMock,
+  sendMessageMock,
 } = vi.hoisted(() => ({
   captureStartMock: vi.fn(async () => {}),
   captureStopMock: vi.fn(async () => {}),
   getActiveBridgeMock: vi.fn((): unknown => undefined),
+  sendMessageMock: vi.fn(),
 }));
 
 vi.mock("./use-voice-capture", () => ({
@@ -88,7 +93,7 @@ vi.mock("@/store/thread-store", () => ({
 
 vi.mock("@/runtime/ui-protocol-send", () => ({
   interruptActiveTurn: vi.fn(async () => true),
-  sendMessage: vi.fn(),
+  sendMessage: sendMessageMock,
 }));
 
 vi.mock("@/runtime/ui-protocol-runtime", () => ({
@@ -165,6 +170,65 @@ describe("pickFreshAudio", () => {
 
     expect(collectFreshAudio(threads, new Set(), new Set(["old-turn"]))).toEqual([
       { path: "a/new.wav", text: "new" },
+    ]);
+  });
+
+  it("keeps turn ids for playback interruption bookkeeping", () => {
+    const threads = [
+      {
+        id: "turn-1",
+        responses: [
+          { role: "assistant", text: "old", files: [{ path: "a/old.wav" }] },
+        ],
+      },
+    ] as unknown as Thread[];
+
+    expect(collectFreshAudioWithTurnIds(threads, new Set())).toEqual([
+      { path: "a/old.wav", text: "old", turnId: "turn-1" },
+    ]);
+  });
+});
+
+describe("buildVoiceTurns", () => {
+  it("derives ASR transcript and assistant text from threads", () => {
+    const threads = [
+      {
+        id: "turn-1",
+        userMsg: { text: "今天天气怎么样", files: [] },
+        pendingAssistant: null,
+        responses: [
+          { role: "assistant", text: "今天适合出门。", files: [] },
+        ],
+      },
+    ] as unknown as Thread[];
+
+    expect(buildVoiceTurns(threads)).toEqual([
+      {
+        id: "turn-1",
+        userText: "今天天气怎么样",
+        assistantText: "今天适合出门。",
+        awaitingTranscript: false,
+      },
+    ]);
+  });
+
+  it("marks an audio-only user row as awaiting transcript", () => {
+    const threads = [
+      {
+        id: "turn-1",
+        userMsg: { text: "", files: [{ path: "uploads/utterance.wav" }] },
+        pendingAssistant: null,
+        responses: [],
+      },
+    ] as unknown as Thread[];
+
+    expect(buildVoiceTurns(threads)).toEqual([
+      {
+        id: "turn-1",
+        userText: "",
+        assistantText: "",
+        awaitingTranscript: true,
+      },
     ]);
   });
 });
@@ -307,6 +371,7 @@ describe("start() cancellation (post-unmount mic re-acquire)", () => {
     vi.useRealTimers();
     captureStartMock.mockClear();
     captureStopMock.mockClear();
+    sendMessageMock.mockClear();
     getActiveBridgeMock.mockReset();
     getActiveBridgeMock.mockReturnValue(undefined);
   });
@@ -458,5 +523,115 @@ describe("interrupt() supersedes the drain loop (stale grace timer)", () => {
       await vi.advanceTimersByTimeAsync(2000);
     });
     expect(result.current.state).toBe("thinking");
+  });
+
+  it("lets the user interrupt reply audio by speaking", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        blob: async () => new Blob(["a"]),
+      })),
+    );
+    getActiveBridgeMock.mockReturnValue({
+      getConnectionState: () => "connected",
+    });
+
+    const { result, rerender } = renderHook(() =>
+      useVoiceConversation("voice-barge-in-test"),
+    );
+    const sendCountBefore = sendMessageMock.mock.calls.length;
+
+    await act(async () => {
+      await result.current.start();
+    });
+
+    const firstListeningUtterance = captureStartMock.mock.calls[0][0] as (
+      wav: Blob,
+    ) => void;
+    await act(async () => {
+      firstListeningUtterance(new Blob(["u1"]));
+      await flushMicrotasks();
+    });
+    expect(result.current.state).toBe("thinking");
+    expect(sendMessageMock).toHaveBeenCalledTimes(sendCountBefore + 1);
+
+    threadsMock.value = [
+      {
+        id: "turn-1",
+        userMsg: { text: "hi" },
+        pendingAssistant: null,
+        responses: [
+          { role: "assistant", text: "reply", files: [{ path: "w/r1.wav" }] },
+        ],
+      },
+    ];
+    rerender();
+    await act(async () => {
+      await flushMicrotasks();
+    });
+    expect(result.current.state).toBe("speaking");
+
+    const bargeInCall = captureStartMock.mock.calls.at(-1)!;
+    const bargeInOptions = bargeInCall[1] as {
+      positiveSpeechThreshold: number;
+      minSpeechMs: number;
+      onSpeechConfirmed: () => void;
+      onVADMisfire: () => void;
+    };
+    const bargeInUtterance = bargeInCall[0] as (wav: Blob) => void;
+    expect(bargeInOptions.positiveSpeechThreshold).toBe(0.68);
+    expect(bargeInOptions.minSpeechMs).toBe(620);
+
+    await act(async () => {
+      bargeInOptions.onVADMisfire();
+      await flushMicrotasks();
+    });
+    expect(audioMock.stopAudio).not.toHaveBeenCalled();
+    expect(sendMessageMock).toHaveBeenCalledTimes(sendCountBefore + 1);
+    expect(result.current.state).toBe("speaking");
+
+    await act(async () => {
+      bargeInOptions.onSpeechConfirmed();
+      await flushMicrotasks();
+    });
+    expect(audioMock.stopAudio).toHaveBeenCalled();
+
+    await act(async () => {
+      bargeInUtterance(new Blob(["u2"]));
+      await flushMicrotasks();
+    });
+
+    expect(sendMessageMock).toHaveBeenCalledTimes(sendCountBefore + 2);
+    expect(result.current.state).toBe("thinking");
+  });
+});
+
+describe("shouldHandleNoSpeechEvent", () => {
+  it("matches the active voice turn in the same session/topic", () => {
+    expect(
+      shouldHandleNoSpeechEvent(
+        {
+          sessionId: "s1",
+          topic: "voice",
+          threadId: "turn-1",
+        },
+        "s1",
+        "voice",
+        "turn-1",
+      ),
+    ).toBe(true);
+    expect(
+      shouldHandleNoSpeechEvent(
+        {
+          sessionId: "s1",
+          topic: "voice",
+          threadId: "turn-2",
+        },
+        "s1",
+        "voice",
+        "turn-1",
+      ),
+    ).toBe(false);
   });
 });

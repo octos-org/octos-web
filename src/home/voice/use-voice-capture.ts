@@ -20,7 +20,10 @@ export interface VoiceCaptureStartOptions {
   negativeSpeechThreshold?: number;
   minSpeechMs?: number;
   redemptionMs?: number;
+  onSpeechStart?: () => void;
+  onSpeechConfirmed?: () => void;
   onSpeechRealStart?: () => void;
+  onVADMisfire?: () => void;
 }
 
 const VAD_SAMPLE_RATE = 16000;
@@ -206,10 +209,23 @@ export function useVoiceCapture(): VoiceCapture {
             negativeSpeechThreshold: options.negativeSpeechThreshold ?? 0.4,
             minSpeechMs: options.minSpeechMs ?? 300,
             redemptionMs: options.redemptionMs ?? 700,
+            onSpeechStart: () => {
+              if (gen !== startGenRef.current) return;
+              runCallbackSafely("onSpeechStart", () => {
+                (options.onSpeechStart ?? noop)();
+              }, setError);
+            },
             onSpeechRealStart: () => {
               if (gen !== startGenRef.current) return;
               runCallbackSafely("onSpeechRealStart", () => {
+                (options.onSpeechConfirmed ?? noop)();
                 (options.onSpeechRealStart ?? noop)();
+              }, setError);
+            },
+            onVADMisfire: () => {
+              if (gen !== startGenRef.current) return;
+              runCallbackSafely("onVADMisfire", () => {
+                (options.onVADMisfire ?? noop)();
               }, setError);
             },
             onSpeechEnd: (audio: Float32Array) => {
