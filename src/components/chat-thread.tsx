@@ -48,6 +48,7 @@ import { sendMessage as bridgeSend } from "@/runtime/ui-protocol-send";
 import { getActiveBridge } from "@/runtime/ui-protocol-runtime";
 import { MarkdownContent } from "./markdown-renderer";
 import { ThinkingIndicator } from "./thinking-indicator";
+import { CompactionIndicator } from "./compaction-indicator";
 import { ToolProgressIndicator } from "./tool-progress-indicator";
 import { useTasks } from "@/store/task-store";
 import { SPAWN_ONLY_TOOL_NAMES } from "@/runtime/spawn-only-tools";
@@ -925,6 +926,7 @@ export const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
             "渡劫中…(13s) is overlapped on task status bubble"). */}
         {showLiveIndicators && (
           <div className="mt-2 block">
+            <CompactionIndicator />
             <ThinkingIndicator />
           </div>
         )}

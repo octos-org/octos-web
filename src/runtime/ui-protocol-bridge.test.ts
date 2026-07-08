@@ -901,6 +901,11 @@ describe("connection lifecycle", () => {
     // notifications on this feature, so dropping it would silently
     // disable spawn_only attachment delivery.
     expect(ws.url).toContain("ui_feature=event.message_persisted.v1");
+    // Regression-pin for UPCR-2026-026: the server filters the whole
+    // context lifecycle family (compaction started/completed,
+    // normalization) for clients that did not negotiate this capability
+    // — the same silent-filter gap octos-tui#253 hit.
+    expect(ws.url).toContain("ui_feature=context.lifecycle.v1");
     // Regression-pin for the M10 Phase 1 capability negotiation
     // (server PR #772): server only emits the new
     // `turn/spawn_complete` envelope when this capability is in the
@@ -1773,6 +1778,71 @@ describe("notification dispatch", () => {
     await Promise.resolve();
     return { bridge, ws };
   }
+
+  it("routes context compaction lifecycle with flattened payloads", async () => {
+    const { bridge, ws } = await freshConnected();
+    const seen: unknown[] = [];
+    bridge.onContextCompaction((e) => seen.push(e));
+
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.CONTEXT_COMPACTION_STARTED,
+      params: {
+        session_id: "sess-1",
+        context_state: { session_id: "sess-1", token_estimate: 91000 },
+        trigger: "preflight",
+        threshold_tokens: 96000,
+      },
+    });
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.CONTEXT_COMPACTION_COMPLETED,
+      params: {
+        session_id: "sess-1",
+        context_state: { session_id: "sess-1", token_estimate: 31000 },
+        compaction: {
+          compaction_id: "c-1",
+          token_estimate_before: 91000,
+          token_estimate_after: 31000,
+          retained_count: 8,
+          dropped_count: 42,
+        },
+      },
+    });
+
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toMatchObject({
+      session_id: "sess-1",
+      token_estimate: 91000,
+      threshold_tokens: 96000,
+      trigger: "preflight",
+    });
+    expect(seen[1]).toMatchObject({
+      session_id: "sess-1",
+      token_estimate_before: 91000,
+      token_estimate_after: 31000,
+      retained_count: 8,
+      dropped_count: 42,
+      error: null,
+    });
+  });
+
+  it("drops malformed compaction payloads at the guard", async () => {
+    const { bridge, ws } = await freshConnected();
+    const seen: unknown[] = [];
+    bridge.onContextCompaction((e) => seen.push(e));
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.CONTEXT_COMPACTION_STARTED,
+      params: { session_id: "sess-1" },
+    });
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.CONTEXT_COMPACTION_COMPLETED,
+      params: { session_id: "sess-1", compaction: {} },
+    });
+    expect(seen).toHaveLength(0);
+  });
 
   it("routes message/delta to its handler", async () => {
     const { bridge, ws } = await freshConnected();
