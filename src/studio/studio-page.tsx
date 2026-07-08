@@ -5,6 +5,7 @@ import { PanelLeft, PanelRight } from "lucide-react";
 import { ChatThread } from "@/components/chat-thread";
 import { StudioNav } from "@/components/studio-nav";
 import { UiProtocolApprovalHost } from "@/components/ui-protocol-approval-host";
+import { UiProtocolQuestionHost } from "@/components/ui-protocol-question-host";
 import { ScopedRuntimeBridge } from "@/runtime/runtime-provider";
 import {
   SessionContext,
@@ -342,6 +343,7 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
           </div>
         </div>
         <UiProtocolApprovalHost />
+        <UiProtocolQuestionHost />
       </ScopedRuntimeBridge>
     </SessionContext.Provider>
   );
