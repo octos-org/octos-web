@@ -597,6 +597,49 @@ export interface ApprovalRequestedEvent {
   render_hints?: ApprovalRenderHints;
 }
 
+// --- Structured multiple-choice questions (user_question.v1, UPCR-2026-023) ---
+
+export interface UserQuestionOption {
+  label: string;
+  description: string;
+}
+
+export interface UserQuestion {
+  /** Short chip label (≤ 12 chars). */
+  header: string;
+  question: string;
+  options: UserQuestionOption[];
+  multi_select: boolean;
+  /** Server-forced true — a free-text "Other" is always offered. */
+  allow_free_text: boolean;
+}
+
+export interface UserQuestionRequestedEvent {
+  session_id: string;
+  topic?: string;
+  question_id: string;
+  turn_id: string;
+  /** Mandatory generic fallback text. */
+  title: string;
+  body: string;
+  /** 1–4 structured questions. */
+  questions: UserQuestion[];
+}
+
+/** One per-question answer, in question order. */
+export interface UserQuestionAnswer {
+  /** 0..1 for single-select, 0..N for multi_select; must match option labels. */
+  selected_labels: string[];
+  free_text?: string;
+}
+
+export interface UserQuestionRespondResult {
+  question_id: string;
+  accepted: boolean;
+  runtime_resumed: boolean;
+  status?: string;
+}
+
 export interface WarningEvent {
   reason: string;
   context?: unknown;

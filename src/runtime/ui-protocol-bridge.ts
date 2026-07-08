@@ -22,6 +22,9 @@ import {
 import type {
   ApprovalDecision,
   ApprovalRequestedEvent,
+  UserQuestionRequestedEvent,
+  UserQuestionRespondResult,
+  UserQuestionAnswer,
   ApprovalRespondResult,
   ApprovalScope,
   ConnectionState,
@@ -64,6 +67,9 @@ import type {
 export type {
   ApprovalDecision,
   ApprovalRequestedEvent,
+  UserQuestionRequestedEvent,
+  UserQuestionRespondResult,
+  UserQuestionAnswer,
   ApprovalRespondResult,
   ApprovalScope,
   ConnectionState,
@@ -119,6 +125,8 @@ export const METHODS = {
   TURN_START: "turn/start",
   TURN_INTERRUPT: "turn/interrupt",
   APPROVAL_RESPOND: "approval/respond",
+  USER_QUESTION_RESPOND: "user_question/respond",
+  USER_QUESTION_REQUESTED: "user_question/requested",
   TASK_OUTPUT_READ: "task/output/read",
   DIFF_PREVIEW_GET: "diff/preview/get",
   TURN_STATE_GET: "turn/state/get",
@@ -215,6 +223,7 @@ export const METHODS = {
  */
 export const UI_PROTOCOL_FEATURES = [
   "approval.typed.v1",
+  "user_question.v1",
   "pane.snapshots.v1",
   // P1.3 (server PR #767, web PR aligning the wire shape): the server
   // explicitly filters both live broadcast and cursor replay of
@@ -422,6 +431,14 @@ export interface UiProtocolBridge {
     ) => void,
   ): () => void;
   onApprovalRequested(handler: (e: ApprovalRequestedEvent) => void): () => void;
+  onUserQuestionRequested(
+    handler: (e: UserQuestionRequestedEvent) => void,
+  ): () => void;
+  respondToUserQuestion(
+    question_id: string,
+    answers: UserQuestionAnswer[],
+    client_note?: string,
+  ): Promise<UserQuestionRespondResult>;
   /** Synchronous tool-call lifecycle event surface. The event-router
    *  attaches a handler that re-emits each variant as a
    *  `crew:tool_progress` DOM event so the streaming-bubble spinner keeps
@@ -1127,6 +1144,60 @@ function guardApprovalRequested(p: unknown): ApprovalRequestedEvent | null {
   };
 }
 
+function guardUserQuestionRequested(
+  p: unknown,
+): UserQuestionRequestedEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (
+    !isString(p.session_id) ||
+    !isString(p.question_id) ||
+    !isString(p.turn_id) ||
+    typeof p.title !== "string" ||
+    typeof p.body !== "string" ||
+    !Array.isArray(p.questions)
+  ) {
+    return null;
+  }
+  const questions = p.questions
+    .map((q): UserQuestionRequestedEvent["questions"][number] | null => {
+      if (!isPlainObject(q)) return null;
+      if (!isString(q.question) || !Array.isArray(q.options)) return null;
+      const options = q.options
+        .map((o) =>
+          isPlainObject(o) && isString(o.label)
+            ? {
+                label: o.label,
+                description: isString(o.description) ? o.description : "",
+              }
+            : null,
+        )
+        .filter((o): o is { label: string; description: string } => o !== null);
+      if (options.length === 0) return null;
+      return {
+        header: isString(q.header) ? q.header : "",
+        question: q.question,
+        options,
+        multi_select: q.multi_select === true,
+        allow_free_text: q.allow_free_text !== false,
+      };
+    })
+    .filter(
+      (q): q is UserQuestionRequestedEvent["questions"][number] => q !== null,
+    );
+  return {
+    session_id: p.session_id,
+    topic:
+      typeof p.topic === "string" && p.topic.trim()
+        ? p.topic.trim()
+        : undefined,
+    question_id: p.question_id,
+    turn_id: p.turn_id,
+    title: p.title,
+    body: p.body,
+    questions,
+  };
+}
+
 function guardWarning(p: unknown): WarningEvent | null {
   if (!isPlainObject(p)) return null;
   if (typeof p.reason !== "string") return null;
@@ -1518,6 +1589,8 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     TurnStartedEvent | TurnCompletedEvent | TurnErrorEvent
   >();
   private readonly subApprovalRequested = new Subscribers<ApprovalRequestedEvent>();
+  private readonly subUserQuestionRequested =
+    new Subscribers<UserQuestionRequestedEvent>();
   private readonly subToolStarted = new Subscribers<ToolStartedEvent>();
   private readonly subToolProgress = new Subscribers<ToolProgressEvent>();
   private readonly subToolCompleted = new Subscribers<ToolCompletedEvent>();
@@ -1600,6 +1673,11 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     [METHODS.APPROVAL_REQUESTED]: {
       guard: guardApprovalRequested,
       emit: (v) => this.subApprovalRequested.emit(v as ApprovalRequestedEvent),
+    },
+    [METHODS.USER_QUESTION_REQUESTED]: {
+      guard: guardUserQuestionRequested,
+      emit: (v) =>
+        this.subUserQuestionRequested.emit(v as UserQuestionRequestedEvent),
     },
     [METHODS.TOOL_STARTED]: {
       guard: guardToolStarted,
@@ -1757,6 +1835,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.subTaskOutputDelta.clear();
     this.subTurnLifecycle.clear();
     this.subApprovalRequested.clear();
+    this.subUserQuestionRequested.clear();
     this.subToolStarted.clear();
     this.subToolProgress.clear();
     this.subToolCompleted.clear();
@@ -1845,6 +1924,36 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     if (client_note !== undefined) params.client_note = client_note;
     return this.request<ApprovalRespondResult>(
       METHODS.APPROVAL_RESPOND,
+      params,
+    );
+  }
+
+  onUserQuestionRequested(
+    handler: Listener<UserQuestionRequestedEvent>,
+  ): () => void {
+    return this.subUserQuestionRequested.add(handler);
+  }
+
+  respondToUserQuestion(
+    question_id: string,
+    answers: UserQuestionAnswer[],
+    client_note?: string,
+  ): Promise<UserQuestionRespondResult> {
+    if (!isString(question_id)) {
+      return Promise.reject(
+        new Error(
+          "ui-protocol-bridge: respondToUserQuestion requires question_id",
+        ),
+      );
+    }
+    const params: Record<string, unknown> = {
+      session_id: this.requireScopedSessionId(),
+      question_id,
+      answers,
+    };
+    if (client_note !== undefined) params.client_note = client_note;
+    return this.request<UserQuestionRespondResult>(
+      METHODS.USER_QUESTION_RESPOND,
       params,
     );
   }
@@ -2793,6 +2902,7 @@ export const __INTERNAL_GUARDS_FOR_TEST__ = {
   guardTurnCompleted,
   guardTurnError,
   guardApprovalRequested,
+  guardUserQuestionRequested,
   guardToolStarted,
   guardToolProgress,
   guardToolCompleted,

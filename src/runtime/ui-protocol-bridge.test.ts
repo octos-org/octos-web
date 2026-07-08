@@ -648,6 +648,49 @@ describe("type guards (fail-closed)", () => {
     expect(bogus?.approval_scope).toBeUndefined();
   });
 
+  it("guards user_question/requested: keeps valid options, drops garbled questions", () => {
+    const ok = guards.guardUserQuestionRequested({
+      session_id: "s",
+      topic: "chat",
+      question_id: "q",
+      turn_id: "t",
+      title: "Pick",
+      body: "b",
+      questions: [
+        {
+          header: "Approach",
+          question: "Which?",
+          options: [
+            { label: "A", description: "first" },
+            { label: "B" },
+          ],
+          multi_select: true,
+        },
+        { question: "no options here" },
+      ],
+    });
+    expect(ok?.question_id).toBe("q");
+    expect(ok?.topic).toBe("chat");
+    // The optionless question is dropped; the valid one is kept and normalized.
+    expect(ok?.questions).toHaveLength(1);
+    expect(ok?.questions[0].options).toHaveLength(2);
+    expect(ok?.questions[0].options[1].description).toBe(""); // default filled
+    expect(ok?.questions[0].multi_select).toBe(true);
+    expect(ok?.questions[0].allow_free_text).toBe(true); // defaults true
+  });
+
+  it("rejects user_question/requested missing required scalar fields", () => {
+    expect(
+      guards.guardUserQuestionRequested({
+        session_id: "s",
+        question_id: "q",
+        turn_id: "t",
+        title: "x",
+        // body + questions missing
+      }),
+    ).toBeNull();
+  });
+
   it("rejects turn/error without an error object", () => {
     expect(
       guards.guardTurnError({ session_id: "s", turn_id: "t" }),
