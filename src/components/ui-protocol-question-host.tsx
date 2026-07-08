@@ -44,15 +44,19 @@ export function UiProtocolQuestionHost() {
     };
   }, [currentSessionId, historyTopic]);
 
-  const head = queue[0] ?? null;
-  const scoped =
-    head && eventMatchesScope(head, currentSessionId, historyTopic)
-      ? head
-      : null;
+  // Render the first queued question that matches the ACTIVE scope, not just
+  // queue[0]: a question queued under a now-inactive session/topic must not
+  // sit in front and block newer in-scope questions (codex review). Stale
+  // items are kept, not pruned — the question is still pending server-side, so
+  // it should re-appear if the user switches back to that scope.
+  const head =
+    queue.find((q) =>
+      eventMatchesScope(q, currentSessionId, historyTopic),
+    ) ?? null;
 
   return (
     <UiProtocolQuestionDialog
-      question={scoped}
+      question={head}
       sessionId={currentSessionId}
       topic={historyTopic}
       onResolved={() =>
