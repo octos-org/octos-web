@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef } from "react";
 import { ensureSelectedProfileId } from "@/api/client";
 import { ChatThread } from "@/components/chat-thread";
 import { UiProtocolApprovalHost } from "@/components/ui-protocol-approval-host";
+import { UiProtocolQuestionHost } from "@/components/ui-protocol-question-host";
 import {
   SessionContext,
   useModeState,
@@ -344,6 +345,7 @@ export function SitesChat({ sessionId }: Props) {
           </div>
         </div>
         <UiProtocolApprovalHost />
+        <UiProtocolQuestionHost />
       </ScopedRuntimeBridge>
     </SessionContext.Provider>
   );

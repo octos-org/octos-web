@@ -102,6 +102,7 @@ function makeDeferredBridge(): DeferredBridge {
     onTaskOutputDelta: vi.fn(() => () => {}),
     onTurnLifecycle: vi.fn(() => () => {}),
     onApprovalRequested: vi.fn(() => () => {}),
+    onUserQuestionRequested: vi.fn(() => () => {}),
     onToolStarted: vi.fn(() => () => {}),
     onToolProgress: vi.fn(() => () => {}),
     onToolCompleted: vi.fn(() => () => {}),

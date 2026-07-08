@@ -70,6 +70,7 @@ function stubBridgeForMessagesPage(messages: unknown[]): {
     onTaskOutputDelta: () => () => {},
     onTurnLifecycle: () => () => {},
     onApprovalRequested: () => () => {},
+    onUserQuestionRequested: () => () => {},
     onConnectionStateChange: () => () => {},
     getConnectionState: () => "connected" as const,
     onWarning: () => () => {},

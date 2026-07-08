@@ -43,6 +43,10 @@ vi.mock("@/components/ui-protocol-approval-host", () => ({
   UiProtocolApprovalHost: () => null,
 }));
 
+vi.mock("@/components/ui-protocol-question-host", () => ({
+  UiProtocolQuestionHost: () => null,
+}));
+
 vi.mock("@/store/thread-store", () => ({
   loadHistory: (...args: unknown[]) => loadHistoryMock(...args),
 }));

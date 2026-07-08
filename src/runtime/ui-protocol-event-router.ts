@@ -24,6 +24,7 @@
 
 import type {
   ApprovalRequestedEvent,
+  UserQuestionRequestedEvent,
   FileAttachedEvent,
   MessageDeltaEvent,
   MessagePersistedEvent,
@@ -1678,6 +1679,19 @@ export function handleApprovalRequested(
   );
 }
 
+export function handleUserQuestionRequested(
+  cfg: RouterConfig,
+  event: UserQuestionRequestedEvent,
+): void {
+  // ChatLayout consumes this typed CustomEvent to render the multiple-choice
+  // dialog and respond via `user_question/respond`. Same shape as the bridge's
+  // `UserQuestionRequestedEvent` so the UI never parses ad-hoc payloads.
+  dispatch(
+    cfg,
+    new CustomEvent("crew:user_question_requested", { detail: event }),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Wave4-A: router/status, router/failover, queue/state
 // ---------------------------------------------------------------------------
@@ -1910,6 +1924,9 @@ export function attachRouter(
   const offApprovalRequested = bridge.onApprovalRequested((e) =>
     handleApprovalRequested(cfg, e),
   );
+  const offUserQuestionRequested = bridge.onUserQuestionRequested((e) =>
+    handleUserQuestionRequested(cfg, e),
+  );
   const offToolStarted = bridge.onToolStarted((e) => handleToolStarted(cfg, e));
   const offToolProgress = bridge.onToolProgress((e) =>
     handleToolProgress(cfg, e),
@@ -1963,6 +1980,7 @@ export function attachRouter(
       offTaskOutputDelta();
       offTurnLifecycle();
       offApprovalRequested();
+      offUserQuestionRequested();
       offToolStarted();
       offToolProgress();
       offToolCompleted();
