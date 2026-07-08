@@ -27,6 +27,11 @@ Don't want to run anything yourself? **Octos Cloud** is the hosted, multi-tenant
 
 That setup command is personalized for your machine and includes the values needed to connect your device to the Octos cloud relay. After setup, your Octos instance is accessible on the public internet under your node name.
 
+Two credentials come out of signup, and it pays to know which is which:
+
+- **Signing in to the app** (`https://<your-name>.octos.cloud/app/`) uses your **email code** — same as the login page anywhere else.
+- **The admin dashboard** (`https://<your-name>.octos.cloud/admin/`) accepts the **`--auth-token` value from your setup command**: pick the *"Login with admin token"* tab on its login screen and paste it. The same command was emailed to you at signup, so the token is always recoverable from that email (or from the service file the installer wrote on your device).
+
 When you click `Send Code` on the portal, check your Spam folder if the email does not arrive right away. It is also a good idea to add the Octos sending domain/address to your address book so future login and setup emails are delivered reliably.
 
 After signup, the portal shows your node details, public URL, and the setup command to run on your device:
