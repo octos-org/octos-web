@@ -1904,6 +1904,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.subTaskUpdated.clear();
     this.subTaskOutputDelta.clear();
     this.subTurnLifecycle.clear();
+    this.subContextCompaction.clear();
     this.subApprovalRequested.clear();
     this.subUserQuestionRequested.clear();
     this.subToolStarted.clear();
