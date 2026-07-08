@@ -51,8 +51,8 @@ function makeSessionCtx(): SessionContextValue {
   };
 }
 
-let container: HTMLDivElement;
-let root: Root;
+let container: HTMLDivElement | null = null;
+let root: Root | null = null;
 
 function mount() {
   container = document.createElement("div");
@@ -78,17 +78,24 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  act(() => {
-    root.unmount();
-  });
-  container.remove();
+  // Guarded: the pure-utility test never mounts (codex P3 — a solo
+  // `vitest -t progressBar` run would crash cleanup otherwise).
+  if (root) {
+    const mounted = root;
+    act(() => {
+      mounted.unmount();
+    });
+    root = null;
+  }
+  container?.remove();
+  container = null;
   vi.useRealTimers();
 });
 
 describe("CompactionIndicator", () => {
   it("renders the honest bar on started and the notice on completed", () => {
     mount();
-    expect(container.querySelector("[data-testid='compaction-indicator']")).toBeNull();
+    expect(container!.querySelector("[data-testid='compaction-indicator']")).toBeNull();
 
     fire("crew:compaction", {
       session_id: SESSION,
@@ -97,11 +104,11 @@ describe("CompactionIndicator", () => {
       threshold_tokens: 96000,
       trigger: "preflight",
     });
-    const block = container.querySelector("[data-testid='compaction-indicator']");
+    const block = container!.querySelector("[data-testid='compaction-indicator']");
     expect(block).not.toBeNull();
     expect(block!.textContent).toContain("Compacting conversation");
     expect(block!.textContent).toContain("48.0k tokens");
-    const bar = container.querySelector("[data-testid='compaction-bar']");
+    const bar = container!.querySelector("[data-testid='compaction-bar']");
     expect(bar!.textContent).toContain("50% of compact threshold");
     // 50% of a 40-cell bar = 20 filled.
     expect(bar!.textContent).toContain("▰".repeat(20) + "▱".repeat(20));
@@ -115,14 +122,14 @@ describe("CompactionIndicator", () => {
       dropped_count: 42,
       error: null,
     });
-    const notice = container.querySelector("[data-testid='compaction-indicator']");
+    const notice = container!.querySelector("[data-testid='compaction-indicator']");
     expect(notice!.textContent).toContain("context compacted 48.0k → 12.0k tokens");
 
     // Auto-clears after the timeout.
     act(() => {
       vi.advanceTimersByTime(9000);
     });
-    expect(container.querySelector("[data-testid='compaction-indicator']")).toBeNull();
+    expect(container!.querySelector("[data-testid='compaction-indicator']")).toBeNull();
   });
 
   it("drops cross-session events", () => {
@@ -134,7 +141,7 @@ describe("CompactionIndicator", () => {
       threshold_tokens: 2000,
       trigger: "preflight",
     });
-    expect(container.querySelector("[data-testid='compaction-indicator']")).toBeNull();
+    expect(container!.querySelector("[data-testid='compaction-indicator']")).toBeNull();
   });
 
   it("clears a dangling started-block on the thinking falling edge", () => {
@@ -146,10 +153,10 @@ describe("CompactionIndicator", () => {
       threshold_tokens: 2000,
       trigger: "preflight",
     });
-    expect(container.querySelector("[data-testid='compaction-indicator']")).not.toBeNull();
+    expect(container!.querySelector("[data-testid='compaction-indicator']")).not.toBeNull();
 
     fire("crew:thinking", { session_id: SESSION, thinking: false });
-    expect(container.querySelector("[data-testid='compaction-indicator']")).toBeNull();
+    expect(container!.querySelector("[data-testid='compaction-indicator']")).toBeNull();
   });
 
   it("progressBar clamps and rounds", () => {
