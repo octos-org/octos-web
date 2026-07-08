@@ -3162,6 +3162,56 @@ export function applyHydrateDedup(
   notify();
 }
 
+export function applyVoiceTranscript(
+  sessionId: string,
+  topic: string | undefined,
+  threadId: string | undefined,
+  transcript: string,
+): boolean {
+  const text = transcript.trim();
+  if (!threadId || text.length === 0) return false;
+  const key = storeKey(sessionId, topic);
+  const state = sessionsByKey.get(key);
+  const thread = state?.byId.get(threadId);
+  if (!thread) return false;
+  if (thread.userMsg.text.trim().length > 0) return false;
+  thread.userMsg = {
+    ...thread.userMsg,
+    text,
+  };
+  notify();
+  return true;
+}
+
+export function discardOptimisticVoiceTurn(
+  sessionId: string,
+  topic: string | undefined,
+  threadId: string | undefined,
+): boolean {
+  if (!threadId) return false;
+  const key = storeKey(sessionId, topic);
+  const state = sessionsByKey.get(key);
+  const thread = state?.byId.get(threadId);
+  if (!state || !thread) return false;
+  const pendingIsEmpty =
+    thread.pendingAssistant === null ||
+    (thread.pendingAssistant.text.trim().length === 0 &&
+      thread.pendingAssistant.files.length === 0 &&
+      thread.pendingAssistant.toolCalls.length === 0);
+  if (
+    thread.userMsg.text.trim().length > 0 ||
+    thread.responses.length > 0 ||
+    !pendingIsEmpty
+  ) {
+    return false;
+  }
+  state.byId.delete(threadId);
+  const idx = state.threads.findIndex((t) => t.id === threadId);
+  if (idx !== -1) state.threads.splice(idx, 1);
+  notify();
+  return true;
+}
+
 /**
  * Ingest a single persisted `MessageInfo` (e.g. from a `session_result`
  * notification on the WS bridge) into the appropriate thread without
@@ -3261,10 +3311,22 @@ export function appendPersistedMessage(
 
   if (message.role === "user") {
     // Persisted user record echoing back through session_result — only
-    // adopt its text/files if the existing user bubble is the empty
-    // placeholder (orphan thread case). Don't clobber a real send.
-    if (thread.userMsg.text === "" && thread.userMsg.files.length === 0) {
-      const built = buildResponseFromApi(message);
+    // adopt its text/files if the existing user bubble is empty. Voice turns
+    // are optimistically inserted with an audio file and empty text; the
+    // persisted echo carries the ASR transcript, so keep local media while
+    // filling the transcript in.
+    const built = buildResponseFromApi(message);
+    if (thread.userMsg.text === "" && built.text.trim().length > 0) {
+      thread.userMsg = {
+        ...thread.userMsg,
+        text: built.text,
+        files: built.files.length > 0 ? built.files : thread.userMsg.files,
+        historySeq: built.historySeq,
+        intra_thread_seq: built.intra_thread_seq,
+        clientMessageId: message.client_message_id ?? threadId,
+      };
+      notify();
+    } else if (thread.userMsg.text === "" && thread.userMsg.files.length === 0) {
       thread.userMsg = {
         ...thread.userMsg,
         text: built.text,

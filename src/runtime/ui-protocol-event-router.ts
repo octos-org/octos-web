@@ -1481,6 +1481,62 @@ export function handleProgressUpdated(
     // step. Premature finalisation orphans the pending, causing a duplicate.
     return;
   }
+  if (event.metadata.kind === "voice_transcript") {
+    const transcript =
+      typeof event.metadata.transcript === "string"
+        ? event.metadata.transcript
+        : typeof event.metadata.message === "string"
+          ? event.metadata.message
+          : "";
+    const threadId =
+      typeof event.metadata.client_message_id === "string" &&
+      event.metadata.client_message_id.length > 0
+        ? event.metadata.client_message_id
+        : event.turn_id;
+    if (transcript.trim().length > 0 && threadId) {
+      ThreadStore.applyVoiceTranscript(
+        cfg.sessionId,
+        cfg.topic,
+        threadId,
+        transcript,
+      );
+      dispatch(
+        cfg,
+        new CustomEvent("crew:voice_transcript", {
+          detail: {
+            sessionId: cfg.sessionId,
+            topic: cfg.topic,
+            turnId: event.turn_id,
+            threadId,
+            transcript,
+          },
+        }),
+      );
+    }
+    return;
+  }
+  if (event.metadata.kind === "voice_no_speech") {
+    const threadId =
+      typeof event.metadata.client_message_id === "string" &&
+      event.metadata.client_message_id.length > 0
+        ? event.metadata.client_message_id
+        : event.turn_id;
+    if (threadId) {
+      ThreadStore.discardOptimisticVoiceTurn(cfg.sessionId, cfg.topic, threadId);
+      dispatch(
+        cfg,
+        new CustomEvent("crew:voice_no_speech", {
+          detail: {
+            sessionId: cfg.sessionId,
+            topic: cfg.topic,
+            turnId: event.turn_id,
+            threadId,
+          },
+        }),
+      );
+    }
+    return;
+  }
   if (event.metadata.kind !== "token_cost_update") return;
   const cost = event.metadata.token_cost;
   const inputTokens = cost?.input_tokens;

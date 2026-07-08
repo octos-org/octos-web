@@ -18,6 +18,7 @@ export interface VoiceConversation {
   state: VoiceState;
   lastUserText: string;
   lastAssistantText: string;
+  turns: VoiceConversationTurn[];
   error: string | null;
   start: () => Promise<void>;
   stop: () => void;
@@ -43,6 +44,13 @@ export interface VoiceConversation {
   /** UPCR-2026-025: true once an exit intent fired; the view shows a farewell
    *  while the last reply audio finishes, then navigates home. */
   exiting: boolean;
+}
+
+export interface VoiceConversationTurn {
+  id: string;
+  userText: string;
+  assistantText: string;
+  awaitingTranscript: boolean;
 }
 
 /** A rich-output artifact the assistant produced for this voice turn. */
@@ -89,6 +97,12 @@ const THINKING_INTERRUPT_VAD_OPTIONS = {
   minSpeechMs: 700,
   redemptionMs: 650,
 };
+const SPEAKING_INTERRUPT_VAD_OPTIONS = {
+  positiveSpeechThreshold: 0.68,
+  negativeSpeechThreshold: 0.48,
+  minSpeechMs: 620,
+  redemptionMs: 700,
+};
 
 /** Find the most recent unplayed assistant audio from threads. Exported for unit tests. */
 export function pickFreshAudio(
@@ -116,7 +130,17 @@ export function collectFreshAudio(
   played: Set<string>,
   ignoredThreadIds: Set<string> = new Set(),
 ): { path: string; text: string }[] {
-  const out: { path: string; text: string }[] = [];
+  return collectFreshAudioWithTurnIds(threads, played, ignoredThreadIds).map(
+    ({ path, text }) => ({ path, text }),
+  );
+}
+
+export function collectFreshAudioWithTurnIds(
+  threads: Thread[],
+  played: Set<string>,
+  ignoredThreadIds: Set<string> = new Set(),
+): { path: string; text: string; turnId: string }[] {
+  const out: { path: string; text: string; turnId: string }[] = [];
   for (let i = 0; i < threads.length; i++) {
     if (ignoredThreadIds.has(threads[i].id)) continue;
     const asst = threads[i].responses.filter(
@@ -125,12 +149,37 @@ export function collectFreshAudio(
     for (let j = 0; j < asst.length; j++) {
       for (const f of asst[j].files) {
         if (AUDIO_EXT.test(f.path) && !played.has(f.path)) {
-          out.push({ path: f.path, text: asst[j].text });
+          out.push({ path: f.path, text: asst[j].text, turnId: threads[i].id });
         }
       }
     }
   }
   return out;
+}
+
+export function buildVoiceTurns(
+  threads: Thread[],
+  baseline = 0,
+): VoiceConversationTurn[] {
+  return threads.slice(baseline).map((thread) => {
+    const assistants: ThreadMessage[] = [
+      ...thread.responses.filter((m) => m.role === "assistant"),
+      ...(thread.pendingAssistant ? [thread.pendingAssistant] : []),
+    ];
+    const assistantText = stripVisualMarker(
+      [...assistants].reverse().find((m) => m.text.trim().length > 0)?.text ?? "",
+    );
+    const userText = thread.userMsg.text.trim();
+    const awaitingTranscript =
+      userText.length === 0 &&
+      thread.userMsg.files.some((f) => AUDIO_EXT.test(f.path));
+    return {
+      id: thread.id,
+      userText,
+      assistantText,
+      awaitingTranscript,
+    };
+  });
 }
 
 const HTML_EXT = /\.html?$/i;
@@ -167,6 +216,18 @@ export function shouldHandleExitEvent(
   const turnId = typeof detail.turnId === "string" ? detail.turnId : "";
   if (turnId && consumed.has(turnId)) return false;
   return true;
+}
+
+export function shouldHandleNoSpeechEvent(
+  detail: { sessionId?: string; topic?: string; threadId?: string; turnId?: string } | undefined,
+  sessionId: string,
+  topic: string | undefined,
+  activeTurnId: string | null,
+): boolean {
+  if (!detail || detail.sessionId !== sessionId) return false;
+  if ((detail.topic ?? undefined) !== (topic ?? undefined)) return false;
+  const eventTurnId = detail.threadId ?? detail.turnId ?? "";
+  return activeTurnId === null || eventTurnId === activeTurnId;
 }
 
 /**
@@ -294,11 +355,14 @@ export function useVoiceConversation(
   // Thread count when this voice session started; used to suppress showing the
   // PREVIOUS turn's question/answer until a new turn happens this session.
   const turnBaselineRef = useRef(0);
+  const [turnBaseline, setTurnBaseline] = useState(0);
 
   // Sentence-streamed reply audio: a FIFO queue of workspace-relative paths to
   // play in order, a "currently playing" flag, and a grace timer used to wait
   // for late sentences before returning to listening.
   const audioQueueRef = useRef<string[]>([]);
+  const audioTurnByPathRef = useRef<Map<string, string>>(new Map());
+  const speakingTurnIdRef = useRef<string | null>(null);
   const playingRef = useRef(false);
   const graceTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   // Drain-loop supersession token. interrupt()/stop() bump it after clearing
@@ -335,7 +399,7 @@ export function useVoiceConversation(
   // Stable refs that break the circular dependency between beginListening ↔
   // drainQueue. Each stores itself into its own ref every render.
   const beginListeningRef = useRef<() => Promise<void>>(async () => {});
-  const beginThinkingInterruptRef = useRef<() => Promise<void>>(async () => {});
+  const beginBargeInRef = useRef<() => Promise<void>>(async () => {});
   const sendUtteranceRef = useRef<(wav: Blob) => Promise<void>>(async () => {});
   const drainQueueRef = useRef<() => Promise<void>>(async () => {});
 
@@ -410,7 +474,7 @@ export function useVoiceConversation(
             }
           },
         });
-        void beginThinkingInterruptRef.current();
+        void beginBargeInRef.current();
         // Safety net: if no reply audio shows up in time, return to listening.
         clearTimeout(replyTimerRef.current);
         replyTimerRef.current = setTimeout(() => {
@@ -426,33 +490,54 @@ export function useVoiceConversation(
     [historyTopic, sessionId, cameraGrab, showSentFrame],
   );
 
-  const beginThinkingInterrupt = useCallback(async () => {
-    if (stateRef.current !== "thinking") return;
+  const beginBargeIn = useCallback(async () => {
+    if (stateRef.current !== "thinking" && stateRef.current !== "speaking") return;
     speechInterruptArmedRef.current = false;
+    const vadOptions =
+      stateRef.current === "speaking"
+        ? SPEAKING_INTERRUPT_VAD_OPTIONS
+        : THINKING_INTERRUPT_VAD_OPTIONS;
     await captureStart(
       (wav: Blob) => {
-        if (!speechInterruptArmedRef.current) return;
+        if (
+          !speechInterruptArmedRef.current ||
+          (stateRef.current !== "thinking" && stateRef.current !== "speaking")
+        ) {
+          return;
+        }
         void captureStop();
         void sendUtteranceRef.current(wav);
       },
       {
-        ...THINKING_INTERRUPT_VAD_OPTIONS,
-        onSpeechRealStart: () => {
+        ...vadOptions,
+        onSpeechConfirmed: () => {
           if (
             speechInterruptArmedRef.current ||
-            stateRef.current !== "thinking"
+            (stateRef.current !== "thinking" && stateRef.current !== "speaking")
           ) {
             return;
           }
           speechInterruptArmedRef.current = true;
           clearTimeout(replyTimerRef.current);
           clearTimeout(graceTimerRef.current);
+          if (stateRef.current === "speaking") {
+            const turnId = speakingTurnIdRef.current;
+            if (turnId) ignoredTurnIdsRef.current.add(turnId);
+            drainGenRef.current++;
+            releaseAudio();
+          } else {
+            requestTurnInterrupt("user started speaking while thinking");
+          }
           audioQueueRef.current = [];
-          requestTurnInterrupt("user started speaking while thinking");
+          audioTurnByPathRef.current.clear();
+          speakingTurnIdRef.current = null;
+        },
+        onVADMisfire: () => {
+          speechInterruptArmedRef.current = false;
         },
       },
     );
-  }, [captureStart, captureStop, requestTurnInterrupt]);
+  }, [captureStart, captureStop, releaseAudio, requestTurnInterrupt]);
 
   // Define beginListening and playReply with useCallback; each calls the other via its ref.
 
@@ -486,6 +571,7 @@ export function useVoiceConversation(
         const blob = await resp.blob();
         stateRef.current = "speaking";
         setState("speaking");
+        await beginBargeInRef.current();
         // Play through the autoplay-unlocked AudioContext (see audio-playback.ts);
         // resolve when playback ends, fails to start, OR decode/start throws —
         // otherwise a single bad clip wedges the queue in "speaking" forever.
@@ -516,7 +602,10 @@ export function useVoiceConversation(
     try {
       while (audioQueueRef.current.length > 0) {
         const next = audioQueueRef.current.shift() as string;
+        speakingTurnIdRef.current = audioTurnByPathRef.current.get(next) ?? null;
         await playOne(next);
+        audioTurnByPathRef.current.delete(next);
+        speakingTurnIdRef.current = null;
       }
     } finally {
       playingRef.current = false;
@@ -546,7 +635,7 @@ export function useVoiceConversation(
 
   // Keep refs up to date after every render so closures always call the latest version.
   beginListeningRef.current = beginListening;
-  beginThinkingInterruptRef.current = beginThinkingInterrupt;
+  beginBargeInRef.current = beginBargeIn;
   sendUtteranceRef.current = sendCapturedUtterance;
   drainQueueRef.current = drainQueue;
 
@@ -572,6 +661,7 @@ export function useVoiceConversation(
     ignoredTurnIdsRef.current = new Set();
     activeTurnIdRef.current = null;
     turnBaselineRef.current = threadsRef.current.length;
+    setTurnBaseline(threadsRef.current.length);
     setLastAssistantText("");
     // Rich output: mark pre-existing artifacts as seen so re-entry doesn't
     // re-surface a prior turn's visual; reset the live visual/generating state.
@@ -587,6 +677,8 @@ export function useVoiceConversation(
     generatingTurnRef.current = null;
     clearTimeout(generatingTimerRef.current);
     audioQueueRef.current = [];
+    audioTurnByPathRef.current.clear();
+    speakingTurnIdRef.current = null;
     playingRef.current = false;
     clearTimeout(graceTimerRef.current);
     // UPCR-2026-025: a fresh start clears any prior exit-pending state (e.g. an
@@ -626,6 +718,8 @@ export function useVoiceConversation(
     activeTurnIdRef.current = null;
     speechInterruptArmedRef.current = false;
     audioQueueRef.current = [];
+    audioTurnByPathRef.current.clear();
+    speakingTurnIdRef.current = null;
     playingRef.current = false;
     clearTimeout(generatingTimerRef.current);
     generatingTurnRef.current = null;
@@ -664,7 +758,11 @@ export function useVoiceConversation(
 
   const interrupt = useCallback(() => {
     if (stateRef.current === "speaking") {
+      const turnId = speakingTurnIdRef.current;
+      if (turnId) ignoredTurnIdsRef.current.add(turnId);
       audioQueueRef.current = [];
+      audioTurnByPathRef.current.clear();
+      speakingTurnIdRef.current = null;
       // Supersede the drain loop BEFORE releaseAudio() resolves its awaited
       // clip: when it resumes it must exit without scheduling a stale grace
       // timer — we return to listening right here.
@@ -676,6 +774,8 @@ export function useVoiceConversation(
       clearTimeout(replyTimerRef.current);
       clearTimeout(graceTimerRef.current);
       audioQueueRef.current = [];
+      audioTurnByPathRef.current.clear();
+      speakingTurnIdRef.current = null;
       // A drain loop can be alive in `thinking` too (its first clip is still
       // in the fetch phase) — supersede it the same way.
       drainGenRef.current++;
@@ -695,7 +795,7 @@ export function useVoiceConversation(
   // seconds after the turn completes). Only acts while "thinking".
   useEffect(() => {
     if (state !== "thinking" && state !== "speaking") return;
-    const fresh = collectFreshAudio(
+    const fresh = collectFreshAudioWithTurnIds(
       threads,
       playedPathsRef.current,
       ignoredTurnIdsRef.current,
@@ -709,18 +809,15 @@ export function useVoiceConversation(
     // re-collect the same audio.
     for (const f of fresh) {
       playedPathsRef.current.add(f.path);
+      audioTurnByPathRef.current.set(f.path, f.turnId);
       audioQueueRef.current.push(f.path);
       setLastAssistantText(stripVisualMarker(f.text));
     }
-    // Tear the barge-in VAD down and WAIT for it to finish BEFORE playback, so
-    // its Silero ONNX/WASM + mic AudioContext shutdown doesn't contend with the
-    // reply's Web Audio render thread (that contention glitched the first
-    // sentence). drainQueue is guarded by playingRef against concurrent runs.
-    void (async () => {
-      await captureStop();
-      await drainQueueRef.current();
-    })();
-  }, [captureStop, threads, state]);
+    // Keep the barge-in VAD alive while reply audio plays so the user can
+    // interrupt by speaking. drainQueue is guarded by playingRef against
+    // concurrent runs.
+    void drainQueueRef.current();
+  }, [threads, state]);
 
   // Rich output: surface visual artifacts as they land (decoupled from turn
   // timing — HTML authoring / image gen can finish seconds after the reply).
@@ -856,6 +953,41 @@ export function useVoiceConversation(
     return () => window.removeEventListener("crew:voice_exit", onExitEvent);
   }, [sessionId]);
 
+  useEffect(() => {
+    const onNoSpeech = (ev: Event) => {
+      const detail = (ev as CustomEvent).detail as
+        | {
+            sessionId?: string;
+            topic?: string;
+            turnId?: string;
+            threadId?: string;
+          }
+        | undefined;
+      if (
+        !shouldHandleNoSpeechEvent(
+          detail,
+          sessionId,
+          historyTopic,
+          activeTurnIdRef.current,
+        )
+      ) {
+        return;
+      }
+      clearTimeout(replyTimerRef.current);
+      clearTimeout(graceTimerRef.current);
+      activeTurnIdRef.current = null;
+      speechInterruptArmedRef.current = false;
+      audioQueueRef.current = [];
+      audioTurnByPathRef.current.clear();
+      speakingTurnIdRef.current = null;
+      if (stateRef.current === "thinking") {
+        void beginListeningRef.current();
+      }
+    };
+    window.addEventListener("crew:voice_no_speech", onNoSpeech);
+    return () => window.removeEventListener("crew:voice_no_speech", onNoSpeech);
+  }, [historyTopic, sessionId]);
+
   // Stop ONLY on real unmount. Use a ref so identity churn of `stop` across
   // re-renders never re-fires this cleanup (that was tearing the VAD down on
   // every render). `[]` deps → cleanup runs once, at unmount.
@@ -864,9 +996,10 @@ export function useVoiceConversation(
   useEffect(() => () => stopRef.current(), []);
 
   const lastUserText =
-    threads.length > turnBaselineRef.current
+    threads.length > turnBaseline
       ? (threads[threads.length - 1].userMsg?.text ?? "")
       : "";
+  const turns = buildVoiceTurns(threads, turnBaseline);
 
   const dismissVisual = useCallback(() => setVisual(null), []);
 
@@ -874,6 +1007,7 @@ export function useVoiceConversation(
     state,
     lastUserText,
     lastAssistantText,
+    turns,
     error: capture.error,
     start,
     stop,

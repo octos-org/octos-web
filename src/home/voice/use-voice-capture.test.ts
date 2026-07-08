@@ -49,6 +49,33 @@ describe("useVoiceCapture", () => {
     unmount();
   });
 
+  it("surfaces confirmed speech and VAD misfires separately", async () => {
+    const onSpeechStart = vi.fn();
+    const onSpeechConfirmed = vi.fn();
+    const onVADMisfire = vi.fn();
+    const { result, unmount } = renderHook(() => useVoiceCapture());
+
+    await act(async () => {
+      await result.current.start(vi.fn(), {
+        onSpeechStart,
+        onSpeechConfirmed,
+        onVADMisfire,
+      });
+    });
+
+    await act(async () => {
+      (vadInstances[0].options.onSpeechStart as () => void)();
+      (vadInstances[0].options.onVADMisfire as () => void)();
+      (vadInstances[0].options.onSpeechRealStart as () => void)();
+      await Promise.resolve();
+    });
+
+    expect(onSpeechStart).toHaveBeenCalledTimes(1);
+    expect(onVADMisfire).toHaveBeenCalledTimes(1);
+    expect(onSpeechConfirmed).toHaveBeenCalledTimes(1);
+    unmount();
+  });
+
   it("ignores stale VAD callbacks after stop", async () => {
     const onUtterance = vi.fn();
     const { result, unmount } = renderHook(() => useVoiceCapture());

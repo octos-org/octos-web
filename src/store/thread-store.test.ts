@@ -1414,6 +1414,74 @@ describe.each(FLAG_STATES)("thread-store [$label]", ({ projectionV1 }) => {
     expect(thread.userMsg.role).toBe("user");
   });
 
+  it("appendPersistedMessage_fills_voice_asr_text_without_dropping_audio", () => {
+    ThreadStore.addUserMessage(SESSION, {
+      text: "",
+      clientMessageId: "cm-voice",
+      files: [
+        { filename: "utterance.wav", path: "/uploads/utterance.wav", caption: "" },
+      ],
+    });
+
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 7,
+      role: "user",
+      content: "帮我记住我喜欢乌龙茶",
+      client_message_id: "cm-voice",
+      thread_id: "cm-voice",
+      timestamp: "2026-04-28T10:00:00Z",
+    });
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(thread.userMsg.text).toBe("帮我记住我喜欢乌龙茶");
+    expect(thread.userMsg.files.map((f) => f.path)).toEqual([
+      "/uploads/utterance.wav",
+    ]);
+  });
+
+  it("applyVoiceTranscript_fills_current_voice_turn_before_persisted_echo", () => {
+    ThreadStore.addUserMessage(SESSION, {
+      text: "",
+      clientMessageId: "cm-voice-live",
+      files: [
+        { filename: "utterance.wav", path: "/uploads/utterance.wav", caption: "" },
+      ],
+    });
+
+    const changed = ThreadStore.applyVoiceTranscript(
+      SESSION,
+      undefined,
+      "cm-voice-live",
+      "  先显示这句 ASR  ",
+    );
+
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(changed).toBe(true);
+    expect(thread.userMsg.text).toBe("先显示这句 ASR");
+    expect(thread.userMsg.files.map((f) => f.path)).toEqual([
+      "/uploads/utterance.wav",
+    ]);
+  });
+
+  it("discardOptimisticVoiceTurn_removes_empty_voice_turn_after_no_speech", () => {
+    ThreadStore.addUserMessage(SESSION, {
+      text: "",
+      clientMessageId: "cm-voice-no-speech",
+      files: [
+        { filename: "utterance.wav", path: "/uploads/utterance.wav", caption: "" },
+      ],
+    });
+
+    const removed = ThreadStore.discardOptimisticVoiceTurn(
+      SESSION,
+      undefined,
+      "cm-voice-no-speech",
+    );
+
+    expect(removed).toBe(true);
+    expect(ThreadStore.getThreads(SESSION)).toHaveLength(0);
+  });
+
   it("replayHistory_user_message_with_image_and_audio_preserves_both_files", () => {
     // History reload of an image+voice user turn: both media paths must
     // round-trip onto `thread.userMsg.files`.
