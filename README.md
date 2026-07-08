@@ -20,7 +20,7 @@ This repo is for **developing or customizing the client**. octos-web is one of t
 
 Don't want to run anything yourself? **Octos Cloud** is the hosted, multi-tenant way in — and the account experience (signup, email-code sign-in, your tenant's dashboard) is delivered by this web client:
 
-1. Go to your Octos Cloud operator's signup portal.
+1. Go to [octos.cloud](https://octos.cloud) (or your self-hosted operator's portal).
 2. Register with your email.
 3. Choose a custom node name.
 4. Run the generated setup command on your device.
