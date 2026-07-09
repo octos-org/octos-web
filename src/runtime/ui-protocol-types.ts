@@ -109,6 +109,95 @@ export interface SessionOpenResult {
   opened: SessionOpenedResult;
 }
 
+// ─── M15 autonomy surfaces: recurring loops + persisted goal ───────────────
+// Wire mirrors of `octos_core::ui_protocol::{UiLoopRecord, UiGoalRecord}`
+// and the loop/goal notification structs. Negotiated behind
+// `coding.loop_runtime.v1` / `coding.goal_runtime.v1`.
+
+export interface UiLoopRecord {
+  loop_id: string;
+  session_id: string;
+  profile_id?: string | null;
+  prompt: string;
+  mode: string;
+  interval_seconds?: number | null;
+  status: string;
+  next_run_at_ms?: number | null;
+  last_run_at_ms?: number | null;
+  expires_at_ms: number;
+  created_at_ms: number;
+  updated_at_ms: number;
+}
+
+export interface UiGoalRecord {
+  profile_id?: string | null;
+  goal_id: string;
+  objective: string;
+  status: string;
+  token_budget: number;
+  tokens_used: number;
+  time_used_seconds: number;
+  created_at_ms: number;
+  updated_at_ms: number;
+}
+
+/** `loop/updated` — control-plane transitions (create/pause/resume/delete).
+ *  The wire field is `loop` (serde rename of `loop_state`). */
+export interface LoopUpdatedEvent {
+  session_id: string;
+  loop_id?: string;
+  loop: UiLoopRecord;
+  ok?: boolean;
+  status?: string;
+  deleted?: boolean;
+}
+
+/** `loop/fired` — the scheduler queued a continuation for the loop. */
+export interface LoopFiredEvent {
+  session_id: string;
+  loop_id: string;
+  loop?: UiLoopRecord;
+  status?: string;
+}
+
+/** `loop/completed` — a loop reached a terminal state. */
+export interface LoopCompletedEvent {
+  session_id: string;
+  loop_id: string;
+  loop?: UiLoopRecord;
+  status?: string;
+  error?: string;
+}
+
+export interface SessionGoalUpdatedEvent {
+  session_id: string;
+  goal: UiGoalRecord;
+  transition_actor?: string;
+}
+
+export interface SessionGoalClearedEvent {
+  session_id: string;
+  cleared?: boolean;
+  goal?: UiGoalRecord | null;
+  transition_actor?: string;
+}
+
+export interface LoopListResult {
+  loops: UiLoopRecord[];
+}
+
+/** Result of loop/pause | loop/resume | loop/delete. */
+export interface LoopControlResult {
+  ok?: boolean;
+  status?: string;
+  loop_id?: string;
+  loop?: UiLoopRecord;
+}
+
+export interface SessionGoalGetResult {
+  goal: UiGoalRecord | null;
+}
+
 export interface TurnStartResult {
   accepted: boolean;
 }
