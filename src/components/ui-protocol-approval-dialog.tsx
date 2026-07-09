@@ -4,6 +4,7 @@ import { getActiveBridge } from "@/runtime/ui-protocol-runtime";
 import type {
   ApprovalDecision,
   ApprovalRequestedEvent,
+  ApprovalScope,
 } from "@/runtime/ui-protocol-types";
 
 interface UiProtocolApprovalDialogProps {
@@ -92,7 +93,11 @@ export function UiProtocolApprovalDialog({
   topic,
   onResolved,
 }: UiProtocolApprovalDialogProps) {
-  const [responding, setResponding] = useState<ApprovalDecision | null>(null);
+  // Which button is mid-flight: "approve", "deny", or the widened
+  // "approve-session" (so only that button shows its pending label).
+  const [responding, setResponding] = useState<
+    ApprovalDecision | "approve-session" | null
+  >(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<DiffPreviewResult | null>(null);
@@ -113,16 +118,26 @@ export function UiProtocolApprovalDialog({
   if (!approval) return null;
   const currentApproval = approval;
 
-  async function respond(decision: ApprovalDecision) {
+  // `scopeOverride` lets "Approve for session" widen the grant to
+  // `session` scope (recorded server-side in the ScopePolicy table, so every
+  // later matching request in this session auto-resolves and arrives as an
+  // `approval/auto_resolved` notification). A plain Approve/Deny keeps the
+  // server-sent `approval_scope` (usually `request` = once).
+  async function respond(
+    decision: ApprovalDecision,
+    scopeOverride?: ApprovalScope,
+  ) {
     setError(null);
-    setResponding(decision);
+    setResponding(decision === "approve" && scopeOverride === "session"
+      ? "approve-session"
+      : decision);
     try {
       const bridge = getActiveBridge(sessionId, topic);
       if (!bridge) throw new Error("UI Protocol bridge is not connected");
       const result = await bridge.respondToApproval(
         currentApproval.approval_id,
         decision,
-        currentApproval.approval_scope,
+        scopeOverride ?? currentApproval.approval_scope,
       );
       if (!result.accepted) {
         throw new Error(result.status || "approval response was rejected");
@@ -267,6 +282,19 @@ export function UiProtocolApprovalDialog({
             disabled={responding !== null}
           >
             {responding === "deny" ? "Denying..." : denyLabel}
+          </button>
+          {/* Secondary (outlined) so plain Approve stays the default action —
+              a session grant is deliberately the more considered click. */}
+          <button
+            type="button"
+            className="rounded-[10px] border border-border px-4 py-2 text-sm font-medium text-text hover:border-accent hover:text-text-strong disabled:opacity-60"
+            onClick={() => void respond("approve", "session")}
+            disabled={responding !== null}
+            title="Approve this and auto-approve later matching requests for the rest of this session"
+          >
+            {responding === "approve-session"
+              ? "Approving..."
+              : "Approve for session"}
           </button>
           <button
             type="button"

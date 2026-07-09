@@ -660,6 +660,34 @@ describe("type guards (fail-closed)", () => {
     expect(bogus?.approval_scope).toBeUndefined();
   });
 
+  it("guards approval/auto_resolved: keeps valid, drops malformed", () => {
+    const ok = guards.guardApprovalAutoResolved({
+      session_id: "s",
+      topic: "chat",
+      approval_id: "a",
+      turn_id: "t",
+      tool_name: "shell",
+      scope: "session",
+      scope_match: "*",
+      decision: "approve",
+    });
+    expect(ok?.tool_name).toBe("shell");
+    expect(ok?.scope).toBe("session");
+    expect(ok?.decision).toBe("approve");
+    // Unknown decision normalizes to approve (auto-resolve only fires on a
+    // standing grant); a missing required field rejects the whole event.
+    expect(
+      guards.guardApprovalAutoResolved({
+        session_id: "s",
+        approval_id: "a",
+        turn_id: "t",
+        tool_name: "shell",
+        // scope + scope_match missing
+        decision: "approve",
+      }),
+    ).toBeNull();
+  });
+
   it("guards user_question/requested: keeps valid options, drops garbled questions", () => {
     const ok = guards.guardUserQuestionRequested({
       session_id: "s",
