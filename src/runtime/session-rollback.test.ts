@@ -179,4 +179,156 @@ describe("rollbackSessionTurns", () => {
     const outcome = await rollbackSessionTurns(SESSION, undefined, 1);
     expect(outcome).toEqual({ ok: false, reason: "no_bridge" });
   });
+
+  // ── codex #262 round 2 folds ─────────────────────────────────────────────
+
+  it("reconciles from the projection when the server CLAMPS the count", async () => {
+    // Local has 2 turns; the user asked for 2 but the server only had
+    // 1 persisted turn and clamped. Local trim of 1 would "succeed"
+    // (droppedLocally === dropped_turns) yet local and server now
+    // disagree about the surviving prefix — the request was computed
+    // against indices the server never shared. Must clear + reseed.
+    ThreadStore.addUserMessage(SESSION, {
+      text: "local-only stale turn",
+      clientMessageId: "cmid-stale",
+    });
+    ThreadStore.addUserMessage(SESSION, {
+      text: "drop me",
+      clientMessageId: "cmid-drop-clamp",
+    });
+    rollbackSession.mockResolvedValue({
+      ...trimmedResult(),
+      dropped_turns: 1,
+    });
+    const outcome = await rollbackSessionTurns(SESSION, undefined, 2);
+    expect(outcome).toEqual({ ok: true, droppedTurns: 1 });
+    const threads = ThreadStore.getThreads(SESSION);
+    // Reseeded from the server projection — the stale local turn the
+    // server never had is gone.
+    expect(JSON.stringify(threads)).toContain("keep me");
+    expect(JSON.stringify(threads)).not.toContain("local-only stale turn");
+  });
+
+  it("replaces the hydrate-snapshot cache on the SURGICAL path too", async () => {
+    // Pre-rollback the scope's cached hydrate snapshot contains the
+    // dropped turn; a later replay/dedup pass reading the stale cache
+    // would resurrect it. After a successful surgical rollback the
+    // cache must hold exactly the trimmed projection.
+    ThreadStore.setHydrateSnapshot(SESSION, undefined, {
+      messages: [
+        {
+          seq: 1,
+          role: "user",
+          content: "keep me",
+          client_message_id: "cmid-keep",
+          message_id: "m1",
+          persisted_at: "2026-07-10T00:00:00Z",
+        },
+        {
+          seq: 2,
+          role: "assistant",
+          content: "kept reply",
+          message_id: "m2",
+          persisted_at: "2026-07-10T00:00:01Z",
+        },
+        {
+          seq: 3,
+          role: "user",
+          content: "drop me",
+          client_message_id: "cmid-drop",
+          message_id: "m3",
+          persisted_at: "2026-07-10T00:00:02Z",
+        },
+      ],
+    });
+    ThreadStore.addUserMessage(SESSION, {
+      text: "drop me",
+      clientMessageId: "cmid-drop",
+    });
+    expect(ThreadStore.getThreads(SESSION).length).toBeGreaterThanOrEqual(2);
+    rollbackSession.mockResolvedValue(trimmedResult());
+    const outcome = await rollbackSessionTurns(SESSION, undefined, 1);
+    expect(outcome.ok).toBe(true);
+    const cached = ThreadStore.__getHydrateSnapshotForTest(SESSION);
+    expect(cached).toBeDefined();
+    expect(JSON.stringify(cached)).not.toContain("drop me");
+    expect(cached?.messages).toHaveLength(2);
+  });
+
+  it("rebuilds the seq-dedup ledger so renumbered seqs are accepted after the trim", async () => {
+    // The server renumbers persisted seqs from the trimmed length, so
+    // the first post-rollback commits REUSE seqs the dropped suffix
+    // burned. A stale ledger makes appendPersistedMessage discard them.
+    ThreadStore.addUserMessage(SESSION, {
+      text: "keep me",
+      clientMessageId: "cmid-keep",
+    });
+    ThreadStore.appendAssistantToken("cmid-keep", "kept reply");
+    ThreadStore.finalizeAssistant("cmid-keep", { committedSeq: 2 });
+    ThreadStore.addUserMessage(SESSION, {
+      text: "drop me",
+      clientMessageId: "cmid-drop-seq",
+    });
+    ThreadStore.appendAssistantToken("cmid-drop-seq", "dropped reply");
+    // Burns seq 4 into the ledger for the suffix we're about to drop.
+    ThreadStore.finalizeAssistant("cmid-drop-seq", { committedSeq: 4 });
+    rollbackSession.mockResolvedValue(trimmedResult());
+    const outcome = await rollbackSessionTurns(SESSION, undefined, 1);
+    expect(outcome.ok).toBe(true);
+    expect(ThreadStore.getThreads(SESSION)).toHaveLength(1);
+    // A fresh persisted row REUSING the dropped suffix's seq 4 must
+    // land (post-rollback renumbering)…
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 4,
+      role: "assistant",
+      content: "fresh post-rollback reply",
+      thread_id: "cmid-keep",
+      message_id: "m-fresh",
+      timestamp: "2026-07-10T00:00:03Z",
+    } as never);
+    const [thread] = ThreadStore.getThreads(SESSION);
+    expect(
+      thread.responses.some((r) => r.text === "fresh post-rollback reply"),
+    ).toBe(true);
+    // …while a replay of a SURVIVING seq (2) still dedups.
+    const before = thread.responses.length;
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 2,
+      role: "assistant",
+      content: "kept reply (replayed)",
+      thread_id: "cmid-keep",
+      message_id: "m-replay",
+      timestamp: "2026-07-10T00:00:04Z",
+    } as never);
+    expect(ThreadStore.getThreads(SESSION)[0].responses).toHaveLength(before);
+  });
+
+  it("treats provenance placeholders — not empty-shaped rows — as non-turns", () => {
+    // A bucket synthesized for a late persisted assistant row (no user
+    // message yet) IS a placeholder…
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 9,
+      role: "assistant",
+      content: "late reply",
+      thread_id: "thread-late",
+      message_id: "m-late",
+      timestamp: "2026-07-10T00:00:05Z",
+    } as never);
+    const [synth] = ThreadStore.getThreads(SESSION);
+    expect(ThreadStore.isPlaceholderThread(synth)).toBe(true);
+    expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(true);
+    // …until its persisted user record arrives (adoption clears it).
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 8,
+      role: "user",
+      content: "the real prompt",
+      client_message_id: "thread-late",
+      thread_id: "thread-late",
+      timestamp: "2026-07-10T00:00:04Z",
+    } as never);
+    const [adopted] = ThreadStore.getThreads(SESSION);
+    expect(adopted.userMsg.text).toBe("the real prompt");
+    expect(ThreadStore.isPlaceholderThread(adopted)).toBe(false);
+    expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(false);
+  });
 });

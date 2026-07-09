@@ -1287,17 +1287,20 @@ function ThreadList({
   // inflates `num_turns` (rewinding B in [A, B, orphan] would send 2
   // and delete A too) and puts a Rewind button on a non-turn.
   // Placeholders map to 0 → no affordance.
+  //
+  // Round 2: while ANY orphan placeholder exists in the scope, the
+  // local turn list is KNOWN-incomplete — the orphan may be a real
+  // persisted turn whose user message simply hasn't hydrated, so every
+  // relative index computed from the list may be off by one or more.
+  // Withhold ALL rewind affordances (everything maps to 0) until
+  // hydration resolves the orphan.
   const turnsFromEndByThreadId = useMemo(() => {
     const byId = new Map<string, number>();
+    if (threads.some((t) => isPlaceholderThread(t))) return byId;
     let fromEnd = 0;
     for (let i = threads.length - 1; i >= 0; i -= 1) {
-      const thread = threads[i];
-      if (isPlaceholderThread(thread)) {
-        byId.set(thread.id, 0);
-      } else {
-        fromEnd += 1;
-        byId.set(thread.id, fromEnd);
-      }
+      fromEnd += 1;
+      byId.set(threads[i].id, fromEnd);
     }
     return byId;
   }, [threads]);

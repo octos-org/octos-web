@@ -125,6 +125,15 @@ export interface Thread {
   /** In-flight assistant message for the current turn (becomes part of
    *  `responses` when `finalizeAssistant` is called). */
   pendingAssistant: ThreadMessage | null;
+  /** Set when this bucket was MINTED as an orphan placeholder (a late
+   *  event arrived before its user message). Cleared when the real
+   *  user message adopts the bucket. While set, the thread's turn-ness
+   *  is UNKNOWN — the underlying turn may exist server-side and simply
+   *  not be hydrated yet — so rollback math must not run against a
+   *  list containing one (codex #262 round 2: shape-inference
+   *  misclassified a persisted-but-unhydrated turn as a non-turn and
+   *  sent a destructive num_turns for the wrong bubble). */
+  placeholderOrigin?: boolean;
   /** #245 P2: set on a reconnect reopen while this thread had in-flight
    *  streamed text. While set, `appendAssistantToken` drops tokens for this
    *  thread — the server's `after` replay re-emits deltas with no client
@@ -369,6 +378,7 @@ function ensureOrphanThread(threadId: string): {
     userMsg: placeholderUser,
     responses: [],
     pendingAssistant: null,
+    placeholderOrigin: true,
   };
   insertThreadInTimestampOrder(host, thread);
   recordRuntimeCounter("octos_thread_orphan_created_total", {
@@ -686,6 +696,8 @@ export function addUserMessage(
   const existing = state.byId.get(opts.clientMessageId);
   if (existing) {
     existing.userMsg = userMsg;
+    // The real user message arrived — the bucket is a known turn now.
+    existing.placeholderOrigin = false;
     if (!existing.pendingAssistant) {
       const alreadyAnswered = existing.responses.some(
         (r) => r.role === "assistant",
@@ -724,6 +736,8 @@ export function addUserMessage(
       pendingAssistant: orphanAlreadyAnswered
         ? null
         : (orphan.pendingAssistant ?? pendingAssistant),
+      // The real user message arrived — the bucket is a known turn now.
+      placeholderOrigin: false,
     };
     // Detach from the wrong session.
     otherState.byId.delete(opts.clientMessageId);
@@ -1504,6 +1518,7 @@ export function appendCompletionBubble(
           userMsg: placeholderUser,
           responses: [],
           pendingAssistant: null,
+          placeholderOrigin: true,
         };
         insertThreadInTimestampOrder(state, orphan);
         recordRuntimeCounter("octos_thread_orphan_created_total", {
@@ -2518,6 +2533,9 @@ export function replayHistory(
         userMsg: placeholderUser,
         responses: [],
         pendingAssistant: carryPending.get(threadId) ?? null,
+        // Bucket synthesized WITHOUT its user row — turn-ness unknown
+        // (see `isPlaceholderThread`).
+        placeholderOrigin: true,
       };
       state.byId.set(threadId, thread);
       state.threads.push(thread);
@@ -3501,6 +3519,10 @@ export function appendPersistedMessage(
       userMsg: placeholderUser,
       responses: [],
       pendingAssistant: null,
+      // Same provenance rule as `ensureOrphanThread`: a bucket minted
+      // without its user message is turn-ness-UNKNOWN until the real
+      // user record (below) or `addUserMessage` adopts it.
+      placeholderOrigin: true,
     };
     insertThreadInTimestampOrder(state, thread);
   }
@@ -3528,6 +3550,8 @@ export function appendPersistedMessage(
         intra_thread_seq: built.intra_thread_seq,
         clientMessageId: message.client_message_id ?? threadId,
       };
+      // The persisted user record arrived — a known turn now.
+      thread.placeholderOrigin = false;
       notify();
     } else if (thread.userMsg.text === "" && thread.userMsg.files.length === 0) {
       thread.userMsg = {
@@ -3538,6 +3562,7 @@ export function appendPersistedMessage(
         intra_thread_seq: built.intra_thread_seq,
         clientMessageId: message.client_message_id ?? threadId,
       };
+      thread.placeholderOrigin = false;
       notify();
     }
     return;
@@ -3852,11 +3877,30 @@ export function getKnownFilePaths(
  *  file-only user message is a real turn (text empty, files non-empty).
  *  Rollback math (`session/rollback` counts persisted USER turns only)
  *  must skip placeholders — counting them both inflates `num_turns`
- *  and grows a Rewind affordance on a bubble that is not a turn. */
+ *  and grows a Rewind affordance on a bubble that is not a turn.
+ *
+ *  PROVENANCE, not shape (codex #262 round 2): the flag is set when
+ *  the bucket is MINTED as an orphan and cleared when the real user
+ *  message adopts it. Shape-inference ("empty text + no files") also
+ *  matched real-but-unhydrated turns and empty-text turns replayed by
+ *  hydrate, silently shifting relative rollback counts. */
 export function isPlaceholderThread(thread: Thread): boolean {
-  return (
-    thread.userMsg.text.trim() === "" && thread.userMsg.files.length === 0
-  );
+  return thread.placeholderOrigin === true;
+}
+
+/** True when ANY bucket in the scope is still an orphan placeholder.
+ *  While one exists the local turn list is KNOWN-incomplete (a late
+ *  event arrived for a turn we have not seen the user message for), so
+ *  relative rollback indices computed from it may target the wrong
+ *  turn — the UI must withhold every Rewind affordance until hydration
+ *  resolves the orphan (codex #262 round 2). */
+export function hasPlaceholderThreads(
+  sessionId: string,
+  topic?: string,
+): boolean {
+  const state = sessionsByKey.get(storeKey(sessionId, topic));
+  if (!state) return false;
+  return state.threads.some((t) => isPlaceholderThread(t));
 }
 
 /** Conversation-suffix trim for `session/rollback`: drop the last
@@ -3888,6 +3932,25 @@ export function dropLastUserTurnThreads(
   for (const thread of removed) {
     state.byId.delete(thread.id);
   }
+  // Rebuild the seq-dedup ledger from the SURVIVING rows (codex #262
+  // round 2): `seq` is a per-session committed-row index and the
+  // server renumbers from the trimmed length, so the first messages
+  // persisted AFTER a rollback REUSE the seqs the dropped suffix
+  // burned. A stale ledger would make `hasSeenSeq` silently discard
+  // those fresh rows. Surviving rows keep their entries so hydrate /
+  // replay dedup still works for them.
+  const survivingSeqs = new Set<number>();
+  for (const thread of state.threads) {
+    const msgs = [thread.userMsg, ...thread.responses];
+    if (thread.pendingAssistant) msgs.push(thread.pendingAssistant);
+    for (const msg of msgs) {
+      if (typeof msg.historySeq === "number") {
+        survivingSeqs.add(msg.historySeq);
+      }
+    }
+  }
+  if (survivingSeqs.size > 0) seenSeqsByKey.set(key, survivingSeqs);
+  else seenSeqsByKey.delete(key);
   notify();
   return dropped;
 }
@@ -4050,6 +4113,17 @@ export function resolveEventThreadId(
 }
 
 /** Test-only helper: reset all in-memory state. Not exported in production. */
+/** Test-only: read the cached hydrate snapshot for a scope. Rollback
+ *  must REPLACE it with the trimmed projection (codex #262 round 2) —
+ *  a stale cache resurrects dropped turns on the next replay/dedup
+ *  pass, and that staleness is otherwise unobservable from outside. */
+export function __getHydrateSnapshotForTest(
+  sessionId: string,
+  topic?: string,
+): HydrateSnapshot | undefined {
+  return hydrateSnapshotByKey.get(storeKey(sessionId, topic));
+}
+
 export function __resetForTests(): void {
   sessionsByKey.clear();
   listeners.clear();

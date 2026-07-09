@@ -171,26 +171,36 @@ describe("user-bubble rewind affordance", () => {
     harness.unmount();
   });
 
-  it("excludes orphan placeholder threads from the affordance and the count", async () => {
-    // codex #262 P1: a late-event orphan bucket (empty placeholder user
-    // message) is NOT a persisted user turn — it must get no Rewind
-    // button, and rewinding the real turn BEFORE it must not count it.
-    rollbackSessionTurns.mockResolvedValue({ ok: true, droppedTurns: 1 });
-    const { secondThreadId } = seedTwoTurns();
+  it("withholds ALL rewind affordances while an orphan placeholder exists, restores after adoption", async () => {
+    // codex #262 round 2: while ANY orphan placeholder bucket exists,
+    // the local turn list is KNOWN-incomplete — the orphan may be a
+    // real persisted turn whose user message hasn't hydrated, so every
+    // relative index computed from the list is untrustworthy. No
+    // bubble may offer Rewind until the orphan resolves.
+    rollbackSessionTurns.mockResolvedValue({ ok: true, droppedTurns: 2 });
+    const { firstThreadId, secondThreadId } = seedTwoTurns();
     // Mint an orphan bucket the way the store does for late events:
     // a tool progress line for an unknown thread id.
     ThreadStore.appendToolProgress("orphan-thread-1", "tc-orphan", "late");
-    const threads = ThreadStore.getThreads(SESSION);
-    expect(threads.length).toBe(3);
+    expect(ThreadStore.getThreads(SESSION).length).toBe(3);
     const harness = mountThread();
-    // The orphan bubble renders no rewind button.
-    expect(
-      harness.container.querySelector(
-        '[data-testid="rewind-to-orphan-thread-1"]',
-      ),
-    ).toBeNull();
-    // Rewinding the newest REAL turn still sends num_turns = 1 — the
-    // trailing orphan does not inflate the count.
+    // NO bubble renders a rewind button — not the orphan, not the
+    // real turns.
+    for (const id of ["orphan-thread-1", firstThreadId, secondThreadId]) {
+      expect(
+        harness.container.querySelector(`[data-testid="rewind-to-${id}"]`),
+      ).toBeNull();
+    }
+    // The real user message for the orphan arrives (adoption) — the
+    // bucket is a known turn now, so affordances return with indices
+    // counting it as a REAL turn.
+    act(() => {
+      ThreadStore.addUserMessage(SESSION, {
+        text: "third prompt",
+        clientMessageId: "orphan-thread-1",
+      });
+    });
+    // secondThreadId is now 2 turns from the end (adopted turn is 1).
     const btn = harness.container.querySelector(
       `[data-testid="rewind-to-${secondThreadId}"]`,
     ) as HTMLButtonElement;
@@ -203,7 +213,7 @@ describe("user-bubble rewind affordance", () => {
         ) as HTMLButtonElement
       ).click();
     });
-    expect(rollbackSessionTurns).toHaveBeenCalledWith(SESSION, undefined, 1);
+    expect(rollbackSessionTurns).toHaveBeenCalledWith(SESSION, undefined, 2);
     harness.unmount();
   });
 
