@@ -54,6 +54,11 @@ export function CompactionIndicator() {
   const clearTimer = useRef<number | null>(null);
 
   useEffect(() => {
+    // Scope change (session/topic switch): the previous conversation's
+    // block must not bleed into the new one — reset local state whenever
+    // the effect re-binds (codex R4).
+    setState(null);
+    setElapsed(0);
     function handler(e: Event) {
       const detail = (e as CustomEvent).detail;
       if (!eventMatchesScope(detail, currentSessionId, historyTopic)) return;
