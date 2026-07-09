@@ -924,12 +924,6 @@ export const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
             `inline-flex` indicator sits cleanly below the tool-card row
             instead of overlapping it (reported on dspfac 2026-05-22:
             "渡劫中…(13s) is overlapped on task status bubble"). */}
-        {/* Mounted OUTSIDE the live-indicators gate: with projection_v1
-            (skipOptimisticUserMessage) the server's preflight compaction
-            events arrive before any live bubble exists — a gated mount
-            would miss the one-shot crew:compaction events entirely. The
-            component renders null when idle. */}
-        <CompactionIndicator />
         {showLiveIndicators && (
           <div className="mt-2 block">
             <ThinkingIndicator />
@@ -1247,6 +1241,11 @@ function ChatThreadV2({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-transparent">
+      {/* Mounted ONCE at thread level (codex R3): a per-bubble mount
+          duplicated the listener/timer per assistant message, and with
+          projection_v1 the preflight compaction events can arrive before
+          any bubble exists at all. Renders null when idle. */}
+      <CompactionIndicator />
       {hasThreads || hasGhosts ? (
         <ThreadList
           threads={threads}
