@@ -3,6 +3,7 @@ import { Navigate, useParams } from "react-router-dom";
 import { PanelLeft, PanelRight } from "lucide-react";
 
 import { ChatThread } from "@/components/chat-thread";
+import { listSkillActionJobs, type SkillActionJob } from "@/api/skill-actions";
 import { StudioNav } from "@/components/studio-nav";
 import { UiProtocolApprovalHost } from "@/components/ui-protocol-approval-host";
 import { ScopedRuntimeBridge } from "@/runtime/runtime-provider";
@@ -17,7 +18,12 @@ import { loadSessionFiles } from "@/store/file-store";
 import { recordProjectOpened } from "@/store/project-store";
 import * as ThreadStore from "@/store/thread-store";
 
-import type { SourceRow } from "./source-media";
+import {
+  SOURCE_IMPORT_ACTION_ID,
+  mergeSourceRows,
+  sourceRowFromSkillActionJob,
+  type SourceRow,
+} from "./source-media";
 import { StudioRail } from "./studio-rail";
 import { StudioSourcesPane } from "./studio-sources-pane";
 
@@ -156,7 +162,95 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
     };
   }, [projectId]);
 
+  const mergeUploadedSourceRows = useCallback((rows: SourceRow[]) => {
+    setUploadedSources((prev) => mergeSourceRows(prev, rows));
+  }, []);
 
+  const mergeSourceImportJobs = useCallback(
+    (jobs: SkillActionJob[]) => {
+      const sourceJobs = jobs.filter(
+        (job) =>
+          job.session_id === projectId &&
+          job.action_id === SOURCE_IMPORT_ACTION_ID,
+      );
+      if (sourceJobs.length === 0) return;
+
+      setUploadedSources((prev) =>
+        mergeSourceRows(
+          prev,
+          sourceJobs.map((job) => sourceRowFromSkillActionJob(job)),
+        ),
+      );
+
+      const completedJobs = sourceJobs.filter(
+        (job) => job.status === "succeeded" && job.source_path,
+      );
+      if (completedJobs.length === 0) return;
+
+      setSelectedSources((prev) => {
+        let next = prev;
+        let changed = false;
+
+        for (const job of completedJobs) {
+          const stalePaths = [
+            job.input_path,
+            job.materialized_path,
+            job.job_id,
+          ].filter((path): path is string => Boolean(path));
+          const filtered = next.filter((path) => !stalePaths.includes(path));
+          if (filtered.length !== next.length) {
+            next = filtered;
+            changed = true;
+          }
+          if (job.source_path && !next.includes(job.source_path)) {
+            next = [...next, job.source_path];
+            changed = true;
+          }
+        }
+
+        return changed ? next : prev;
+      });
+    },
+    [projectId],
+  );
+
+  const restoreSourceImportJobs = useCallback(async () => {
+    try {
+      const jobs = await listSkillActionJobs(projectId, {
+        actionId: SOURCE_IMPORT_ACTION_ID,
+      });
+      mergeSourceImportJobs(jobs);
+    } catch {
+      // The bridge may not be connected yet; the next bridge_connected
+      // event will retry the snapshot fetch.
+    }
+  }, [mergeSourceImportJobs, projectId]);
+
+  useEffect(() => {
+    const restoreSoon = () => {
+      void Promise.resolve().then(restoreSourceImportJobs);
+    };
+    restoreSoon();
+    const onBridgeReady = () => {
+      restoreSoon();
+    };
+    window.addEventListener("crew:bridge_connected", onBridgeReady);
+    return () => {
+      window.removeEventListener("crew:bridge_connected", onBridgeReady);
+    };
+  }, [restoreSourceImportJobs]);
+
+  useEffect(() => {
+    const onJobUpdated = (e: Event) => {
+      const job = (e as CustomEvent<SkillActionJob>).detail;
+      if (!job) return;
+      mergeSourceImportJobs([job]);
+    };
+    window.addEventListener("crew:skill_action_job_updated", onJobUpdated);
+    return () => {
+      window.removeEventListener("crew:skill_action_job_updated", onJobUpdated);
+    };
+  }, [mergeSourceImportJobs]);
 
   // Session files feed the Sources pane and the Generated Assets list.
   useEffect(() => {
@@ -290,9 +384,7 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
                   selected={selectedSources}
                   onToggle={toggleSource}
                   uploaded={uploadedSources}
-                  onUploaded={(rows) =>
-                    setUploadedSources((prev) => [...rows, ...prev])
-                  }
+                  onUploaded={mergeUploadedSourceRows}
                   loading={sourcesLoading}
                 />
               </aside>

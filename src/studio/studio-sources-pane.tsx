@@ -6,7 +6,15 @@ import { uploadFiles } from "@/api/chat";
 import { invokeSkillAction } from "@/api/skill-actions";
 import { useAllFiles } from "@/store/file-store";
 
-import { sourceKind, type SourceKind, type SourceRow } from "./source-media";
+import {
+  SOURCE_IMPORT_ACTION_ID,
+  fileNameFromPath,
+  isSourceRowReady,
+  sourceKind,
+  sourceRowFromSkillActionJob,
+  type SourceKind,
+  type SourceRow,
+} from "./source-media";
 
 interface Props {
   sessionId: string;
@@ -30,13 +38,6 @@ const KIND_ICONS: Record<SourceKind, LucideIcon> = {
   table: Table,
   text: FileText,
 };
-
-const SOURCE_IMPORT_ACTION_ID = "source.import";
-
-function fileNameFromPath(path: string, fallback: string): string {
-  const normalized = path.replace(/\\/g, "/");
-  return normalized.split("/").filter(Boolean).pop() ?? fallback;
-}
 
 export function StudioSourcesPane({
   sessionId,
@@ -87,6 +88,14 @@ export function StudioSourcesPane({
         const failed = imported.results?.find((result) => !result.success);
         throw new Error(failed?.output || "Source import failed");
       }
+      if (imported.jobs?.length) {
+        onUploaded(
+          imported.jobs.map((job, index) =>
+            sourceRowFromSkillActionJob(job, files[index]?.name),
+          ),
+        );
+        return;
+      }
       const importedPaths = imported.materialized_paths?.length
         ? imported.materialized_paths
         : paths;
@@ -95,6 +104,7 @@ export function StudioSourcesPane({
         path,
         filename: fileNameFromPath(path, files[index]?.name ?? path),
         timestamp: now,
+        status: "ready" as const,
       }));
       onUploaded(rows);
       for (const row of rows) onToggle(row.path);
@@ -163,20 +173,46 @@ export function StudioSourcesPane({
           <ul className="flex flex-col">
             {visible.map((row) => {
               const Icon = KIND_ICONS[sourceKind(row.filename)];
+              const ready = isSourceRowReady(row);
+              const statusLabel =
+                row.status === "processing"
+                  ? "Processing"
+                  : row.status === "failed"
+                    ? "Failed"
+                    : row.status === "abandoned"
+                      ? "Abandoned"
+                      : null;
               return (
-                <li key={row.path} className="studio-list-row">
+                <li key={row.jobId ?? row.path} className="studio-list-row">
                   <Icon size={16} className="shrink-0 text-muted" />
-                  <span
-                    className="min-w-0 flex-1 truncate text-sm"
-                    title={row.filename}
-                  >
-                    {row.filename}
-                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span
+                        className="min-w-0 truncate text-sm"
+                        title={row.filename}
+                      >
+                        {row.filename}
+                      </span>
+                      {statusLabel && (
+                        <span className="shrink-0 rounded border px-1.5 py-0.5 font-label text-[10px] uppercase tracking-[0.04em] text-muted">
+                          {statusLabel}
+                        </span>
+                      )}
+                    </div>
+                    {row.error && (
+                      <p className="mt-1 truncate text-xs text-red-500">
+                        {row.error}
+                      </p>
+                    )}
+                  </div>
                   <input
                     type="checkbox"
                     className="accent-accent h-4 w-4"
-                    checked={selected.includes(row.path)}
-                    onChange={() => onToggle(row.path)}
+                    checked={ready && selected.includes(row.path)}
+                    disabled={!ready}
+                    onChange={() => {
+                      if (ready) onToggle(row.path);
+                    }}
                     aria-label={`Use ${row.filename} as source`}
                   />
                 </li>

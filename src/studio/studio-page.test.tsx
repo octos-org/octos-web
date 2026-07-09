@@ -3,6 +3,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -29,6 +30,7 @@ const invokeSkillActionMock = vi.hoisted(() =>
     results: [{ success: true, output: "captured" }],
   })),
 );
+const listSkillActionJobsMock = vi.hoisted(() => vi.fn(async () => []));
 const fileFixtures = vi.hoisted(() => [
   {
     id: "f1",
@@ -92,6 +94,7 @@ vi.mock("@/api/chat", () => ({
 }));
 vi.mock("@/api/skill-actions", () => ({
   invokeSkillAction: invokeSkillActionMock,
+  listSkillActionJobs: listSkillActionJobsMock,
 }));
 
 import { STUDIO_SKILLS } from "./skills";
@@ -122,6 +125,8 @@ beforeEach(() => {
   uploadFilesMock.mockClear();
   uploadFilesMock.mockResolvedValue(["research/up.pdf"]);
   invokeSkillActionMock.mockClear();
+  listSkillActionJobsMock.mockClear();
+  listSkillActionJobsMock.mockResolvedValue([]);
   invokeSkillActionMock.mockResolvedValue({
     action_id: "source.import",
     ok: true,
@@ -283,5 +288,204 @@ describe("StudioPage", () => {
     expect(
       screen.getByText(/1 source selected for notebook grounding/),
     ).toBeTruthy();
+  });
+
+  it("renders a processing source row while a background import job runs", async () => {
+    uploadFilesMock.mockResolvedValue(["upload-handle-photo"]);
+    invokeSkillActionMock.mockResolvedValue({
+      action_id: "source.import",
+      ok: true,
+      queued: 1,
+      jobs: [
+        {
+          job_id: "job-photo",
+          batch_id: "batch-photo",
+          profile_id: "alan0x",
+          session_id: "web-abc",
+          action_id: "source.import",
+          skill_id: "mofa-notebook-source",
+          status: "queued",
+          input_path: "uploads/photo.jpg",
+          filename: "photo.jpg",
+          created_at: "2026-07-09T01:00:00Z",
+          updated_at: "2026-07-09T01:00:00Z",
+        },
+      ],
+    });
+
+    renderStudio();
+    fireEvent.change(screen.getByTestId("studio-upload-input"), {
+      target: {
+        files: [new File(["image"], "photo.jpg", { type: "image/jpeg" })],
+      },
+    });
+
+    await screen.findByText("photo.jpg");
+    expect(screen.getByText("Processing")).toBeTruthy();
+    const checkbox = screen.getByLabelText(
+      "Use photo.jpg as source",
+    ) as HTMLInputElement;
+    expect(checkbox.disabled).toBe(true);
+    expect(
+      screen.queryByText(/source selected for notebook grounding/),
+    ).toBeNull();
+  });
+
+  it("marks a processing source ready when its job succeeds", async () => {
+    uploadFilesMock.mockResolvedValue(["upload-handle-photo"]);
+    invokeSkillActionMock.mockResolvedValue({
+      action_id: "source.import",
+      ok: true,
+      queued: 1,
+      jobs: [
+        {
+          job_id: "job-photo",
+          batch_id: "batch-photo",
+          profile_id: "alan0x",
+          session_id: "web-abc",
+          action_id: "source.import",
+          skill_id: "mofa-notebook-source",
+          status: "running",
+          input_path: "uploads/photo.jpg",
+          filename: "photo.jpg",
+          created_at: "2026-07-09T01:00:00Z",
+          updated_at: "2026-07-09T01:00:00Z",
+        },
+      ],
+    });
+
+    renderStudio();
+    fireEvent.change(screen.getByTestId("studio-upload-input"), {
+      target: {
+        files: [new File(["image"], "photo.jpg", { type: "image/jpeg" })],
+      },
+    });
+    await screen.findByText("Processing");
+
+    fireEvent(
+      window,
+      new CustomEvent("crew:skill_action_job_updated", {
+        detail: {
+          job_id: "job-photo",
+          batch_id: "batch-photo",
+          profile_id: "alan0x",
+          session_id: "web-abc",
+          action_id: "source.import",
+          skill_id: "mofa-notebook-source",
+          status: "succeeded",
+          input_path: "uploads/photo.jpg",
+          filename: "photo.jpg",
+          source_id: "photo",
+          source_path: "notebook-sources/photo/source.md",
+          metadata_path: "notebook-sources/photo/metadata.json",
+          created_at: "2026-07-09T01:00:00Z",
+          updated_at: "2026-07-09T01:02:00Z",
+        },
+      }),
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByText("Processing")).toBeNull();
+    });
+    const checkbox = screen.getByLabelText(
+      "Use photo.jpg as source",
+    ) as HTMLInputElement;
+    expect(checkbox.disabled).toBe(false);
+    expect(checkbox.checked).toBe(true);
+    expect(
+      screen.getByText(/1 source selected for notebook grounding/),
+    ).toBeTruthy();
+  });
+
+  it("shows a failed source import job error", async () => {
+    uploadFilesMock.mockResolvedValue(["upload-handle-photo"]);
+    invokeSkillActionMock.mockResolvedValue({
+      action_id: "source.import",
+      ok: true,
+      queued: 1,
+      jobs: [
+        {
+          job_id: "job-photo",
+          batch_id: "batch-photo",
+          profile_id: "alan0x",
+          session_id: "web-abc",
+          action_id: "source.import",
+          skill_id: "mofa-notebook-source",
+          status: "running",
+          input_path: "uploads/photo.jpg",
+          filename: "photo.jpg",
+          created_at: "2026-07-09T01:00:00Z",
+          updated_at: "2026-07-09T01:00:00Z",
+        },
+      ],
+    });
+
+    renderStudio();
+    fireEvent.change(screen.getByTestId("studio-upload-input"), {
+      target: {
+        files: [new File(["image"], "photo.jpg", { type: "image/jpeg" })],
+      },
+    });
+    await screen.findByText("Processing");
+
+    fireEvent(
+      window,
+      new CustomEvent("crew:skill_action_job_updated", {
+        detail: {
+          job_id: "job-photo",
+          batch_id: "batch-photo",
+          profile_id: "alan0x",
+          session_id: "web-abc",
+          action_id: "source.import",
+          skill_id: "mofa-notebook-source",
+          status: "failed",
+          input_path: "uploads/photo.jpg",
+          filename: "photo.jpg",
+          error: "Unsupported image payload",
+          created_at: "2026-07-09T01:00:00Z",
+          updated_at: "2026-07-09T01:02:00Z",
+        },
+      }),
+    );
+
+    expect(await screen.findByText("Failed")).toBeTruthy();
+    expect(screen.getByText("Unsupported image payload")).toBeTruthy();
+    const checkbox = screen.getByLabelText(
+      "Use photo.jpg as source",
+    ) as HTMLInputElement;
+    expect(checkbox.disabled).toBe(true);
+  });
+
+  it("restores processing source jobs after the bridge reconnects", async () => {
+    listSkillActionJobsMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          job_id: "job-restored",
+          batch_id: "batch-restored",
+          profile_id: "alan0x",
+          session_id: "web-abc",
+          action_id: "source.import",
+          skill_id: "mofa-notebook-source",
+          status: "running",
+          input_path: "uploads/restored.pdf",
+          filename: "restored.pdf",
+          created_at: "2026-07-09T01:00:00Z",
+          updated_at: "2026-07-09T01:02:00Z",
+        },
+      ]);
+
+    renderStudio();
+    await waitFor(() =>
+      expect(listSkillActionJobsMock).toHaveBeenCalledTimes(1),
+    );
+
+    fireEvent(window, new Event("crew:bridge_connected"));
+
+    expect(await screen.findByText("restored.pdf")).toBeTruthy();
+    expect(screen.getByText("Processing")).toBeTruthy();
+    expect(listSkillActionJobsMock).toHaveBeenLastCalledWith("web-abc", {
+      actionId: "source.import",
+    });
   });
 });
