@@ -46,6 +46,7 @@ import type {
   TurnSpawnCompleteEvent,
   TurnStartedEvent,
   WarningEvent,
+  SkillActionJobUpdatedEvent,
 } from "./ui-protocol-types";
 
 // ---------------------------------------------------------------------------
@@ -600,6 +601,45 @@ describe("type guards (fail-closed)", () => {
       expect(ev?.chunk).toBe("stdout line");
     },
   );
+
+  it("accepts skill/action/job/updated with terminal source metadata", () => {
+    const ev = guards.guardSkillActionJobUpdated({
+      job_id: "job-1",
+      batch_id: "batch-1",
+      profile_id: "alan0x",
+      session_id: "sess-1",
+      action_id: "source.import",
+      skill_id: "mofa-notebook-source",
+      status: "succeeded",
+      input_path: "uploads/report.pdf",
+      filename: "report.pdf",
+      source_id: "report",
+      source_path: "notebook-sources/report/source.md",
+      metadata_path: "notebook-sources/report/metadata.json",
+      created_at: "2026-07-09T01:00:00Z",
+      updated_at: "2026-07-09T01:01:00Z",
+    });
+
+    expect(ev).not.toBeNull();
+    expect(ev?.job_id).toBe("job-1");
+    expect(ev?.status).toBe("succeeded");
+    expect(ev?.source_path).toBe("notebook-sources/report/source.md");
+  });
+
+  it("rejects skill/action/job/updated with an unknown status", () => {
+    expect(
+      guards.guardSkillActionJobUpdated({
+        job_id: "job-1",
+        batch_id: "batch-1",
+        session_id: "sess-1",
+        action_id: "source.import",
+        skill_id: "mofa-notebook-source",
+        status: "done",
+        created_at: "2026-07-09T01:00:00Z",
+        updated_at: "2026-07-09T01:01:00Z",
+      }),
+    ).toBeNull();
+  });
 
   it("rejects task/output/delta without chunk", () => {
     expect(
@@ -1970,6 +2010,40 @@ describe("notification dispatch", () => {
     expect(persisted[0].seq).toBe(18);
     expect(tasks[0].task_id).toBe("task-A");
     expect(outputs[0].chunk).toBe("log line");
+  });
+
+  it("routes skill/action/job/updated to its handler", async () => {
+    const { bridge, ws } = await freshConnected();
+    const jobs: SkillActionJobUpdatedEvent[] = [];
+    bridge.onSkillActionJobUpdated((e) => jobs.push(e));
+
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.SKILL_ACTION_JOB_UPDATED,
+      params: {
+        job_id: "job-1",
+        batch_id: "batch-1",
+        profile_id: "alan0x",
+        session_id: "sess-1",
+        action_id: "source.import",
+        skill_id: "mofa-notebook-source",
+        status: "running",
+        input_path: "uploads/chart.jpg",
+        filename: "chart.jpg",
+        materialized_path: "uploads/chart.jpg",
+        created_at: "2026-07-09T01:00:00Z",
+        updated_at: "2026-07-09T01:01:00Z",
+      },
+    });
+
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]).toMatchObject({
+      job_id: "job-1",
+      batch_id: "batch-1",
+      status: "running",
+      input_path: "uploads/chart.jpg",
+      materialized_path: "uploads/chart.jpg",
+    });
   });
 
   it("routes turn/spawn_complete to onSpawnComplete (M10 Phase 2)", async () => {

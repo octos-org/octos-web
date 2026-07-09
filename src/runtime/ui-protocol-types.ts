@@ -369,6 +369,36 @@ export interface VoiceExitEvent {
   turn_id: string;
 }
 
+export type SkillActionJobStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "abandoned";
+
+export interface SkillActionJob {
+  job_id: string;
+  batch_id: string;
+  profile_id: string;
+  session_id: string;
+  action_id: string;
+  skill_id: string;
+  status: SkillActionJobStatus;
+  input_path?: string;
+  filename?: string;
+  materialized_path?: string;
+  output?: string;
+  error?: string;
+  result?: unknown;
+  source_id?: string;
+  source_path?: string;
+  metadata_path?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SkillActionJobUpdatedEvent extends SkillActionJob {}
+
 export interface TaskUpdatedEvent {
   session_id: string;
   /** Optional. Server's `TaskUpdatedEvent` struct does NOT carry

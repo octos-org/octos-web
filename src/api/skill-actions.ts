@@ -5,6 +5,9 @@ import {
   METHODS,
 } from "@/runtime/ui-protocol-bridge";
 import { getAnyConnectedBridge } from "@/runtime/ui-protocol-runtime";
+import type { SkillActionJob } from "@/runtime/ui-protocol-types";
+
+export type { SkillActionJob, SkillActionJobStatus } from "@/runtime/ui-protocol-types";
 
 export interface SkillActionToolResult {
   success: boolean;
@@ -19,6 +22,14 @@ export interface SkillActionInvokeResponse {
   ok: boolean;
   materialized_paths?: string[];
   results?: SkillActionToolResult[];
+  queued?: number;
+  batch_id?: string;
+  jobs?: SkillActionJob[];
+}
+
+export interface SkillActionJobListOptions {
+  batchId?: string;
+  actionId?: string;
 }
 
 function translateBridgeError(err: unknown): Error {
@@ -51,4 +62,34 @@ export async function invokeSkillAction(
     action_id: actionId,
     arguments: args,
   });
+}
+
+export async function listSkillActionJobs(
+  sessionId: string,
+  options: SkillActionJobListOptions = {},
+): Promise<SkillActionJob[]> {
+  const params: Record<string, unknown> = { session_id: sessionId };
+  if (options.batchId) {
+    params.batch_id = options.batchId;
+  }
+  if (options.actionId) {
+    params.action_id = options.actionId;
+  }
+
+  const response = await callSkillActionWs<{ jobs?: SkillActionJob[] }>(
+    METHODS.SKILL_ACTION_JOB_LIST,
+    params,
+  );
+  return response.jobs ?? [];
+}
+
+export async function readSkillActionJob(
+  sessionId: string,
+  jobId: string,
+): Promise<SkillActionJob> {
+  const response = await callSkillActionWs<{ job: SkillActionJob }>(
+    METHODS.SKILL_ACTION_JOB_READ,
+    { session_id: sessionId, job_id: jobId },
+  );
+  return response.job;
 }

@@ -35,6 +35,7 @@ import {
   handleSpawnComplete,
   handleTaskOutputDelta,
   handleTaskUpdated,
+  handleSkillActionJobUpdated,
   handleToolCompleted,
   handleToolProgress,
   handleToolStarted,
@@ -57,6 +58,7 @@ import type {
   RouterStatusEvent,
   TaskOutputDeltaEvent,
   TaskUpdatedEvent,
+  SkillActionJobUpdatedEvent,
   ToolCompletedEvent,
   ToolProgressEvent,
   ToolStartedEvent,
@@ -1875,6 +1877,36 @@ describe("router event mapping", () => {
     expect(ce.type).toBe("crew:approval_requested");
     expect(ce.detail).toEqual(evt);
   });
+
+  it("skill/action/job/updated fans out as a DOM event", () => {
+    const dispatched: Event[] = [];
+    const evt: SkillActionJobUpdatedEvent = {
+      job_id: "job-1",
+      batch_id: "batch-1",
+      profile_id: "alan0x",
+      session_id: SESSION,
+      action_id: "source.import",
+      skill_id: "mofa-notebook-source",
+      status: "succeeded",
+      input_path: "uploads/chart.jpg",
+      filename: "chart.jpg",
+      source_id: "chart",
+      source_path: "notebook-sources/chart/source.md",
+      metadata_path: "notebook-sources/chart/metadata.json",
+      created_at: "2026-07-09T01:00:00Z",
+      updated_at: "2026-07-09T01:01:00Z",
+    };
+
+    handleSkillActionJobUpdated(
+      { sessionId: SESSION, dispatchEvent: (e) => dispatched.push(e) },
+      evt,
+    );
+
+    expect(dispatched).toHaveLength(1);
+    const ce = dispatched[0] as CustomEvent;
+    expect(ce.type).toBe("crew:skill_action_job_updated");
+    expect(ce.detail).toEqual(evt);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2712,6 +2744,7 @@ class FakeBridge implements UiProtocolBridge {
   emitVoiceExit?: (e: VoiceExitEvent) => void;
   emitTaskUpdated?: (e: TaskUpdatedEvent) => void;
   emitTaskOutputDelta?: (e: TaskOutputDeltaEvent) => void;
+  emitSkillActionJobUpdated?: (e: SkillActionJobUpdatedEvent) => void;
   emitTurnLifecycle?: (
     e: TurnStartedEvent | TurnCompletedEvent | TurnErrorEvent,
   ) => void;
@@ -2796,6 +2829,12 @@ class FakeBridge implements UiProtocolBridge {
       this.emitTaskOutputDelta = undefined;
     };
   }
+  onSkillActionJobUpdated(h: (e: SkillActionJobUpdatedEvent) => void) {
+    this.emitSkillActionJobUpdated = h;
+    return () => {
+      this.emitSkillActionJobUpdated = undefined;
+    };
+  }
   onTurnLifecycle(
     h: (e: TurnStartedEvent | TurnCompletedEvent | TurnErrorEvent) => void,
   ) {
@@ -2876,6 +2915,7 @@ describe("attachRouter", () => {
     expect(bridge.emitSpawnComplete).toBeDefined();
     expect(bridge.emitTaskUpdated).toBeDefined();
     expect(bridge.emitTaskOutputDelta).toBeDefined();
+    expect(bridge.emitSkillActionJobUpdated).toBeDefined();
     expect(bridge.emitTurnLifecycle).toBeDefined();
     expect(bridge.emitApprovalRequested).toBeDefined();
     expect(bridge.emitVisualGenerating).toBeDefined();
@@ -2887,6 +2927,7 @@ describe("attachRouter", () => {
     expect(bridge.emitSpawnComplete).toBeUndefined();
     expect(bridge.emitTaskUpdated).toBeUndefined();
     expect(bridge.emitTaskOutputDelta).toBeUndefined();
+    expect(bridge.emitSkillActionJobUpdated).toBeUndefined();
     expect(bridge.emitTurnLifecycle).toBeUndefined();
     expect(bridge.emitApprovalRequested).toBeUndefined();
     expect(bridge.emitVisualGenerating).toBeUndefined();

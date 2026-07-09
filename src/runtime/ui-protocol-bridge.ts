@@ -59,6 +59,8 @@ import type {
   UiTokenCostUpdate,
   UiFileMutationNotice,
   WarningEvent,
+  SkillActionJobStatus,
+  SkillActionJobUpdatedEvent,
 } from "./ui-protocol-types";
 
 export type {
@@ -104,6 +106,9 @@ export type {
   UiRetryBackoff,
   UiTokenCostUpdate,
   WarningEvent,
+  SkillActionJob,
+  SkillActionJobStatus,
+  SkillActionJobUpdatedEvent,
 } from "./ui-protocol-types";
 
 // ---------------------------------------------------------------------------
@@ -138,6 +143,9 @@ export const METHODS = {
   SESSION_DELETE: "session/delete",
   SKILL_ACTION_LIST: "skill/action/list",
   SKILL_ACTION_INVOKE: "skill/action/invoke",
+  SKILL_ACTION_JOB_LIST: "skill/action/job/list",
+  SKILL_ACTION_JOB_READ: "skill/action/job/read",
+  SKILL_ACTION_JOB_UPDATED: "skill/action/job/updated",
   SYSTEM_STATUS_GET: "system/status.get",
   CONTENT_LIST: "content/list",
   CONTENT_DELETE: "content/delete",
@@ -253,6 +261,9 @@ export const UI_PROTOCOL_FEATURES = [
   // populated post-`session/open` from the negotiated `replayed_envelopes`
   // is what eliminates the N+1 bubble render after page reload.
   "state.session_hydrate.v1",
+  // UPCR-2026-027: persisted background jobs for manifest-declared
+  // skill actions such as notebook source import.
+  "skill.action_jobs.v1",
 ] as const;
 
 /**
@@ -418,6 +429,9 @@ export interface UiProtocolBridge {
   onVoiceExit(handler: (e: VoiceExitEvent) => void): () => void;
   onTaskUpdated(handler: (e: TaskUpdatedEvent) => void): () => void;
   onTaskOutputDelta(handler: (e: TaskOutputDeltaEvent) => void): () => void;
+  onSkillActionJobUpdated(
+    handler: (e: SkillActionJobUpdatedEvent) => void,
+  ): () => void;
   onTurnLifecycle(
     handler: (
       e: TurnStartedEvent | TurnCompletedEvent | TurnErrorEvent,
@@ -1057,6 +1071,61 @@ function guardTaskOutputDelta(p: unknown): TaskOutputDeltaEvent | null {
   };
 }
 
+function isSkillActionJobStatus(value: unknown): value is SkillActionJobStatus {
+  return (
+    value === "queued" ||
+    value === "running" ||
+    value === "succeeded" ||
+    value === "failed" ||
+    value === "abandoned"
+  );
+}
+
+function optionalNonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function guardSkillActionJobUpdated(p: unknown): SkillActionJobUpdatedEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (
+    !isString(p.job_id) ||
+    !isString(p.batch_id) ||
+    !isString(p.profile_id) ||
+    !isString(p.session_id) ||
+    !isString(p.action_id) ||
+    !isString(p.skill_id) ||
+    !isString(p.created_at) ||
+    !isString(p.updated_at) ||
+    !isSkillActionJobStatus(p.status)
+  ) {
+    return null;
+  }
+
+  const event: SkillActionJobUpdatedEvent = {
+    job_id: p.job_id,
+    batch_id: p.batch_id,
+    profile_id: p.profile_id,
+    session_id: p.session_id,
+    action_id: p.action_id,
+    skill_id: p.skill_id,
+    status: p.status,
+    input_path: optionalNonEmptyString(p.input_path),
+    filename: optionalNonEmptyString(p.filename),
+    materialized_path: optionalNonEmptyString(p.materialized_path),
+    output: optionalNonEmptyString(p.output),
+    error: optionalNonEmptyString(p.error),
+    source_id: optionalNonEmptyString(p.source_id),
+    source_path: optionalNonEmptyString(p.source_path),
+    metadata_path: optionalNonEmptyString(p.metadata_path),
+    created_at: p.created_at,
+    updated_at: p.updated_at,
+  };
+  if (p.result !== undefined) {
+    event.result = p.result;
+  }
+  return event;
+}
+
 function guardTurnStarted(p: unknown): TurnStartedEvent | null {
   if (!isPlainObject(p)) return null;
   if (!isString(p.session_id) || !isString(p.turn_id)) return null;
@@ -1516,6 +1585,8 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private readonly subVoiceExit = new Subscribers<VoiceExitEvent>();
   private readonly subTaskUpdated = new Subscribers<TaskUpdatedEvent>();
   private readonly subTaskOutputDelta = new Subscribers<TaskOutputDeltaEvent>();
+  private readonly subSkillActionJobUpdated =
+    new Subscribers<SkillActionJobUpdatedEvent>();
   private readonly subTurnLifecycle = new Subscribers<
     TurnStartedEvent | TurnCompletedEvent | TurnErrorEvent
   >();
@@ -1586,6 +1657,10 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     [METHODS.TASK_OUTPUT_DELTA]: {
       guard: guardTaskOutputDelta,
       emit: (v) => this.subTaskOutputDelta.emit(v as TaskOutputDeltaEvent),
+    },
+    [METHODS.SKILL_ACTION_JOB_UPDATED]: {
+      guard: guardSkillActionJobUpdated,
+      emit: (v) => this.subSkillActionJobUpdated.emit(v as SkillActionJobUpdatedEvent),
     },
     [METHODS.TURN_STARTED]: {
       guard: guardTurnStarted,
@@ -1757,6 +1832,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.subVisualFailed.clear();
     this.subTaskUpdated.clear();
     this.subTaskOutputDelta.clear();
+    this.subSkillActionJobUpdated.clear();
     this.subTurnLifecycle.clear();
     this.subApprovalRequested.clear();
     this.subToolStarted.clear();
@@ -1920,6 +1996,11 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   }
   onTaskOutputDelta(handler: Listener<TaskOutputDeltaEvent>): () => void {
     return this.subTaskOutputDelta.add(handler);
+  }
+  onSkillActionJobUpdated(
+    handler: Listener<SkillActionJobUpdatedEvent>,
+  ): () => void {
+    return this.subSkillActionJobUpdated.add(handler);
   }
   onTurnLifecycle(
     handler: Listener<TurnStartedEvent | TurnCompletedEvent | TurnErrorEvent>,
@@ -2791,6 +2872,7 @@ export const __INTERNAL_GUARDS_FOR_TEST__ = {
   guardSessionHydrate,
   guardTaskUpdated,
   guardTaskOutputDelta,
+  guardSkillActionJobUpdated,
   guardTurnStarted,
   guardTurnCompleted,
   guardTurnError,
