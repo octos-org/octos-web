@@ -45,6 +45,7 @@ import type {
   RouterStatusEvent,
   RpcErrorPayload,
   SessionHydrateResult,
+  SessionOpenedResult,
   SessionOpenResult,
   TaskOutputDeltaEvent,
   TaskUpdatedEvent,
@@ -524,6 +525,11 @@ export interface UiProtocolBridge {
    *  missed completion bubble + media attachment from the durable
    *  ledger via `replayed_envelopes`. */
   onReopened(handler: () => void): () => void;
+  /** Fires on EVERY successful `session/open` ack (initial open AND
+   *  reconnects) with the server's `opened` payload. The runtime layer
+   *  seeds per-session state that the server persists across restarts —
+   *  today the thinking-effort selector (`opened.reasoning_effort`). */
+  onSessionOpened(handler: (opened: SessionOpenedResult) => void): () => void;
   onWarning(handler: (e: WarningEvent) => void): () => void;
   /** Issue #113.2: server-emitted title update for cross-tab and
    *  auto-title flows. SessionProvider subscribes to keep its
@@ -1783,6 +1789,10 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
    *  to re-issue `session/hydrate` so envelopes emitted while the WS
    *  was disconnected get replayed from `replayed_envelopes`. */
   private readonly subReopened = new Subscribers<void>();
+  /** Fires on every successful `session/open` ack with the `opened`
+   *  payload (initial + reconnect) — carrier for server-persisted
+   *  per-session state like `reasoning_effort`. */
+  private readonly subSessionOpened = new Subscribers<SessionOpenedResult>();
   private readonly subSessionTitleUpdated = new Subscribers<{
     session_id: string;
     title: string;
@@ -2037,6 +2047,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.subQueueState.clear();
     this.subWarning.clear();
     this.subState.clear();
+    this.subSessionOpened.clear();
     this.subSessionTitleUpdated.clear();
   }
 
@@ -2075,6 +2086,14 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     // server always saw `live_video=false` and forwarded zero reference frames.
     if (extras?.live_video) {
       params.live_video = true;
+    }
+    // Thinking-effort parity (`/thinking`): forward the per-session
+    // reasoning effort. Omission is MEANINGFUL to the server (a user
+    // turn without the field clears the stored override), so this maps
+    // only-when-populated like the other extras — the "default"
+    // selection is expressed by absence.
+    if (extras?.reasoning_effort) {
+      params.reasoning_effort = extras.reasoning_effort;
     }
     return this.request<TurnStartResult>(METHODS.TURN_START, params);
   }
@@ -2281,6 +2300,9 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   onReopened(handler: Listener<void>): () => void {
     return this.subReopened.add(handler);
   }
+  onSessionOpened(handler: Listener<SessionOpenedResult>): () => void {
+    return this.subSessionOpened.add(handler);
+  }
   onWarning(handler: Listener<WarningEvent>): () => void {
     return this.subWarning.add(handler);
   }
@@ -2468,6 +2490,12 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       const isReopen = this.hasEverOpened;
       this.hasEverOpened = true;
       this.setState("connected");
+      // Surface the `opened` payload (initial + reopen) so the runtime
+      // layer can seed server-persisted per-session state — today the
+      // thinking-effort selector (`opened.reasoning_effort`).
+      if (openResult?.opened) {
+        this.subSessionOpened.emit(openResult.opened);
+      }
       this.startKeepalive();
       this.flushSendQueue();
       if (isReopen) {

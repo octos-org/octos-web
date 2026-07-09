@@ -18,6 +18,11 @@ import {
   setHydrateSnapshot,
   suppressPendingDeltasForReplay,
 } from "@/store/thread-store";
+import {
+  asStoredEffort,
+  markThinkingSeeded,
+  setThinkingEffort,
+} from "@/store/thinking-store";
 
 interface ActiveBridge {
   sessionId: string;
@@ -36,6 +41,9 @@ interface ActiveBridge {
    *  envelopes (e.g. a `TurnSpawnComplete` emitted while the WS was
    *  dropped) get replayed via `replayed_envelopes`. */
   unsubscribeReopened: () => void;
+  /** Cleanup fn for the session-opened subscriber (thinking-effort
+   *  seeding). Detached on stop. */
+  unsubscribeSessionOpened: () => void;
 }
 
 let active: ActiveBridge | null = null;
@@ -190,6 +198,32 @@ export async function startBridgeForSession(
       runHydrateFor(sessionId, topic, bridge, myGeneration);
     });
   }
+  // Thinking-effort parity: seed the per-session selector from the
+  // server-persisted value carried on every `session/open` ack, so a
+  // reload/reconnect restores the user's `/thinking`-equivalent choice.
+  // ROOT scope only (codex #261 P1): the bridge's `session/open` sends
+  // the bare session id, so `opened.reasoning_effort` describes the
+  // ROOT bucket — applying it to a topic key would restore the wrong
+  // value and let the topic's next turn overwrite the root's choice.
+  // Topic scopes are marked seeded-without-value instead (no restore is
+  // possible over the current wire; selector still works live).
+  // Same defensive-typeof guard as `onReopened` for pre-dating mocks —
+  // those are marked seeded too so sends never wait on a seed that
+  // cannot arrive.
+  let unsubscribeSessionOpened: () => void = () => {};
+  const scopeHasTopic = Boolean(topic && topic.trim() !== "");
+  if (!scopeHasTopic && typeof bridge.onSessionOpened === "function") {
+    unsubscribeSessionOpened = bridge.onSessionOpened((opened) => {
+      if (myGeneration !== generation) return;
+      setThinkingEffort(
+        sessionId,
+        asStoredEffort(opened.reasoning_effort),
+        topic,
+      );
+    });
+  } else {
+    markThinkingSeeded(sessionId, topic);
+  }
 
   active = {
     sessionId,
@@ -199,6 +233,7 @@ export async function startBridgeForSession(
     connectionState,
     unsubscribeState,
     unsubscribeReopened,
+    unsubscribeSessionOpened,
   };
 
   // M10 Phase 6.2 (Bug C): immediately fire `session/hydrate` to fetch
@@ -349,6 +384,7 @@ export async function stopActiveBridge(): Promise<void> {
   handle.attachment.detach();
   handle.unsubscribeState();
   handle.unsubscribeReopened();
+  handle.unsubscribeSessionOpened();
   try {
     await handle.bridge.stop();
   } catch {
@@ -377,6 +413,7 @@ export async function stopActiveBridgeIfScope(
   handle.attachment.detach();
   handle.unsubscribeState();
   handle.unsubscribeReopened();
+  handle.unsubscribeSessionOpened();
   try {
     await handle.bridge.stop();
   } catch {
@@ -410,5 +447,10 @@ export function __setActiveBridgeForTest(
     connectionState,
     unsubscribeState: () => {},
     unsubscribeReopened: () => {},
+    unsubscribeSessionOpened: () => {},
   };
+  // Injected bridges skip the real `session/open` handshake, so mark the
+  // thinking-effort scope seeded — otherwise every test send would stall
+  // on `whenThinkingSeeded`'s fail-open timeout.
+  markThinkingSeeded(sessionId, topic);
 }
