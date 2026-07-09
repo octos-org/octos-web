@@ -51,6 +51,10 @@ export function UiProtocolApprovalHost() {
     return () => {
       window.removeEventListener("crew:approval_auto_resolved", onAutoResolved);
       if (timer) clearTimeout(timer);
+      // Drop any visible toast when the session/topic rebinds — the render
+      // path doesn't re-scope it, so a lingering toast would otherwise stay
+      // pinned to the wrong session (codex review).
+      setAutoResolved(null);
     };
   }, [currentSessionId, historyTopic]);
 
@@ -67,7 +71,14 @@ export function UiProtocolApprovalHost() {
           role="status"
           className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-[10px] border border-border bg-surface-container px-4 py-2 text-sm text-muted shadow-lg"
         >
-          <span className="text-text-strong">Auto-approved</span>
+          {/* A standing grant can auto-DENY too (e.g. a deny recorded by
+              another client). Announce the actual decision — never label a
+              denial "approved" on a security-sensitive surface. */}
+          <span className="text-text-strong">
+            {autoResolved.decision === "deny"
+              ? "Auto-denied"
+              : "Auto-approved"}
+          </span>
           {" · "}
           <span className="font-mono text-text">{autoResolved.tool_name}</span>
           {" · "}
