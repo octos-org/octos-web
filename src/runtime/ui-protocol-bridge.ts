@@ -27,6 +27,7 @@ import type {
   UserQuestionRespondResult,
   UserQuestionAnswer,
   ApprovalRespondResult,
+  TaskCancelResult,
   ApprovalScope,
   ConnectionState,
   Envelope,
@@ -76,6 +77,7 @@ export type {
   UserQuestionRespondResult,
   UserQuestionAnswer,
   ApprovalRespondResult,
+  TaskCancelResult,
   ApprovalScope,
   ConnectionState,
   HydratedMessage,
@@ -134,9 +136,7 @@ export const METHODS = {
   APPROVAL_RESPOND: "approval/respond",
   USER_QUESTION_RESPOND: "user_question/respond",
   USER_QUESTION_REQUESTED: "user_question/requested",
-  TASK_OUTPUT_READ: "task/output/read",
   DIFF_PREVIEW_GET: "diff/preview/get",
-  TURN_STATE_GET: "turn/state/get",
   PING: "ping",
   // M12 Phase D-1 (octos PR #912): auxiliary.rest_to_ws.v1 methods.
   // Each mirrors the JSON body of the corresponding REST handler so
@@ -148,6 +148,7 @@ export const METHODS = {
   SESSION_STATUS_GET: "session/status.get",
   SESSION_FILES_LIST: "session/files.list",
   SESSION_TASKS_LIST: "session/tasks.list",
+  TASK_CANCEL: "task/cancel",
   SESSION_WORKSPACE_GET: "session/workspace.get",
   SESSION_TITLE_SET: "session/title.set",
   SESSION_DELETE: "session/delete",
@@ -239,6 +240,7 @@ export const UI_PROTOCOL_FEATURES = [
   "approval.typed.v1",
   "user_question.v1",
   "pane.snapshots.v1",
+  "harness.task_control.v1",
   // P1.3 (server PR #767, web PR aligning the wire shape): the server
   // explicitly filters both live broadcast and cursor replay of
   // `message/persisted` notifications unless this capability was
@@ -385,6 +387,7 @@ export interface UiProtocolBridge {
     scope?: ApprovalScope,
     client_note?: string,
   ): Promise<ApprovalRespondResult>;
+  cancelTask(task_id: string): Promise<TaskCancelResult>;
 
   /**
    * Issue a `session/hydrate` RPC for the active session. M10 Phase 6.2
@@ -2115,6 +2118,18 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       METHODS.APPROVAL_RESPOND,
       params,
     );
+  }
+
+  cancelTask(task_id: string): Promise<TaskCancelResult> {
+    if (!isString(task_id)) {
+      return Promise.reject(
+        new Error("ui-protocol-bridge: cancelTask requires task_id"),
+      );
+    }
+    return this.request<TaskCancelResult>(METHODS.TASK_CANCEL, {
+      task_id,
+      session_id: this.requireScopedSessionId(),
+    });
   }
 
   onUserQuestionRequested(

@@ -12,7 +12,7 @@
  * arithmetic.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -20,6 +20,11 @@ import { createRoot, type Root } from "react-dom/client";
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
+
+const cancelTask = vi.fn();
+vi.mock("@/runtime/ui-protocol-runtime", () => ({
+  getActiveBridge: () => ({ cancelTask }),
+}));
 
 import { SessionTaskIndicator } from "./session-task-dock";
 import { SessionContext } from "@/runtime/session-context";
@@ -96,11 +101,261 @@ function seedTasks(n: number): void {
 
 beforeEach(() => {
   TaskStore.clearTasks(SESSION);
+  cancelTask.mockReset();
 });
 
 afterEach(() => {
   for (const node of [...document.body.children]) node.remove();
   TaskStore.clearTasks(SESSION);
+});
+
+describe("SessionTaskIndicator — cancel", () => {
+  it("opens a cancel menu and cancels a running task, dropping it from active", async () => {
+    cancelTask.mockResolvedValue({ task_id: "task-0", status: "cancelled" });
+    seedTasks(1);
+    const harness = mount(
+      <SessionContext.Provider value={makeSessionCtx()}>
+        <SessionTaskIndicator />
+      </SessionContext.Provider>,
+    );
+
+    // Indicator is a button; no menu until opened.
+    const indicator = harness.container.querySelector(
+      '[data-testid="session-task-indicator"]',
+    ) as HTMLButtonElement;
+    expect(indicator).toBeTruthy();
+    expect(
+      harness.container.querySelector(
+        '[data-testid="session-task-cancel-menu"]',
+      ),
+    ).toBeNull();
+
+    act(() => indicator.click());
+    const cancelBtn = harness.container.querySelector(
+      '[data-testid="cancel-task-task-0"]',
+    ) as HTMLButtonElement;
+    expect(cancelBtn).toBeTruthy();
+
+    await act(async () => {
+      cancelBtn.click();
+    });
+
+    expect(cancelTask).toHaveBeenCalledWith("task-0");
+    // Cancelled → mapped to a terminal status → no longer active → indicator
+    // (which only shows for active/failed) disappears.
+    expect(
+      harness.container.querySelector(
+        '[data-testid="session-task-indicator"]',
+      ),
+    ).toBeNull();
+
+    harness.unmount();
+  });
+
+  it("cancels every member of a rolled-up pipeline group, not just the representative", async () => {
+    cancelTask.mockResolvedValue({ task_id: "x", status: "cancelled" });
+    // A run_pipeline parent + two pipeline children sharing one tool_call_id
+    // collapse to a single menu row; Cancel must hit all three.
+    const shared = "tc-pipe";
+    TaskStore.replaceTasks(SESSION, [
+      {
+        id: "p-parent",
+        tool_name: "run_pipeline",
+        tool_call_id: shared,
+        status: "running",
+        started_at: new Date(2026, 0, 1, 0, 0, 0).toISOString(),
+        completed_at: null,
+        output_files: [],
+        error: null,
+      },
+      {
+        id: "p-child-1",
+        tool_name: "pipeline:analyze",
+        tool_call_id: shared,
+        status: "running",
+        started_at: new Date(2026, 0, 1, 0, 0, 1).toISOString(),
+        completed_at: null,
+        output_files: [],
+        error: null,
+      },
+      {
+        id: "p-child-2",
+        tool_name: "pipeline:synthesize",
+        tool_call_id: shared,
+        status: "running",
+        started_at: new Date(2026, 0, 1, 0, 0, 2).toISOString(),
+        completed_at: null,
+        output_files: [],
+        error: null,
+      },
+    ]);
+    const harness = mount(
+      <SessionContext.Provider value={makeSessionCtx()}>
+        <SessionTaskIndicator />
+      </SessionContext.Provider>,
+    );
+    const indicator = harness.container.querySelector(
+      '[data-testid="session-task-indicator"]',
+    ) as HTMLButtonElement;
+    act(() => indicator.click());
+    // One collapsed row for the group.
+    const cancelBtn = harness.container.querySelector(
+      '[data-testid="cancel-task-p-parent"]',
+    ) as HTMLButtonElement;
+    expect(cancelBtn).toBeTruthy();
+    await act(async () => {
+      cancelBtn.click();
+    });
+    // All three raw task ids were cancelled.
+    const cancelledIds = cancelTask.mock.calls.map((c) => c[0]).sort();
+    expect(cancelledIds).toEqual(["p-child-1", "p-child-2", "p-parent"]);
+    harness.unmount();
+  });
+
+  it("cancels only the clicked row when unrelated tasks share a tool_call_id", async () => {
+    // codex round 2 P1: `rollupTasksByCall` deliberately renders unrelated
+    // NON-pipeline tasks as separate rows even when they share a
+    // `tool_call_id`. Cancel on one row must not destroy the other row's
+    // task — group expansion applies to pipeline families only.
+    cancelTask.mockResolvedValue({ task_id: "x", status: "cancelled" });
+    const shared = "tc-shared";
+    TaskStore.replaceTasks(SESSION, [
+      {
+        id: "podcast-a",
+        tool_name: "podcast_generate",
+        tool_call_id: shared,
+        status: "running",
+        started_at: new Date(2026, 0, 1, 0, 0, 0).toISOString(),
+        completed_at: null,
+        output_files: [],
+        error: null,
+      },
+      {
+        id: "voice-b",
+        tool_name: "fm_tts",
+        tool_call_id: shared,
+        status: "running",
+        started_at: new Date(2026, 0, 1, 0, 0, 1).toISOString(),
+        completed_at: null,
+        output_files: [],
+        error: null,
+      },
+    ]);
+    const harness = mount(
+      <SessionContext.Provider value={makeSessionCtx()}>
+        <SessionTaskIndicator />
+      </SessionContext.Provider>,
+    );
+    const indicator = harness.container.querySelector(
+      '[data-testid="session-task-indicator"]',
+    ) as HTMLButtonElement;
+    // Non-pipeline group does NOT collapse: both rows visible.
+    expect(indicator.getAttribute("data-task-count")).toBe("2");
+    act(() => indicator.click());
+    const cancelBtn = harness.container.querySelector(
+      '[data-testid="cancel-task-podcast-a"]',
+    ) as HTMLButtonElement;
+    expect(cancelBtn).toBeTruthy();
+    expect(
+      harness.container.querySelector('[data-testid="cancel-task-voice-b"]'),
+    ).toBeTruthy();
+    await act(async () => {
+      cancelBtn.click();
+    });
+    // ONLY the clicked row's task was cancelled.
+    expect(cancelTask.mock.calls.map((c) => c[0])).toEqual(["podcast-a"]);
+    harness.unmount();
+  });
+
+  it("ignores a retained terminal pipeline row when classifying the cancel group", async () => {
+    // codex round 3: `buildSummary` rolls up the ACTIVE subset only, so a
+    // completed pipeline row retained in the store must not re-classify
+    // its call id as a pipeline family — the renderer showed the two
+    // active non-pipeline rows separately, so Cancel stays per-row.
+    cancelTask.mockResolvedValue({ task_id: "x", status: "cancelled" });
+    const shared = "tc-retained";
+    TaskStore.replaceTasks(SESSION, [
+      {
+        id: "old-pipe",
+        tool_name: "pipeline:analyze",
+        tool_call_id: shared,
+        status: "completed",
+        started_at: new Date(2026, 0, 1, 0, 0, 0).toISOString(),
+        completed_at: new Date(2026, 0, 1, 0, 1, 0).toISOString(),
+        output_files: [],
+        error: null,
+      },
+      {
+        id: "podcast-a",
+        tool_name: "podcast_generate",
+        tool_call_id: shared,
+        status: "running",
+        started_at: new Date(2026, 0, 1, 0, 2, 0).toISOString(),
+        completed_at: null,
+        output_files: [],
+        error: null,
+      },
+      {
+        id: "voice-b",
+        tool_name: "fm_tts",
+        tool_call_id: shared,
+        status: "running",
+        started_at: new Date(2026, 0, 1, 0, 2, 1).toISOString(),
+        completed_at: null,
+        output_files: [],
+        error: null,
+      },
+    ]);
+    const harness = mount(
+      <SessionContext.Provider value={makeSessionCtx()}>
+        <SessionTaskIndicator />
+      </SessionContext.Provider>,
+    );
+    const indicator = harness.container.querySelector(
+      '[data-testid="session-task-indicator"]',
+    ) as HTMLButtonElement;
+    // Active rollup input excludes the terminal row → two separate rows.
+    expect(indicator.getAttribute("data-task-count")).toBe("2");
+    act(() => indicator.click());
+    const cancelBtn = harness.container.querySelector(
+      '[data-testid="cancel-task-podcast-a"]',
+    ) as HTMLButtonElement;
+    expect(cancelBtn).toBeTruthy();
+    await act(async () => {
+      cancelBtn.click();
+    });
+    // The stale pipeline row must not expand the group: one cancel only.
+    expect(cancelTask.mock.calls.map((c) => c[0])).toEqual(["podcast-a"]);
+    harness.unmount();
+  });
+
+  it("keeps the task active when the server reports it still running", async () => {
+    cancelTask.mockResolvedValue({ task_id: "task-0", status: "running" });
+    seedTasks(1);
+    const harness = mount(
+      <SessionContext.Provider value={makeSessionCtx()}>
+        <SessionTaskIndicator />
+      </SessionContext.Provider>,
+    );
+    const indicator = harness.container.querySelector(
+      '[data-testid="session-task-indicator"]',
+    ) as HTMLButtonElement;
+    act(() => indicator.click());
+    await act(async () => {
+      (
+        harness.container.querySelector(
+          '[data-testid="cancel-task-task-0"]',
+        ) as HTMLButtonElement
+      ).click();
+    });
+    // Still running → indicator remains.
+    expect(
+      harness.container.querySelector(
+        '[data-testid="session-task-indicator"]',
+      ),
+    ).toBeTruthy();
+    harness.unmount();
+  });
 });
 
 describe("SessionTaskIndicator — constellation dot cap", () => {
