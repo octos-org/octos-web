@@ -40,6 +40,7 @@ import {
   KNOWN_EFFORT_LEVELS,
   setThinkingEffort,
   useThinkingEffort,
+  whenThinkingSeeded,
 } from "@/store/thinking-store";
 import {
   useThreads,
@@ -1880,9 +1881,21 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
           t.pendingAssistant.status === "streaming",
       )?.id;
       if (pendingTurnId) {
-        void bridge.interruptTurn(pendingTurnId, "user cancelled").catch(() => {
-          // best-effort: swallow transport errors.
-        });
+        // codex #261 round-2 P1: the send path parks `turn/start` behind
+        // `whenThinkingSeeded` during the initial `session/open`
+        // handshake. A cancel clicked in that window must NOT enqueue
+        // `turn/interrupt` ahead of the still-parked `turn/start` —
+        // the interrupt would no-op server-side and the supposedly
+        // cancelled turn would then run. Gating the interrupt on the
+        // SAME promise preserves pairwise order: seed waiters resolve
+        // in registration order and the send always registered first
+        // (this Cancel button only exists for a bubble that send
+        // created). Steady-state cost is one microtask.
+        void whenThinkingSeeded(currentSessionId, historyTopic)
+          .then(() => bridge.interruptTurn(pendingTurnId, "user cancelled"))
+          .catch(() => {
+            // best-effort: swallow transport errors.
+          });
       }
     }
   }, [currentSessionId, historyTopic, threadsForRunning]);
