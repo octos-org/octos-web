@@ -159,6 +159,32 @@ describe("CompactionIndicator", () => {
     expect(container!.querySelector("[data-testid='compaction-indicator']")).toBeNull();
   });
 
+  it("clears state when the session scope changes", () => {
+    mount();
+    fire("crew:compaction", {
+      session_id: SESSION,
+      phase: "completed",
+      token_estimate_before: 48000,
+      token_estimate_after: 12000,
+      retained_count: 8,
+      dropped_count: 42,
+      error: null,
+    });
+    expect(container!.querySelector("[data-testid='compaction-indicator']")).not.toBeNull();
+
+    // Re-render under a DIFFERENT session — the notice must not bleed.
+    act(() => {
+      root!.render(
+        <SessionContext.Provider
+          value={{ ...makeSessionCtx(), currentSessionId: "another-session" }}
+        >
+          <CompactionIndicator />
+        </SessionContext.Provider>,
+      );
+    });
+    expect(container!.querySelector("[data-testid='compaction-indicator']")).toBeNull();
+  });
+
   it("progressBar clamps and rounds", () => {
     expect(progressBar(0, 8)).toBe("▱▱▱▱▱▱▱▱");
     expect(progressBar(0.5, 8)).toBe("▰▰▰▰▱▱▱▱");
