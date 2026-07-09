@@ -12,8 +12,13 @@ import {
   createUiProtocolBridge,
   type UiProtocolBridge,
 } from "./ui-protocol-bridge";
-import type { ConnectionState } from "./ui-protocol-types";
+import type {
+  ConnectionState,
+  UiGoalRecord,
+  UiLoopRecord,
+} from "./ui-protocol-types";
 import { attachRouter, type RouterAttachment } from "./ui-protocol-event-router";
+import * as AutonomyStore from "@/store/autonomy-store";
 import {
   setHydrateSnapshot,
   suppressPendingDeltasForReplay,
@@ -196,6 +201,7 @@ export async function startBridgeForSession(
       // included), unlike the topic-gated hydrate below.
       suppressPendingDeltasForReplay(sessionId, topic);
       runHydrateFor(sessionId, topic, bridge, myGeneration);
+      runAutonomySnapshotFor(sessionId, topic, bridge, myGeneration);
     });
   }
   // Thinking-effort parity: seed the per-session selector from the
@@ -254,6 +260,7 @@ export async function startBridgeForSession(
   // pre-fix N+1 limitation. This avoids cross-topic envelope leakage
   // (codex round-2 P2).
   runHydrateFor(sessionId, topic, bridge, myGeneration);
+  runAutonomySnapshotFor(sessionId, topic, bridge, myGeneration);
 
   return bridge;
 }
@@ -299,6 +306,48 @@ function runHydrateFor(
       replayed_envelopes: hydrate.replayed_envelopes,
       replayed_tool_envelopes: hydrate.replayed_tool_envelopes,
     });
+  })();
+}
+
+/** M15 autonomy chip: snapshot this scope's loops + goal after a
+ *  successful (re)open. Live `loop/*` / `session/goal/*` notifications
+ *  keep it fresh afterwards; this seeds the store for state created
+ *  before the page loaded (the invisible-runaway-loop gap). Best-effort:
+ *  an older server rejects the RPCs (feature not negotiated /
+ *  method_not_supported) and the chip simply stays hidden. Unlike the
+ *  hydrate above this ALSO runs for topic scopes — loops are keyed by
+ *  the scoped SessionKey. */
+function runAutonomySnapshotFor(
+  sessionId: string,
+  topic: string | undefined,
+  bridge: UiProtocolBridge,
+  capturedGeneration: number,
+): void {
+  void (async () => {
+    if (capturedGeneration !== generation) return;
+    if (
+      typeof bridge.listLoops !== "function" ||
+      typeof bridge.getGoal !== "function"
+    ) {
+      return;
+    }
+    // Distinct FAILURE sentinel (codex #263 round 1 P2): `getGoal()`
+    // legitimately resolves `null` for "no goal" and that null is
+    // authoritative — but a REJECTED read (timeout, reconnect blip,
+    // method_not_supported) must not masquerade as it and wipe a
+    // previously loaded or live-updated goal. Same for loops.
+    const failed = Symbol("autonomy-read-failed");
+    const [loops, goal] = await Promise.all([
+      bridge.listLoops().catch(() => failed),
+      bridge.getGoal().catch(() => failed),
+    ]);
+    if (capturedGeneration !== generation) return;
+    if (loops !== failed) {
+      AutonomyStore.replaceLoops(sessionId, loops as UiLoopRecord[], topic);
+    }
+    if (goal !== failed) {
+      AutonomyStore.setGoal(sessionId, goal as UiGoalRecord | null, topic);
+    }
   })();
 }
 

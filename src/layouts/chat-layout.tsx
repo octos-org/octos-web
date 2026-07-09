@@ -9,6 +9,7 @@ import { SessionList } from "@/components/session-list";
 import { ContentBrowser } from "@/components/content-browser";
 import { SessionTitleEditor } from "@/components/session-title-editor";
 import { SessionTaskIndicator } from "@/components/session-task-dock";
+import { SessionAutonomyChip } from "@/components/session-autonomy-chip";
 import { UiProtocolApprovalHost } from "@/components/ui-protocol-approval-host";
 import { UiProtocolQuestionHost } from "@/components/ui-protocol-question-host";
 import { useSession } from "@/runtime/session-context";
@@ -204,6 +205,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
                     testId="chat-session-title"
                   />
                 </div>
+                <SessionAutonomyChip />
                 <SessionTaskIndicator />
                 <button
                   onClick={() => setMediaPanelOpen((v) => !v)}

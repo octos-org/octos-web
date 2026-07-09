@@ -23,6 +23,12 @@
  */
 
 import type {
+  LoopUpdatedEvent,
+  LoopFiredEvent,
+  LoopCompletedEvent,
+  SessionGoalUpdatedEvent,
+  SessionGoalClearedEvent,
+
   ApprovalRequestedEvent,
   ApprovalAutoResolvedEvent,
   UserQuestionRequestedEvent,
@@ -55,6 +61,7 @@ import type { MessageInfo } from "@/api/types";
 import { recordRuntimeCounter } from "./observability";
 import { isSpawnOnlyToolName } from "./spawn-only-tools";
 import { aggregateCallStatus } from "./task-rollup";
+import * as AutonomyStore from "@/store/autonomy-store";
 
 // ---------------------------------------------------------------------------
 // Per-turn meta snapshot
@@ -1918,6 +1925,60 @@ function handleVoiceExit(cfg: RouterConfig, event: VoiceExitEvent): void {
  * removes every listener registered here — call it before swapping the
  * bridge out (e.g. session change) to avoid event leaks.
  */
+/** M15 autonomy visibility — merge loop/goal notifications into the
+ *  autonomy store the header chip reads. Scoped by the router cfg (same
+ *  convention as `handleTaskUpdated`): the bridge only delivers this
+ *  scope's envelopes. A `loop/updated` carrying `deleted` (or a
+ *  tombstone `status === "deleted"`) removes the row. */
+export function handleLoopUpdated(
+  cfg: RouterConfig,
+  event: LoopUpdatedEvent,
+): void {
+  if (event.deleted === true || event.loop.status === "deleted") {
+    AutonomyStore.removeLoop(cfg.sessionId, event.loop.loop_id, cfg.topic);
+    return;
+  }
+  AutonomyStore.upsertLoop(cfg.sessionId, event.loop, cfg.topic);
+}
+
+export function handleLoopFired(
+  cfg: RouterConfig,
+  event: LoopFiredEvent,
+): void {
+  if (event.loop) {
+    AutonomyStore.upsertLoop(cfg.sessionId, event.loop, cfg.topic);
+  }
+}
+
+export function handleLoopCompleted(
+  cfg: RouterConfig,
+  event: LoopCompletedEvent,
+): void {
+  if (event.loop) {
+    AutonomyStore.upsertLoop(cfg.sessionId, event.loop, cfg.topic);
+    return;
+  }
+  // Terminal without a record — drop the row so the chip clears.
+  AutonomyStore.removeLoop(cfg.sessionId, event.loop_id, cfg.topic);
+}
+
+export function handleGoalUpdated(
+  cfg: RouterConfig,
+  event: SessionGoalUpdatedEvent,
+): void {
+  AutonomyStore.setGoal(cfg.sessionId, event.goal, cfg.topic);
+}
+
+export function handleGoalCleared(
+  cfg: RouterConfig,
+  // The event payload carries no state the store needs — a clear is a
+  // clear. Keep the param for the uniform (cfg, event) handler shape.
+  event: SessionGoalClearedEvent,
+): void {
+  void event;
+  AutonomyStore.setGoal(cfg.sessionId, null, cfg.topic);
+}
+
 export function attachRouter(
   bridge: UiProtocolBridge,
   cfg: RouterConfig,
@@ -1993,6 +2054,21 @@ export function attachRouter(
           };
     dispatch(cfg, new CustomEvent("crew:compaction", { detail }));
   });
+  // M15 autonomy chip feeds. Optional-called — test mocks predating the
+  // loop/goal surface simply don't wire them.
+  const offLoopUpdated = bridge.onLoopUpdated?.((e) =>
+    handleLoopUpdated(cfg, e),
+  );
+  const offLoopFired = bridge.onLoopFired?.((e) => handleLoopFired(cfg, e));
+  const offLoopCompleted = bridge.onLoopCompleted?.((e) =>
+    handleLoopCompleted(cfg, e),
+  );
+  const offGoalUpdated = bridge.onGoalUpdated?.((e) =>
+    handleGoalUpdated(cfg, e),
+  );
+  const offGoalCleared = bridge.onGoalCleared?.((e) =>
+    handleGoalCleared(cfg, e),
+  );
   const offToolStarted = bridge.onToolStarted((e) => handleToolStarted(cfg, e));
   const offToolProgress = bridge.onToolProgress((e) =>
     handleToolProgress(cfg, e),
@@ -2053,6 +2129,11 @@ export function attachRouter(
       offToolCompleted();
       offProgressUpdated();
       offContextCompaction?.();
+      offLoopUpdated?.();
+      offLoopFired?.();
+      offLoopCompleted?.();
+      offGoalUpdated?.();
+      offGoalCleared?.();
       offRouterStatus();
       offRouterFailover();
       offQueueState();
