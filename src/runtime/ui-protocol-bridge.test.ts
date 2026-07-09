@@ -1996,9 +1996,51 @@ describe("notification dispatch", () => {
       "medium",
     );
     await bridge.stop();
-  it("negotiates the M15 autonomy capabilities", () => {
+  });
+
+  it("negotiates the M15 autonomy capabilities incl. the umbrella token", () => {
+    // codex #263 round 1 P1: once ANY tokens are sent the server
+    // requires `coding.autonomy.v1` AND the runtime child — children
+    // alone reject every autonomy RPC with method_not_supported.
+    expect(UI_PROTOCOL_FEATURES).toContain("coding.autonomy.v1");
     expect(UI_PROTOCOL_FEATURES).toContain("coding.loop_runtime.v1");
     expect(UI_PROTOCOL_FEATURES).toContain("coding.goal_runtime.v1");
+  });
+
+  it("autonomy RPCs forward the bridge profile_id (admin-unscoped WS)", async () => {
+    // codex #263 round 1 P1: the server resolves these calls
+    // independently from `session/open` — on an unscoped connection an
+    // omitted profile_id defaults to the session key's profile or
+    // `_main`, silently missing / controlling the wrong profile.
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    void bridge.start({ sessionId: "sess-1", profileId: "prof-y" });
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(ws, METHODS.SESSION_OPEN);
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+    // Swallow: stop() below rejects the never-answered RPCs.
+    void bridge.listLoops().catch(() => {});
+    void bridge.controlLoop("l1", "pause").catch(() => {});
+    void bridge.getGoal().catch(() => {});
+    void bridge.clearGoal().catch(() => {});
+    for (const method of [
+      METHODS.LOOP_LIST,
+      METHODS.LOOP_PAUSE,
+      METHODS.SESSION_GOAL_GET,
+      METHODS.SESSION_GOAL_CLEAR,
+    ]) {
+      const req = findRequest(ws, method);
+      expect(req.params?.profile_id).toBe("prof-y");
+      expect(req.params?.session_id).toBe("sess-1");
+    }
+    await bridge.stop();
   });
 
   it("listLoops sends the scoped session id and guards the rows", async () => {

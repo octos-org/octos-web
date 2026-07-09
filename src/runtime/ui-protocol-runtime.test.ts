@@ -40,6 +40,7 @@ import {
   stopActiveBridge,
 } from "./ui-protocol-runtime";
 import * as ThreadStore from "@/store/thread-store";
+import * as AutonomyStore from "@/store/autonomy-store";
 import type { UiProtocolBridge } from "./ui-protocol-bridge";
 import type { ConnectionState } from "./ui-protocol-types";
 
@@ -155,6 +156,7 @@ beforeEach(() => {
 afterEach(() => {
   __resetUiProtocolRuntimeForTest();
   ThreadStore.__resetForTests();
+  AutonomyStore.__resetAutonomyStoreForTest();
 });
 
 describe("startBridgeForSession race safety", () => {
@@ -514,5 +516,85 @@ describe("reload-bug fix: re-hydrate session on WS reconnect", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(a.bridge.hydrateSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("autonomy snapshot resilience (codex #263 round 1 P2)", () => {
+  const GOAL = {
+    goal_id: "g1",
+    objective: "stay green",
+    status: "active",
+    token_budget: 1000,
+    tokens_used: 1,
+    time_used_seconds: 1,
+    created_at_ms: 1,
+    updated_at_ms: 1,
+  };
+  const LOOP = {
+    loop_id: "l1",
+    session_id: "sess-snap",
+    prompt: "poll",
+    mode: "interval",
+    interval_seconds: 60,
+    status: "active",
+    expires_at_ms: 0,
+    created_at_ms: 1,
+    updated_at_ms: 1,
+  };
+
+  async function startWithAutonomy(
+    listLoops: () => Promise<unknown>,
+    getGoal: () => Promise<unknown>,
+  ) {
+    const deferred = makeDeferredBridge();
+    Object.assign(deferred.bridge, { listLoops, getGoal });
+    createBridgeSpy.mockReturnValueOnce(deferred.bridge);
+    const start = startBridgeForSession("sess-snap");
+    deferred.resolveStart();
+    await start;
+    // The snapshot runs as a void async — flush its microtasks.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  it("preserves a live goal when the snapshot goal read FAILS", async () => {
+    // A goal is already known (prior load or live goal/updated). A
+    // rejected `getGoal` (timeout, reconnect blip, unsupported) must
+    // NOT masquerade as the authoritative "no goal" null and wipe it.
+    AutonomyStore.setGoal("sess-snap", GOAL);
+    await startWithAutonomy(
+      async () => [LOOP],
+      async () => {
+        throw new Error("rpc timeout");
+      },
+    );
+    expect(AutonomyStore.getAutonomyState("sess-snap").goal?.goal_id).toBe(
+      "g1",
+    );
+    // The loop read succeeded independently and still applied.
+    expect(
+      AutonomyStore.getAutonomyState("sess-snap").loops.map((l) => l.loop_id),
+    ).toEqual(["l1"]);
+  });
+
+  it("still clears the goal on an authoritative null result", async () => {
+    AutonomyStore.setGoal("sess-snap", GOAL);
+    await startWithAutonomy(
+      async () => [],
+      async () => null,
+    );
+    expect(AutonomyStore.getAutonomyState("sess-snap").goal).toBe(null);
+  });
+
+  it("preserves known loops when the snapshot loop read FAILS", async () => {
+    AutonomyStore.replaceLoops("sess-snap", [LOOP]);
+    await startWithAutonomy(
+      async () => {
+        throw new Error("rpc timeout");
+      },
+      async () => null,
+    );
+    expect(
+      AutonomyStore.getAutonomyState("sess-snap").loops.map((l) => l.loop_id),
+    ).toEqual(["l1"]);
   });
 });

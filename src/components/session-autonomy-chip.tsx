@@ -30,8 +30,17 @@ import {
  *  arrive via `loop/completed` records. */
 const TERMINAL_LOOP_STATUSES = new Set(["deleted", "completed", "expired"]);
 
-function isLiveLoop(l: UiLoopRecord): boolean {
-  return !TERMINAL_LOOP_STATUSES.has(l.status);
+/** Live = non-terminal status AND not past its own expiry (codex #263
+ *  round 1 P2): the backend enforces `expires_at_ms` by SKIPPING due
+ *  loops, without necessarily rewriting `status` or emitting
+ *  `loop/completed`, so an elapsed-but-still-"active" row would
+ *  otherwise pin the chip forever with ineffective controls. */
+function isLiveLoop(l: UiLoopRecord, nowMs: number): boolean {
+  if (TERMINAL_LOOP_STATUSES.has(l.status)) return false;
+  if (typeof l.expires_at_ms === "number" && l.expires_at_ms > 0) {
+    return l.expires_at_ms > nowMs;
+  }
+  return true;
 }
 
 function isLiveGoal(status: string): boolean {
@@ -69,7 +78,26 @@ export function SessionAutonomyChip() {
     setArmed(null);
   }, [currentSessionId, historyTopic]);
 
-  const liveLoops = loops.filter(isLiveLoop);
+  // Re-render when the earliest future expiry elapses so the chip
+  // retires expired rows without waiting for a server event. The tick
+  // is in the deps so each firing re-arms for the NEXT expiry.
+  const [expiryTick, setExpiryTick] = useState(0);
+  useEffect(() => {
+    const now = Date.now();
+    const future = loops
+      .map((l) => l.expires_at_ms)
+      .filter((t): t is number => typeof t === "number" && t > now);
+    if (future.length === 0) return;
+    const delay = Math.min(
+      Math.max(Math.min(...future) - now + 50, 250),
+      2_147_000_000,
+    );
+    const timer = setTimeout(() => setExpiryTick((v) => v + 1), delay);
+    return () => clearTimeout(timer);
+  }, [loops, expiryTick]);
+
+  const nowMs = Date.now();
+  const liveLoops = loops.filter((l) => isLiveLoop(l, nowMs));
   const liveGoal = goal !== null && isLiveGoal(goal.status) ? goal : null;
   if (liveLoops.length === 0 && liveGoal === null) return null;
 
@@ -152,7 +180,7 @@ export function SessionAutonomyChip() {
         <div
           role="menu"
           data-testid="session-autonomy-menu"
-          className="absolute right-0 top-full z-50 mt-1 w-80 rounded-[10px] border border-border bg-surface-container p-1 shadow-lg"
+          className="absolute right-0 top-full z-50 mt-1 max-h-[min(60vh,420px)] w-80 overflow-y-auto rounded-[10px] border border-border bg-surface-container p-1 shadow-lg"
         >
           {liveLoops.map((loop) => {
             const rowBusy = busy[loop.loop_id] === true;

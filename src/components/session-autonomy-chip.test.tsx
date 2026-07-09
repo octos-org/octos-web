@@ -119,6 +119,31 @@ describe("SessionAutonomyChip", () => {
     harness.unmount();
   });
 
+  it("treats an elapsed expires_at_ms as terminal even when status is active (codex #263 P2)", () => {
+    // The backend enforces expiry by SKIPPING due loops — it does not
+    // necessarily rewrite status or emit loop/completed, so an
+    // elapsed-but-"active" row must not pin the chip with dead
+    // controls.
+    replaceLoops(SESSION, [
+      makeLoop({ loop_id: "l-exp", expires_at_ms: Date.now() - 1_000 }),
+    ]);
+    const harness = mountChip();
+    expect(q(harness, '[data-testid="session-autonomy-chip"]')).toBeNull();
+    // A live loop alongside it counts alone.
+    act(() => {
+      replaceLoops(SESSION, [
+        makeLoop({ loop_id: "l-exp", expires_at_ms: Date.now() - 1_000 }),
+        makeLoop({ loop_id: "l-live", expires_at_ms: Date.now() + 60_000 }),
+      ]);
+    });
+    const chip = q<HTMLButtonElement>(
+      harness,
+      '[data-testid="session-autonomy-chip"]',
+    );
+    expect(chip?.getAttribute("data-loop-count")).toBe("1");
+    harness.unmount();
+  });
+
   it("pauses an active loop and merges the returned record", async () => {
     controlLoop.mockResolvedValue({
       ok: true,

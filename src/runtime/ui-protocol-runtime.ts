@@ -12,7 +12,11 @@ import {
   createUiProtocolBridge,
   type UiProtocolBridge,
 } from "./ui-protocol-bridge";
-import type { ConnectionState } from "./ui-protocol-types";
+import type {
+  ConnectionState,
+  UiGoalRecord,
+  UiLoopRecord,
+} from "./ui-protocol-types";
 import { attachRouter, type RouterAttachment } from "./ui-protocol-event-router";
 import * as AutonomyStore from "@/store/autonomy-store";
 import {
@@ -327,15 +331,23 @@ function runAutonomySnapshotFor(
     ) {
       return;
     }
+    // Distinct FAILURE sentinel (codex #263 round 1 P2): `getGoal()`
+    // legitimately resolves `null` for "no goal" and that null is
+    // authoritative — but a REJECTED read (timeout, reconnect blip,
+    // method_not_supported) must not masquerade as it and wipe a
+    // previously loaded or live-updated goal. Same for loops.
+    const failed = Symbol("autonomy-read-failed");
     const [loops, goal] = await Promise.all([
-      bridge.listLoops().catch(() => null),
-      bridge.getGoal().catch(() => null),
+      bridge.listLoops().catch(() => failed),
+      bridge.getGoal().catch(() => failed),
     ]);
     if (capturedGeneration !== generation) return;
-    if (loops !== null) {
-      AutonomyStore.replaceLoops(sessionId, loops, topic);
+    if (loops !== failed) {
+      AutonomyStore.replaceLoops(sessionId, loops as UiLoopRecord[], topic);
     }
-    AutonomyStore.setGoal(sessionId, goal, topic);
+    if (goal !== failed) {
+      AutonomyStore.setGoal(sessionId, goal as UiGoalRecord | null, topic);
+    }
   })();
 }
 

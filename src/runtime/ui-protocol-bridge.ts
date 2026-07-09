@@ -318,6 +318,13 @@ export const UI_PROTOCOL_FEATURES = [
   // (`autonomy_method_available` → `loop_runtime_available()` /
   // `goal_runtime_available()`), so without the tokens the header
   // autonomy chip's list/control calls all return method_not_supported.
+  //
+  // codex #263 round 1 P1: once a client sends ANY feature tokens the
+  // server requires the UMBRELLA `coding.autonomy.v1` in ADDITION to
+  // each runtime child (`loop_runtime_available()` = autonomy && loop;
+  // `goal_runtime_available()` = autonomy && goal). Children alone →
+  // every autonomy RPC rejects.
+  "coding.autonomy.v1",
   "coding.loop_runtime.v1",
   "coding.goal_runtime.v1",
 ] as const;
@@ -2408,10 +2415,25 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   }
 
   /** `loop/list` for this scope. Requires `coding.loop_runtime.v1`. */
-  async listLoops(): Promise<UiLoopRecord[]> {
-    const raw = await this.request<unknown>(METHODS.LOOP_LIST, {
+  /** Params shared by every autonomy RPC. The server resolves these
+   *  calls independently from `session/open`: on an admin/unscoped
+   *  connection an omitted `profile_id` falls back to the session key's
+   *  embedded profile or `_main`, so a bridge viewing a non-main
+   *  profile must forward it explicitly (codex #263 round 1 P1). */
+  private autonomyParams(extra?: Record<string, unknown>): Record<string, unknown> {
+    const params: Record<string, unknown> = {
       session_id: this.requireScopedSessionId(),
-    });
+      ...extra,
+    };
+    if (this.profileId) params.profile_id = this.profileId;
+    return params;
+  }
+
+  async listLoops(): Promise<UiLoopRecord[]> {
+    const raw = await this.request<unknown>(
+      METHODS.LOOP_LIST,
+      this.autonomyParams(),
+    );
     const record = raw as LoopListResult;
     if (!Array.isArray(record?.loops)) return [];
     const loops: UiLoopRecord[] = [];
@@ -2436,10 +2458,10 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
         : kind === "resume"
           ? METHODS.LOOP_RESUME
           : METHODS.LOOP_DELETE;
-    const raw = await this.request<unknown>(method, {
-      loop_id: loopId,
-      session_id: this.requireScopedSessionId(),
-    });
+    const raw = await this.request<unknown>(
+      method,
+      this.autonomyParams({ loop_id: loopId }),
+    );
     const record = raw as {
       ok?: unknown;
       status?: unknown;
@@ -2456,9 +2478,10 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
 
   /** `session/goal/get`. Requires `coding.goal_runtime.v1`. */
   async getGoal(): Promise<UiGoalRecord | null> {
-    const raw = await this.request<unknown>(METHODS.SESSION_GOAL_GET, {
-      session_id: this.requireScopedSessionId(),
-    });
+    const raw = await this.request<unknown>(
+      METHODS.SESSION_GOAL_GET,
+      this.autonomyParams(),
+    );
     const record = raw as SessionGoalGetResult;
     return guardGoalRecord(record?.goal);
   }
@@ -2466,9 +2489,10 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   /** `session/goal/clear`. Returns the cleared goal when the server
    *  echoes it. */
   async clearGoal(): Promise<UiGoalRecord | null> {
-    const raw = await this.request<unknown>(METHODS.SESSION_GOAL_CLEAR, {
-      session_id: this.requireScopedSessionId(),
-    });
+    const raw = await this.request<unknown>(
+      METHODS.SESSION_GOAL_CLEAR,
+      this.autonomyParams(),
+    );
     const record = raw as { goal?: unknown };
     return guardGoalRecord(record?.goal);
   }
