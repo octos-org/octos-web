@@ -1917,10 +1917,13 @@ export function attachRouter(
   // Optional-call: older bridge mocks/instances may predate the method
   // (same defensive rule as `onReopened` in the runtime).
   const offContextCompaction = bridge.onContextCompaction?.((e) => {
+    // `topic` rides every detail so `eventMatchesScope` accepts the
+    // event in topic-scoped chats (`/new <topic>` sessions) too.
     const detail =
       "threshold_tokens" in e
         ? {
             session_id: e.session_id,
+            topic: cfg.topic,
             phase: "started" as const,
             token_estimate: e.token_estimate,
             threshold_tokens: e.threshold_tokens,
@@ -1928,6 +1931,7 @@ export function attachRouter(
           }
         : {
             session_id: e.session_id,
+            topic: cfg.topic,
             phase: "completed" as const,
             token_estimate_before: e.token_estimate_before,
             token_estimate_after: e.token_estimate_after,
