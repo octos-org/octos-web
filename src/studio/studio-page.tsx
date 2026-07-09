@@ -111,6 +111,16 @@ export function StudioPage() {
   return <StudioWorkspace key={projectId} projectId={projectId} />;
 }
 
+function sameSourceRow(a: SourceRow, b: SourceRow): boolean {
+  if (a.jobId && b.jobId && a.jobId === b.jobId) return true;
+  if (a.sourceId && b.sourceId && a.sourceId === b.sourceId) return true;
+  return a.path === b.path;
+}
+
+function selectedPathMatchesRow(path: string, row: SourceRow): boolean {
+  return path === row.path || path === row.sourcePath;
+}
+
 function StudioWorkspace({ projectId }: { projectId: string }) {
   const [title, setTitle] = useState(() => readStoredTitle(projectId));
   const [panes, setPanes] = useState<PaneState>(loadPaneState);
@@ -165,6 +175,21 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
 
   const mergeUploadedSourceRows = useCallback((rows: SourceRow[]) => {
     setUploadedSources((prev) => mergeSourceRows(prev, rows));
+  }, []);
+
+  const renameUploadedSourceRow = useCallback((row: SourceRow, title: string) => {
+    setUploadedSources((prev) =>
+      prev.map((existing) =>
+        sameSourceRow(existing, row)
+          ? { ...existing, filename: title, timestamp: Date.now() }
+          : existing,
+      ),
+    );
+  }, []);
+
+  const removeUploadedSourceRow = useCallback((row: SourceRow) => {
+    setUploadedSources((prev) => prev.filter((existing) => !sameSourceRow(existing, row)));
+    setSelectedSources((prev) => prev.filter((path) => !selectedPathMatchesRow(path, row)));
   }, []);
 
   const mergeSourceImportJobs = useCallback(
@@ -386,6 +411,8 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
                   onToggle={toggleSource}
                   uploaded={uploadedSources}
                   onUploaded={mergeUploadedSourceRows}
+                  onRenamed={renameUploadedSourceRow}
+                  onRemoved={removeUploadedSourceRow}
                   loading={sourcesLoading}
                 />
               </aside>

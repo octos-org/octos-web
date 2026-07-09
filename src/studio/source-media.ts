@@ -28,6 +28,8 @@ export function mergeSourceMedia(
 }
 
 export const SOURCE_IMPORT_ACTION_ID = "source.import";
+export const SOURCE_RENAME_ACTION_ID = "source.rename";
+export const SOURCE_REMOVE_ACTION_ID = "source.remove";
 
 export type SourceRowStatus = "processing" | "ready" | "failed" | "abandoned";
 
@@ -46,6 +48,8 @@ export interface SourceRow {
   error?: string;
   inputPath?: string;
   sourcePath?: string;
+  materializedPath?: string;
+  previewPath?: string;
 }
 
 export function isSourceRowReady(row: SourceRow): boolean {
@@ -136,7 +140,13 @@ export function sourceRowFromSkillActionJob(
     error: job.error ?? (status === "failed" ? job.output : undefined),
     inputPath: job.input_path,
     sourcePath: job.source_path,
+    materializedPath: job.materialized_path,
+    previewPath: job.materialized_path ?? job.input_path,
   };
+}
+
+export function sourcePreviewPath(row: SourceRow): string {
+  return row.previewPath ?? row.materializedPath ?? row.inputPath ?? row.path;
 }
 
 export function mergeSourceRows(

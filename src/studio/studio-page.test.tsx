@@ -100,6 +100,27 @@ vi.mock("@/api/skill-actions", () => ({
 import { STUDIO_SKILLS } from "./skills";
 import { StudioPage } from "./studio-page";
 
+function readySourceJob(overrides: Record<string, unknown> = {}) {
+  return {
+    job_id: "job-photo",
+    batch_id: "batch-photo",
+    profile_id: "alan0x",
+    session_id: "web-abc",
+    action_id: "source.import",
+    skill_id: "mofa-notebook-source",
+    status: "succeeded",
+    input_path: "upload-handle-photo",
+    filename: "photo.jpg",
+    materialized_path: "uploads/photo.jpg",
+    source_id: "photo",
+    source_path: "notebook-sources/photo/source.md",
+    metadata_path: "notebook-sources/photo/metadata.json",
+    created_at: "2026-07-09T01:00:00Z",
+    updated_at: "2026-07-09T01:02:00Z",
+    ...overrides,
+  };
+}
+
 function renderStudio(path = "/studio/web-abc") {
   return render(
     <MemoryRouter initialEntries={[path]}>
@@ -487,5 +508,75 @@ describe("StudioPage", () => {
     expect(listSkillActionJobsMock).toHaveBeenLastCalledWith("web-abc", {
       actionId: "source.import",
     });
+  });
+
+  it("previews the original uploaded file for an imported source", async () => {
+    listSkillActionJobsMock.mockResolvedValueOnce([readySourceJob()]);
+
+    renderStudio();
+
+    await screen.findByText("photo.jpg");
+    fireEvent.click(screen.getByLabelText("Preview photo.jpg"));
+
+    const image = await screen.findByAltText("photo.jpg source preview");
+    expect(image.getAttribute("src")).toBe(
+      "/api/files?path=uploads%2Fphoto.jpg&session=web-abc",
+    );
+    expect(image.getAttribute("src")).not.toContain("notebook-sources");
+  });
+
+  it("renames an imported source through the source rename action", async () => {
+    listSkillActionJobsMock.mockResolvedValueOnce([readySourceJob()]);
+    invokeSkillActionMock.mockResolvedValueOnce({
+      action_id: "source.rename",
+      ok: true,
+      results: [{ success: true, output: "renamed" }],
+    });
+
+    renderStudio();
+    await screen.findByText("photo.jpg");
+
+    fireEvent.click(screen.getByLabelText("Rename photo.jpg"));
+    fireEvent.change(screen.getByLabelText("Rename source title"), {
+      target: { value: "Renamed Photo" },
+    });
+    fireEvent.click(screen.getByLabelText("Save source rename"));
+
+    await waitFor(() => {
+      expect(invokeSkillActionMock).toHaveBeenCalledWith(
+        "web-abc",
+        "source.rename",
+        { source_id: "photo", title: "Renamed Photo" },
+      );
+    });
+    expect(screen.getByText("Renamed Photo")).toBeTruthy();
+  });
+
+  it("removes an imported source through the source remove action", async () => {
+    listSkillActionJobsMock.mockResolvedValueOnce([readySourceJob()]);
+    invokeSkillActionMock.mockResolvedValueOnce({
+      action_id: "source.remove",
+      ok: true,
+      results: [{ success: true, output: "removed" }],
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderStudio();
+    await screen.findByText("photo.jpg");
+    expect(
+      screen.getByText(/1 source selected for notebook grounding/),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Remove photo.jpg"));
+
+    await waitFor(() => {
+      expect(invokeSkillActionMock).toHaveBeenCalledWith(
+        "web-abc",
+        "source.remove",
+        { source_id: "photo" },
+      );
+    });
+    expect(screen.queryByText("photo.jpg")).toBeNull();
+    expect(screen.queryByText(/source selected for notebook grounding/)).toBeNull();
+    confirm.mockRestore();
   });
 });
