@@ -314,6 +314,66 @@ describe("StudioPage", () => {
     ).toBeTruthy();
   });
 
+  it("previews and downloads artifacts from completed studio action jobs", async () => {
+    listSkillActionJobsMock.mockResolvedValueOnce([readySourceJob()]);
+    invokeSkillActionMock.mockResolvedValueOnce({
+      action_id: "quiz.generate",
+      ok: true,
+      execution: "background",
+      queued: 1,
+      batch_id: "batch-quiz",
+      jobs: [
+        {
+          job_id: "job-quiz",
+          batch_id: "batch-quiz",
+          profile_id: "alan0x",
+          session_id: "web-abc",
+          action_id: "quiz.generate",
+          skill_id: "mofa-notebook-study",
+          status: "running",
+          created_at: "2026-07-09T01:00:00Z",
+          updated_at: "2026-07-09T01:00:00Z",
+        },
+      ],
+    });
+
+    renderStudio();
+    await screen.findByText("photo.jpg");
+    fireEvent.click(screen.getByRole("button", { name: "Quiz" }));
+
+    fireEvent(
+      window,
+      new CustomEvent("crew:skill_action_job_updated", {
+        detail: {
+          job_id: "job-quiz",
+          batch_id: "batch-quiz",
+          profile_id: "alan0x",
+          session_id: "web-abc",
+          action_id: "quiz.generate",
+          skill_id: "mofa-notebook-study",
+          status: "succeeded",
+          result: {
+            files_to_send: [
+              "/Users/alan0x/.octos/profiles/alan0x/data/users/web-abc/workspace/notebook-outputs/study/quiz/quiz.md",
+            ],
+          },
+          created_at: "2026-07-09T01:00:00Z",
+          updated_at: "2026-07-09T01:01:00Z",
+        },
+      }),
+    );
+
+    expect(await screen.findByText("quiz.md")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Preview quiz.md" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Download quiz.md" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview quiz.md" }));
+    const preview = await screen.findByTitle("quiz.md asset preview");
+    expect(preview.getAttribute("src")).toBe(
+      "/api/files?path=%2FUsers%2Falan0x%2F.octos%2Fprofiles%2Falan0x%2Fdata%2Fusers%2Fweb-abc%2Fworkspace%2Fnotebook-outputs%2Fstudy%2Fquiz%2Fquiz.md&session=web-abc",
+    );
+  });
+
   it("disables source-required action skills until a source is selected", () => {
     renderStudio();
 

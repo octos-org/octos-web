@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { LucideIcon } from "lucide-react";
-import { Download, FileText, Image, Music, Table, Video, XCircle } from "lucide-react";
+import { Download, Eye, FileText, Image, Music, Table, Video, XCircle } from "lucide-react";
 
 import { buildApiHeaders } from "@/api/client";
 import { buildFileUrl } from "@/api/files";
@@ -12,7 +12,8 @@ import {
 import { useAllFiles } from "@/store/file-store";
 
 import { STUDIO_SKILLS, STUDIO_SKILL_ACTION_IDS, STUDIO_SKILL_LABEL_BY_ACTION_ID } from "./skills";
-import { relativeTime, sourceKind, type SourceKind } from "./source-media";
+import { fileNameFromPath, relativeTime, sourceKind, type SourceKind } from "./source-media";
+import { StudioFilePreviewDialog } from "./studio-file-preview";
 
 interface Props {
   sessionId: string;
@@ -37,6 +38,13 @@ const KIND_ICONS: Record<SourceKind, LucideIcon> = {
 const ASSET_LIST_CAP = 20;
 const ACTIVE_JOB_STATUSES = new Set<SkillActionJobStatus>(["queued", "running"]);
 
+interface GeneratedArtifact {
+  id: string;
+  filename: string;
+  filePath: string;
+  job: SkillActionJob;
+}
+
 function jobTimestamp(job: SkillActionJob): number {
   const parsed = Date.parse(job.updated_at || job.created_at);
   return Number.isFinite(parsed) ? parsed : Date.now();
@@ -46,8 +54,12 @@ function jobTimestamp(job: SkillActionJob): number {
  * Header-authenticated blob download: keeps the bearer token out of the
  * DOM (an <a href> with ?token= is copyable/leakable via "Copy Link").
  */
-async function downloadAsset(filePath: string, filename: string): Promise<void> {
-  const response = await fetch(buildFileUrl(filePath), {
+async function downloadAsset(
+  filePath: string,
+  filename: string,
+  sessionId: string,
+): Promise<void> {
+  const response = await fetch(buildFileUrl(filePath, { sessionId }), {
     headers: buildApiHeaders(),
   });
   if (!response.ok) throw new Error(`Download failed (${response.status})`);
@@ -95,20 +107,47 @@ function jobStatusLabel(status: SkillActionJobStatus): string {
   }
 }
 
+function artifactsFromJob(job: SkillActionJob): GeneratedArtifact[] {
+  if (!job.result || typeof job.result !== "object") return [];
+  const files = (job.result as { files_to_send?: unknown }).files_to_send;
+  if (!Array.isArray(files)) return [];
+
+  const seen = new Set<string>();
+  return files.flatMap((value, index) => {
+    if (typeof value !== "string" || !value || seen.has(value)) return [];
+    seen.add(value);
+    return [{
+      id: `${job.job_id}:${index}`,
+      filename: fileNameFromPath(
+        value,
+        STUDIO_SKILL_LABEL_BY_ACTION_ID.get(job.action_id) ?? job.action_id,
+      ),
+      filePath: value,
+      job,
+    }];
+  });
+}
+
 export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Props) {
   const allFiles = useAllFiles();
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busySkillId, setBusySkillId] = useState<string | null>(null);
   const [jobs, setJobs] = useState<SkillActionJob[]>([]);
+  const [previewArtifact, setPreviewArtifact] = useState<GeneratedArtifact | null>(null);
+  const actionArtifacts = useMemo(
+    () => jobs.flatMap(artifactsFromJob),
+    [jobs],
+  );
   const assets = useMemo(
     () =>
       allFiles
         .filter((f) => f.sessionId === sessionId)
+        .filter((f) => !actionArtifacts.some((artifact) => artifact.filePath === f.filePath))
         .slice()
         .sort((a, b) => b.timestamp - a.timestamp)
         .slice(0, ASSET_LIST_CAP),
-    [allFiles, sessionId],
+    [actionArtifacts, allFiles, sessionId],
   );
 
   useEffect(() => {
@@ -214,6 +253,56 @@ export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Pr
         ) : (
           <ul className="flex flex-col gap-2">
             {jobs.map((job) => {
+              const artifacts = artifactsFromJob(job);
+              if (artifacts.length > 0) {
+                return artifacts.map((artifact) => {
+                  const Icon = KIND_ICONS[sourceKind(artifact.filename)];
+                  const actionLabel =
+                    STUDIO_SKILL_LABEL_BY_ACTION_ID.get(job.action_id) ??
+                    job.action_id;
+                  return (
+                    <li
+                      key={artifact.id}
+                      className="studio-list-row studio-card !rounded-xl p-3"
+                    >
+                      <Icon size={16} className="shrink-0 text-muted" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm leading-tight" title={artifact.filename}>
+                          {artifact.filename}
+                        </span>
+                        <span className="mt-0.5 block text-[11px] text-muted">
+                          {actionLabel} - {relativeTime(jobTimestamp(job))}
+                        </span>
+                      </span>
+                      <button
+                        type="button"
+                        className="studio-ghost-button studio-asset-action shrink-0 p-1"
+                        aria-label={`Preview ${artifact.filename}`}
+                        onClick={() => setPreviewArtifact(artifact)}
+                      >
+                        <Eye size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        className="studio-ghost-button studio-asset-action shrink-0 p-1"
+                        aria-label={`Download ${artifact.filename}`}
+                        onClick={() => {
+                          setDownloadError(null);
+                          downloadAsset(artifact.filePath, artifact.filename, sessionId).catch(
+                            (err: unknown) => {
+                              setDownloadError(
+                                err instanceof Error ? err.message : "Download failed",
+                              );
+                            },
+                          );
+                        }}
+                      >
+                        <Download size={14} />
+                      </button>
+                    </li>
+                  );
+                });
+              }
               const label =
                 STUDIO_SKILL_LABEL_BY_ACTION_ID.get(job.action_id) ??
                 job.action_id;
@@ -282,7 +371,7 @@ export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Pr
                       aria-label={`Download ${file.filename}`}
                       onClick={() => {
                         setDownloadError(null);
-                        downloadAsset(file.filePath, file.filename).catch(
+                        downloadAsset(file.filePath, file.filename, sessionId).catch(
                           (err: unknown) => {
                             setDownloadError(
                               err instanceof Error
@@ -302,6 +391,15 @@ export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Pr
           </ul>
         )}
       </section>
+      {previewArtifact && (
+        <StudioFilePreviewDialog
+          filename={previewArtifact.filename}
+          filePath={previewArtifact.filePath}
+          sessionId={sessionId}
+          kind="asset"
+          onClose={() => setPreviewArtifact(null)}
+        />
+      )}
     </div>
   );
 }

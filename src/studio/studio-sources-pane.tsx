@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   Check,
-  ExternalLink,
   Eye,
   FileText,
   Image,
@@ -18,7 +17,6 @@ import {
 } from "lucide-react";
 
 import { uploadFiles } from "@/api/chat";
-import { buildAuthenticatedFileUrl } from "@/api/files";
 import { invokeSkillAction } from "@/api/skill-actions";
 import { useAllFiles } from "@/store/file-store";
 
@@ -34,6 +32,7 @@ import {
   type SourceKind,
   type SourceRow,
 } from "./source-media";
+import { StudioFilePreviewDialog } from "./studio-file-preview";
 
 interface Props {
   sessionId: string;
@@ -59,24 +58,6 @@ const KIND_ICONS: Record<SourceKind, LucideIcon> = {
   table: Table,
   text: FileText,
 };
-
-type PreviewMode = "image" | "audio" | "video" | "pdf" | "text" | "unsupported";
-
-function extensionOf(filename: string): string {
-  const dot = filename.lastIndexOf(".");
-  if (dot === -1 || dot === filename.length - 1) return "";
-  return filename.slice(dot + 1).toLowerCase();
-}
-
-function sourcePreviewMode(filename: string): PreviewMode {
-  const ext = extensionOf(filename);
-  if (["png", "jpg", "jpeg", "gif", "webp"].includes(ext)) return "image";
-  if (["mp3", "wav", "m4a", "aac", "ogg"].includes(ext)) return "audio";
-  if (["mp4", "mov", "webm", "mkv"].includes(ext)) return "video";
-  if (ext === "pdf") return "pdf";
-  if (["md", "markdown", "txt", "csv", "json"].includes(ext)) return "text";
-  return "unsupported";
-}
 
 const DISMISSED_SOURCES_STORAGE_PREFIX = "octos-studio-dismissed-sources";
 
@@ -135,45 +116,6 @@ function persistDismissedSourceKeys(
   } catch {
     // Dismissal is an interface convenience; storage failures are non-fatal.
   }
-}
-
-function SourcePreviewDialog({
-  row,
-  sessionId,
-  onClose,
-}: {
-  row: SourceRow;
-  sessionId: string;
-  onClose: () => void;
-}) {
-  const path = sourcePreviewPath(row);
-  const url = buildAuthenticatedFileUrl(path, { sessionId });
-  const mode = sourcePreviewMode(path);
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
-      <div className="studio-pane flex h-[min(760px,90vh)] w-[min(920px,92vw)] flex-col overflow-hidden border shadow-2xl">
-        <div className="flex shrink-0 items-center justify-between gap-3 border-b px-4 py-3">
-          <h3 className="min-w-0 truncate text-sm font-medium">{row.filename}</h3>
-          <button type="button" className="studio-ghost-button p-2" aria-label="Close source preview" onClick={onClose}>
-            <X size={16} />
-          </button>
-        </div>
-        <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-surface/40 p-4">
-          {mode === "image" && <img src={url} alt={`${row.filename} source preview`} className="max-h-full max-w-full rounded-[8px] object-contain" />}
-          {mode === "audio" && <audio src={url} controls className="w-full max-w-xl" />}
-          {mode === "video" && <video src={url} controls className="max-h-full max-w-full rounded-[8px]" />}
-          {(mode === "pdf" || mode === "text") && <iframe title={`${row.filename} source preview`} src={url} className="h-full w-full rounded-[8px] border bg-white" />}
-          {mode === "unsupported" && (
-            <a href={url} target="_blank" rel="noreferrer" className="studio-button-primary h-9 px-3 text-sm">
-              <ExternalLink size={15} />
-              Open file
-            </a>
-          )}
-        </div>
-      </div>
-    </div>
-  );
 }
 
 function SourceActionsMenu({
@@ -650,7 +592,13 @@ export function StudioSourcesPane({
         </p>
       )}
       {previewRow && (
-        <SourcePreviewDialog row={previewRow} sessionId={sessionId} onClose={() => setPreviewRow(null)} />
+        <StudioFilePreviewDialog
+          filename={previewRow.filename}
+          filePath={sourcePreviewPath(previewRow)}
+          sessionId={sessionId}
+          kind="source"
+          onClose={() => setPreviewRow(null)}
+        />
       )}
     </div>
   );
