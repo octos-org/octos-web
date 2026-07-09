@@ -638,6 +638,36 @@ describe("type guards (fail-closed)", () => {
     expect(ev?.source_path).toBe("notebook-sources/report/source.md");
   });
 
+  it("accepts skill/action/job/updated with the ledger wrapper shape", () => {
+    const ev = guards.guardSkillActionJobUpdated({
+      profile_id: "alan0x",
+      session_id: "sess-1",
+      job: {
+        job_id: "job-1",
+        batch_id: "batch-1",
+        profile_id: "alan0x",
+        session_id: "sess-1",
+        action_id: "source.import",
+        skill_id: "mofa-notebook-source",
+        status: "failed",
+        input_path: "uploads/report.jpg",
+        filename: "report.jpg",
+        materialized_path: "uploads/report.jpg",
+        output: "This source format requires GEMINI_API_KEY for notebook import: .jpg",
+        error: "This source format requires GEMINI_API_KEY for notebook import: .jpg",
+        created_at: "2026-07-09T13:00:36.214091Z",
+        updated_at: "2026-07-09T13:00:37.257711Z",
+      },
+    });
+
+    expect(ev).not.toBeNull();
+    expect(ev?.job_id).toBe("job-1");
+    expect(ev?.status).toBe("failed");
+    expect(ev?.error).toBe(
+      "This source format requires GEMINI_API_KEY for notebook import: .jpg",
+    );
+  });
+
   it("rejects skill/action/job/updated with an unknown status", () => {
     expect(
       guards.guardSkillActionJobUpdated({
@@ -2014,6 +2044,44 @@ describe("notification dispatch", () => {
     expect(ok[0].files).toEqual(["visual-abc.html"]);
     expect(failed).toHaveLength(1);
     expect(failed[0].reason).toBe("timed out");
+  });
+
+  it("routes wrapped skill/action/job/updated params to its handler", async () => {
+    const { bridge, ws } = await freshConnected();
+    const jobs: SkillActionJobUpdatedEvent[] = [];
+    bridge.onSkillActionJobUpdated((e) => jobs.push(e));
+
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.SKILL_ACTION_JOB_UPDATED,
+      params: {
+        profile_id: "alan0x",
+        session_id: "sess-1",
+        job: {
+          job_id: "job-1",
+          batch_id: "batch-1",
+          profile_id: "alan0x",
+          session_id: "sess-1",
+          action_id: "source.import",
+          skill_id: "mofa-notebook-source",
+          status: "failed",
+          input_path: "uploads/report.jpg",
+          filename: "report.jpg",
+          materialized_path: "uploads/report.jpg",
+          error: "This source format requires GEMINI_API_KEY for notebook import: .jpg",
+          created_at: "2026-07-09T13:00:36.214091Z",
+          updated_at: "2026-07-09T13:00:37.257711Z",
+        },
+      },
+    });
+
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]).toMatchObject({
+      job_id: "job-1",
+      session_id: "sess-1",
+      status: "failed",
+      error: "This source format requires GEMINI_API_KEY for notebook import: .jpg",
+    });
   });
 
   // A visual/succeeded missing the required `kind` is rejected (fail-closed),

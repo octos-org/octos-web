@@ -1202,43 +1202,59 @@ function optionalNonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function unwrapSkillActionJobPayload(
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!isPlainObject(payload.job)) return payload;
+
+  const job = { ...payload.job };
+  if (!isString(job.profile_id) && isString(payload.profile_id)) {
+    job.profile_id = payload.profile_id;
+  }
+  if (!isString(job.session_id) && isString(payload.session_id)) {
+    job.session_id = payload.session_id;
+  }
+  return job;
+}
+
 function guardSkillActionJobUpdated(p: unknown): SkillActionJobUpdatedEvent | null {
   if (!isPlainObject(p)) return null;
+  const payload = unwrapSkillActionJobPayload(p);
   if (
-    !isString(p.job_id) ||
-    !isString(p.batch_id) ||
-    !isString(p.profile_id) ||
-    !isString(p.session_id) ||
-    !isString(p.action_id) ||
-    !isString(p.skill_id) ||
-    !isString(p.created_at) ||
-    !isString(p.updated_at) ||
-    !isSkillActionJobStatus(p.status)
+    !isString(payload.job_id) ||
+    !isString(payload.batch_id) ||
+    !isString(payload.profile_id) ||
+    !isString(payload.session_id) ||
+    !isString(payload.action_id) ||
+    !isString(payload.skill_id) ||
+    !isString(payload.created_at) ||
+    !isString(payload.updated_at) ||
+    !isSkillActionJobStatus(payload.status)
   ) {
     return null;
   }
 
   const event: SkillActionJobUpdatedEvent = {
-    job_id: p.job_id,
-    batch_id: p.batch_id,
-    profile_id: p.profile_id,
-    session_id: p.session_id,
-    action_id: p.action_id,
-    skill_id: p.skill_id,
-    status: p.status,
-    input_path: optionalNonEmptyString(p.input_path),
-    filename: optionalNonEmptyString(p.filename),
-    materialized_path: optionalNonEmptyString(p.materialized_path),
-    output: optionalNonEmptyString(p.output),
-    error: optionalNonEmptyString(p.error),
-    source_id: optionalNonEmptyString(p.source_id),
-    source_path: optionalNonEmptyString(p.source_path),
-    metadata_path: optionalNonEmptyString(p.metadata_path),
-    created_at: p.created_at,
-    updated_at: p.updated_at,
+    job_id: payload.job_id,
+    batch_id: payload.batch_id,
+    profile_id: payload.profile_id,
+    session_id: payload.session_id,
+    action_id: payload.action_id,
+    skill_id: payload.skill_id,
+    status: payload.status,
+    input_path: optionalNonEmptyString(payload.input_path),
+    filename: optionalNonEmptyString(payload.filename),
+    materialized_path: optionalNonEmptyString(payload.materialized_path),
+    output: optionalNonEmptyString(payload.output),
+    error: optionalNonEmptyString(payload.error),
+    source_id: optionalNonEmptyString(payload.source_id),
+    source_path: optionalNonEmptyString(payload.source_path),
+    metadata_path: optionalNonEmptyString(payload.metadata_path),
+    created_at: payload.created_at,
+    updated_at: payload.updated_at,
   };
-  if (p.result !== undefined) {
-    event.result = p.result;
+  if (payload.result !== undefined) {
+    event.result = payload.result;
   }
   return event;
 }
