@@ -303,6 +303,131 @@ describe("rollbackSessionTurns", () => {
     expect(ThreadStore.getThreads(SESSION)[0].responses).toHaveLength(before);
   });
 
+  // ── codex #262 round 3 folds ─────────────────────────────────────────────
+
+  it("replayHistory carries an unresolved orphan's provenance forward", () => {
+    // A real turn + a late stream for an unknown thread (orphan with
+    // in-flight pending). A forced replay whose rows STILL lack the
+    // orphan's user row must carry the bucket forward AS an orphan —
+    // round 3 P1: dropping the flag let it bypass the rewind gate and
+    // count as a real turn, inflating num_turns for earlier bubbles.
+    ThreadStore.addUserMessage(SESSION, {
+      text: "real prompt",
+      clientMessageId: "cmid-real",
+    });
+    ThreadStore.appendAssistantToken("orphan-carry", "late stream");
+    expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(true);
+    ThreadStore.replayHistory(SESSION, [
+      {
+        role: "user",
+        content: "real prompt",
+        client_message_id: "cmid-real",
+        thread_id: "cmid-real",
+        timestamp: "2026-07-10T00:00:00Z",
+      },
+    ] as never);
+    const carried = ThreadStore.getThreads(SESSION).find(
+      (t) => t.id === "orphan-carry",
+    );
+    expect(carried).toBeTruthy();
+    expect(ThreadStore.isPlaceholderThread(carried!)).toBe(true);
+    expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(true);
+  });
+
+  it("replayHistory adopts a synthesized bucket when its user row follows", () => {
+    // Assistant row precedes its user row in the same replay batch —
+    // the synthesized bucket must become a KNOWN turn when the user
+    // row lands (round 3 P2: it stayed a placeholder and suppressed
+    // Rewind for every turn indefinitely).
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 2,
+        role: "assistant",
+        content: "answer",
+        thread_id: "t1",
+        message_id: "m2",
+        timestamp: "2026-07-10T00:00:01Z",
+      },
+      {
+        seq: 1,
+        role: "user",
+        content: "prompt",
+        client_message_id: "t1",
+        thread_id: "t1",
+        timestamp: "2026-07-10T00:00:00Z",
+      },
+    ] as never);
+    const threads = ThreadStore.getThreads(SESSION);
+    expect(threads).toHaveLength(1);
+    expect(threads[0].userMsg.text).toBe("prompt");
+    expect(ThreadStore.isPlaceholderThread(threads[0])).toBe(false);
+    expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(false);
+  });
+
+  it("applyVoiceTranscript adopts an orphan bucket", () => {
+    ThreadStore.addUserMessage(SESSION, {
+      text: "anchor",
+      clientMessageId: "cmid-anchor",
+    });
+    ThreadStore.appendAssistantToken("orphan-voice", "streamed");
+    expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(true);
+    const applied = ThreadStore.applyVoiceTranscript(
+      SESSION,
+      undefined,
+      "orphan-voice",
+      "what I said",
+    );
+    expect(applied).toBe(true);
+    expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(false);
+  });
+
+  it("unions the projection's seqs so re-emissions for seq-stripped survivors dedup", async () => {
+    // messages_page replay strips seq → surviving rows carry NO
+    // historySeq, so the post-trim ledger rebuild alone would forget
+    // them and a live re-emission would append a duplicate (round 3
+    // P2). The rollback projection carries the authoritative seqs.
+    ThreadStore.replayHistory(SESSION, [
+      {
+        role: "user",
+        content: "keep me",
+        client_message_id: "cmid-keep",
+        thread_id: "cmid-keep",
+        timestamp: "2026-07-10T00:00:00Z",
+      },
+      {
+        role: "assistant",
+        content: "kept reply",
+        thread_id: "cmid-keep",
+        message_id: "m2",
+        timestamp: "2026-07-10T00:00:01Z",
+      },
+      {
+        role: "user",
+        content: "drop me",
+        client_message_id: "cmid-drop",
+        thread_id: "cmid-drop",
+        timestamp: "2026-07-10T00:00:02Z",
+      },
+    ] as never);
+    expect(ThreadStore.getThreads(SESSION)).toHaveLength(2);
+    rollbackSession.mockResolvedValue(trimmedResult());
+    const outcome = await rollbackSessionTurns(SESSION, undefined, 1);
+    expect(outcome.ok).toBe(true);
+    const [thread] = ThreadStore.getThreads(SESSION);
+    const before = thread.responses.length;
+    // Live re-emission of the SURVIVING assistant row (projection seq
+    // 2) under a fresh message_id: only the unioned ledger dedups it.
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 2,
+      role: "assistant",
+      content: "kept reply",
+      thread_id: "cmid-keep",
+      message_id: "m2-reemit",
+      timestamp: "2026-07-10T00:00:03Z",
+    } as never);
+    expect(ThreadStore.getThreads(SESSION)[0].responses).toHaveLength(before);
+  });
+
   it("treats provenance placeholders — not empty-shaped rows — as non-turns", () => {
     // A bucket synthesized for a late persisted assistant row (no user
     // message yet) IS a placeholder…

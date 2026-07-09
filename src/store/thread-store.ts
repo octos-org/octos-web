@@ -2500,7 +2500,11 @@ export function replayHistory(
       userMsg.role = "user";
       userMsg.clientMessageId = apiMessage.client_message_id ?? threadId;
       if (thread) {
+        // The bucket was synthesized earlier in this replay (assistant
+        // row preceded its user row) — the user row makes it a known
+        // turn.
         thread.userMsg = userMsg;
+        markThreadAdopted(thread);
       } else {
         thread = {
           id: threadId,
@@ -2608,6 +2612,10 @@ export function replayHistory(
           userMsg: prevThread.userMsg,
           responses: prevThread.responses,
           pendingAssistant: pending,
+          // Carried forward VERBATIM — an unresolved orphan stays an
+          // orphan (codex #262 round 3 P1: dropping the flag here let
+          // the bucket bypass the rewind gate and inflate num_turns).
+          placeholderOrigin: prevThread.placeholderOrigin,
         };
         state.byId.set(tid, carried);
         state.threads.push(carried);
@@ -2833,6 +2841,9 @@ function mergeHydrateMediaIntoExisting(
         thread.userMsg = mergedUser;
         changed = true;
       }
+      // The hydrate row IS a persisted user record for this bucket —
+      // authoritative turn proof even when the media merge no-ops.
+      if (markThreadAdopted(thread)) changed = true;
       continue;
     }
 
@@ -3400,6 +3411,8 @@ export function applyVoiceTranscript(
     ...thread.userMsg,
     text,
   };
+  // A transcript proves the user turn exists.
+  markThreadAdopted(thread);
   notify();
   return true;
 }
@@ -3540,6 +3553,11 @@ export function appendPersistedMessage(
     // are optimistically inserted with an audio file and empty text; the
     // persisted echo carries the ASR transcript, so keep local media while
     // filling the transcript in.
+    // A persisted USER record is authoritative proof of turn-ness —
+    // clear provenance even when the local bubble already has text
+    // (e.g. an ASR/hydrate-filled orphan), or the scope's rewind gate
+    // sticks closed forever (codex #262 round 3).
+    const adopted = markThreadAdopted(thread);
     const built = buildResponseFromApi(message);
     if (thread.userMsg.text === "" && built.text.trim().length > 0) {
       thread.userMsg = {
@@ -3550,8 +3568,6 @@ export function appendPersistedMessage(
         intra_thread_seq: built.intra_thread_seq,
         clientMessageId: message.client_message_id ?? threadId,
       };
-      // The persisted user record arrived — a known turn now.
-      thread.placeholderOrigin = false;
       notify();
     } else if (thread.userMsg.text === "" && thread.userMsg.files.length === 0) {
       thread.userMsg = {
@@ -3562,7 +3578,8 @@ export function appendPersistedMessage(
         intra_thread_seq: built.intra_thread_seq,
         clientMessageId: message.client_message_id ?? threadId,
       };
-      thread.placeholderOrigin = false;
+      notify();
+    } else if (adopted) {
       notify();
     }
     return;
@@ -3888,6 +3905,18 @@ export function isPlaceholderThread(thread: Thread): boolean {
   return thread.placeholderOrigin === true;
 }
 
+/** Centralized adoption (codex #262 round 3): EVERY path that applies
+ *  an authoritative user row — live add, orphan adoption, replay
+ *  rebuild, persisted user echo, hydrate user-media merge, ASR
+ *  transcript — must clear provenance, or the scope's rewind gate
+ *  (`hasPlaceholderThreads`) sticks closed forever. Returns whether
+ *  the flag actually flipped so callers can decide to notify. */
+function markThreadAdopted(thread: Thread): boolean {
+  if (thread.placeholderOrigin !== true) return false;
+  thread.placeholderOrigin = false;
+  return true;
+}
+
 /** True when ANY bucket in the scope is still an orphan placeholder.
  *  While one exists the local turn list is KNOWN-incomplete (a late
  *  event arrived for a turn we have not seen the user message for), so
@@ -3953,6 +3982,27 @@ export function dropLastUserTurnThreads(
   else seenSeqsByKey.delete(key);
   notify();
   return dropped;
+}
+
+/** Union authoritative seqs into a scope's seen-seq ledger. Used by
+ *  the rollback applier after a surgical trim: the post-trim rebuild in
+ *  `dropLastUserTurnThreads` derives entries from surviving rows'
+ *  `historySeq` alone, but a prior forced `messages_page` replay can
+ *  have stripped those fields and companion merges collapse multiple
+ *  seqs into one row (codex #262 round 3). The rollback RESULT carries
+ *  the authoritative surviving rows WITH seqs — union them in so live
+ *  re-emissions for surviving rows keep deduping. */
+export function unionSeenSeqs(
+  sessionId: string,
+  topic: string | undefined,
+  seqs: number[],
+): void {
+  const key = storeKey(sessionId, topic);
+  for (const seq of seqs) {
+    if (typeof seq === "number" && Number.isFinite(seq)) {
+      rememberSeq(key, seq);
+    }
+  }
 }
 
 /** Exact-key variant of `clearSession`: clears ONLY the addressed

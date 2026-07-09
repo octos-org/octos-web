@@ -181,6 +181,20 @@ export async function rollbackSessionTurns(
     const serverClamped = result.dropped_turns !== numTurns;
     if (serverClamped || droppedLocally !== result.dropped_turns) {
       ThreadStore.clearSessionScope(sessionId, topic);
+    } else {
+      // Surgical path: the local trim rebuilt the seq ledger from
+      // surviving rows' historySeq, which a prior messages_page replay
+      // may have stripped (and companion merges collapse). Union the
+      // AUTHORITATIVE surviving seqs from the rollback projection so
+      // live re-emissions for surviving rows keep deduping
+      // (codex #262 round 3).
+      ThreadStore.unionSeenSeqs(
+        sessionId,
+        topic,
+        (result.thread.messages ?? [])
+          .map((m) => m.seq)
+          .filter((n): n is number => typeof n === "number"),
+      );
     }
     // ALWAYS replace the hydrate cache with the trimmed projection —
     // surgical path included (codex #262 round 2). The pre-rollback
