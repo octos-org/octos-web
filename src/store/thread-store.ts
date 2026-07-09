@@ -3846,6 +3846,72 @@ export function getKnownFilePaths(
   return out;
 }
 
+/** True when the thread was minted as an orphan placeholder (a late
+ *  assistant/tool event whose user message never landed in the store)
+ *  rather than a real persisted user turn: empty text AND no files. A
+ *  file-only user message is a real turn (text empty, files non-empty).
+ *  Rollback math (`session/rollback` counts persisted USER turns only)
+ *  must skip placeholders — counting them both inflates `num_turns`
+ *  and grows a Rewind affordance on a bubble that is not a turn. */
+export function isPlaceholderThread(thread: Thread): boolean {
+  return (
+    thread.userMsg.text.trim() === "" && thread.userMsg.files.length === 0
+  );
+}
+
+/** Conversation-suffix trim for `session/rollback`: drop the last
+ *  `dropTurns` REAL user-turn threads and EVERY thread after the cut
+ *  (trailing orphan placeholders carry late events for the dropped
+ *  suffix). Exact-key scope — topic caches are untouched by a root
+ *  rollback. Keeps surviving thread objects intact, so their tool
+ *  cards / progress timelines / meta survive (unlike a clear+reseed,
+ *  whose HydratedMessage rows carry none of that state).
+ *  Returns how many user turns were actually dropped. */
+export function dropLastUserTurnThreads(
+  sessionId: string,
+  topic: string | undefined,
+  dropTurns: number,
+): number {
+  if (!Number.isInteger(dropTurns) || dropTurns < 1) return 0;
+  const key = storeKey(sessionId, topic);
+  const state = sessionsByKey.get(key);
+  if (!state) return 0;
+  const userTurnIndices: number[] = [];
+  state.threads.forEach((thread, index) => {
+    if (!isPlaceholderThread(thread)) userTurnIndices.push(index);
+  });
+  if (userTurnIndices.length === 0) return 0;
+  const dropped = Math.min(dropTurns, userTurnIndices.length);
+  const cutIndex = userTurnIndices[userTurnIndices.length - dropped];
+  const removed = state.threads.slice(cutIndex);
+  state.threads = state.threads.slice(0, cutIndex);
+  for (const thread of removed) {
+    state.byId.delete(thread.id);
+  }
+  notify();
+  return dropped;
+}
+
+/** Exact-key variant of `clearSession`: clears ONLY the addressed
+ *  scope. `clearSession(sessionId)` intentionally sweeps every
+ *  topic-suffixed key too (session delete), which is wrong for a root
+ *  `session/rollback` — the RPC mutates only the root SessionKey, so
+ *  cached slides/site topic histories must survive locally. */
+export function clearSessionScope(
+  sessionId: string,
+  topic?: string,
+): void {
+  const key = storeKey(sessionId, topic);
+  sessionsByKey.delete(key);
+  loadedSessions.delete(key);
+  loadingPromises.delete(key);
+  hydrateSnapshotByKey.delete(key);
+  pendingClientMessageIds.delete(key);
+  seenSeqsByKey.delete(key);
+  appliedHydrateToolEnvelopesByKey.delete(key);
+  notify();
+}
+
 export function clearSession(sessionId: string, topic?: string): void {
   const key = storeKey(sessionId, topic);
   if (topic?.trim()) {

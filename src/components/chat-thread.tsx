@@ -35,8 +35,12 @@ import {
   Check,
 } from "lucide-react";
 import { useSession } from "@/runtime/session-context";
-import { rollbackSessionTurns } from "@/runtime/session-rollback";
 import {
+  rollbackSessionTurns,
+  useRollbackBusy,
+} from "@/runtime/session-rollback";
+import {
+  isPlaceholderThread,
   useThreads,
   type MessageFile,
   type MessageMeta,
@@ -579,6 +583,11 @@ const ThreadUserBubble = memo(function ThreadUserBubble({
   turnsFromEnd?: number;
 }) {
   const visibleText = threadMessageVisibleText(message);
+  // A rollback applying anywhere in this scope disables every Rewind
+  // button: rollback counts are RELATIVE ("last N"), so a second click
+  // confirmed against pre-trim indices would delete unintended turns
+  // (codex #262 P1). The applier itself also refuses concurrent runs.
+  const rollbackBusy = useRollbackBusy(sessionId ?? "", historyTopic);
   // Rewind affordance state: idle → confirm (second click required) →
   // busy. Errors render inline under the bubble and reset to idle.
   const [rewindState, setRewindState] = useState<
@@ -669,7 +678,7 @@ const ThreadUserBubble = memo(function ThreadUserBubble({
             ? `Drops the last ${turnsFromEnd} turn${turnsFromEnd === 1 ? "" : "s"} — click again to confirm`
             : "Rewind to before this message"
         }
-        disabled={rewindState === "busy"}
+        disabled={rewindState === "busy" || rollbackBusy}
         onClick={() => {
           if (rewindState === "idle" || rewindState === "error") {
             setRewindState("confirm");
@@ -1272,6 +1281,27 @@ function ThreadList({
   onSettleGhost: (clientMessageId: string) => void;
   hideFileOnlyAssistantMessages: boolean;
 }) {
+  // Rewind math (codex #262 P1): `session/rollback` counts persisted
+  // USER turns only, but `threads` can contain placeholder orphans
+  // (late-event buckets with no user message). Counting those both
+  // inflates `num_turns` (rewinding B in [A, B, orphan] would send 2
+  // and delete A too) and puts a Rewind button on a non-turn.
+  // Placeholders map to 0 → no affordance.
+  const turnsFromEndByThreadId = useMemo(() => {
+    const byId = new Map<string, number>();
+    let fromEnd = 0;
+    for (let i = threads.length - 1; i >= 0; i -= 1) {
+      const thread = threads[i];
+      if (isPlaceholderThread(thread)) {
+        byId.set(thread.id, 0);
+      } else {
+        fromEnd += 1;
+        byId.set(thread.id, fromEnd);
+      }
+    }
+    return byId;
+  }, [threads]);
+
   const viewportRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
 
@@ -1303,12 +1333,12 @@ function ThreadList({
       className="chat-thread-viewport flex-1 min-h-0 overflow-y-auto overscroll-contain"
     >
       <div className="chat-thread-inner mx-auto max-w-4xl py-6">
-        {threads.map((thread, index) => (
+        {threads.map((thread) => (
           <ThreadView
             key={thread.id}
             thread={thread}
             hideFileOnlyAssistantMessages={hideFileOnlyAssistantMessages}
-            turnsFromEnd={threads.length - index}
+            turnsFromEnd={turnsFromEndByThreadId.get(thread.id) ?? 0}
           />
         ))}
         {ghosts.map((g) => (

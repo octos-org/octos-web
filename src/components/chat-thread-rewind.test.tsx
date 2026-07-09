@@ -19,6 +19,8 @@ import { createRoot, type Root } from "react-dom/client";
 const rollbackSessionTurns = vi.fn();
 vi.mock("@/runtime/session-rollback", () => ({
   rollbackSessionTurns: (...args: unknown[]) => rollbackSessionTurns(...args),
+  // The bubble also reads the scope-busy flag; never busy in these tests.
+  useRollbackBusy: () => false,
 }));
 
 import { ChatThread } from "./chat-thread";
@@ -166,6 +168,42 @@ describe("user-bubble rewind affordance", () => {
     expect(prefills).toHaveLength(1);
     expect(prefills[0].text).toBe("second prompt");
     expect(prefills[0].sessionId).toBe(SESSION);
+    harness.unmount();
+  });
+
+  it("excludes orphan placeholder threads from the affordance and the count", async () => {
+    // codex #262 P1: a late-event orphan bucket (empty placeholder user
+    // message) is NOT a persisted user turn — it must get no Rewind
+    // button, and rewinding the real turn BEFORE it must not count it.
+    rollbackSessionTurns.mockResolvedValue({ ok: true, droppedTurns: 1 });
+    const { secondThreadId } = seedTwoTurns();
+    // Mint an orphan bucket the way the store does for late events:
+    // a tool progress line for an unknown thread id.
+    ThreadStore.appendToolProgress("orphan-thread-1", "tc-orphan", "late");
+    const threads = ThreadStore.getThreads(SESSION);
+    expect(threads.length).toBe(3);
+    const harness = mountThread();
+    // The orphan bubble renders no rewind button.
+    expect(
+      harness.container.querySelector(
+        '[data-testid="rewind-to-orphan-thread-1"]',
+      ),
+    ).toBeNull();
+    // Rewinding the newest REAL turn still sends num_turns = 1 — the
+    // trailing orphan does not inflate the count.
+    const btn = harness.container.querySelector(
+      `[data-testid="rewind-to-${secondThreadId}"]`,
+    ) as HTMLButtonElement;
+    expect(btn).toBeTruthy();
+    act(() => btn.click());
+    await act(async () => {
+      (
+        harness.container.querySelector(
+          `[data-testid="rewind-to-${secondThreadId}"]`,
+        ) as HTMLButtonElement
+      ).click();
+    });
+    expect(rollbackSessionTurns).toHaveBeenCalledWith(SESSION, undefined, 1);
     harness.unmount();
   });
 

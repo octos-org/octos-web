@@ -4,21 +4,117 @@
  *
  * The RPC is conversation-only and server-authoritative: it drops the
  * last N USER turns (persisted marker + in-memory trim) and returns the
- * trimmed thread projected in the `session/hydrate` shape. Applying it
- * client-side CANNOT go through `setHydrateSnapshot` alone — the hydrate
- * dedup/seed pass only ever ADDS or coalesces rows, it never removes the
- * rolled-back turns from an already-populated ThreadStore. So the applier
- * clears the session scope first, then seeds from the trimmed snapshot
- * (the same `seedFromHydrateMessages` path a reload-mid-stream uses).
+ * trimmed thread projected in the `session/hydrate` shape.
+ *
+ * Local application is a SURGICAL SUFFIX TRIM, not a clear+reseed
+ * (codex #262 round 1): `dropLastUserTurnThreads` removes the dropped
+ * user-turn threads (placeholder orphans excluded from the count) and
+ * everything after the cut, keeping surviving thread objects — and
+ * with them their tool cards, progress timelines, and message meta,
+ * which the hydrate rows cannot rebuild. Only when the local view
+ * disagrees with the server's `dropped_turns` (local rows were already
+ * inconsistent) does it fall back to an exact-key clear + reseed from
+ * the returned projection; `clearSessionScope` never touches sibling
+ * topic caches the RPC did not mutate.
+ *
+ * Concurrency: rollbacks are RELATIVE ("last N"), so two in-flight
+ * rollbacks — or a send racing the trim — can delete unintended turns.
+ * A per-scope lock serializes them: `rollbackSessionTurns` refuses to
+ * start while one is running (`busy`), every Rewind button disables via
+ * `useRollbackBusy`, and the send path parks new turns behind
+ * `whenRollbackIdle` until the snapshot is applied.
  */
 
+import { useSyncExternalStore } from "react";
 import * as ThreadStore from "@/store/thread-store";
 import { setHydrateSnapshot } from "@/store/thread-store";
 import { getActiveBridge } from "./ui-protocol-runtime";
 
 export type RollbackOutcome =
   | { ok: true; droppedTurns: number }
-  | { ok: false; reason: "no_bridge" | "turn_in_progress" | "rpc_failed" };
+  | {
+      ok: false;
+      reason: "no_bridge" | "turn_in_progress" | "rpc_failed" | "busy";
+    };
+
+// ── per-scope mutation lock ────────────────────────────────────────────────
+
+const busyKeys = new Set<string>();
+const busyListeners = new Set<() => void>();
+const idleWaiters = new Map<string, Array<() => void>>();
+
+function scopeKey(sessionId: string, topic?: string): string {
+  const trimmedTopic = topic?.trim();
+  return trimmedTopic ? `${sessionId}#${trimmedTopic}` : sessionId;
+}
+
+function setBusy(key: string, value: boolean): void {
+  if (value) {
+    busyKeys.add(key);
+  } else {
+    busyKeys.delete(key);
+    const waiters = idleWaiters.get(key);
+    if (waiters) {
+      idleWaiters.delete(key);
+      for (const resolve of waiters) resolve();
+    }
+  }
+  for (const listener of busyListeners) listener();
+}
+
+export function isRollbackBusy(sessionId: string, topic?: string): boolean {
+  return busyKeys.has(scopeKey(sessionId, topic));
+}
+
+/** React hook: true while a rollback is applying for the scope. Every
+ *  Rewind affordance disables on it so a second RELATIVE rollback
+ *  cannot be confirmed against pre-trim indices. */
+export function useRollbackBusy(sessionId: string, topic?: string): boolean {
+  const subscribe = (listener: () => void) => {
+    busyListeners.add(listener);
+    return () => {
+      busyListeners.delete(listener);
+    };
+  };
+  return useSyncExternalStore(
+    subscribe,
+    () => isRollbackBusy(sessionId, topic),
+    () => isRollbackBusy(sessionId, topic),
+  );
+}
+
+/** Resolves when no rollback is applying for the scope (immediately if
+ *  idle). The send path parks new turns on this so a just-sent bubble
+ *  cannot be wiped by the trim that lands moments later. Bounded
+ *  fail-open so a stuck lock can never wedge sends. */
+export function whenRollbackIdle(
+  sessionId: string,
+  topic: string | undefined,
+  timeoutMs = 5000,
+): Promise<void> {
+  const key = scopeKey(sessionId, topic);
+  if (!busyKeys.has(key)) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      const waiters = idleWaiters.get(key);
+      if (waiters) {
+        const next = waiters.filter((w) => w !== wrapped);
+        if (next.length === 0) idleWaiters.delete(key);
+        else idleWaiters.set(key, next);
+      }
+      resolve();
+    }, timeoutMs);
+    const wrapped = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const waiters = idleWaiters.get(key) ?? [];
+    waiters.push(wrapped);
+    idleWaiters.set(key, waiters);
+  });
+}
+
+// ── rollback ───────────────────────────────────────────────────────────────
 
 /** True when the RPC error is the server's while-a-turn-is-live guard
  *  (`invalid_params` with `data.kind === "turn_in_progress"`). The
@@ -27,12 +123,14 @@ export type RollbackOutcome =
 function isTurnInProgress(err: unknown): boolean {
   const text =
     err instanceof Error ? err.message : typeof err === "string" ? err : "";
-  return text.includes("turn_in_progress") || text.includes("turn is in progress");
+  return (
+    text.includes("turn_in_progress") || text.includes("turn is in progress")
+  );
 }
 
 /**
- * Roll the session back by `numTurns` user turns and rebuild the local
- * thread state from the server's trimmed projection.
+ * Roll the session back by `numTurns` user turns and trim the local
+ * thread state to match.
  */
 export async function rollbackSessionTurns(
   sessionId: string,
@@ -43,23 +141,44 @@ export async function rollbackSessionTurns(
   if (!bridge || typeof bridge.rollbackSession !== "function") {
     return { ok: false, reason: "no_bridge" };
   }
-  let result;
-  try {
-    result = await bridge.rollbackSession(numTurns);
-  } catch (err) {
-    return {
-      ok: false,
-      reason: isTurnInProgress(err) ? "turn_in_progress" : "rpc_failed",
-    };
+  const key = scopeKey(sessionId, topic);
+  if (busyKeys.has(key)) {
+    // A rollback is already applying; a second RELATIVE count computed
+    // against pre-trim indices would delete unintended turns.
+    return { ok: false, reason: "busy" };
   }
-  // Server state is already trimmed — rebuild the local store to match.
-  // Clear FIRST: the hydrate seed pass only adds rows; without the clear
-  // the rolled-back bubbles would survive locally until a full reload.
-  ThreadStore.clearSession(sessionId, topic);
-  setHydrateSnapshot(sessionId, topic, {
-    messages: result.thread.messages ?? [],
-    replayed_envelopes: result.thread.replayed_envelopes,
-    replayed_tool_envelopes: result.thread.replayed_tool_envelopes,
-  });
-  return { ok: true, droppedTurns: result.dropped_turns };
+  setBusy(key, true);
+  try {
+    let result;
+    try {
+      result = await bridge.rollbackSession(numTurns);
+    } catch (err) {
+      return {
+        ok: false,
+        reason: isTurnInProgress(err) ? "turn_in_progress" : "rpc_failed",
+      };
+    }
+    const droppedLocally = ThreadStore.dropLastUserTurnThreads(
+      sessionId,
+      topic,
+      result.dropped_turns,
+    );
+    if (droppedLocally !== result.dropped_turns) {
+      // Local rows disagreed with the server's count — the local view
+      // was already inconsistent. Reconcile from the authoritative
+      // trimmed projection (exact-key clear: sibling topic caches were
+      // not mutated by the RPC and must survive). This degraded path
+      // loses rich per-turn UI state; the surgical trim above is the
+      // normal path precisely to avoid that.
+      ThreadStore.clearSessionScope(sessionId, topic);
+      setHydrateSnapshot(sessionId, topic, {
+        messages: result.thread.messages ?? [],
+        replayed_envelopes: result.thread.replayed_envelopes,
+        replayed_tool_envelopes: result.thread.replayed_tool_envelopes,
+      });
+    }
+    return { ok: true, droppedTurns: result.dropped_turns };
+  } finally {
+    setBusy(key, false);
+  }
 }
