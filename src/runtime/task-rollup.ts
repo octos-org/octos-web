@@ -74,6 +74,41 @@ export function expandRolledGroup(
 }
 
 /**
+ * Aggregate status of every raw task sharing one tool call (codex round 3).
+ *
+ * Pipeline members emit per-task terminal transitions, but the thread's
+ * tool card is keyed by the shared `tool_call_id` — settling the card on
+ * the FIRST terminal member freezes it while siblings still run, and
+ * later running frames never restore it. Both terminal paths (the live
+ * `task/updated` router branch and the polling `crew:task_status`
+ * applier) consult this before flipping the card:
+ *
+ *   - "active"  → at least one member still spawned/running; defer.
+ *   - "failed"  → all settled, at least one member failed; settle error.
+ *                 The store retains earlier failed rows, so the failure
+ *                 outcome survives until the last sibling ends without
+ *                 any extra bookkeeping.
+ *   - "settled" → all settled, none failed; settle complete.
+ *   - null      → no member carries this call id (store not hydrated);
+ *                 caller falls back to the event's own state.
+ */
+export function aggregateCallStatus(
+  tasks: BackgroundTaskInfo[],
+  toolCallId: string,
+): "active" | "failed" | "settled" | null {
+  let sawMember = false;
+  let sawFailed = false;
+  for (const t of tasks) {
+    if (t.tool_call_id !== toolCallId) continue;
+    sawMember = true;
+    if (t.status === "spawned" || t.status === "running") return "active";
+    if (t.status === "failed") sawFailed = true;
+  }
+  if (!sawMember) return null;
+  return sawFailed ? "failed" : "settled";
+}
+
+/**
  * Fold pipeline children under the parent `run_pipeline` task by
  * `tool_call_id`. The returned list preserves the input order of each
  * group's representative (parent first, else first child seen).

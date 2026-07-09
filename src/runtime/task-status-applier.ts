@@ -15,6 +15,8 @@
  */
 
 import * as ThreadStore from "@/store/thread-store";
+import * as TaskStore from "@/store/task-store";
+import { aggregateCallStatus } from "@/runtime/task-rollup";
 import type { BackgroundTaskInfo } from "@/api/types";
 
 /** Last task_status seen per `task.id`. Used to suppress synthesizing a
@@ -142,17 +144,34 @@ export function applyTaskStatusToThreadStore(
   // the status flip no-ops (tool call not in store yet, picker
   // missed, etc.) the next retry should be allowed to try again.
   let applied = true;
-  if (task.status === "completed") {
+  if (task.status === "completed" || task.status === "failed") {
+    // codex round 3: pipeline members share this tool_call_id but the
+    // watcher dispatches each raw row separately — flipping the card on
+    // the FIRST terminal member freezes it while siblings still run
+    // (same deferral the live `task/updated` router path applies). The
+    // watcher calls `TaskStore.replaceTasks` BEFORE dispatching
+    // `crew:task_status`, so the store reflects this poll's snapshot.
+    // While a sibling is active, skip the flip; the LAST member's
+    // transition settles the card with the aggregate outcome (an
+    // earlier failed row is retained by the store, so the failure
+    // outcome survives the deferral).
+    const aggregate =
+      aggregateCallStatus(
+        TaskStore.getTasks(sessionId, topic),
+        task.tool_call_id,
+      ) ?? (task.status === "failed" ? "failed" : "settled");
+    if (aggregate === "active") {
+      // Do NOT record the dedupe entry: the next poll tick re-fires this
+      // terminal row and re-evaluates the aggregate, so the card still
+      // settles even if the last sibling's own terminal row is never
+      // observed (self-healing). The re-synthesized progress line is
+      // swallowed by `appendToolProgress`'s consecutive-duplicate dedupe.
+      return;
+    }
     applied = ThreadStore.setToolCallStatus(
       threadId,
       task.tool_call_id,
-      "complete",
-    );
-  } else if (task.status === "failed") {
-    applied = ThreadStore.setToolCallStatus(
-      threadId,
-      task.tool_call_id,
-      "error",
+      aggregate === "failed" ? "error" : "complete",
     );
   }
   // Non-terminal `spawned`/`running` lines always count as applied

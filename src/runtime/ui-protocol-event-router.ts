@@ -53,6 +53,7 @@ import type { MessageMeta } from "@/store/thread-store";
 import type { MessageInfo } from "@/api/types";
 import { recordRuntimeCounter } from "./observability";
 import { isSpawnOnlyToolName } from "./spawn-only-tools";
+import { aggregateCallStatus } from "./task-rollup";
 
 // ---------------------------------------------------------------------------
 // Per-turn meta snapshot
@@ -933,72 +934,55 @@ export function handleTaskUpdated(
       dispatchToolProgressEvent(cfg, hostThreadId, toolLabel, label);
       break;
     }
-    // `cancelled` shares the completed terminal path: the tool card must
-    // stop animating, a terminal progress frame must fire, and the cache
-    // entry dropped — otherwise the tool card + spinner keep spinning after
-    // the dock row disappears (codex review). `mergeLiveTask` above already
-    // maps its store status to `completed`.
+    // All terminal states share one path: the tool card must stop
+    // animating, a terminal progress frame must fire, and the cache
+    // entry dropped — otherwise the tool card + spinner keep spinning
+    // after the dock row disappears (codex review). `cancelled` maps its
+    // store status to `completed` in `mergeLiveTask`.
+    //
+    // Pipeline members share one tool card (`resolvedToolCallId`) but
+    // `task/updated` fires per raw task, and a cancel or failure can
+    // terminate one member while siblings keep running — an explicitly
+    // supported task/cancel outcome. Settling the card on the FIRST
+    // terminal member freezes it while the dock still shows active work,
+    // and later running frames never restore it (codex rounds 2–3).
+    // Defer the card's terminal transition while any active member
+    // shares the call id — `mergeLiveTask` above already flipped THIS
+    // task's store row terminal, so an active match is a different,
+    // still-live member. A deferred failure is retained by its store
+    // row: when the last sibling settles, the aggregate reports
+    // "failed" and the card lands on error.
     case "completed":
     case "cancelled":
-    case "canceled": {
-      // Pipeline members share one tool card (`resolvedToolCallId`) but
-      // `task/updated` fires per raw task, and a cancel can terminate one
-      // member while siblings keep running — an explicitly supported
-      // task/cancel outcome. Settling the card on the FIRST terminal
-      // member freezes it "complete" while the dock still shows active
-      // work, and later running frames never restore it (codex round 2).
-      // Defer the terminal transition until no active sibling shares the
-      // call id. `mergeLiveTask` above already flipped THIS task's store
-      // row terminal, so an active match is a different, still-live member.
-      const hasActiveSibling = TaskStore.getTasks(
-        cfg.sessionId,
-        cfg.topic,
-      ).some(
-        (t) =>
-          t.id !== event.task_id &&
-          t.tool_call_id === resolvedToolCallId &&
-          (t.status === "spawned" || t.status === "running"),
-      );
-      if (hasActiveSibling) break;
-      if (hostThreadId) {
-        ThreadStore.setToolCallStatus(
-          hostThreadId,
-          resolvedToolCallId,
-          "complete",
-        );
-      }
-      dispatchToolProgressEvent(
-        cfg,
-        hostThreadId,
-        toolLabel,
-        "done",
-        /* terminal */ true,
-      );
-      // Drop the cache entry — the task is done, no further frames
-      // should land on this id (mirrors `handleToolCompleted`). Drop
-      // both identifier shapes.
-      toolNameByCallId.delete(event.task_id);
-      if (resolvedToolCallId !== event.task_id) {
-        toolNameByCallId.delete(resolvedToolCallId);
-      }
-      break;
-    }
+    case "canceled":
     case "failed":
     case "errored": {
+      const isFailureEvent =
+        event.state === "failed" || event.state === "errored";
+      const aggregate =
+        aggregateCallStatus(
+          TaskStore.getTasks(cfg.sessionId, cfg.topic),
+          resolvedToolCallId,
+        ) ?? (isFailureEvent ? "failed" : "settled");
+      if (aggregate === "active") break;
+      const isError = aggregate === "failed";
       if (hostThreadId) {
         ThreadStore.setToolCallStatus(
           hostThreadId,
           resolvedToolCallId,
-          "error",
+          isError ? "error" : "complete",
         );
       }
       dispatchToolProgressEvent(
         cfg,
         hostThreadId,
         toolLabel,
-        "error",
+        isError ? "error" : "done",
         /* terminal */ true,
       );
+      // Drop the cache entry — the call is done, no further frames
+      // should land on this id (mirrors `handleToolCompleted`). Drop
+      // both identifier shapes.
       toolNameByCallId.delete(event.task_id);
       if (resolvedToolCallId !== event.task_id) {
         toolNameByCallId.delete(resolvedToolCallId);

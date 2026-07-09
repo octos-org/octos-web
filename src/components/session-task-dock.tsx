@@ -112,9 +112,13 @@ export function SessionTaskIndicator() {
   // `expandRolledGroup` mirrors the rollup's collapse rule: ONLY pipeline
   // families expand; unrelated tasks sharing a `tool_call_id` render as
   // separate rows, so their Cancel must stay per-row (codex round 2).
+  // Expand over the SAME active subset `buildSummary` rolled up — a
+  // retained terminal pipeline row must not re-classify a key that the
+  // renderer treated as non-pipeline rows (codex round 3).
   async function cancelGroup(representative: TaskInfo) {
-    const members = expandRolledGroup(representative, currentTasks).filter(
-      isTaskActive,
+    const members = expandRolledGroup(
+      representative,
+      currentTasks.filter(isTaskActive),
     );
     const ids = members.length > 0 ? members : [representative];
     setCancelling((prev) => {

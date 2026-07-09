@@ -14,6 +14,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import * as ThreadStore from "@/store/thread-store";
+import * as TaskStore from "@/store/task-store";
 import {
   __resetTaskStatusDedupForTest,
   applyTaskStatusToThreadStore,
@@ -25,6 +26,7 @@ const SESSION = "sess-runtime-provider";
 
 afterEach(() => {
   ThreadStore.__resetForTests();
+  TaskStore.clearTasks(SESSION);
   __resetTaskStatusDedupForTest();
   __resetTurnMetaForTest();
 });
@@ -97,6 +99,49 @@ describe("applyTaskStatusToThreadStore", () => {
 
     const [thread] = ThreadStore.getThreads(SESSION);
     const tc = thread.responses[0].toolCalls.find((c) => c.id === taskId);
+    expect(tc?.status).toBe("error");
+  });
+
+  it("defers the terminal flip while a pipeline sibling is active, then settles with the aggregate outcome", () => {
+    // codex round 3: the watcher dispatches each raw pipeline row
+    // separately — flipping the shared card on the FIRST terminal member
+    // froze it while siblings still ran. The flip must wait for the last
+    // sibling, and an earlier failed row (retained by TaskStore) must
+    // win the final outcome.
+    const cmid = "cmid-live-sib";
+    const callId = "tc-pipe-live";
+    seedToolCall(cmid, callId, "run_pipeline");
+
+    const memberA: BackgroundTaskInfo = {
+      id: "sib-live-a",
+      tool_name: "pipeline:analyze",
+      tool_call_id: callId,
+      status: "failed",
+      started_at: "2026-07-10T00:00:00Z",
+      error: "boom",
+    };
+    const memberB: BackgroundTaskInfo = {
+      id: "sib-live-b",
+      tool_name: "pipeline:synthesize",
+      tool_call_id: callId,
+      status: "running",
+      started_at: "2026-07-10T00:00:00Z",
+      error: null,
+    };
+    // The watcher writes the poll snapshot BEFORE dispatching each row.
+    TaskStore.replaceTasks(SESSION, [memberA, memberB]);
+    applyTaskStatusToThreadStore(SESSION, undefined, memberA);
+    let [thread] = ThreadStore.getThreads(SESSION);
+    let tc = thread.responses[0].toolCalls.find((c) => c.id === callId);
+    // Sibling B still running → the shared card must NOT settle yet.
+    expect(tc?.status).toBe("running");
+
+    // Next poll: B completed. All members settled, one failed → error.
+    const memberBDone: BackgroundTaskInfo = { ...memberB, status: "completed" };
+    TaskStore.replaceTasks(SESSION, [memberA, memberBDone]);
+    applyTaskStatusToThreadStore(SESSION, undefined, memberBDone);
+    [thread] = ThreadStore.getThreads(SESSION);
+    tc = thread.responses[0].toolCalls.find((c) => c.id === callId);
     expect(tc?.status).toBe("error");
   });
 

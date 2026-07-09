@@ -662,6 +662,69 @@ describe("router event mapping", () => {
     expect(terminalFrames()).toHaveLength(1);
   });
 
+  it("task/updated failed for one pipeline member defers, and the failure outcome wins when the last sibling completes", () => {
+    // codex round 3: the failed/errored branch bypassed the sibling
+    // deferral — one member's failure settled the shared card while the
+    // other member kept running. The failure must defer like the other
+    // terminals, and its store row must carry the error outcome to the
+    // final settle.
+    seedThread("cmid-sibfail");
+    const dispatched: Event[] = [];
+    const cfg = {
+      sessionId: SESSION,
+      dispatchEvent: (e: Event) => dispatched.push(e),
+    };
+    const shared = "tc-pipe-fail";
+    const base = {
+      started_at: new Date(2026, 0, 1).toISOString(),
+      completed_at: null,
+      output_files: [],
+      error: null,
+    };
+    TaskStore.replaceTasks(SESSION, [
+      {
+        id: "sf-a",
+        tool_name: "pipeline:analyze",
+        tool_call_id: shared,
+        status: "running",
+        ...base,
+      },
+      {
+        id: "sf-b",
+        tool_name: "pipeline:synthesize",
+        tool_call_id: shared,
+        status: "running",
+        ...base,
+      },
+    ]);
+    const terminalFrames = () =>
+      dispatched
+        .filter((e) => e.type === "crew:tool_progress")
+        .map((e) => e as CustomEvent)
+        .filter((e) => e.detail.terminal === true);
+    handleTaskUpdated(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-sibfail",
+      task_id: "sf-a",
+      tool_call_id: shared,
+      state: "failed",
+      runtime_detail: "boom",
+    } as TaskUpdatedEvent);
+    // Sibling still running → even a failure defers the shared card.
+    expect(terminalFrames()).toHaveLength(0);
+    handleTaskUpdated(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-sibfail",
+      task_id: "sf-b",
+      tool_call_id: shared,
+      state: "completed",
+    } as TaskUpdatedEvent);
+    // All settled; sf-a's retained failed row decides the outcome.
+    const frames = terminalFrames();
+    expect(frames).toHaveLength(1);
+    expect(frames[0].detail.message).toBe("error");
+  });
+
   it("task/updated running passes through new labels (state-only dedupe would suppress spinner refresh)", () => {
     // Codex round-3: a stream of `running` updates with refreshed
     // `title`/`runtime_detail` values must reach the lifted spinner.
