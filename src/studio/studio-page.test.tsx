@@ -250,56 +250,84 @@ describe("StudioPage", () => {
     );
   });
 
-  it("sends the skill prompt through the bridge when a tile is clicked", () => {
+  it("renders notebook-style studio skills from the installed notebook skill set", () => {
     renderStudio();
 
-    const deepResearch = STUDIO_SKILLS.find((s) => s.id === "deep-research");
-    expect(deepResearch).toBeDefined();
+    expect(STUDIO_SKILLS.map((skill) => skill.label)).toEqual([
+      "Audio Overview",
+      "Slide Deck",
+      "Video Overview",
+      "Mind Map",
+      "Reports",
+      "Flashcards",
+      "Quiz",
+      "Infographic",
+      "Data Table",
+    ]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Deep Research" }));
+    const studioRail = within(screen.getByTestId("studio-rail"));
+    for (const skill of STUDIO_SKILLS) {
+      expect(
+        studioRail.getByRole("button", { name: new RegExp(skill.label) }),
+      ).toBeTruthy();
+    }
+  });
+
+  it("sends the notebook skill prompt through the bridge when a tile is clicked", () => {
+    renderStudio();
+
+    const mindMap = STUDIO_SKILLS.find((s) => s.id === "mind-map");
+    expect(mindMap).toBeDefined();
+
+    fireEvent.click(screen.getByLabelText("Use notes.md as source"));
+    fireEvent.click(screen.getByRole("button", { name: "Mind Map" }));
     expect(sendMessageMock).toHaveBeenCalledTimes(1);
     expect(sendMessageMock).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: "web-abc",
-        text: deepResearch?.prompt,
+        text: mindMap?.prompt,
         media: [],
       }),
     );
+    expect(mindMap?.prompt).toContain("mofa-notebook-mindmap");
+    expect(mindMap?.prompt).toContain("mindmap_generate");
   });
 
   it("disables requiresSources skills until a source is selected", () => {
     renderStudio();
 
-    const dataViz = screen.getByRole("button", {
-      name: "Data Viz",
+    const dataTable = screen.getByRole("button", {
+      name: "Data Table",
     }) as HTMLButtonElement;
-    expect(dataViz.disabled).toBe(true);
+    expect(dataTable.disabled).toBe(true);
 
-    fireEvent.click(dataViz);
+    fireEvent.click(dataTable);
     expect(sendMessageMock).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByLabelText("Use notes.md as source"));
-    const dataVizEnabled = screen.getByRole("button", {
-      name: "Data Viz",
+    const dataTableEnabled = screen.getByRole("button", {
+      name: "Data Table",
     }) as HTMLButtonElement;
-    expect(dataVizEnabled.disabled).toBe(false);
+    expect(dataTableEnabled.disabled).toBe(false);
 
-    fireEvent.click(dataVizEnabled);
-    const dataVizSkill = STUDIO_SKILLS.find((s) => s.id === "data-viz");
+    fireEvent.click(dataTableEnabled);
+    const dataTableSkill = STUDIO_SKILLS.find((s) => s.id === "data-table");
     expect(sendMessageMock).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: "web-abc",
-        text: dataVizSkill?.prompt,
+        text: dataTableSkill?.prompt,
         media: [],
       }),
     );
+    expect(dataTableSkill?.prompt).toContain("mofa-notebook-data-table");
+    expect(dataTableSkill?.prompt).toContain("data_table_generate");
   });
 
   it("does not send selected notebook sources as turn media attachments", () => {
     renderStudio();
 
     fireEvent.click(screen.getByLabelText("Use notes.md as source"));
-    fireEvent.click(screen.getByRole("button", { name: "Deep Research" }));
+    fireEvent.click(screen.getByRole("button", { name: "Audio Overview" }));
 
     expect(sendMessageMock).toHaveBeenCalledWith(
       expect.objectContaining({

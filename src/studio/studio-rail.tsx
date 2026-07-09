@@ -71,7 +71,7 @@ export function StudioRail({ sessionId, historyTopic, selectedSources }: Props) 
 
       <section className="flex shrink-0 flex-col gap-3">
         <h3 className="text-lg font-medium text-text-strong">Skills</h3>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-3 gap-2">
           {STUDIO_SKILLS.map((skill) => {
             const disabled =
               skill.requiresSources === true && selectedSources.length === 0;
@@ -101,7 +101,12 @@ export function StudioRail({ sessionId, historyTopic, selectedSources }: Props) 
                 <span className="studio-skill-tile-icon">
                   <Icon size={18} />
                 </span>
-                <span className="studio-skill-tile-label">{skill.label}</span>
+                <span className="studio-skill-tile-label">
+                  {skill.label}
+                  {skill.badge && (
+                    <span className="studio-skill-tile-badge">{skill.badge}</span>
+                  )}
+                </span>
               </button>
             );
           })}
