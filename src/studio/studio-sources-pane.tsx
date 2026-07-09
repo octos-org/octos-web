@@ -3,6 +3,7 @@ import type { LucideIcon } from "lucide-react";
 import { FileText, Image, Music, Plus, Search, Table, Video } from "lucide-react";
 
 import { uploadFiles } from "@/api/chat";
+import { invokeSkillAction } from "@/api/skill-actions";
 import { useAllFiles } from "@/store/file-store";
 
 import { sourceKind, type SourceKind, type SourceRow } from "./source-media";
@@ -29,6 +30,13 @@ const KIND_ICONS: Record<SourceKind, LucideIcon> = {
   table: Table,
   text: FileText,
 };
+
+const SOURCE_IMPORT_ACTION_ID = "source.import";
+
+function fileNameFromPath(path: string, fallback: string): string {
+  const normalized = path.replace(/\\/g, "/");
+  return normalized.split("/").filter(Boolean).pop() ?? fallback;
+}
 
 export function StudioSourcesPane({
   sessionId,
@@ -72,18 +80,24 @@ export function StudioSourcesPane({
     setUploadError(null);
     try {
       const paths = await uploadFiles(files);
+      const imported = await invokeSkillAction(sessionId, SOURCE_IMPORT_ACTION_ID, {
+        paths,
+      });
+      if (!imported.ok) {
+        const failed = imported.results?.find((result) => !result.success);
+        throw new Error(failed?.output || "Source import failed");
+      }
+      const importedPaths = imported.materialized_paths?.length
+        ? imported.materialized_paths
+        : paths;
       const now = Date.now();
-      onUploaded(
-        paths.map((path, i) => ({
-          path,
-          filename: files[i]?.name ?? path.split("/").pop() ?? path,
-          timestamp: now,
-        })),
-      );
-      // Real grounding: newly uploaded sources are attached to the next
-      // send, so auto-select them (parent toggles via functional
-      // setState, so back-to-back calls in one tick all apply).
-      for (const path of paths) onToggle(path);
+      const rows = importedPaths.map((path, index) => ({
+        path,
+        filename: fileNameFromPath(path, files[index]?.name ?? path),
+        timestamp: now,
+      }));
+      onUploaded(rows);
+      for (const row of rows) onToggle(row.path);
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : "Upload failed");
     } finally {
@@ -142,7 +156,7 @@ export function StudioSourcesPane({
             {rows.length === 0
               ? loading
                 ? "Loading sources…"
-                : "No sources yet. Upload files or generate some in chat."
+                : "No sources yet. Upload files to add notebook sources."
               : "No sources match your search."}
           </div>
         ) : (
@@ -173,8 +187,8 @@ export function StudioSourcesPane({
       </div>
       {selected.length > 0 && (
         <p className="studio-kicker shrink-0">
-          {selected.length} source{selected.length === 1 ? "" : "s"} attach to
-          your next message
+          {selected.length} source{selected.length === 1 ? "" : "s"} selected for
+          notebook grounding
         </p>
       )}
     </div>

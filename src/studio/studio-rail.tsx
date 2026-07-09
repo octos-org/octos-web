@@ -14,9 +14,9 @@ interface Props {
   sessionId: string;
   historyTopic?: string;
   /**
-   * Server paths of the currently selected sources. Skill sends attach
-   * them as turn media directly — the composer's beforeSend hook never
-   * runs on this path — and their count gates requiresSources skills.
+   * Notebook source ids currently selected in the Sources pane. Their
+   * count gates source-dependent skills; the sources are already imported
+   * into the session workspace, so skill sends do not attach them as media.
    */
   selectedSources: string[];
 }
@@ -94,7 +94,7 @@ export function StudioRail({ sessionId, historyTopic, selectedSources }: Props) 
                     sessionId,
                     historyTopic,
                     text: skill.prompt,
-                    media: [...selectedSources],
+                    media: [],
                   });
                 }}
               >

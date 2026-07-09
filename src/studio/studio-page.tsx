@@ -17,7 +17,7 @@ import { loadSessionFiles } from "@/store/file-store";
 import { recordProjectOpened } from "@/store/project-store";
 import * as ThreadStore from "@/store/thread-store";
 
-import { mergeSourceMedia, type SourceRow } from "./source-media";
+import type { SourceRow } from "./source-media";
 import { StudioRail } from "./studio-rail";
 import { StudioSourcesPane } from "./studio-sources-pane";
 
@@ -193,16 +193,13 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
     );
   }, []);
 
-  // Sources grounding: checked sources ride along as turn media on the
-  // next send, deduped against anything the composer already attached.
+  // Notebook sources are imported into the session workspace up front.
+  // The center composer does not upload or attach files in Studio mode.
   const beforeSend = useCallback(
     async (request: SessionSendRequest): Promise<SessionBeforeSendResult> => {
-      return {
-        ...request,
-        media: mergeSourceMedia(request.media, selectedSources),
-      };
+      return request;
     },
-    [selectedSources],
+    [],
   );
 
   const { queueMode, adaptiveMode } = useModeState();
@@ -313,7 +310,7 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
                 </p>
               </div>
               <div className="min-h-0 flex-1 overflow-hidden">
-                <ChatThread />
+                <ChatThread allowAttachments={false} />
               </div>
               <p className="shrink-0 pb-2 text-center font-label text-[11px] tracking-[0.05em] text-muted">
                 AI responses may vary. Please verify important information.

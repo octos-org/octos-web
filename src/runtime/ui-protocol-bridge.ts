@@ -136,6 +136,8 @@ export const METHODS = {
   SESSION_WORKSPACE_GET: "session/workspace.get",
   SESSION_TITLE_SET: "session/title.set",
   SESSION_DELETE: "session/delete",
+  SKILL_ACTION_LIST: "skill/action/list",
+  SKILL_ACTION_INVOKE: "skill/action/invoke",
   SYSTEM_STATUS_GET: "system/status.get",
   CONTENT_LIST: "content/list",
   CONTENT_DELETE: "content/delete",

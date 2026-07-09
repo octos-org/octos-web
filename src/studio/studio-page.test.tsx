@@ -21,6 +21,14 @@ const threadStoreMocks = vi.hoisted(() => ({
 const uploadFilesMock = vi.hoisted(() =>
   vi.fn(async () => ["research/up.pdf"]),
 );
+const invokeSkillActionMock = vi.hoisted(() =>
+  vi.fn(async () => ({
+    action_id: "source.import",
+    ok: true,
+    materialized_paths: ["uploads/up.pdf"],
+    results: [{ success: true, output: "captured" }],
+  })),
+);
 const fileFixtures = vi.hoisted(() => [
   {
     id: "f1",
@@ -51,7 +59,12 @@ const fileFixtures = vi.hoisted(() => [
 const loadSessionFilesMock = vi.hoisted(() => vi.fn(async () => {}));
 
 vi.mock("@/components/chat-thread", () => ({
-  ChatThread: () => <div data-testid="chat-thread-stub" />,
+  ChatThread: (props: { allowAttachments?: boolean }) => (
+    <div
+      data-testid="chat-thread-stub"
+      data-allow-attachments={String(props.allowAttachments)}
+    />
+  ),
 }));
 vi.mock("@/components/ui-protocol-approval-host", () => ({
   UiProtocolApprovalHost: () => null,
@@ -76,6 +89,9 @@ vi.mock("@/store/file-store", () => ({
 }));
 vi.mock("@/api/chat", () => ({
   uploadFiles: uploadFilesMock,
+}));
+vi.mock("@/api/skill-actions", () => ({
+  invokeSkillAction: invokeSkillActionMock,
 }));
 
 import { STUDIO_SKILLS } from "./skills";
@@ -105,6 +121,13 @@ beforeEach(() => {
   loadSessionFilesMock.mockClear();
   uploadFilesMock.mockClear();
   uploadFilesMock.mockResolvedValue(["research/up.pdf"]);
+  invokeSkillActionMock.mockClear();
+  invokeSkillActionMock.mockResolvedValue({
+    action_id: "source.import",
+    ok: true,
+    materialized_paths: ["uploads/up.pdf"],
+    results: [{ success: true, output: "captured" }],
+  });
 });
 
 afterEach(() => {
@@ -122,6 +145,11 @@ describe("StudioPage", () => {
 
     expect(screen.getByTestId("studio-page")).toBeTruthy();
     expect(screen.getByTestId("chat-thread-stub")).toBeTruthy();
+    expect(
+      screen
+        .getByTestId("chat-thread-stub")
+        .getAttribute("data-allow-attachments"),
+    ).toBe("false");
     expect(screen.getByTestId("studio-sources-pane")).toBeTruthy();
     expect(screen.getByTestId("studio-rail")).toBeTruthy();
     expect(screen.getByTestId("studio-title").textContent).toBe("My Research");
@@ -158,18 +186,18 @@ describe("StudioPage", () => {
     expect(screen.queryByText(/source/, { selector: "p" })).toBeNull();
     fireEvent.click(screen.getByLabelText("Use notes.md as source"));
     expect(
-      screen.getByText(/1 source attach to your next message/),
+      screen.getByText(/1 source selected for notebook grounding/),
     ).toBeTruthy();
 
     fireEvent.click(screen.getByLabelText("Use chart.png as source"));
     expect(
-      screen.getByText(/2 sources attach to your next message/),
+      screen.getByText(/2 sources selected for notebook grounding/),
     ).toBeTruthy();
 
     // Unchecking drops it back down.
     fireEvent.click(screen.getByLabelText("Use chart.png as source"));
     expect(
-      screen.getByText(/1 source attach to your next message/),
+      screen.getByText(/1 source selected for notebook grounding/),
     ).toBeTruthy();
   });
 
@@ -209,19 +237,16 @@ describe("StudioPage", () => {
 
     fireEvent.click(dataVizEnabled);
     const dataVizSkill = STUDIO_SKILLS.find((s) => s.id === "data-viz");
-    // The selected source MUST ride along as turn media: skill sends
-    // bypass the composer (and therefore beforeSend), so the rail
-    // attaches the selection itself.
     expect(sendMessageMock).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: "web-abc",
         text: dataVizSkill?.prompt,
-        media: ["research/notes.md"],
+        media: [],
       }),
     );
   });
 
-  it("attaches the selection to every skill send, not just gated ones", () => {
+  it("does not send selected notebook sources as turn media attachments", () => {
     renderStudio();
 
     fireEvent.click(screen.getByLabelText("Use notes.md as source"));
@@ -230,12 +255,12 @@ describe("StudioPage", () => {
     expect(sendMessageMock).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: "web-abc",
-        media: ["research/notes.md"],
+        media: [],
       }),
     );
   });
 
-  it("uploads sources, lists them, and auto-selects them for grounding", async () => {
+  it("uploads sources, invokes the source import action, lists them, and auto-selects them", async () => {
     renderStudio();
 
     const input = screen.getByTestId("studio-upload-input");
@@ -247,13 +272,16 @@ describe("StudioPage", () => {
 
     await screen.findByText("up.pdf");
     expect(uploadFilesMock).toHaveBeenCalledTimes(1);
+    expect(invokeSkillActionMock).toHaveBeenCalledWith("web-abc", "source.import", {
+      paths: ["research/up.pdf"],
+    });
 
     const checkbox = screen.getByLabelText(
       "Use up.pdf as source",
     ) as HTMLInputElement;
     expect(checkbox.checked).toBe(true);
     expect(
-      screen.getByText(/1 source attach to your next message/),
+      screen.getByText(/1 source selected for notebook grounding/),
     ).toBeTruthy();
   });
 });
