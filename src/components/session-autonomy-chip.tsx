@@ -98,8 +98,17 @@ export function SessionAutonomyChip() {
 
   const nowMs = Date.now();
   const liveLoops = loops.filter((l) => isLiveLoop(l, nowMs));
+  // Dead-but-deletable (codex #263 round 2): every non-deleted record —
+  // elapsed-active, completed, expired — still counts toward the
+  // backend's 16-loops-per-session quota (`create_loop` counts
+  // `status != "deleted"`), and `loop/list` returns them all. Hiding
+  // them left no web path to free the quota; render them as
+  // delete-only rows instead.
+  const deadLoops = loops.filter((l) => !isLiveLoop(l, nowMs));
   const liveGoal = goal !== null && isLiveGoal(goal.status) ? goal : null;
-  if (liveLoops.length === 0 && liveGoal === null) return null;
+  if (liveLoops.length === 0 && liveGoal === null && deadLoops.length === 0) {
+    return null;
+  }
 
   const label =
     liveLoops.length > 0 && liveGoal !== null
@@ -110,7 +119,9 @@ export function SessionAutonomyChip() {
             ? "Loop paused"
             : "Loop"
           : `${liveLoops.length} loops`
-        : "Goal";
+        : liveGoal !== null
+          ? "Goal"
+          : `${deadLoops.length} expired`;
 
   function markBusy(id: string, value: boolean) {
     setBusy((prev) => {
@@ -165,6 +176,7 @@ export function SessionAutonomyChip() {
         type="button"
         data-testid="session-autonomy-chip"
         data-loop-count={liveLoops.length}
+        data-dead-loop-count={deadLoops.length}
         data-has-goal={liveGoal !== null ? "true" : "false"}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -217,6 +229,52 @@ export function SessionAutonomyChip() {
                 >
                   {loop.status === "paused" ? "Resume" : "Pause"}
                 </button>
+                <button
+                  type="button"
+                  data-testid={`loop-delete-${loop.loop_id}`}
+                  disabled={rowBusy}
+                  onClick={() => {
+                    if (deleteArmed) void runLoopControl(loop, "delete");
+                    else setArmed(loop.loop_id);
+                  }}
+                  className={`shrink-0 rounded-[6px] border px-2 py-0.5 text-[11px] font-medium disabled:opacity-60 ${
+                    deleteArmed
+                      ? "border-rose-400 text-rose-300"
+                      : "border-border text-muted hover:border-rose-400 hover:text-rose-300"
+                  }`}
+                >
+                  {rowBusy
+                    ? "Working…"
+                    : deleteArmed
+                      ? "Confirm delete?"
+                      : "Delete"}
+                </button>
+              </div>
+            );
+          })}
+          {deadLoops.map((loop) => {
+            const rowBusy = busy[loop.loop_id] === true;
+            const deleteArmed = armed === loop.loop_id;
+            const expiredLabel = TERMINAL_LOOP_STATUSES.has(loop.status)
+              ? loop.status
+              : "expired";
+            return (
+              <div
+                key={loop.loop_id}
+                data-testid={`loop-dead-${loop.loop_id}`}
+                className="flex items-center justify-between gap-2 rounded-[8px] px-2 py-1.5 opacity-70 hover:bg-surface"
+              >
+                <span className="min-w-0 flex-1">
+                  <span
+                    className="block truncate text-[12px] text-muted"
+                    title={loop.prompt}
+                  >
+                    {clip(loop.prompt) || loop.mode || "loop"}
+                  </span>
+                  <span className="block text-[10px] text-muted">
+                    {expiredLabel} · still counts toward the loop quota
+                  </span>
+                </span>
                 <button
                   type="button"
                   data-testid={`loop-delete-${loop.loop_id}`}

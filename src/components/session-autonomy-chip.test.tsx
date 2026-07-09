@@ -109,38 +109,91 @@ afterEach(() => {
 });
 
 describe("SessionAutonomyChip", () => {
-  it("renders nothing without live loops or goal", () => {
+  it("renders nothing without loops or goal; terminal rows become delete-only", () => {
     const harness = mountChip();
     expect(q(harness, '[data-testid="session-autonomy-chip"]')).toBeNull();
-    // Terminal loops don't count as live.
-    replaceLoops(SESSION, [makeLoop({ loop_id: "l1", status: "completed" })]);
-    act(() => {});
-    expect(q(harness, '[data-testid="session-autonomy-chip"]')).toBeNull();
+    // Terminal rows aren't LIVE — but they still count toward the
+    // backend loop quota (codex #263 round 2), so the chip renders
+    // them as delete-only cleanup entries instead of hiding them.
+    act(() => {
+      replaceLoops(SESSION, [makeLoop({ loop_id: "l1", status: "completed" })]);
+    });
+    const chip = q<HTMLButtonElement>(
+      harness,
+      '[data-testid="session-autonomy-chip"]',
+    );
+    expect(chip).toBeTruthy();
+    expect(chip?.getAttribute("data-loop-count")).toBe("0");
+    expect(chip?.getAttribute("data-dead-loop-count")).toBe("1");
+    act(() => chip?.click());
+    // Delete-only: no pause/resume toggle for a dead row.
+    expect(q(harness, '[data-testid="loop-toggle-l1"]')).toBeNull();
+    expect(q(harness, '[data-testid="loop-delete-l1"]')).toBeTruthy();
     harness.unmount();
   });
 
-  it("treats an elapsed expires_at_ms as terminal even when status is active (codex #263 P2)", () => {
+  it("treats an elapsed expires_at_ms as dead: not live, but delete-only (codex #263 P2 rounds 1-2)", () => {
     // The backend enforces expiry by SKIPPING due loops — it does not
-    // necessarily rewrite status or emit loop/completed, so an
-    // elapsed-but-"active" row must not pin the chip with dead
-    // controls.
+    // necessarily rewrite status or emit loop/completed. An
+    // elapsed-but-"active" row must not count as live (round 1) yet
+    // must stay DELETABLE because every non-deleted record still
+    // consumes the backend loop quota (round 2).
     replaceLoops(SESSION, [
       makeLoop({ loop_id: "l-exp", expires_at_ms: Date.now() - 1_000 }),
     ]);
     const harness = mountChip();
-    expect(q(harness, '[data-testid="session-autonomy-chip"]')).toBeNull();
-    // A live loop alongside it counts alone.
+    const chip = q<HTMLButtonElement>(
+      harness,
+      '[data-testid="session-autonomy-chip"]',
+    );
+    expect(chip).toBeTruthy();
+    expect(chip?.getAttribute("data-loop-count")).toBe("0");
+    expect(chip?.getAttribute("data-dead-loop-count")).toBe("1");
+    expect(chip?.textContent).toContain("expired");
+    act(() => chip?.click());
+    expect(q(harness, '[data-testid="loop-toggle-l-exp"]')).toBeNull();
+    expect(q(harness, '[data-testid="loop-delete-l-exp"]')).toBeTruthy();
+    // A live loop alongside it counts alone; both rows reachable.
     act(() => {
       replaceLoops(SESSION, [
         makeLoop({ loop_id: "l-exp", expires_at_ms: Date.now() - 1_000 }),
         makeLoop({ loop_id: "l-live", expires_at_ms: Date.now() + 60_000 }),
       ]);
     });
-    const chip = q<HTMLButtonElement>(
+    const chip2 = q<HTMLButtonElement>(
       harness,
       '[data-testid="session-autonomy-chip"]',
     );
-    expect(chip?.getAttribute("data-loop-count")).toBe("1");
+    expect(chip2?.getAttribute("data-loop-count")).toBe("1");
+    expect(chip2?.getAttribute("data-dead-loop-count")).toBe("1");
+    harness.unmount();
+  });
+
+  it("deletes a dead loop through the delete-only row", async () => {
+    controlLoop.mockResolvedValue({ ok: true, status: "deleted" });
+    replaceLoops(SESSION, [
+      makeLoop({ loop_id: "l-dead", expires_at_ms: Date.now() - 1_000 }),
+    ]);
+    const harness = mountChip();
+    act(() =>
+      q<HTMLButtonElement>(
+        harness,
+        '[data-testid="session-autonomy-chip"]',
+      )?.click(),
+    );
+    act(() =>
+      q<HTMLButtonElement>(harness, '[data-testid="loop-delete-l-dead"]')?.click(),
+    );
+    expect(controlLoop).not.toHaveBeenCalled();
+    await act(async () => {
+      q<HTMLButtonElement>(
+        harness,
+        '[data-testid="loop-delete-l-dead"]',
+      )?.click();
+    });
+    expect(controlLoop).toHaveBeenCalledWith("l-dead", "delete");
+    // Optimistic removal frees the row; nothing else live → chip gone.
+    expect(q(harness, '[data-testid="session-autonomy-chip"]')).toBeNull();
     harness.unmount();
   });
 
