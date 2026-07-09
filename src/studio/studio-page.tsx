@@ -313,6 +313,18 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
     );
   }, []);
 
+  const selectedSourceIds = useMemo(
+    () =>
+      selectedSources
+        .map((path) =>
+          uploadedSources.find(
+            (row) => row.sourceId && selectedPathMatchesRow(path, row),
+          )?.sourceId,
+        )
+        .filter((sourceId): sourceId is string => Boolean(sourceId)),
+    [selectedSources, uploadedSources],
+  );
+
   // Notebook sources are imported into the session workspace up front.
   // The center composer does not upload or attach files in Studio mode.
   const beforeSend = useCallback(
@@ -453,6 +465,7 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
                 <StudioRail
                   sessionId={projectId}
                   selectedSources={selectedSources}
+                  selectedSourceIds={selectedSourceIds}
                 />
               </aside>
             )}

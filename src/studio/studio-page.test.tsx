@@ -273,27 +273,48 @@ describe("StudioPage", () => {
     }
   });
 
-  it("sends the notebook skill prompt through the bridge when a tile is clicked", () => {
+  it("invokes a notebook skill action with selected imported source ids", async () => {
+    listSkillActionJobsMock.mockResolvedValueOnce([readySourceJob()]);
+    invokeSkillActionMock.mockResolvedValueOnce({
+      action_id: "quiz.generate",
+      ok: true,
+      execution: "background",
+      queued: 1,
+      batch_id: "batch-quiz",
+      jobs: [
+        {
+          job_id: "job-quiz",
+          batch_id: "batch-quiz",
+          profile_id: "alan0x",
+          session_id: "web-abc",
+          action_id: "quiz.generate",
+          skill_id: "mofa-notebook-study",
+          status: "running",
+          created_at: "2026-07-09T01:00:00Z",
+          updated_at: "2026-07-09T01:00:00Z",
+        },
+      ],
+    });
+
     renderStudio();
+    await screen.findByText("photo.jpg");
 
-    const mindMap = STUDIO_SKILLS.find((s) => s.id === "mind-map");
-    expect(mindMap).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "Quiz" }));
 
-    fireEvent.click(screen.getByLabelText("Use notes.md as source"));
-    fireEvent.click(screen.getByRole("button", { name: "Mind Map" }));
-    expect(sendMessageMock).toHaveBeenCalledTimes(1);
-    expect(sendMessageMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionId: "web-abc",
-        text: mindMap?.prompt,
-        media: [],
-      }),
-    );
-    expect(mindMap?.prompt).toContain("mofa-notebook-mindmap");
-    expect(mindMap?.prompt).toContain("mindmap_generate");
+    await waitFor(() => {
+      expect(invokeSkillActionMock).toHaveBeenCalledWith(
+        "web-abc",
+        "quiz.generate",
+        { source_ids: ["photo"] },
+      );
+    });
+    expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(
+      within(screen.getByTestId("studio-rail")).getByText("Running"),
+    ).toBeTruthy();
   });
 
-  it("disables requiresSources skills until a source is selected", () => {
+  it("disables source-required action skills until a source is selected", () => {
     renderStudio();
 
     const dataTable = screen.getByRole("button", {
@@ -302,39 +323,31 @@ describe("StudioPage", () => {
     expect(dataTable.disabled).toBe(true);
 
     fireEvent.click(dataTable);
-    expect(sendMessageMock).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByLabelText("Use notes.md as source"));
-    const dataTableEnabled = screen.getByRole("button", {
-      name: "Data Table",
-    }) as HTMLButtonElement;
-    expect(dataTableEnabled.disabled).toBe(false);
-
-    fireEvent.click(dataTableEnabled);
-    const dataTableSkill = STUDIO_SKILLS.find((s) => s.id === "data-table");
-    expect(sendMessageMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionId: "web-abc",
-        text: dataTableSkill?.prompt,
-        media: [],
-      }),
-    );
-    expect(dataTableSkill?.prompt).toContain("mofa-notebook-data-table");
-    expect(dataTableSkill?.prompt).toContain("data_table_generate");
+    expect(invokeSkillActionMock).not.toHaveBeenCalled();
   });
 
-  it("does not send selected notebook sources as turn media attachments", () => {
+  it("does not send selected notebook sources as chat turn media attachments", async () => {
+    listSkillActionJobsMock.mockResolvedValueOnce([readySourceJob()]);
+    invokeSkillActionMock.mockResolvedValueOnce({
+      action_id: "mindmap.generate",
+      ok: true,
+      execution: "background",
+      queued: 0,
+      jobs: [],
+    });
     renderStudio();
+    await screen.findByText("photo.jpg");
 
-    fireEvent.click(screen.getByLabelText("Use notes.md as source"));
-    fireEvent.click(screen.getByRole("button", { name: "Audio Overview" }));
+    fireEvent.click(screen.getByRole("button", { name: "Mind Map" }));
 
-    expect(sendMessageMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionId: "web-abc",
-        media: [],
-      }),
+    await waitFor(() =>
+      expect(invokeSkillActionMock).toHaveBeenCalledWith(
+        "web-abc",
+        "mindmap.generate",
+        { source_ids: ["photo"] },
+      ),
     );
+    expect(sendMessageMock).not.toHaveBeenCalled();
   });
 
   it("uploads sources, invokes the source import action, lists them, and auto-selects them", async () => {
