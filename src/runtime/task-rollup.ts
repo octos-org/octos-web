@@ -89,14 +89,19 @@ export function expandRolledGroup(
  *   - null      → no member carries this call id (store not hydrated);
  *                 caller falls back to the event's own state.
  *
- * Outcome rule (codex round 4): a pipeline can RECOVER from a node
+ * Outcome rule (codex rounds 4–5): a pipeline can RECOVER from a node
  * failure (failure edges, retries, `continue_on_error`) — the failed
  * `pipeline:*` child row is retained in the store while the parent
- * settles successfully. The parent's outcome is therefore authoritative
- * when a parent member exists (the LAST parent in list order wins, so a
- * relaunch sharing the call id supersedes its failed predecessor);
- * child aggregation — any failed member fails the call — is the
- * fallback for the orphan case where only children remain.
+ * settles successfully. Within a pipeline FAMILY the parent's outcome
+ * is therefore authoritative, and the NEWEST parent by `started_at`
+ * wins so a relaunch sharing the call id supersedes its failed
+ * predecessor (`TaskStore.getTasks` orders newest-first, so list
+ * position must NOT be trusted — round-5 P1). Child aggregation — any
+ * failed member fails the call — covers the orphan case where only
+ * children remain. NON-pipeline groups (unrelated tasks sharing a call
+ * id, explicitly supported by the rollup) keep any-failure
+ * aggregation: no member is a "parent" that can mask another member's
+ * failure (round-5 P2).
  */
 export function aggregateCallStatus(
   tasks: BackgroundTaskInfo[],
@@ -104,19 +109,32 @@ export function aggregateCallStatus(
 ): "active" | "failed" | "settled" | null {
   let sawMember = false;
   let sawFailed = false;
+  let sawPipeline = false;
   let parent: BackgroundTaskInfo | null = null;
   for (const t of tasks) {
     if (t.tool_call_id !== toolCallId) continue;
     sawMember = true;
     if (t.status === "spawned" || t.status === "running") return "active";
-    if (!isPipelineChild(t)) parent = t;
     if (t.status === "failed") sawFailed = true;
+    const child = isPipelineChild(t);
+    if (child || isPipelineParent(t)) sawPipeline = true;
+    // Track the newest parent-capable member by timestamp. Ties (and
+    // unparseable timestamps) keep the FIRST seen, which is the newest
+    // under the store's newest-first ordering.
+    if (!child && (parent === null || startedAtMs(t) > startedAtMs(parent))) {
+      parent = t;
+    }
   }
   if (!sawMember) return null;
-  if (parent !== null) {
+  if (sawPipeline && parent !== null) {
     return parent.status === "failed" ? "failed" : "settled";
   }
   return sawFailed ? "failed" : "settled";
+}
+
+function startedAtMs(task: BackgroundTaskInfo): number {
+  const ms = Date.parse(task.started_at);
+  return Number.isNaN(ms) ? 0 : ms;
 }
 
 /**

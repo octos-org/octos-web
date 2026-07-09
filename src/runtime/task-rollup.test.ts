@@ -367,22 +367,67 @@ describe("aggregateCallStatus", () => {
     expect(aggregateCallStatus(tasks, CALL)).toBe("failed");
   });
 
-  it("the latest parent wins over a failed predecessor sharing the call id (relaunch)", () => {
+  it("the newest parent by started_at wins over a failed predecessor, regardless of list order", () => {
+    // codex round 5 P1: TaskStore.getTasks orders newest-first, so list
+    // position must not decide — a relaunched parent must supersede its
+    // failed predecessor under BOTH orderings.
+    const older = makeTask({
+      id: "parent-old",
+      tool_name: "run_pipeline",
+      tool_call_id: CALL,
+      status: "failed",
+      started_at: "2026-07-10T00:00:00Z",
+    });
+    const newer = makeTask({
+      id: "parent-new",
+      tool_name: "run_pipeline",
+      tool_call_id: CALL,
+      status: "completed",
+      started_at: "2026-07-10T01:00:00Z",
+    });
+    // Production (store) ordering: newest first.
+    expect(aggregateCallStatus([newer, older], CALL)).toBe("settled");
+    // Chronological ordering: oldest first.
+    expect(aggregateCallStatus([older, newer], CALL)).toBe("settled");
+    // Inverse case: the RELAUNCH failed while the predecessor succeeded.
+    const newerFailed = makeTask({
+      id: "parent-new-f",
+      tool_name: "run_pipeline",
+      tool_call_id: CALL,
+      status: "failed",
+      started_at: "2026-07-10T01:00:00Z",
+    });
+    const olderOk = makeTask({
+      id: "parent-old-ok",
+      tool_name: "run_pipeline",
+      tool_call_id: CALL,
+      status: "completed",
+      started_at: "2026-07-10T00:00:00Z",
+    });
+    expect(aggregateCallStatus([newerFailed, olderOk], CALL)).toBe("failed");
+  });
+
+  it("keeps any-failure aggregation for non-pipeline groups (no parent masking)", () => {
+    // codex round 5 P2: unrelated ordinary tasks sharing a call id have
+    // no parent/child relationship — one member's success must not mask
+    // another member's failure.
     const tasks = [
       makeTask({
-        id: "parent-old",
-        tool_name: "run_pipeline",
-        tool_call_id: CALL,
-        status: "failed",
-      }),
-      makeTask({
-        id: "parent-new",
-        tool_name: "run_pipeline",
+        id: "ord-ok",
+        tool_name: "podcast_generate",
         tool_call_id: CALL,
         status: "completed",
+        started_at: "2026-07-10T01:00:00Z",
+      }),
+      makeTask({
+        id: "ord-fail",
+        tool_name: "fm_tts",
+        tool_call_id: CALL,
+        status: "failed",
+        started_at: "2026-07-10T00:00:00Z",
       }),
     ];
-    expect(aggregateCallStatus(tasks, CALL)).toBe("settled");
+    expect(aggregateCallStatus(tasks, CALL)).toBe("failed");
   });
 
   it("returns null when no member carries the call id", () => {
