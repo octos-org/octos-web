@@ -36,7 +36,8 @@ import {
 } from "lucide-react";
 import { useSession } from "@/runtime/session-context";
 import {
-  asReasoningEffortLevel,
+  asStoredEffort,
+  KNOWN_EFFORT_LEVELS,
   setThinkingEffort,
   useThinkingEffort,
 } from "@/store/thinking-store";
@@ -2174,7 +2175,7 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
                 onChange={(e) =>
                   setThinkingEffort(
                     currentSessionId,
-                    asReasoningEffortLevel(e.target.value),
+                    asStoredEffort(e.target.value),
                     historyTopic,
                   )
                 }
@@ -2185,6 +2186,18 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
                 <option value="medium">Thinking: medium</option>
                 <option value="high">Thinking: high</option>
                 <option value="max">Thinking: max</option>
+                {/* A newer server can persist a tier this client does
+                    not know; keep it selectable so it round-trips
+                    verbatim instead of being destroyed by omission
+                    (codex #261 P2). */}
+                {thinkingEffort !== null &&
+                  !(KNOWN_EFFORT_LEVELS as readonly string[]).includes(
+                    thinkingEffort,
+                  ) && (
+                    <option value={thinkingEffort}>
+                      Thinking: {thinkingEffort}
+                    </option>
+                  )}
               </select>
             </label>
             {(queueMode || adaptiveMode || queueDepth > 0) && (

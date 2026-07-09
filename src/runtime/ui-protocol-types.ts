@@ -81,8 +81,11 @@ export interface TurnStartExtras {
    *  stored override ("default"); server-initiated continuations fall
    *  back to the stored value. So once the user picks a non-default
    *  effort the send path must attach it to EVERY turn (see
-   *  `buildTurnStartExtras` reading the thinking store). */
-  reasoning_effort?: ReasoningEffortLevel;
+   *  `buildTurnStartExtras` reading the thinking store).
+   *  Typed wider than the known union: a NEWER server may have
+   *  persisted a tier this client does not know, and it must
+   *  round-trip verbatim rather than be destroyed by omission. */
+  reasoning_effort?: ReasoningEffortLevel | (string & {});
 }
 
 /** Wire values of `octos_core::ui_protocol::ReasoningEffortLevel`
@@ -97,8 +100,9 @@ export interface SessionOpenedResult {
   panes?: unknown;
   /** Server-persisted per-session reasoning effort, surfaced on the
    *  open ack so a (re)connecting client restores its thinking
-   *  selector. Absent/null when the session never set one. */
-  reasoning_effort?: ReasoningEffortLevel | null;
+   *  selector. Absent/null when the session never set one. May carry
+   *  a tier newer than this client's known union. */
+  reasoning_effort?: ReasoningEffortLevel | (string & {}) | null;
 }
 
 export interface SessionOpenResult {

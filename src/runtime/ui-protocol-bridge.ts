@@ -45,6 +45,7 @@ import type {
   RouterStatusEvent,
   RpcErrorPayload,
   SessionHydrateResult,
+  SessionOpenedResult,
   SessionOpenResult,
   TaskOutputDeltaEvent,
   TaskUpdatedEvent,

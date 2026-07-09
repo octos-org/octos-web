@@ -18,7 +18,10 @@
  */
 
 import * as ThreadStore from "@/store/thread-store";
-import { getThinkingEffort } from "@/store/thinking-store";
+import {
+  getThinkingEffort,
+  whenThinkingSeeded,
+} from "@/store/thinking-store";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { getActiveBridge, startBridgeForSession } from "./ui-protocol-runtime";
 import { BridgeStoppedError, BridgeTimeoutError } from "./ui-protocol-bridge";
@@ -636,6 +639,12 @@ async function sendMessageV1(
     // from the populated `SendOptions` fields. The bridge serialises
     // only the populated extras onto the wire, so a text-only send
     // produces the same bytes a pre-β-1 build did.
+    // codex #261 P2: a send racing the `session/open` handshake must not
+    // serialise its frame before the server-persisted thinking effort has
+    // been observed — the frame would omit `reasoning_effort` and the
+    // server treats user-turn omission as "clear the stored override".
+    // Bounded fail-open (3s) so a broken handshake can't wedge sends.
+    await whenThinkingSeeded(opts.sessionId, opts.historyTopic);
     const extras = buildTurnStartExtras(opts);
     const result = await bridge.sendTurn(
       clientMessageId,

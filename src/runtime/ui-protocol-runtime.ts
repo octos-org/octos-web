@@ -19,7 +19,8 @@ import {
   suppressPendingDeltasForReplay,
 } from "@/store/thread-store";
 import {
-  asReasoningEffortLevel,
+  asStoredEffort,
+  markThinkingSeeded,
   setThinkingEffort,
 } from "@/store/thinking-store";
 
@@ -200,17 +201,28 @@ export async function startBridgeForSession(
   // Thinking-effort parity: seed the per-session selector from the
   // server-persisted value carried on every `session/open` ack, so a
   // reload/reconnect restores the user's `/thinking`-equivalent choice.
-  // Same defensive-typeof guard as `onReopened` for pre-dating mocks.
+  // ROOT scope only (codex #261 P1): the bridge's `session/open` sends
+  // the bare session id, so `opened.reasoning_effort` describes the
+  // ROOT bucket — applying it to a topic key would restore the wrong
+  // value and let the topic's next turn overwrite the root's choice.
+  // Topic scopes are marked seeded-without-value instead (no restore is
+  // possible over the current wire; selector still works live).
+  // Same defensive-typeof guard as `onReopened` for pre-dating mocks —
+  // those are marked seeded too so sends never wait on a seed that
+  // cannot arrive.
   let unsubscribeSessionOpened: () => void = () => {};
-  if (typeof bridge.onSessionOpened === "function") {
+  const scopeHasTopic = Boolean(topic && topic.trim() !== "");
+  if (!scopeHasTopic && typeof bridge.onSessionOpened === "function") {
     unsubscribeSessionOpened = bridge.onSessionOpened((opened) => {
       if (myGeneration !== generation) return;
       setThinkingEffort(
         sessionId,
-        asReasoningEffortLevel(opened.reasoning_effort),
+        asStoredEffort(opened.reasoning_effort),
         topic,
       );
     });
+  } else {
+    markThinkingSeeded(sessionId, topic);
   }
 
   active = {
@@ -437,4 +449,8 @@ export function __setActiveBridgeForTest(
     unsubscribeReopened: () => {},
     unsubscribeSessionOpened: () => {},
   };
+  // Injected bridges skip the real `session/open` handshake, so mark the
+  // thinking-effort scope seeded — otherwise every test send would stall
+  // on `whenThinkingSeeded`'s fail-open timeout.
+  markThinkingSeeded(sessionId, topic);
 }
