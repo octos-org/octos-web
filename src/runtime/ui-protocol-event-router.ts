@@ -941,6 +941,25 @@ export function handleTaskUpdated(
     case "completed":
     case "cancelled":
     case "canceled": {
+      // Pipeline members share one tool card (`resolvedToolCallId`) but
+      // `task/updated` fires per raw task, and a cancel can terminate one
+      // member while siblings keep running — an explicitly supported
+      // task/cancel outcome. Settling the card on the FIRST terminal
+      // member freezes it "complete" while the dock still shows active
+      // work, and later running frames never restore it (codex round 2).
+      // Defer the terminal transition until no active sibling shares the
+      // call id. `mergeLiveTask` above already flipped THIS task's store
+      // row terminal, so an active match is a different, still-live member.
+      const hasActiveSibling = TaskStore.getTasks(
+        cfg.sessionId,
+        cfg.topic,
+      ).some(
+        (t) =>
+          t.id !== event.task_id &&
+          t.tool_call_id === resolvedToolCallId &&
+          (t.status === "spawned" || t.status === "running"),
+      );
+      if (hasActiveSibling) break;
       if (hostThreadId) {
         ThreadStore.setToolCallStatus(
           hostThreadId,

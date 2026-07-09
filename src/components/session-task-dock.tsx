@@ -5,7 +5,7 @@ import { useSession } from "@/runtime/session-context";
 import { getActiveBridge } from "@/runtime/ui-protocol-runtime";
 import {
   displayLabelForRolled,
-  rollupKey,
+  expandRolledGroup,
   rollupTasksByCall,
 } from "@/runtime/task-rollup";
 
@@ -109,10 +109,12 @@ export function SessionTaskIndicator() {
   // Cancel EVERY active raw task in the representative's group, not just the
   // representative — otherwise a sibling immediately becomes the next
   // representative and one Cancel doesn't clear the row (codex review).
+  // `expandRolledGroup` mirrors the rollup's collapse rule: ONLY pipeline
+  // families expand; unrelated tasks sharing a `tool_call_id` render as
+  // separate rows, so their Cancel must stay per-row (codex round 2).
   async function cancelGroup(representative: TaskInfo) {
-    const key = rollupKey(representative);
-    const members = currentTasks.filter(
-      (t) => isTaskActive(t) && rollupKey(t) === key,
+    const members = expandRolledGroup(representative, currentTasks).filter(
+      isTaskActive,
     );
     const ids = members.length > 0 ? members : [representative];
     setCancelling((prev) => {

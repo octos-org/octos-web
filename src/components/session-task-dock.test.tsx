@@ -212,6 +212,61 @@ describe("SessionTaskIndicator — cancel", () => {
     harness.unmount();
   });
 
+  it("cancels only the clicked row when unrelated tasks share a tool_call_id", async () => {
+    // codex round 2 P1: `rollupTasksByCall` deliberately renders unrelated
+    // NON-pipeline tasks as separate rows even when they share a
+    // `tool_call_id`. Cancel on one row must not destroy the other row's
+    // task — group expansion applies to pipeline families only.
+    cancelTask.mockResolvedValue({ task_id: "x", status: "cancelled" });
+    const shared = "tc-shared";
+    TaskStore.replaceTasks(SESSION, [
+      {
+        id: "podcast-a",
+        tool_name: "podcast_generate",
+        tool_call_id: shared,
+        status: "running",
+        started_at: new Date(2026, 0, 1, 0, 0, 0).toISOString(),
+        completed_at: null,
+        output_files: [],
+        error: null,
+      },
+      {
+        id: "voice-b",
+        tool_name: "fm_tts",
+        tool_call_id: shared,
+        status: "running",
+        started_at: new Date(2026, 0, 1, 0, 0, 1).toISOString(),
+        completed_at: null,
+        output_files: [],
+        error: null,
+      },
+    ]);
+    const harness = mount(
+      <SessionContext.Provider value={makeSessionCtx()}>
+        <SessionTaskIndicator />
+      </SessionContext.Provider>,
+    );
+    const indicator = harness.container.querySelector(
+      '[data-testid="session-task-indicator"]',
+    ) as HTMLButtonElement;
+    // Non-pipeline group does NOT collapse: both rows visible.
+    expect(indicator.getAttribute("data-task-count")).toBe("2");
+    act(() => indicator.click());
+    const cancelBtn = harness.container.querySelector(
+      '[data-testid="cancel-task-podcast-a"]',
+    ) as HTMLButtonElement;
+    expect(cancelBtn).toBeTruthy();
+    expect(
+      harness.container.querySelector('[data-testid="cancel-task-voice-b"]'),
+    ).toBeTruthy();
+    await act(async () => {
+      cancelBtn.click();
+    });
+    // ONLY the clicked row's task was cancelled.
+    expect(cancelTask.mock.calls.map((c) => c[0])).toEqual(["podcast-a"]);
+    harness.unmount();
+  });
+
   it("keeps the task active when the server reports it still running", async () => {
     cancelTask.mockResolvedValue({ task_id: "task-0", status: "running" });
     seedTasks(1);

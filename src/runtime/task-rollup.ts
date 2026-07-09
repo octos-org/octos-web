@@ -45,14 +45,32 @@ function isPipelineParent(task: BackgroundTaskInfo): boolean {
 }
 
 /**
- * Synthesize a rollup key that never collides across null entries. Exported
- * so a caller can recover every raw member behind a rolled-up representative
- * (e.g. to cancel a whole pipeline group, not just its representative).
+ * Synthesize a rollup key that never collides across null entries.
  */
 export function rollupKey(task: BackgroundTaskInfo): string {
   return task.tool_call_id != null
     ? `${CALL_TAG}${task.tool_call_id}`
     : `${NULL_CALL_TAG}${task.id}`;
+}
+
+/**
+ * Recover the raw tasks behind a rendered row. Mirrors the collapse rule
+ * in `rollupTasksByCall` exactly: only pipeline families fold into one
+ * representative, so only they expand back out. A non-pipeline task
+ * renders 1:1 even when it shares a `tool_call_id` with unrelated work —
+ * expanding those by key alone would let one row act on another visible
+ * row's task (codex review: Cancel on either row destroyed both).
+ */
+export function expandRolledGroup(
+  representative: BackgroundTaskInfo,
+  tasks: BackgroundTaskInfo[],
+): BackgroundTaskInfo[] {
+  const key = rollupKey(representative);
+  const members = tasks.filter((t) => rollupKey(t) === key);
+  const isPipelineGroup = members.some(
+    (t) => isPipelineParent(t) || isPipelineChild(t),
+  );
+  return isPipelineGroup ? members : [representative];
 }
 
 /**

@@ -597,6 +597,71 @@ describe("router event mapping", () => {
     expect(terminalEvt!.detail.message).toBe("done");
   });
 
+  it("task/updated cancelled for one pipeline member defers card terminalization until the last sibling ends", () => {
+    // codex round 2 P2: pipeline members share one tool call, but
+    // `task/updated` fires per raw task. Cancelling one member while a
+    // sibling keeps running (a supported task/cancel outcome) must NOT
+    // settle the shared card — later running frames never restore it.
+    // Terminalize only when no active sibling remains on the call.
+    seedThread("cmid-sib");
+    const dispatched: Event[] = [];
+    const cfg = {
+      sessionId: SESSION,
+      dispatchEvent: (e: Event) => dispatched.push(e),
+    };
+    const shared = "tc-pipe-sib";
+    const base = {
+      started_at: new Date(2026, 0, 1).toISOString(),
+      completed_at: null,
+      output_files: [],
+      error: null,
+    };
+    TaskStore.replaceTasks(SESSION, [
+      {
+        id: "sib-a",
+        tool_name: "pipeline:analyze",
+        tool_call_id: shared,
+        status: "running",
+        ...base,
+      },
+      {
+        id: "sib-b",
+        tool_name: "pipeline:synthesize",
+        tool_call_id: shared,
+        status: "running",
+        ...base,
+      },
+    ]);
+    const terminalFrames = () =>
+      dispatched
+        .filter((e) => e.type === "crew:tool_progress")
+        .map((e) => e as CustomEvent)
+        .filter((e) => e.detail.terminal === true);
+    handleTaskUpdated(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-sib",
+      task_id: "sib-a",
+      tool_call_id: shared,
+      state: "cancelled",
+    } as TaskUpdatedEvent);
+    // Sibling sib-b still running on the same call — no terminal frame yet.
+    expect(terminalFrames()).toHaveLength(0);
+    // The cancelled member's OWN store row still went terminal (its dock
+    // row clears); only the shared card transition is deferred.
+    expect(
+      TaskStore.getTasks(SESSION).find((t) => t.id === "sib-a")?.status,
+    ).toBe("completed");
+    handleTaskUpdated(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-sib",
+      task_id: "sib-b",
+      tool_call_id: shared,
+      state: "cancelled",
+    } as TaskUpdatedEvent);
+    // Last active member gone → the shared card terminalizes now.
+    expect(terminalFrames()).toHaveLength(1);
+  });
+
   it("task/updated running passes through new labels (state-only dedupe would suppress spinner refresh)", () => {
     // Codex round-3: a stream of `running` updates with refreshed
     // `title`/`runtime_detail` values must reach the lifted spinner.
