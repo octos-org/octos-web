@@ -364,7 +364,12 @@ describe("rollbackSessionTurns", () => {
     expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(false);
   });
 
-  it("applyVoiceTranscript adopts an orphan bucket", () => {
+  it("applyVoiceTranscript fills an orphan but leaves the rewind gate closed", () => {
+    // Rounds 3→5: a transcript proves the turn exists but carries no
+    // ORDER (no persisted timestamp/seq), so it must not open the
+    // rewind gate — the persisted user echo that follows carries both
+    // and adopts via the order-restoring path. Real voice turns are
+    // minted by addUserMessage and were never placeholders.
     ThreadStore.addUserMessage(SESSION, {
       text: "anchor",
       clientMessageId: "cmid-anchor",
@@ -378,6 +383,16 @@ describe("rollbackSessionTurns", () => {
       "what I said",
     );
     expect(applied).toBe(true);
+    expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(true);
+    // The persisted echo (timestamp + seq) is what adopts it.
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 7,
+      role: "user",
+      content: "what I said",
+      client_message_id: "orphan-voice",
+      thread_id: "orphan-voice",
+      timestamp: "2026-07-10T00:00:06Z",
+    } as never);
     expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(false);
   });
 
@@ -483,6 +498,88 @@ describe("rollbackSessionTurns", () => {
       ],
     });
     expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(true);
+  });
+
+  it("persisted-echo adoption re-anchors the orphan's order (codex round 5 P1)", () => {
+    // Newer real prompt first; late stream mints the orphan AFTER it.
+    ThreadStore.addUserMessage(SESSION, {
+      text: "newer prompt",
+      clientMessageId: "cmid-new5",
+    });
+    ThreadStore.appendAssistantToken("cmid-old5", "late stream");
+    expect(ThreadStore.getThreads(SESSION).map((t) => t.id)).toEqual([
+      "cmid-new5",
+      "cmid-old5",
+    ]);
+    // The persisted user echo carries the true (older) order.
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 1,
+      role: "user",
+      content: "older prompt",
+      client_message_id: "cmid-old5",
+      thread_id: "cmid-old5",
+      timestamp: "2020-01-01T00:00:00Z",
+    } as never);
+    expect(ThreadStore.getThreads(SESSION).map((t) => t.id)).toEqual([
+      "cmid-old5",
+      "cmid-new5",
+    ]);
+    expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(false);
+  });
+
+  it("keeps the gate closed on an equal-timestamp tie without a seq tiebreak (codex round 5 P2)", () => {
+    // Sibling built by replay with a known timestamp but NO seq
+    // (messages_page strips it) …
+    ThreadStore.replayHistory(SESSION, [
+      {
+        role: "user",
+        content: "sibling",
+        client_message_id: "cmid-sib",
+        thread_id: "cmid-sib",
+        timestamp: "2026-07-10T00:00:05Z",
+      },
+    ] as never);
+    ThreadStore.appendAssistantToken("cmid-tie", "late stream");
+    // …and the echo lands in the SAME millisecond: placement between
+    // the two is a guess — the gate must stay closed.
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 4,
+      role: "user",
+      content: "tied prompt",
+      client_message_id: "cmid-tie",
+      thread_id: "cmid-tie",
+      timestamp: "2026-07-10T00:00:05Z",
+    } as never);
+    expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(true);
+  });
+
+  it("breaks an equal-timestamp tie by seq when both sides carry one (codex round 5 P2)", () => {
+    ThreadStore.replayHistory(SESSION, [
+      {
+        seq: 3,
+        role: "user",
+        content: "sibling",
+        client_message_id: "cmid-sib2",
+        thread_id: "cmid-sib2",
+        timestamp: "2026-07-10T00:00:05Z",
+      },
+    ] as never);
+    ThreadStore.appendAssistantToken("cmid-tie2", "late stream");
+    // Echo ties on timestamp but carries seq 1 < 3 → placed BEFORE the
+    // sibling, gate opens.
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 1,
+      role: "user",
+      content: "tied prompt",
+      client_message_id: "cmid-tie2",
+      thread_id: "cmid-tie2",
+      timestamp: "2026-07-10T00:00:05Z",
+    } as never);
+    expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(false);
+    expect(ThreadStore.getThreads(SESSION).map((t) => t.id)).toEqual([
+      "cmid-tie2",
+      "cmid-sib2",
+    ]);
   });
 
   it("treats provenance placeholders — not empty-shaped rows — as non-turns", () => {

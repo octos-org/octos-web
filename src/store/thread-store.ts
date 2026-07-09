@@ -2851,22 +2851,15 @@ function mergeHydrateMediaIntoExisting(
       // `persisted_at` and REINSERT before clearing provenance; with
       // no usable timestamp the gate stays closed (a later replay or
       // persisted echo carries order and adopts then).
-      if (thread.placeholderOrigin === true) {
-        const persistedAtMs = row.persisted_at
-          ? Date.parse(row.persisted_at)
-          : Number.NaN;
-        if (Number.isFinite(persistedAtMs) && persistedAtMs > 0) {
-          if (thread.userMsg.timestamp !== persistedAtMs) {
-            thread.userMsg = { ...thread.userMsg, timestamp: persistedAtMs };
-            const idx = state.threads.indexOf(thread);
-            if (idx !== -1) {
-              state.threads.splice(idx, 1);
-              insertThreadInTimestampOrder(state, thread);
-            }
-          }
-          markThreadAdopted(thread);
-          changed = true;
-        }
+      if (
+        adoptPlaceholderWithOrder(state, thread, {
+          timestampMs: row.persisted_at
+            ? Date.parse(row.persisted_at)
+            : Number.NaN,
+          seq: typeof row.seq === "number" ? row.seq : undefined,
+        })
+      ) {
+        changed = true;
       }
       continue;
     }
@@ -3435,8 +3428,12 @@ export function applyVoiceTranscript(
     ...thread.userMsg,
     text,
   };
-  // A transcript proves the user turn exists.
-  markThreadAdopted(thread);
+  // NOTE (codex #262 rounds 3→5): a transcript proves the user turn
+  // exists but carries NO order information (no persisted timestamp or
+  // seq), so it must not open the rewind gate on a true orphan — the
+  // persisted user echo that follows carries both and adopts through
+  // `adoptPlaceholderWithOrder`. Real voice turns are minted by
+  // `addUserMessage` and were never placeholders.
   notify();
   return true;
 }
@@ -3578,10 +3575,20 @@ export function appendPersistedMessage(
     // persisted echo carries the ASR transcript, so keep local media while
     // filling the transcript in.
     // A persisted USER record is authoritative proof of turn-ness —
-    // clear provenance even when the local bubble already has text
-    // (e.g. an ASR/hydrate-filled orphan), or the scope's rewind gate
-    // sticks closed forever (codex #262 round 3).
-    const adopted = markThreadAdopted(thread);
+    // adopt even when the local bubble already has text (an
+    // ASR/hydrate-filled orphan; codex #262 round 3). Adoption goes
+    // through the ORDER-restoring helper (round 5 P1): the orphan sits
+    // at event-arrival time, and clearing the gate without reinserting
+    // it at message.timestamp leaves [newer, older] so a rewind on the
+    // newer bubble deletes an extra turn.
+    const adopted = state
+      ? adoptPlaceholderWithOrder(state, thread, {
+          timestampMs: message.timestamp
+            ? Date.parse(message.timestamp)
+            : Number.NaN,
+          seq: typeof message.seq === "number" ? message.seq : undefined,
+        })
+      : false;
     const built = buildResponseFromApi(message);
     if (thread.userMsg.text === "" && built.text.trim().length > 0) {
       thread.userMsg = {
@@ -3939,6 +3946,68 @@ function markThreadAdopted(thread: Thread): boolean {
   if (thread.placeholderOrigin !== true) return false;
   thread.placeholderOrigin = false;
   return true;
+}
+
+/** Adopt an orphan bucket into a KNOWN turn once its server ORDER is
+ *  establishable (codex #262 rounds 4-5). An orphan is inserted at
+ *  event-arrival time, which can place an older turn AFTER a newer
+ *  prompt; opening the rewind gate without restoring order lets the
+ *  distance-from-end math send an inflated num_turns. Re-anchors the
+ *  user root to the persisted timestamp, stamps the row seq, reinserts
+ *  by (timestamp, seq) and clears provenance. Returns false — gate
+ *  stays closed — when the row carries no usable timestamp, or when
+ *  the timestamp TIES with a sibling turn and the seq tiebreak is
+ *  unavailable on either side (sub-millisecond server timestamps
+ *  collapse under Date.parse; placement would be a guess). */
+function adoptPlaceholderWithOrder(
+  state: SessionState,
+  thread: Thread,
+  order: { timestampMs: number; seq?: number },
+): boolean {
+  if (thread.placeholderOrigin !== true) return false;
+  if (!Number.isFinite(order.timestampMs) || order.timestampMs <= 0) {
+    return false;
+  }
+  for (const other of state.threads) {
+    if (other === thread) continue;
+    if (other.userMsg.timestamp !== order.timestampMs) continue;
+    const otherSeq = other.userMsg.historySeq;
+    if (typeof order.seq !== "number" || typeof otherSeq !== "number") {
+      return false; // ambiguous tie — keep the gate closed
+    }
+  }
+  thread.userMsg = {
+    ...thread.userMsg,
+    timestamp: order.timestampMs,
+    historySeq:
+      typeof order.seq === "number" ? order.seq : thread.userMsg.historySeq,
+  };
+  const idx = state.threads.indexOf(thread);
+  if (idx !== -1) state.threads.splice(idx, 1);
+  let i = state.threads.length - 1;
+  while (i >= 0) {
+    const other = state.threads[i];
+    const otherTs = other.userMsg.timestamp;
+    if (otherTs > order.timestampMs) {
+      i -= 1;
+      continue;
+    }
+    if (otherTs === order.timestampMs) {
+      const otherSeq = other.userMsg.historySeq;
+      if (
+        typeof order.seq === "number" &&
+        typeof otherSeq === "number" &&
+        otherSeq > order.seq
+      ) {
+        i -= 1;
+        continue;
+      }
+    }
+    break;
+  }
+  state.threads.splice(i + 1, 0, thread);
+  state.byId.set(thread.id, thread);
+  return markThreadAdopted(thread);
 }
 
 /** True when ANY bucket in the scope is still an orphan placeholder.
