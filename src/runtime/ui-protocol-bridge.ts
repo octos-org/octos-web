@@ -1313,15 +1313,32 @@ function guardTurnCompleted(p: unknown): TurnCompletedEvent | null {
 function guardTurnError(p: unknown): TurnErrorEvent | null {
   if (!isPlainObject(p)) return null;
   if (!isString(p.session_id) || !isString(p.turn_id)) return null;
-  if (!isPlainObject(p.error)) return null;
-  const err = p.error;
-  if (typeof err.code !== "number" || typeof err.message !== "string") {
+
+  if (isPlainObject(p.error)) {
+    const err = p.error;
+    if (
+      (typeof err.code !== "number" && typeof err.code !== "string") ||
+      typeof err.message !== "string"
+    ) {
+      return null;
+    }
+    return {
+      session_id: p.session_id,
+      turn_id: p.turn_id,
+      error: { code: err.code, message: err.message, data: err.data },
+    };
+  }
+
+  if (
+    (typeof p.code !== "number" && typeof p.code !== "string") ||
+    typeof p.message !== "string"
+  ) {
     return null;
   }
   return {
     session_id: p.session_id,
     turn_id: p.turn_id,
-    error: { code: err.code, message: err.message, data: err.data },
+    error: { code: p.code, message: p.message },
   };
 }
 

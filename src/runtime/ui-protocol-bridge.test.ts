@@ -779,6 +779,21 @@ describe("type guards (fail-closed)", () => {
     ).toBeNull();
   });
 
+  it("accepts server turn/error payloads with top-level code and message", () => {
+    expect(
+      guards.guardTurnError({
+        session_id: "s",
+        turn_id: "t",
+        code: "agent_failed",
+        message: "LLM request failed",
+      }),
+    ).toEqual({
+      session_id: "s",
+      turn_id: "t",
+      error: { code: "agent_failed", message: "LLM request failed" },
+    });
+  });
+
   // PR fix/restore-progress-cost-meta-events guards (regression A / B)
   it("accepts a well-formed tool/started event", () => {
     const ok = guards.guardToolStarted({

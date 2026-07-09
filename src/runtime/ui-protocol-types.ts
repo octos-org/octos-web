@@ -473,7 +473,7 @@ export interface TurnCompletedEvent {
 export interface TurnErrorEvent {
   session_id: string;
   turn_id: string;
-  error: { code: number; message: string; data?: unknown };
+  error: { code: number | string; message: string; data?: unknown };
 }
 
 /**
