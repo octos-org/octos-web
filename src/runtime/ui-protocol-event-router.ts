@@ -1927,6 +1927,37 @@ export function attachRouter(
   const offUserQuestionRequested = bridge.onUserQuestionRequested((e) =>
     handleUserQuestionRequested(cfg, e),
   );
+  // UPCR-2026-026: fan the context-compaction lifecycle out as a scoped
+  // `crew:compaction` DOM event; `CompactionIndicator` consumes it the
+  // same way ThinkingIndicator consumes `crew:thinking`. Discriminate by
+  // the field unique per variant (`threshold_tokens` only on started).
+  // Optional-call: older bridge mocks/instances may predate the method
+  // (same defensive rule as `onReopened` in the runtime).
+  const offContextCompaction = bridge.onContextCompaction?.((e) => {
+    // `topic` rides every detail so `eventMatchesScope` accepts the
+    // event in topic-scoped chats (`/new <topic>` sessions) too.
+    const detail =
+      "threshold_tokens" in e
+        ? {
+            session_id: e.session_id,
+            topic: cfg.topic,
+            phase: "started" as const,
+            token_estimate: e.token_estimate,
+            threshold_tokens: e.threshold_tokens,
+            trigger: e.trigger,
+          }
+        : {
+            session_id: e.session_id,
+            topic: cfg.topic,
+            phase: "completed" as const,
+            token_estimate_before: e.token_estimate_before,
+            token_estimate_after: e.token_estimate_after,
+            retained_count: e.retained_count,
+            dropped_count: e.dropped_count,
+            error: e.error,
+          };
+    dispatch(cfg, new CustomEvent("crew:compaction", { detail }));
+  });
   const offToolStarted = bridge.onToolStarted((e) => handleToolStarted(cfg, e));
   const offToolProgress = bridge.onToolProgress((e) =>
     handleToolProgress(cfg, e),
@@ -1985,6 +2016,7 @@ export function attachRouter(
       offToolProgress();
       offToolCompleted();
       offProgressUpdated();
+      offContextCompaction?.();
       offRouterStatus();
       offRouterFailover();
       offQueueState();

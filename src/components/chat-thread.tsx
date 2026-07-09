@@ -48,6 +48,7 @@ import { sendMessage as bridgeSend } from "@/runtime/ui-protocol-send";
 import { getActiveBridge } from "@/runtime/ui-protocol-runtime";
 import { MarkdownContent } from "./markdown-renderer";
 import { ThinkingIndicator } from "./thinking-indicator";
+import { CompactionIndicator } from "./compaction-indicator";
 import { ToolProgressIndicator } from "./tool-progress-indicator";
 import { useTasks } from "@/store/task-store";
 import { SPAWN_ONLY_TOOL_NAMES } from "@/runtime/spawn-only-tools";
@@ -1240,6 +1241,11 @@ function ChatThreadV2({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-transparent">
+      {/* Mounted ONCE at thread level (codex R3): a per-bubble mount
+          duplicated the listener/timer per assistant message, and with
+          projection_v1 the preflight compaction events can arrive before
+          any bubble exists at all. Renders null when idle. */}
+      <CompactionIndicator />
       {hasThreads || hasGhosts ? (
         <ThreadList
           threads={threads}

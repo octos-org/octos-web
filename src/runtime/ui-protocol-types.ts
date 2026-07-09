@@ -408,6 +408,32 @@ export interface TurnStartedEvent {
   turn_id: string;
 }
 
+/** UPCR-2026-026: emitted immediately BEFORE a server-owned context
+ * compaction pass. `token_estimate` is the PRE-compaction size (flattened
+ * from the wire's `context_state.token_estimate` by the bridge guard);
+ * `threshold_tokens` is the limit that tripped the pass — an honest
+ * fullness denominator for the indicator bar. May arrive in the same
+ * delivery batch as the completed event (the pass is synchronous today).
+ */
+export interface ContextCompactionStartedEvent {
+  session_id: string;
+  token_estimate: number;
+  threshold_tokens: number;
+  trigger: string;
+}
+
+/** Completion record for a compaction pass (flattened from the wire's
+ * `compaction` object by the bridge guard). `token_estimate_after` is
+ * absent on failed passes (`error` set). */
+export interface ContextCompactionCompletedEvent {
+  session_id: string;
+  token_estimate_before: number;
+  token_estimate_after: number | null;
+  retained_count: number;
+  dropped_count: number;
+  error: string | null;
+}
+
 export interface TurnCompletedEvent {
   session_id: string;
   turn_id: string;

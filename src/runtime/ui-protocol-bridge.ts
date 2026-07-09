@@ -48,6 +48,8 @@ import type {
   ToolCompletedEvent,
   ToolProgressEvent,
   ToolStartedEvent,
+  ContextCompactionStartedEvent,
+  ContextCompactionCompletedEvent,
   TurnCompletedEvent,
   TurnErrorEvent,
   TurnInterruptResult,
@@ -90,6 +92,8 @@ export type {
   ToolCompletedEvent,
   ToolProgressEvent,
   ToolStartedEvent,
+  ContextCompactionStartedEvent,
+  ContextCompactionCompletedEvent,
   TurnCompletedEvent,
   TurnErrorEvent,
   TurnInterruptResult,
@@ -181,6 +185,12 @@ export const METHODS = {
   // (`ToolProgressIndicator`) lights up — the SSE bridge predecessor of
   // this surface was the sole dispatcher prior to PR #96. See
   // `crates/octos-cli/src/api/ui_protocol_progress.rs:99-363`.
+  // UPCR-2026-026 context-compaction lifecycle: `started` fires
+  // immediately before a server-owned compaction pass (may arrive in the
+  // same batch as `completed` — the pass is synchronous today);
+  // `completed` carries the before/after token estimates.
+  CONTEXT_COMPACTION_STARTED: "context/compaction_started",
+  CONTEXT_COMPACTION_COMPLETED: "context/compaction_completed",
   TOOL_STARTED: "tool/started",
   TOOL_PROGRESS: "tool/progress",
   TOOL_COMPLETED: "tool/completed",
@@ -260,6 +270,13 @@ export const UI_PROTOCOL_FEATURES = [
   // populated post-`session/open` from the negotiated `replayed_envelopes`
   // is what eliminates the N+1 bubble render after page reload.
   "state.session_hydrate.v1",
+  // UPCR-2026-026 (octos #1558) + UPCR-2026-022: the server filters the
+  // context lifecycle family (context/compaction_started,
+  // context/compaction_completed, context/normalization_reported) for
+  // clients that did not negotiate this capability — without the token
+  // the SPA's compaction indicator is unreachable in production (the
+  // same gap octos-tui#253 fixed for the TUI).
+  "context.lifecycle.v1",
 ] as const;
 
 /**
@@ -428,6 +445,13 @@ export interface UiProtocolBridge {
   onTurnLifecycle(
     handler: (
       e: TurnStartedEvent | TurnCompletedEvent | TurnErrorEvent,
+    ) => void,
+  ): () => void;
+  /** UPCR-2026-026 context-compaction lifecycle (started | completed);
+   *  discriminate by `threshold_tokens` (present only on started). */
+  onContextCompaction(
+    handler: (
+      e: ContextCompactionStartedEvent | ContextCompactionCompletedEvent,
     ) => void,
   ): () => void;
   onApprovalRequested(handler: (e: ApprovalRequestedEvent) => void): () => void;
@@ -1072,6 +1096,41 @@ function guardTaskOutputDelta(p: unknown): TaskOutputDeltaEvent | null {
   };
 }
 
+function guardContextCompactionStarted(p: unknown): ContextCompactionStartedEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.session_id)) return null;
+  const contextState = isPlainObject(p.context_state) ? p.context_state : null;
+  const tokenEstimate =
+    contextState && typeof contextState.token_estimate === "number"
+      ? contextState.token_estimate
+      : null;
+  if (tokenEstimate == null || typeof p.threshold_tokens !== "number") return null;
+  return {
+    session_id: p.session_id,
+    token_estimate: tokenEstimate,
+    threshold_tokens: p.threshold_tokens,
+    trigger: isString(p.trigger) ? p.trigger : "",
+  };
+}
+
+function guardContextCompactionCompleted(p: unknown): ContextCompactionCompletedEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.session_id)) return null;
+  const compaction = isPlainObject(p.compaction) ? p.compaction : null;
+  if (!compaction || typeof compaction.token_estimate_before !== "number") return null;
+  return {
+    session_id: p.session_id,
+    token_estimate_before: compaction.token_estimate_before,
+    token_estimate_after:
+      typeof compaction.token_estimate_after === "number"
+        ? compaction.token_estimate_after
+        : null,
+    retained_count: typeof compaction.retained_count === "number" ? compaction.retained_count : 0,
+    dropped_count: typeof compaction.dropped_count === "number" ? compaction.dropped_count : 0,
+    error: isString(compaction.error) ? compaction.error : null,
+  };
+}
+
 function guardTurnStarted(p: unknown): TurnStartedEvent | null {
   if (!isPlainObject(p)) return null;
   if (!isString(p.session_id) || !isString(p.turn_id)) return null;
@@ -1585,6 +1644,9 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private readonly subVoiceExit = new Subscribers<VoiceExitEvent>();
   private readonly subTaskUpdated = new Subscribers<TaskUpdatedEvent>();
   private readonly subTaskOutputDelta = new Subscribers<TaskOutputDeltaEvent>();
+  private readonly subContextCompaction = new Subscribers<
+    ContextCompactionStartedEvent | ContextCompactionCompletedEvent
+  >();
   private readonly subTurnLifecycle = new Subscribers<
     TurnStartedEvent | TurnCompletedEvent | TurnErrorEvent
   >();
@@ -1657,6 +1719,14 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     [METHODS.TASK_OUTPUT_DELTA]: {
       guard: guardTaskOutputDelta,
       emit: (v) => this.subTaskOutputDelta.emit(v as TaskOutputDeltaEvent),
+    },
+    [METHODS.CONTEXT_COMPACTION_STARTED]: {
+      guard: guardContextCompactionStarted,
+      emit: (v) => this.subContextCompaction.emit(v as ContextCompactionStartedEvent),
+    },
+    [METHODS.CONTEXT_COMPACTION_COMPLETED]: {
+      guard: guardContextCompactionCompleted,
+      emit: (v) => this.subContextCompaction.emit(v as ContextCompactionCompletedEvent),
     },
     [METHODS.TURN_STARTED]: {
       guard: guardTurnStarted,
@@ -1834,6 +1904,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.subTaskUpdated.clear();
     this.subTaskOutputDelta.clear();
     this.subTurnLifecycle.clear();
+    this.subContextCompaction.clear();
     this.subApprovalRequested.clear();
     this.subUserQuestionRequested.clear();
     this.subToolStarted.clear();
@@ -2032,6 +2103,11 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     handler: Listener<TurnStartedEvent | TurnCompletedEvent | TurnErrorEvent>,
   ): () => void {
     return this.subTurnLifecycle.add(handler);
+  }
+  onContextCompaction(
+    handler: Listener<ContextCompactionStartedEvent | ContextCompactionCompletedEvent>,
+  ): () => void {
+    return this.subContextCompaction.add(handler);
   }
   onApprovalRequested(handler: Listener<ApprovalRequestedEvent>): () => void {
     return this.subApprovalRequested.add(handler);
