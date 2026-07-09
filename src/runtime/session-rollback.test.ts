@@ -428,6 +428,63 @@ describe("rollbackSessionTurns", () => {
     expect(ThreadStore.getThreads(SESSION)[0].responses).toHaveLength(before);
   });
 
+  it("hydrate media adoption re-anchors the orphan's order before opening the rewind gate", () => {
+    // codex #262 round 4 P1: a late background assistant mints the
+    // orphan at ASSISTANT-arrival time, placing an OLDER media turn
+    // AFTER a newer prompt. Adoption must restore the server order
+    // (row.persisted_at) — otherwise rewinding the newer prompt sends
+    // num_turns=2 and deletes both turns.
+    ThreadStore.addUserMessage(SESSION, {
+      text: "newer prompt",
+      clientMessageId: "cmid-new",
+    });
+    ThreadStore.appendAssistantToken("cmid-old", "late narration");
+    expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(true);
+    expect(ThreadStore.getThreads(SESSION).map((t) => t.id)).toEqual([
+      "cmid-new",
+      "cmid-old",
+    ]);
+    ThreadStore.setHydrateSnapshot(SESSION, undefined, {
+      messages: [
+        {
+          seq: 1,
+          role: "user",
+          content: "older prompt",
+          client_message_id: "cmid-old",
+          media: ["uploads/x.wav"],
+          persisted_at: "2020-01-01T00:00:00Z",
+        },
+      ],
+    });
+    // Adopted AND reordered: the older turn now precedes the newer one.
+    expect(ThreadStore.getThreads(SESSION).map((t) => t.id)).toEqual([
+      "cmid-old",
+      "cmid-new",
+    ]);
+    expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(false);
+  });
+
+  it("hydrate media adoption keeps the gate closed without a usable persisted_at", () => {
+    ThreadStore.addUserMessage(SESSION, {
+      text: "newer prompt",
+      clientMessageId: "cmid-new2",
+    });
+    ThreadStore.appendAssistantToken("cmid-old2", "late narration");
+    ThreadStore.setHydrateSnapshot(SESSION, undefined, {
+      messages: [
+        {
+          seq: 1,
+          role: "user",
+          content: "older prompt",
+          client_message_id: "cmid-old2",
+          media: ["uploads/y.wav"],
+          // no persisted_at → order unknowable → stay withheld
+        },
+      ],
+    });
+    expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(true);
+  });
+
   it("treats provenance placeholders — not empty-shaped rows — as non-turns", () => {
     // A bucket synthesized for a late persisted assistant row (no user
     // message yet) IS a placeholder…

@@ -2843,7 +2843,31 @@ function mergeHydrateMediaIntoExisting(
       }
       // The hydrate row IS a persisted user record for this bucket —
       // authoritative turn proof even when the media merge no-ops.
-      if (markThreadAdopted(thread)) changed = true;
+      // BUT (codex #262 round 4 P1): an orphan bucket was inserted at
+      // ASSISTANT-arrival time, which can place an older turn AFTER a
+      // newer prompt. Adopting without restoring the server order
+      // would let rewind's distance-from-end math delete an extra
+      // turn. Re-anchor `userMsg.timestamp` to the row's
+      // `persisted_at` and REINSERT before clearing provenance; with
+      // no usable timestamp the gate stays closed (a later replay or
+      // persisted echo carries order and adopts then).
+      if (thread.placeholderOrigin === true) {
+        const persistedAtMs = row.persisted_at
+          ? Date.parse(row.persisted_at)
+          : Number.NaN;
+        if (Number.isFinite(persistedAtMs) && persistedAtMs > 0) {
+          if (thread.userMsg.timestamp !== persistedAtMs) {
+            thread.userMsg = { ...thread.userMsg, timestamp: persistedAtMs };
+            const idx = state.threads.indexOf(thread);
+            if (idx !== -1) {
+              state.threads.splice(idx, 1);
+              insertThreadInTimestampOrder(state, thread);
+            }
+          }
+          markThreadAdopted(thread);
+          changed = true;
+        }
+      }
       continue;
     }
 
