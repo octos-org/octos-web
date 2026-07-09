@@ -2900,6 +2900,88 @@ describe.each(FLAG_STATES)(
   });
 
   /**
+   * PR #243 follow-up (P2): `ThreadUserBubble` / `ThreadAssistantBubble`
+   * are `React.memo` components whose shallow comparison keys on the
+   * `message` object reference. Merging hydrate media into an existing
+   * (REST-seeded) message by pushing into `files` in place mutated
+   * store state WITHOUT changing that reference — the store notified,
+   * the parent re-rendered, but the memoized bubble skipped its repaint
+   * and the rehydrated media silently didn't display. Pin the store
+   * contract: a media merge must REPLACE the containing message object
+   * (same convention as `replaceAssistantSlot`).
+   */
+  it("replaces the message object reference when hydrate media merges into an existing message", () => {
+    ThreadStore.replayHistory(SID, [
+      {
+        seq: 0,
+        role: "user",
+        content: "describe this image",
+        timestamp: "2026-07-01T02:53:00Z",
+        thread_id: "cmid-ref",
+        client_message_id: "cmid-ref",
+      },
+      {
+        seq: 5,
+        role: "assistant",
+        content: "Here is the report.",
+        timestamp: "2026-07-01T02:53:05Z",
+        thread_id: "cmid-ref",
+      },
+    ]);
+    const before = ThreadStore.getThreads(SID)[0];
+    const userBefore = before.userMsg;
+    const responseBefore = before.responses[0];
+
+    const snapshot = {
+      messages: [
+        {
+          seq: 0,
+          role: "user",
+          content: "describe this image",
+          thread_id: "cmid-ref",
+          client_message_id: "cmid-ref",
+          persisted_at: "2026-07-01T02:53:00Z",
+          media: ["uploads/pasted-photo.jpg"],
+        },
+        {
+          seq: 5,
+          role: "assistant",
+          content: "Here is the report.",
+          thread_id: "cmid-ref",
+          persisted_at: "2026-07-01T02:53:05Z",
+          media: ["outputs/report.pdf"],
+        },
+      ],
+    };
+    ThreadStore.setHydrateSnapshot(SID, undefined, snapshot);
+
+    const after = ThreadStore.getThreads(SID)[0];
+    // The memo-visibility contract: new object references, not just
+    // new contents inside the same objects.
+    expect(after.userMsg).not.toBe(userBefore);
+    expect(after.responses[0]).not.toBe(responseBefore);
+    expect(after.userMsg.files.map((f) => f.path)).toEqual([
+      "uploads/pasted-photo.jpg",
+    ]);
+    expect(after.responses[0].files.map((f) => f.path)).toEqual([
+      "outputs/report.pdf",
+    ]);
+    // Untouched fields carry over onto the replacement objects.
+    expect(after.userMsg.text).toBe("describe this image");
+    expect(after.responses[0].text).toBe("Here is the report.");
+
+    // No-op re-merge (same snapshot replayed, e.g. WS reconnect) must
+    // NOT mint fresh objects — that would churn memoized bubbles on
+    // every reconnect.
+    ThreadStore.setHydrateSnapshot(SID, undefined, snapshot);
+    const again = ThreadStore.getThreads(SID)[0];
+    expect(again.userMsg).toBe(after.userMsg);
+    expect(again.responses[0]).toBe(after.responses[0]);
+    expect(again.userMsg.files).toHaveLength(1);
+    expect(again.responses[0].files).toHaveLength(1);
+  });
+
+  /**
    * Confirm the seed is idempotent: a subsequent `replayHistory` call
    * (REST retries fire at 2s/5s/12s) replaces state wholesale, so a
    * real REST response that lands later WINS for any overlap with the

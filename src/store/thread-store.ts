@@ -2586,17 +2586,35 @@ function hydrateRowToMessageInfo(row: HydrateMessageRow): MessageInfo | null {
   };
 }
 
-function mergeMediaIntoMessage(target: ThreadMessage, media?: string[]): boolean {
-  if (!media || media.length === 0) return false;
+/**
+ * Merge hydrate media paths into `target`, returning a NEW
+ * `ThreadMessage` (fresh object + fresh `files` array) when anything
+ * was added, or `null` when the merge is a no-op.
+ *
+ * PR #243 follow-up (P2): the first cut pushed into `target.files` in
+ * place. `ThreadUserBubble` / `ThreadAssistantBubble` are `React.memo`
+ * components whose shallow comparison keys on the `message` object
+ * reference, so an in-place push updated store state without ever
+ * repainting the bubble — media merged into an EXISTING (REST-seeded)
+ * message silently didn't display. Same convention as
+ * `replaceAssistantSlot` (see the 2026-05-15 bug note there): every
+ * mutation that changes a message's data MUST replace the containing
+ * `ThreadMessage` object.
+ */
+function mergeMediaIntoMessage(
+  target: ThreadMessage,
+  media?: string[],
+): ThreadMessage | null {
+  if (!media || media.length === 0) return null;
   const seen = new Set(target.files.map((file) => file.path));
-  let changed = false;
+  const added: MessageFile[] = [];
   for (const path of media) {
     if (seen.has(path)) continue;
-    target.files.push(fileFromMediaPath(path));
+    added.push(fileFromMediaPath(path));
     seen.add(path);
-    changed = true;
   }
-  return changed;
+  if (added.length === 0) return null;
+  return { ...target, files: [...target.files, ...added] };
 }
 
 function rowTimestampMs(row: HydrateMessageRow): number | null {
@@ -2633,15 +2651,23 @@ function mergeHydrateMediaIntoExisting(
       const anchor = row.client_message_id ?? row.thread_id;
       const thread = anchor ? state.byId.get(anchor) : undefined;
       if (!thread) continue;
-      changed = mergeMediaIntoMessage(thread.userMsg, row.media) || changed;
+      const mergedUser = mergeMediaIntoMessage(thread.userMsg, row.media);
+      if (mergedUser) {
+        thread.userMsg = mergedUser;
+        changed = true;
+      }
       continue;
     }
 
     const thread = row.thread_id ? state.byId.get(row.thread_id) : undefined;
     if (!thread) continue;
-    for (const response of thread.responses) {
-      if (hydrateRowMatchesResponse(row, response)) {
-        changed = mergeMediaIntoMessage(response, row.media) || changed;
+    for (let i = 0; i < thread.responses.length; i += 1) {
+      if (hydrateRowMatchesResponse(row, thread.responses[i])) {
+        const merged = mergeMediaIntoMessage(thread.responses[i], row.media);
+        if (merged) {
+          thread.responses[i] = merged;
+          changed = true;
+        }
         break;
       }
     }
