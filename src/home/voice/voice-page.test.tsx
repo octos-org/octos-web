@@ -23,6 +23,10 @@ vi.mock("@/store/thread-store", () => ({
   loadHistory: (...args: unknown[]) => loadHistoryMock(...args),
 }));
 
+vi.mock("@/components/ui-protocol-question-host", () => ({
+  UiProtocolQuestionHost: () => null,
+}));
+
 vi.mock("./voice-view", () => ({
   VoiceView: ({ sessionId }: { sessionId: string }) => (
     <div data-testid="voice-session-id">{sessionId}</div>

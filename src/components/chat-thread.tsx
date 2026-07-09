@@ -48,6 +48,7 @@ import { sendMessage as bridgeSend } from "@/runtime/ui-protocol-send";
 import { getActiveBridge } from "@/runtime/ui-protocol-runtime";
 import { MarkdownContent } from "./markdown-renderer";
 import { ThinkingIndicator } from "./thinking-indicator";
+import { CompactionIndicator } from "./compaction-indicator";
 import { ToolProgressIndicator } from "./tool-progress-indicator";
 import { useTasks } from "@/store/task-store";
 import { SPAWN_ONLY_TOOL_NAMES } from "@/runtime/spawn-only-tools";
@@ -178,13 +179,20 @@ function toolArgumentSummary(
 // File attachment renderer
 // ---------------------------------------------------------------------------
 
+type BlobUrlState = {
+  status: "loading" | "ready" | "error";
+  url?: string;
+};
+
 /** Fetch a file with auth and return an object URL. */
-function useBlobUrl(filePath: string): string | undefined {
+function useBlobUrl(filePath: string, sessionId?: string): BlobUrlState {
   const isExternal = filePath.startsWith("http");
   const [blobState, setBlobState] = useState<{
     filePath: string;
+    sessionId?: string;
+    status: "loading" | "ready" | "error";
     url?: string;
-  }>({ filePath: "" });
+  }>({ filePath: "", status: "loading" });
 
   useEffect(() => {
     if (isExternal) return;
@@ -192,8 +200,9 @@ function useBlobUrl(filePath: string): string | undefined {
     let revoked = false;
     let url: string | undefined;
 
+    setBlobState({ filePath, sessionId, status: "loading" });
     const token = getToken();
-    const apiUrl = buildFileUrl(filePath);
+    const apiUrl = buildFileUrl(filePath, { sessionId });
     fetch(apiUrl, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
@@ -204,26 +213,30 @@ function useBlobUrl(filePath: string): string | undefined {
       .then((blob) => {
         if (revoked) return;
         url = URL.createObjectURL(blob);
-        setBlobState({ filePath, url });
+        setBlobState({ filePath, sessionId, status: "ready", url });
       })
       .catch(() => {
-        // Fallback: leave undefined, media element will show broken state
+        if (!revoked) setBlobState({ filePath, sessionId, status: "error" });
       });
 
     return () => {
       revoked = true;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [filePath, isExternal]);
+  }, [filePath, isExternal, sessionId]);
 
-  if (isExternal) return filePath;
-  return blobState.filePath === filePath ? blobState.url : undefined;
+  if (isExternal) return { status: "ready", url: filePath };
+  if (blobState.filePath === filePath && blobState.sessionId === sessionId) {
+    return { status: blobState.status, url: blobState.url };
+  }
+  return { status: "loading" };
 }
 
-function FileAttachment({ file }: { file: MessageFile }) {
-  const blobUrl = useBlobUrl(file.path);
-  const isAudio = /\.(mp3|wav|ogg|webm|m4a|aac|flac|opus)$/i.test(file.filename);
+function FileAttachment({ file, sessionId }: { file: MessageFile; sessionId?: string }) {
+  const blob = useBlobUrl(file.path, sessionId);
+  const blobUrl = blob.url;
   const isVideo = /\.(mp4|webm|mov)$/i.test(file.filename);
+  const isAudio = !isVideo && /\.(mp3|wav|ogg|m4a|aac|flac|opus)$/i.test(file.filename);
   const isImage = /\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i.test(file.filename);
   const visibleCaption = visibleAttachmentCaption(file.caption);
 
@@ -238,7 +251,7 @@ function FileAttachment({ file }: { file: MessageFile }) {
   }, [blobUrl, file.filename]);
 
   if (isAudio) {
-    return <AudioAttachment file={file} blobUrl={blobUrl} />;
+    return <AudioAttachment file={file} blobUrl={blobUrl} loadStatus={blob.status} />;
   }
 
   if (isVideo) {
@@ -246,6 +259,8 @@ function FileAttachment({ file }: { file: MessageFile }) {
       <div className="message-attachment-card rounded-[10px] p-2">
         {blobUrl ? (
           <video controls preload="metadata" className="w-full max-w-sm rounded-[8px]" src={blobUrl} />
+        ) : blob.status === "error" ? (
+          <div className="flex h-24 items-center justify-center text-xs text-muted">Failed to load</div>
         ) : (
           <div className="flex h-24 items-center justify-center text-xs text-muted">Loading...</div>
         )}
@@ -295,7 +310,7 @@ function FileAttachment({ file }: { file: MessageFile }) {
   const isExternalUrl = /^https?:\/\//i.test(file.path);
   const directHref = isExternalUrl
     ? file.path
-    : buildAuthenticatedFileUrl(file.path);
+    : buildAuthenticatedFileUrl(file.path, { sessionId });
   return blobUrl ? (
     <a
       href={directHref}
@@ -321,7 +336,15 @@ function FileAttachment({ file }: { file: MessageFile }) {
 }
 
 /** Audio attachment — <audio> element only created on first play click. */
-function AudioAttachment({ file, blobUrl }: { file: MessageFile; blobUrl?: string }) {
+function AudioAttachment({
+  file,
+  blobUrl,
+  loadStatus,
+}: {
+  file: MessageFile;
+  blobUrl?: string;
+  loadStatus: BlobUrlState["status"];
+}) {
   const [activated, setActivated] = useState(false);
   const [playing, setPlaying] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -383,7 +406,9 @@ function AudioAttachment({ file, blobUrl }: { file: MessageFile; blobUrl?: strin
           </div>
         </div>
       ) : (
-        <div className="flex h-8 items-center justify-center text-xs text-muted">Loading...</div>
+        <div className="flex h-8 items-center justify-center text-xs text-muted">
+          {loadStatus === "error" ? "Failed to load" : "Loading..."}
+        </div>
       )}
     </div>
   );
@@ -542,9 +567,11 @@ function threadMessageVisibleText(message: ThreadMessage): string {
 const ThreadUserBubble = memo(function ThreadUserBubble({
   message,
   threadId,
+  sessionId,
 }: {
   message: ThreadMessage;
   threadId: string;
+  sessionId?: string;
 }) {
   const visibleText = threadMessageVisibleText(message);
   // Visual layout is shared with `<GhostBubble>` via `<UserBubbleShell>`
@@ -556,7 +583,7 @@ const ThreadUserBubble = memo(function ThreadUserBubble({
     message.files.length > 0 ? (
       <>
         {message.files.map((f) => (
-          <FileAttachment key={f.path} file={f} />
+          <FileAttachment key={f.path} file={f} sessionId={sessionId} />
         ))}
       </>
     ) : null;
@@ -818,11 +845,13 @@ export const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
   isStreaming,
   showLiveIndicators,
   threadId,
+  sessionId,
 }: {
   message: ThreadMessage;
   isStreaming: boolean;
   showLiveIndicators: boolean;
   threadId: string;
+  sessionId?: string;
 }) {
   // Prefer the explicit thread.id passed by the renderer over the
   // message's own backref so a finalized assistant whose origin tid
@@ -904,7 +933,7 @@ export const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
         {message.files.length > 0 && (
           <div className="mt-3 flex flex-col gap-2">
             {message.files.map((f) => (
-              <FileAttachment key={f.path} file={f} />
+              <FileAttachment key={f.path} file={f} sessionId={sessionId} />
             ))}
           </div>
         )}
@@ -1083,7 +1112,11 @@ function ThreadView({
   );
   return (
     <div data-testid="chat-thread-bundle" data-thread-id={thread.id}>
-      <ThreadUserBubble message={thread.userMsg} threadId={thread.id} />
+      <ThreadUserBubble
+        message={thread.userMsg}
+        threadId={thread.id}
+        sessionId={currentSessionId}
+      />
       {visibleResponses.map((response) => (
         <ThreadAssistantBubble
           key={response.id}
@@ -1091,6 +1124,7 @@ function ThreadView({
           isStreaming={false}
           showLiveIndicators={false}
           threadId={thread.id}
+          sessionId={currentSessionId}
         />
       ))}
       {thread.pendingAssistant && (
@@ -1103,6 +1137,7 @@ function ThreadView({
             hasRunningBackgroundTask
           }
           threadId={thread.id}
+          sessionId={currentSessionId}
         />
       )}
     </div>
@@ -1244,6 +1279,11 @@ function ChatThreadV2({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-transparent">
+      {/* Mounted ONCE at thread level (codex R3): a per-bubble mount
+          duplicated the listener/timer per assistant message, and with
+          projection_v1 the preflight compaction events can arrive before
+          any bubble exists at all. Renders null when idle. */}
+      <CompactionIndicator />
       {hasThreads || hasGhosts ? (
         <ThreadList
           threads={threads}

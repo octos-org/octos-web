@@ -70,6 +70,7 @@ function stubBridgeForMessagesPage(messages: unknown[]): {
     onTaskOutputDelta: () => () => {},
     onTurnLifecycle: () => () => {},
     onApprovalRequested: () => () => {},
+    onUserQuestionRequested: () => () => {},
     onConnectionStateChange: () => () => {},
     getConnectionState: () => "connected" as const,
     onWarning: () => () => {},
@@ -2933,6 +2934,408 @@ describe.each(FLAG_STATES)(
     for (const t of threads) {
       expect(t.userMsg.text).not.toBe("");
     }
+  });
+
+  it("merges hydrate media into an existing REST-seeded user message", () => {
+    ThreadStore.replayHistory(SID, [
+      {
+        role: "user",
+        content: "describe this image",
+        timestamp: "2026-07-01T02:53:00Z",
+        thread_id: "cmid-image",
+        client_message_id: "cmid-image",
+      },
+    ]);
+
+    ThreadStore.setHydrateSnapshot(SID, undefined, {
+      messages: [
+        {
+          seq: 0,
+          role: "user",
+          content: "describe this image",
+          thread_id: "cmid-image",
+          client_message_id: "cmid-image",
+          persisted_at: "2026-07-01T02:53:00Z",
+          media: ["uploads/pasted-photo.jpg"],
+        },
+      ],
+    });
+
+    const threads = ThreadStore.getThreads(SID);
+    expect(threads).toHaveLength(1);
+    expect(threads[0].userMsg.text).toBe("describe this image");
+    expect(threads[0].userMsg.files.map((f) => f.path)).toEqual([
+      "uploads/pasted-photo.jpg",
+    ]);
+  });
+
+  it("replays hydrate tool envelopes onto the existing assistant bubble", () => {
+    ThreadStore.replayHistory(SID, [
+      {
+        seq: 0,
+        role: "user",
+        content: "run a shell command",
+        timestamp: "2026-07-01T02:53:00Z",
+        thread_id: "cmid-tools",
+        client_message_id: "cmid-tools",
+      },
+      {
+        seq: 4,
+        role: "assistant",
+        content: "The command finished.",
+        timestamp: "2026-07-01T02:53:05Z",
+        thread_id: "cmid-tools",
+      },
+    ]);
+
+    ThreadStore.setHydrateSnapshot(SID, undefined, {
+      replayed_tool_envelopes: [
+        {
+          thread_id: "cmid-tools",
+          seq: 1,
+          payload: {
+            type: "tool_start",
+            data: { tool_call_id: "tc-shell-1", name: "shell" },
+          },
+        },
+        {
+          thread_id: "cmid-tools",
+          seq: 2,
+          payload: {
+            type: "tool_progress",
+            data: { tool_call_id: "tc-shell-1", message: "running" },
+          },
+        },
+        {
+          thread_id: "cmid-tools",
+          seq: 3,
+          payload: {
+            type: "tool_end",
+            data: { tool_call_id: "tc-shell-1", status: "complete" },
+          },
+        },
+      ],
+    });
+
+    const response = ThreadStore.getThreads(SID)[0].responses[0];
+    expect(response.toolCalls).toHaveLength(1);
+    expect(response.toolCalls[0].id).toBe("tc-shell-1");
+    expect(response.toolCalls[0].name).toBe("shell");
+    expect(response.toolCalls[0].status).toBe("complete");
+    expect(response.toolCalls[0].progress.map((entry) => entry.message)).toEqual([
+      "running",
+    ]);
+  });
+
+  /**
+   * PR #243 follow-up (P2): `ThreadUserBubble` / `ThreadAssistantBubble`
+   * are `React.memo` components whose shallow comparison keys on the
+   * `message` object reference. Merging hydrate media into an existing
+   * (REST-seeded) message by pushing into `files` in place mutated
+   * store state WITHOUT changing that reference — the store notified,
+   * the parent re-rendered, but the memoized bubble skipped its repaint
+   * and the rehydrated media silently didn't display. Pin the store
+   * contract: a media merge must REPLACE the containing message object
+   * (same convention as `replaceAssistantSlot`).
+   */
+  it("replaces the message object reference when hydrate media merges into an existing message", () => {
+    ThreadStore.replayHistory(SID, [
+      {
+        seq: 0,
+        role: "user",
+        content: "describe this image",
+        timestamp: "2026-07-01T02:53:00Z",
+        thread_id: "cmid-ref",
+        client_message_id: "cmid-ref",
+      },
+      {
+        seq: 5,
+        role: "assistant",
+        content: "Here is the report.",
+        timestamp: "2026-07-01T02:53:05Z",
+        thread_id: "cmid-ref",
+      },
+    ]);
+    const before = ThreadStore.getThreads(SID)[0];
+    const userBefore = before.userMsg;
+    const responseBefore = before.responses[0];
+
+    const snapshot = {
+      messages: [
+        {
+          seq: 0,
+          role: "user",
+          content: "describe this image",
+          thread_id: "cmid-ref",
+          client_message_id: "cmid-ref",
+          persisted_at: "2026-07-01T02:53:00Z",
+          media: ["uploads/pasted-photo.jpg"],
+        },
+        {
+          seq: 5,
+          role: "assistant",
+          content: "Here is the report.",
+          thread_id: "cmid-ref",
+          persisted_at: "2026-07-01T02:53:05Z",
+          media: ["outputs/report.pdf"],
+        },
+      ],
+    };
+    ThreadStore.setHydrateSnapshot(SID, undefined, snapshot);
+
+    const after = ThreadStore.getThreads(SID)[0];
+    // The memo-visibility contract: new object references, not just
+    // new contents inside the same objects.
+    expect(after.userMsg).not.toBe(userBefore);
+    expect(after.responses[0]).not.toBe(responseBefore);
+    expect(after.userMsg.files.map((f) => f.path)).toEqual([
+      "uploads/pasted-photo.jpg",
+    ]);
+    expect(after.responses[0].files.map((f) => f.path)).toEqual([
+      "outputs/report.pdf",
+    ]);
+    // Untouched fields carry over onto the replacement objects.
+    expect(after.userMsg.text).toBe("describe this image");
+    expect(after.responses[0].text).toBe("Here is the report.");
+
+    // No-op re-merge (same snapshot replayed, e.g. WS reconnect) must
+    // NOT mint fresh objects — that would churn memoized bubbles on
+    // every reconnect.
+    ThreadStore.setHydrateSnapshot(SID, undefined, snapshot);
+    const again = ThreadStore.getThreads(SID)[0];
+    expect(again.userMsg).toBe(after.userMsg);
+    expect(again.responses[0]).toBe(after.responses[0]);
+    expect(again.userMsg.files).toHaveLength(1);
+    expect(again.responses[0].files).toHaveLength(1);
+  });
+
+  /**
+   * PR #243 follow-up (P2): the hydrate tool replay re-runs on every
+   * WS reconnect (`setHydrateSnapshot` per `session/hydrate`) and
+   * after every `replayHistory` rebuild (cached-hydrate
+   * re-application), but `appendToolProgress` only suppresses
+   * *consecutive* duplicate lines — so replaying the same envelope set
+   * against unchanged state duplicated every progress line
+   * (["step 1","step 2"] became ["step 1","step 2","step 1","step 2"]).
+   */
+  it("does not duplicate tool progress when the same hydrate tool envelopes replay again", () => {
+    const restRows = [
+      {
+        seq: 0,
+        role: "user",
+        content: "run a shell command",
+        timestamp: "2026-07-01T02:53:00Z",
+        thread_id: "cmid-replay",
+        client_message_id: "cmid-replay",
+      },
+      {
+        seq: 5,
+        role: "assistant",
+        content: "The command finished.",
+        timestamp: "2026-07-01T02:53:05Z",
+        thread_id: "cmid-replay",
+      },
+    ];
+    ThreadStore.replayHistory(SID, restRows);
+
+    const toolEnvelopes = [
+      {
+        thread_id: "cmid-replay",
+        seq: 1,
+        payload: {
+          type: "tool_start" as const,
+          data: { tool_call_id: "tc-shell-1", name: "shell" },
+        },
+      },
+      {
+        thread_id: "cmid-replay",
+        seq: 2,
+        payload: {
+          type: "tool_progress" as const,
+          data: { tool_call_id: "tc-shell-1", message: "step 1" },
+        },
+      },
+      {
+        thread_id: "cmid-replay",
+        seq: 3,
+        payload: {
+          type: "tool_progress" as const,
+          data: { tool_call_id: "tc-shell-1", message: "step 2" },
+        },
+      },
+      {
+        thread_id: "cmid-replay",
+        seq: 4,
+        payload: {
+          type: "tool_end" as const,
+          data: { tool_call_id: "tc-shell-1", status: "complete" as const },
+        },
+      },
+    ];
+    ThreadStore.setHydrateSnapshot(SID, undefined, {
+      replayed_tool_envelopes: toolEnvelopes,
+    });
+    // WS reconnect: the server replays the SAME retained envelopes.
+    ThreadStore.setHydrateSnapshot(SID, undefined, {
+      replayed_tool_envelopes: toolEnvelopes,
+    });
+
+    let response = ThreadStore.getThreads(SID)[0].responses[0];
+    expect(response.toolCalls).toHaveLength(1);
+    expect(response.toolCalls[0].progress.map((e) => e.message)).toEqual([
+      "step 1",
+      "step 2",
+    ]);
+
+    // A later hydrate carrying a NEW envelope (higher seq) still
+    // applies — the ledger only skips (thread_id, seq) pairs already
+    // applied, not the whole thread.
+    ThreadStore.setHydrateSnapshot(SID, undefined, {
+      replayed_tool_envelopes: [
+        ...toolEnvelopes,
+        {
+          thread_id: "cmid-replay",
+          seq: 6,
+          payload: {
+            type: "tool_progress" as const,
+            data: { tool_call_id: "tc-shell-1", message: "step 3" },
+          },
+        },
+      ],
+    });
+    response = ThreadStore.getThreads(SID)[0].responses[0];
+    expect(response.toolCalls[0].progress.map((e) => e.message)).toEqual([
+      "step 1",
+      "step 2",
+      "step 3",
+    ]);
+
+    // REST retry: `replayHistory` rebuilds state wholesale (rebuilt
+    // rows carry no progress timelines) and re-applies the cached
+    // hydrate — the replayed tool state must come back exactly once.
+    ThreadStore.replayHistory(SID, restRows);
+    response = ThreadStore.getThreads(SID)[0].responses[0];
+    expect(response.toolCalls).toHaveLength(1);
+    expect(response.toolCalls[0].status).toBe("complete");
+    expect(response.toolCalls[0].progress.map((e) => e.message)).toEqual([
+      "step 1",
+      "step 2",
+      "step 3",
+    ]);
+  });
+
+  /**
+   * PR #243 follow-up (P2): the replay lane routed by `thread_id`
+   * alone — `ensureOrphanThread`'s `pickHostSessionForOrphan()`
+   * fallback attached tool cards for unknown threads to an ARBITRARY
+   * other session. A hydrate is scoped to one (sessionId, topic);
+   * envelopes that cannot be resolved within that scope are skipped.
+   */
+  it("skips hydrate tool envelopes for unknown threads instead of attaching to another session", () => {
+    // Session A has real thread state; the hydrate below is for a
+    // DIFFERENT session that has none.
+    ThreadStore.replayHistory(SID, [
+      {
+        seq: 0,
+        role: "user",
+        content: "unrelated conversation",
+        timestamp: "2026-07-01T02:53:00Z",
+        thread_id: "cmid-a",
+        client_message_id: "cmid-a",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "sure",
+        timestamp: "2026-07-01T02:53:01Z",
+        thread_id: "cmid-a",
+      },
+    ]);
+
+    const OTHER_SID = "sess-hydrate-scope-other";
+    ThreadStore.setHydrateSnapshot(OTHER_SID, undefined, {
+      replayed_tool_envelopes: [
+        {
+          thread_id: "cmid-ghost",
+          seq: 1,
+          payload: {
+            type: "tool_start" as const,
+            data: { tool_call_id: "tc-ghost-1", name: "shell" },
+          },
+        },
+        {
+          thread_id: "cmid-ghost",
+          seq: 2,
+          payload: {
+            type: "tool_progress" as const,
+            data: { tool_call_id: "tc-ghost-1", message: "leaked" },
+          },
+        },
+      ],
+    });
+
+    // Pre-fix: `pickHostSessionForOrphan()` minted an orphan thread in
+    // session A hosting the foreign tool card.
+    const threadsA = ThreadStore.getThreads(SID);
+    expect(threadsA).toHaveLength(1);
+    expect(threadsA[0].responses[0].toolCalls).toEqual([]);
+    expect(threadsA[0].pendingAssistant).toBeNull();
+    expect(ThreadStore.getThreads(OTHER_SID)).toHaveLength(0);
+  });
+
+  it("does not replay tool envelopes onto another session's thread with the same id", () => {
+    ThreadStore.replayHistory(SID, [
+      {
+        seq: 0,
+        role: "user",
+        content: "session A prompt",
+        timestamp: "2026-07-01T02:53:00Z",
+        thread_id: "cmid-a",
+        client_message_id: "cmid-a",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "session A reply",
+        timestamp: "2026-07-01T02:53:01Z",
+        thread_id: "cmid-a",
+      },
+    ]);
+    const OTHER_SID = "sess-hydrate-scope-b";
+    ThreadStore.replayHistory(OTHER_SID, [
+      {
+        seq: 0,
+        role: "user",
+        content: "session B prompt",
+        timestamp: "2026-07-01T02:54:00Z",
+        thread_id: "cmid-b",
+        client_message_id: "cmid-b",
+      },
+    ]);
+
+    // Session B's hydrate names session A's thread — a server-side
+    // mixup. Pre-fix the cross-session `findThreadById` walk attached
+    // the tool card to session A's bubble.
+    ThreadStore.setHydrateSnapshot(OTHER_SID, undefined, {
+      replayed_tool_envelopes: [
+        {
+          thread_id: "cmid-a",
+          seq: 1,
+          payload: {
+            type: "tool_start" as const,
+            data: { tool_call_id: "tc-cross-1", name: "shell" },
+          },
+        },
+      ],
+    });
+
+    const threadsA = ThreadStore.getThreads(SID);
+    expect(threadsA).toHaveLength(1);
+    expect(threadsA[0].responses[0].toolCalls).toEqual([]);
+    const threadsB = ThreadStore.getThreads(OTHER_SID);
+    expect(threadsB).toHaveLength(1);
+    expect(threadsB[0].responses).toEqual([]);
+    expect(threadsB[0].pendingAssistant).toBeNull();
   });
 
   /**

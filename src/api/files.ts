@@ -1,12 +1,33 @@
 import { getToken } from "@/api/client";
 import { API_BASE } from "@/lib/constants";
 
-export function buildFileUrl(filePath: string): string {
+export interface BuildFileUrlOptions {
+  sessionId?: string;
+}
+
+function shouldUseSessionScopedFileUrl(filePath: string, sessionId?: string): boolean {
+  return Boolean(sessionId && filePath.startsWith("uploads/"));
+}
+
+export function buildFileUrl(
+  filePath: string,
+  options: BuildFileUrlOptions = {},
+): string {
+  if (shouldUseSessionScopedFileUrl(filePath, options.sessionId)) {
+    const params = new URLSearchParams();
+    params.set("path", filePath);
+    params.set("session", options.sessionId!);
+    return `${API_BASE}/api/files?${params.toString()}`;
+  }
   return `${API_BASE}/api/files/${encodeURIComponent(filePath)}`;
 }
 
-export function buildAuthenticatedFileUrl(filePath: string): string {
+export function buildAuthenticatedFileUrl(
+  filePath: string,
+  options: BuildFileUrlOptions = {},
+): string {
   const token = getToken();
-  const base = buildFileUrl(filePath);
-  return token ? `${base}?token=${encodeURIComponent(token)}` : base;
+  const base = buildFileUrl(filePath, options);
+  const separator = base.includes("?") ? "&" : "?";
+  return token ? `${base}${separator}token=${encodeURIComponent(token)}` : base;
 }

@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ScopedRuntimeBridge } from "@/runtime/runtime-provider";
+import { UiProtocolQuestionHost } from "@/components/ui-protocol-question-host";
 import {
   SessionContext,
   useModeState,
@@ -99,6 +100,7 @@ export function VoicePage() {
             sessionId={voiceSessionId}
             onBack={() => navigate("/")}
           />
+          <UiProtocolQuestionHost />
         </ScopedRuntimeBridge>
       </SessionContext.Provider>
     </div>

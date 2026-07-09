@@ -483,6 +483,16 @@ describe("type guards (fail-closed)", () => {
           media: ["pf/file.md"],
         },
       ],
+      replayed_tool_envelopes: [
+        {
+          thread_id: "synth_0",
+          seq: 7,
+          payload: {
+            type: "tool_start",
+            data: { tool_call_id: "tc-shell-1", name: "shell" },
+          },
+        },
+      ],
     });
     expect(result).not.toBeNull();
     expect(result?.messages).toHaveLength(3);
@@ -493,6 +503,8 @@ describe("type guards (fail-closed)", () => {
     expect(result?.messages?.[0].message_id).toBeUndefined();
     expect(result?.replayed_envelopes).toHaveLength(1);
     expect(result?.replayed_envelopes?.[0].task_id).toBe("task_abc");
+    expect(result?.replayed_tool_envelopes).toHaveLength(1);
+    expect(result?.replayed_tool_envelopes?.[0].payload.type).toBe("tool_start");
   });
 
   it("guardSessionHydrate accepts a back-compat result without new fields (older server)", () => {
@@ -686,6 +698,49 @@ describe("type guards (fail-closed)", () => {
       approval_scope: "forever",
     });
     expect(bogus?.approval_scope).toBeUndefined();
+  });
+
+  it("guards user_question/requested: keeps valid options, drops garbled questions", () => {
+    const ok = guards.guardUserQuestionRequested({
+      session_id: "s",
+      topic: "chat",
+      question_id: "q",
+      turn_id: "t",
+      title: "Pick",
+      body: "b",
+      questions: [
+        {
+          header: "Approach",
+          question: "Which?",
+          options: [
+            { label: "A", description: "first" },
+            { label: "B" },
+          ],
+          multi_select: true,
+        },
+        { question: "no options here" },
+      ],
+    });
+    expect(ok?.question_id).toBe("q");
+    expect(ok?.topic).toBe("chat");
+    // The optionless question is dropped; the valid one is kept and normalized.
+    expect(ok?.questions).toHaveLength(1);
+    expect(ok?.questions[0].options).toHaveLength(2);
+    expect(ok?.questions[0].options[1].description).toBe(""); // default filled
+    expect(ok?.questions[0].multi_select).toBe(true);
+    expect(ok?.questions[0].allow_free_text).toBe(true); // defaults true
+  });
+
+  it("rejects user_question/requested missing required scalar fields", () => {
+    expect(
+      guards.guardUserQuestionRequested({
+        session_id: "s",
+        question_id: "q",
+        turn_id: "t",
+        title: "x",
+        // body + questions missing
+      }),
+    ).toBeNull();
   });
 
   it("rejects turn/error without an error object", () => {
@@ -941,6 +996,11 @@ describe("connection lifecycle", () => {
     // notifications on this feature, so dropping it would silently
     // disable spawn_only attachment delivery.
     expect(ws.url).toContain("ui_feature=event.message_persisted.v1");
+    // Regression-pin for UPCR-2026-026: the server filters the whole
+    // context lifecycle family (compaction started/completed,
+    // normalization) for clients that did not negotiate this capability
+    // — the same silent-filter gap octos-tui#253 hit.
+    expect(ws.url).toContain("ui_feature=context.lifecycle.v1");
     // Regression-pin for the M10 Phase 1 capability negotiation
     // (server PR #772): server only emits the new
     // `turn/spawn_complete` envelope when this capability is in the
@@ -1813,6 +1873,71 @@ describe("notification dispatch", () => {
     await Promise.resolve();
     return { bridge, ws };
   }
+
+  it("routes context compaction lifecycle with flattened payloads", async () => {
+    const { bridge, ws } = await freshConnected();
+    const seen: unknown[] = [];
+    bridge.onContextCompaction((e) => seen.push(e));
+
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.CONTEXT_COMPACTION_STARTED,
+      params: {
+        session_id: "sess-1",
+        context_state: { session_id: "sess-1", token_estimate: 91000 },
+        trigger: "preflight",
+        threshold_tokens: 96000,
+      },
+    });
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.CONTEXT_COMPACTION_COMPLETED,
+      params: {
+        session_id: "sess-1",
+        context_state: { session_id: "sess-1", token_estimate: 31000 },
+        compaction: {
+          compaction_id: "c-1",
+          token_estimate_before: 91000,
+          token_estimate_after: 31000,
+          retained_count: 8,
+          dropped_count: 42,
+        },
+      },
+    });
+
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toMatchObject({
+      session_id: "sess-1",
+      token_estimate: 91000,
+      threshold_tokens: 96000,
+      trigger: "preflight",
+    });
+    expect(seen[1]).toMatchObject({
+      session_id: "sess-1",
+      token_estimate_before: 91000,
+      token_estimate_after: 31000,
+      retained_count: 8,
+      dropped_count: 42,
+      error: null,
+    });
+  });
+
+  it("drops malformed compaction payloads at the guard", async () => {
+    const { bridge, ws } = await freshConnected();
+    const seen: unknown[] = [];
+    bridge.onContextCompaction((e) => seen.push(e));
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.CONTEXT_COMPACTION_STARTED,
+      params: { session_id: "sess-1" },
+    });
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.CONTEXT_COMPACTION_COMPLETED,
+      params: { session_id: "sess-1", compaction: {} },
+    });
+    expect(seen).toHaveLength(0);
+  });
 
   it("routes message/delta to its handler", async () => {
     const { bridge, ws } = await freshConnected();

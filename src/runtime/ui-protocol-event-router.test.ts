@@ -2849,6 +2849,9 @@ class FakeBridge implements UiProtocolBridge {
       this.emitApprovalRequested = undefined;
     };
   }
+  onUserQuestionRequested(_h: unknown) {
+    return () => {};
+  }
   onToolStarted(h: (e: ToolStartedEvent) => void) {
     this.emitToolStarted = h;
     return () => {

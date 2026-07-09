@@ -22,9 +22,13 @@ import {
 import type {
   ApprovalDecision,
   ApprovalRequestedEvent,
+  UserQuestionRequestedEvent,
+  UserQuestionRespondResult,
+  UserQuestionAnswer,
   ApprovalRespondResult,
   ApprovalScope,
   ConnectionState,
+  Envelope,
   HydratedMessage,
   MessageDeltaEvent,
   FileAttachedEvent,
@@ -45,6 +49,8 @@ import type {
   ToolCompletedEvent,
   ToolProgressEvent,
   ToolStartedEvent,
+  ContextCompactionStartedEvent,
+  ContextCompactionCompletedEvent,
   TurnCompletedEvent,
   TurnErrorEvent,
   TurnInterruptResult,
@@ -66,6 +72,9 @@ import type {
 export type {
   ApprovalDecision,
   ApprovalRequestedEvent,
+  UserQuestionRequestedEvent,
+  UserQuestionRespondResult,
+  UserQuestionAnswer,
   ApprovalRespondResult,
   ApprovalScope,
   ConnectionState,
@@ -86,6 +95,8 @@ export type {
   ToolCompletedEvent,
   ToolProgressEvent,
   ToolStartedEvent,
+  ContextCompactionStartedEvent,
+  ContextCompactionCompletedEvent,
   TurnCompletedEvent,
   TurnErrorEvent,
   TurnInterruptResult,
@@ -124,6 +135,8 @@ export const METHODS = {
   TURN_START: "turn/start",
   TURN_INTERRUPT: "turn/interrupt",
   APPROVAL_RESPOND: "approval/respond",
+  USER_QUESTION_RESPOND: "user_question/respond",
+  USER_QUESTION_REQUESTED: "user_question/requested",
   TASK_OUTPUT_READ: "task/output/read",
   DIFF_PREVIEW_GET: "diff/preview/get",
   TURN_STATE_GET: "turn/state/get",
@@ -183,6 +196,12 @@ export const METHODS = {
   // (`ToolProgressIndicator`) lights up — the SSE bridge predecessor of
   // this surface was the sole dispatcher prior to PR #96. See
   // `crates/octos-cli/src/api/ui_protocol_progress.rs:99-363`.
+  // UPCR-2026-026 context-compaction lifecycle: `started` fires
+  // immediately before a server-owned compaction pass (may arrive in the
+  // same batch as `completed` — the pass is synchronous today);
+  // `completed` carries the before/after token estimates.
+  CONTEXT_COMPACTION_STARTED: "context/compaction_started",
+  CONTEXT_COMPACTION_COMPLETED: "context/compaction_completed",
   TOOL_STARTED: "tool/started",
   TOOL_PROGRESS: "tool/progress",
   TOOL_COMPLETED: "tool/completed",
@@ -225,6 +244,7 @@ export const METHODS = {
  */
 export const UI_PROTOCOL_FEATURES = [
   "approval.typed.v1",
+  "user_question.v1",
   "pane.snapshots.v1",
   // P1.3 (server PR #767, web PR aligning the wire shape): the server
   // explicitly filters both live broadcast and cursor replay of
@@ -264,6 +284,13 @@ export const UI_PROTOCOL_FEATURES = [
   // UPCR-2026-027: persisted background jobs for manifest-declared
   // skill actions such as notebook source import.
   "skill.action_jobs.v1",
+  // UPCR-2026-026 (octos #1558) + UPCR-2026-022: the server filters the
+  // context lifecycle family (context/compaction_started,
+  // context/compaction_completed, context/normalization_reported) for
+  // clients that did not negotiate this capability — without the token
+  // the SPA's compaction indicator is unreachable in production (the
+  // same gap octos-tui#253 fixed for the TUI).
+  "context.lifecycle.v1",
 ] as const;
 
 /**
@@ -437,7 +464,22 @@ export interface UiProtocolBridge {
       e: TurnStartedEvent | TurnCompletedEvent | TurnErrorEvent,
     ) => void,
   ): () => void;
+  /** UPCR-2026-026 context-compaction lifecycle (started | completed);
+   *  discriminate by `threshold_tokens` (present only on started). */
+  onContextCompaction(
+    handler: (
+      e: ContextCompactionStartedEvent | ContextCompactionCompletedEvent,
+    ) => void,
+  ): () => void;
   onApprovalRequested(handler: (e: ApprovalRequestedEvent) => void): () => void;
+  onUserQuestionRequested(
+    handler: (e: UserQuestionRequestedEvent) => void,
+  ): () => void;
+  respondToUserQuestion(
+    question_id: string,
+    answers: UserQuestionAnswer[],
+    client_note?: string,
+  ): Promise<UserQuestionRespondResult>;
   /** Synchronous tool-call lifecycle event surface. The event-router
    *  attaches a handler that re-emits each variant as a
    *  `crew:tool_progress` DOM event so the streaming-bubble spinner keeps
@@ -624,6 +666,71 @@ interface ProjectionEnvelope {
   payload: {
     type: string;
     data: Record<string, unknown>;
+  };
+}
+
+function guardHydrateToolEnvelope(p: unknown): Envelope | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.thread_id)) return null;
+  if (typeof p.seq !== "number" || !Number.isFinite(p.seq) || p.seq < 0) {
+    return null;
+  }
+  if (!isPlainObject(p.payload)) return null;
+  const payloadType = p.payload.type;
+  if (
+    payloadType !== "tool_start" &&
+    payloadType !== "tool_progress" &&
+    payloadType !== "tool_end"
+  ) {
+    return null;
+  }
+  if (!isPlainObject(p.payload.data)) return null;
+  const data = p.payload.data;
+  if (!isString(data.tool_call_id)) return null;
+  if (payloadType === "tool_start") {
+    if (!isString(data.name)) return null;
+    return {
+      thread_id: p.thread_id,
+      seq: p.seq,
+      client_message_id:
+        typeof p.client_message_id === "string" ? p.client_message_id : undefined,
+      payload: {
+        type: "tool_start",
+        data: {
+          tool_call_id: data.tool_call_id,
+          name: data.name,
+          ...(data.arguments !== undefined ? { arguments: data.arguments } : {}),
+        },
+      },
+    };
+  }
+  if (payloadType === "tool_progress") {
+    if (typeof data.message !== "string") return null;
+    return {
+      thread_id: p.thread_id,
+      seq: p.seq,
+      client_message_id:
+        typeof p.client_message_id === "string" ? p.client_message_id : undefined,
+      payload: {
+        type: "tool_progress",
+        data: { tool_call_id: data.tool_call_id, message: data.message },
+      },
+    };
+  }
+  if (data.status !== "complete" && data.status !== "error") return null;
+  return {
+    thread_id: p.thread_id,
+    seq: p.seq,
+    client_message_id:
+      typeof p.client_message_id === "string" ? p.client_message_id : undefined,
+    payload: {
+      type: "tool_end",
+      data: {
+        tool_call_id: data.tool_call_id,
+        status: data.status,
+        ...(typeof data.error === "string" ? { error: data.error } : {}),
+      },
+    },
   };
 }
 
@@ -1009,11 +1116,21 @@ export function guardSessionHydrate(p: unknown): SessionHydrateResult | null {
     }
   }
 
+  let replayedToolEnvelopes: Envelope[] | undefined;
+  if (Array.isArray(p.replayed_tool_envelopes)) {
+    replayedToolEnvelopes = [];
+    for (const e of p.replayed_tool_envelopes) {
+      const guarded = guardHydrateToolEnvelope(e);
+      if (guarded) replayedToolEnvelopes.push(guarded);
+    }
+  }
+
   return {
     session_id: p.session_id,
     cursor,
     messages,
     replayed_envelopes: replayedEnvelopes,
+    replayed_tool_envelopes: replayedToolEnvelopes,
   };
 }
 
@@ -1126,6 +1243,41 @@ function guardSkillActionJobUpdated(p: unknown): SkillActionJobUpdatedEvent | nu
   return event;
 }
 
+function guardContextCompactionStarted(p: unknown): ContextCompactionStartedEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.session_id)) return null;
+  const contextState = isPlainObject(p.context_state) ? p.context_state : null;
+  const tokenEstimate =
+    contextState && typeof contextState.token_estimate === "number"
+      ? contextState.token_estimate
+      : null;
+  if (tokenEstimate == null || typeof p.threshold_tokens !== "number") return null;
+  return {
+    session_id: p.session_id,
+    token_estimate: tokenEstimate,
+    threshold_tokens: p.threshold_tokens,
+    trigger: isString(p.trigger) ? p.trigger : "",
+  };
+}
+
+function guardContextCompactionCompleted(p: unknown): ContextCompactionCompletedEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.session_id)) return null;
+  const compaction = isPlainObject(p.compaction) ? p.compaction : null;
+  if (!compaction || typeof compaction.token_estimate_before !== "number") return null;
+  return {
+    session_id: p.session_id,
+    token_estimate_before: compaction.token_estimate_before,
+    token_estimate_after:
+      typeof compaction.token_estimate_after === "number"
+        ? compaction.token_estimate_after
+        : null,
+    retained_count: typeof compaction.retained_count === "number" ? compaction.retained_count : 0,
+    dropped_count: typeof compaction.dropped_count === "number" ? compaction.dropped_count : 0,
+    error: isString(compaction.error) ? compaction.error : null,
+  };
+}
+
 function guardTurnStarted(p: unknown): TurnStartedEvent | null {
   if (!isPlainObject(p)) return null;
   if (!isString(p.session_id) || !isString(p.turn_id)) return null;
@@ -1195,6 +1347,60 @@ function guardApprovalRequested(p: unknown): ApprovalRequestedEvent | null {
     render_hints: isPlainObject(p.render_hints)
       ? (p.render_hints as ApprovalRequestedEvent["render_hints"])
       : undefined,
+  };
+}
+
+function guardUserQuestionRequested(
+  p: unknown,
+): UserQuestionRequestedEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (
+    !isString(p.session_id) ||
+    !isString(p.question_id) ||
+    !isString(p.turn_id) ||
+    typeof p.title !== "string" ||
+    typeof p.body !== "string" ||
+    !Array.isArray(p.questions)
+  ) {
+    return null;
+  }
+  const questions = p.questions
+    .map((q): UserQuestionRequestedEvent["questions"][number] | null => {
+      if (!isPlainObject(q)) return null;
+      if (!isString(q.question) || !Array.isArray(q.options)) return null;
+      const options = q.options
+        .map((o) =>
+          isPlainObject(o) && isString(o.label)
+            ? {
+                label: o.label,
+                description: isString(o.description) ? o.description : "",
+              }
+            : null,
+        )
+        .filter((o): o is { label: string; description: string } => o !== null);
+      if (options.length === 0) return null;
+      return {
+        header: isString(q.header) ? q.header : "",
+        question: q.question,
+        options,
+        multi_select: q.multi_select === true,
+        allow_free_text: q.allow_free_text !== false,
+      };
+    })
+    .filter(
+      (q): q is UserQuestionRequestedEvent["questions"][number] => q !== null,
+    );
+  return {
+    session_id: p.session_id,
+    topic:
+      typeof p.topic === "string" && p.topic.trim()
+        ? p.topic.trim()
+        : undefined,
+    question_id: p.question_id,
+    turn_id: p.turn_id,
+    title: p.title,
+    body: p.body,
+    questions,
   };
 }
 
@@ -1587,10 +1793,15 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private readonly subTaskOutputDelta = new Subscribers<TaskOutputDeltaEvent>();
   private readonly subSkillActionJobUpdated =
     new Subscribers<SkillActionJobUpdatedEvent>();
+  private readonly subContextCompaction = new Subscribers<
+    ContextCompactionStartedEvent | ContextCompactionCompletedEvent
+  >();
   private readonly subTurnLifecycle = new Subscribers<
     TurnStartedEvent | TurnCompletedEvent | TurnErrorEvent
   >();
   private readonly subApprovalRequested = new Subscribers<ApprovalRequestedEvent>();
+  private readonly subUserQuestionRequested =
+    new Subscribers<UserQuestionRequestedEvent>();
   private readonly subToolStarted = new Subscribers<ToolStartedEvent>();
   private readonly subToolProgress = new Subscribers<ToolProgressEvent>();
   private readonly subToolCompleted = new Subscribers<ToolCompletedEvent>();
@@ -1660,7 +1871,16 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     },
     [METHODS.SKILL_ACTION_JOB_UPDATED]: {
       guard: guardSkillActionJobUpdated,
-      emit: (v) => this.subSkillActionJobUpdated.emit(v as SkillActionJobUpdatedEvent),
+      emit: (v) =>
+        this.subSkillActionJobUpdated.emit(v as SkillActionJobUpdatedEvent),
+    },
+    [METHODS.CONTEXT_COMPACTION_STARTED]: {
+      guard: guardContextCompactionStarted,
+      emit: (v) => this.subContextCompaction.emit(v as ContextCompactionStartedEvent),
+    },
+    [METHODS.CONTEXT_COMPACTION_COMPLETED]: {
+      guard: guardContextCompactionCompleted,
+      emit: (v) => this.subContextCompaction.emit(v as ContextCompactionCompletedEvent),
     },
     [METHODS.TURN_STARTED]: {
       guard: guardTurnStarted,
@@ -1677,6 +1897,11 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     [METHODS.APPROVAL_REQUESTED]: {
       guard: guardApprovalRequested,
       emit: (v) => this.subApprovalRequested.emit(v as ApprovalRequestedEvent),
+    },
+    [METHODS.USER_QUESTION_REQUESTED]: {
+      guard: guardUserQuestionRequested,
+      emit: (v) =>
+        this.subUserQuestionRequested.emit(v as UserQuestionRequestedEvent),
     },
     [METHODS.TOOL_STARTED]: {
       guard: guardToolStarted,
@@ -1834,7 +2059,9 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.subTaskOutputDelta.clear();
     this.subSkillActionJobUpdated.clear();
     this.subTurnLifecycle.clear();
+    this.subContextCompaction.clear();
     this.subApprovalRequested.clear();
+    this.subUserQuestionRequested.clear();
     this.subToolStarted.clear();
     this.subToolProgress.clear();
     this.subToolCompleted.clear();
@@ -1927,6 +2154,36 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     );
   }
 
+  onUserQuestionRequested(
+    handler: Listener<UserQuestionRequestedEvent>,
+  ): () => void {
+    return this.subUserQuestionRequested.add(handler);
+  }
+
+  respondToUserQuestion(
+    question_id: string,
+    answers: UserQuestionAnswer[],
+    client_note?: string,
+  ): Promise<UserQuestionRespondResult> {
+    if (!isString(question_id)) {
+      return Promise.reject(
+        new Error(
+          "ui-protocol-bridge: respondToUserQuestion requires question_id",
+        ),
+      );
+    }
+    const params: Record<string, unknown> = {
+      session_id: this.requireScopedSessionId(),
+      question_id,
+      answers,
+    };
+    if (client_note !== undefined) params.client_note = client_note;
+    return this.request<UserQuestionRespondResult>(
+      METHODS.USER_QUESTION_RESPOND,
+      params,
+    );
+  }
+
   async hydrateSession(
     include: ReadonlyArray<
       "messages" | "threads" | "turns" | "pending_approvals"
@@ -2006,6 +2263,11 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     handler: Listener<TurnStartedEvent | TurnCompletedEvent | TurnErrorEvent>,
   ): () => void {
     return this.subTurnLifecycle.add(handler);
+  }
+  onContextCompaction(
+    handler: Listener<ContextCompactionStartedEvent | ContextCompactionCompletedEvent>,
+  ): () => void {
+    return this.subContextCompaction.add(handler);
   }
   onApprovalRequested(handler: Listener<ApprovalRequestedEvent>): () => void {
     return this.subApprovalRequested.add(handler);
@@ -2877,6 +3139,7 @@ export const __INTERNAL_GUARDS_FOR_TEST__ = {
   guardTurnCompleted,
   guardTurnError,
   guardApprovalRequested,
+  guardUserQuestionRequested,
   guardToolStarted,
   guardToolProgress,
   guardToolCompleted,

@@ -438,6 +438,32 @@ export interface TurnStartedEvent {
   turn_id: string;
 }
 
+/** UPCR-2026-026: emitted immediately BEFORE a server-owned context
+ * compaction pass. `token_estimate` is the PRE-compaction size (flattened
+ * from the wire's `context_state.token_estimate` by the bridge guard);
+ * `threshold_tokens` is the limit that tripped the pass — an honest
+ * fullness denominator for the indicator bar. May arrive in the same
+ * delivery batch as the completed event (the pass is synchronous today).
+ */
+export interface ContextCompactionStartedEvent {
+  session_id: string;
+  token_estimate: number;
+  threshold_tokens: number;
+  trigger: string;
+}
+
+/** Completion record for a compaction pass (flattened from the wire's
+ * `compaction` object by the bridge guard). `token_estimate_after` is
+ * absent on failed passes (`error` set). */
+export interface ContextCompactionCompletedEvent {
+  session_id: string;
+  token_estimate_before: number;
+  token_estimate_after: number | null;
+  retained_count: number;
+  dropped_count: number;
+  error: string | null;
+}
+
 export interface TurnCompletedEvent {
   session_id: string;
   turn_id: string;
@@ -625,6 +651,49 @@ export interface ApprovalRequestedEvent {
   risk?: string;
   typed_details?: ApprovalTypedDetails;
   render_hints?: ApprovalRenderHints;
+}
+
+// --- Structured multiple-choice questions (user_question.v1, UPCR-2026-023) ---
+
+export interface UserQuestionOption {
+  label: string;
+  description: string;
+}
+
+export interface UserQuestion {
+  /** Short chip label (≤ 12 chars). */
+  header: string;
+  question: string;
+  options: UserQuestionOption[];
+  multi_select: boolean;
+  /** Server-forced true — a free-text "Other" is always offered. */
+  allow_free_text: boolean;
+}
+
+export interface UserQuestionRequestedEvent {
+  session_id: string;
+  topic?: string;
+  question_id: string;
+  turn_id: string;
+  /** Mandatory generic fallback text. */
+  title: string;
+  body: string;
+  /** 1–4 structured questions. */
+  questions: UserQuestion[];
+}
+
+/** One per-question answer, in question order. */
+export interface UserQuestionAnswer {
+  /** 0..1 for single-select, 0..N for multi_select; must match option labels. */
+  selected_labels: string[];
+  free_text?: string;
+}
+
+export interface UserQuestionRespondResult {
+  question_id: string;
+  accepted: boolean;
+  runtime_resumed: boolean;
+  status?: string;
 }
 
 export interface WarningEvent {
@@ -826,6 +895,7 @@ export interface SessionHydrateResult {
   turns?: unknown[];
   pending_approvals?: unknown[];
   replayed_envelopes?: TurnSpawnCompleteEvent[];
+  replayed_tool_envelopes?: Envelope[];
 }
 
 // ─── M9-γ canonical projection envelope (UPCR-2026-014) ────────────────────

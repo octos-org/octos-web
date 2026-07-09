@@ -52,17 +52,17 @@ Multi-tenant accounts, per-user isolation, and the admin surfaces for them are w
 |---|---|
 | `/` | Project launcher — every chat, deck, and site as a project card |
 | `/home` | Home-assistant standby — clock, weather/news/calendar/photo/smart-home widgets, night mode, wake-word |
-| `/voice` | Voice assistant — on-device VAD, streamed TTS with barge-in, user-selectable voices, live video chat |
-| `/chat` | The chat workbench — streaming turns, tool activity, approvals, file uploads, rich media |
+| `/voice` | Voice assistant — on-device VAD, streamed TTS with barge-in, spoken transcripts, user-selectable voices, live video chat |
+| `/chat` | The chat workbench — streaming turns, tool activity, approvals and clarifying-question cards, a context-compaction indicator, file uploads, rich media |
 | `/studio/:projectId` | Studio — three-pane grounded workspace (sources · chat · skills) pinned to a project session |
 | `/slides`, `/slides/:id/present` | Slide-deck gallery, editor, and full-screen present mode |
 | `/sites`, `/sites/:id` | Generated-site gallery and editor with signed previews |
-| `/settings` | Admin dashboard — LLM providers & failover, users, channels, sandbox, tools, system metrics & live logs, server watchdog, skills hub, voice, appearance |
+| `/settings` | Admin dashboard — LLM providers & failover, users, profiles, channels, sandbox, tools, system metrics & live logs, server watchdog, skills hub, voice, Ominix home, appearance |
 | `/login` | Email-code login, or password-free solo login against `octos serve --solo` |
 
 ## Develop the client
 
-Prereqs: Node 20+, and an octos server (install above). The client is a React SPA talking to the server over UI Protocol v1 (see [How it connects](#how-it-connects)).
+Prereqs: Node 20.19+ (Vite 7's floor), and an octos server (install above). The client is a React SPA talking to the server over UI Protocol v1 (see [How it connects](#how-it-connects)).
 
 **Stack:** React 19 · TypeScript · Vite 7 · Tailwind CSS 4 · react-router 7 · Vitest + Playwright.
 
@@ -83,7 +83,7 @@ The dev server proxies `/api` (including the WebSocket upgrade) to `http://local
 |---|---|
 | Blank app / WebSocket won't connect | Is the server running on **:50080**? (A service install listens on :8080 — point the proxy or your browser at the right one.) |
 | Login code never arrives | The local server has no SMTP — run `octos serve --solo` and use the solo button instead. |
-| `npm ci` or `npm run dev` fails | Check `node --version` — Vite 7 needs Node 20+. |
+| `npm ci` or `npm run dev` fails | Check `node --version` — Vite 7 needs Node 20.19+. |
 
 ## Build, lint, test
 
@@ -94,19 +94,19 @@ npm run build          # tsc -b && vite build  → dist/
 npm run preview        # serve the production build locally
 npm run lint           # eslint
 
-npm run test:unit      # Vitest unit suite (~800 tests, jsdom, no server needed)
+npm run test:unit      # Vitest unit suite (~750 tests across 80+ files, jsdom, no server needed)
 npm test               # Playwright e2e — needs the app + a LIVE octos server
 npm run test:live:smoke   # fast live smoke subset
 npm run test:live:long    # long-running live scenarios (deep research, TTS)
 ```
 
-The unit suite is the merge gate. Playwright specs (in `tests/`) drive a real browser against `http://localhost:5174` and exercise live server behavior — run them when touching transport, voice, or session flows.
+The unit suite is the merge gate. Playwright specs (in `tests/`) drive a real browser and exercise live server behavior — run them when touching transport, voice, or session flows. Their default `baseURL` is `http://localhost:5174` (override with `BASE_URL`); the Vite dev server listens on `:5173`, so point the specs at your dev server with `BASE_URL=http://localhost:5173` or serve a build on `:5174`.
 
 ## How it connects
 
 - **Transport** — `src/runtime/ui-protocol-bridge.ts`: a strict, fail-closed JSON-RPC bridge over WebSocket at `/api/ui-protocol/ws`. Reconnects with exponential backoff, resumes with an `after` cursor + `session/hydrate`, and queues outbound RPCs while offline. This is the *only* chat transport (the legacy SSE/REST bridge is gone).
-- **Events → state** — `src/runtime/ui-protocol-event-router.ts` routes typed notifications (`message/delta`, `message/persisted`, `turn/spawn_complete`, `tool/*`, approvals, …) into `src/store/thread-store.ts`, the single source of truth keyed by `client_message_id`. A pure projection layer (`src/store/projection.ts`, envelopes → view-model) runs behind the `octos_projection_v1` flag.
-- **Auth** — session token (`octos_session_token`) and optional admin token in localStorage; the WS handshake carries the token as a query parameter.
+- **Events → state** — `src/runtime/ui-protocol-event-router.ts` routes typed notifications (`message/delta`, `message/persisted`, `turn/spawn_complete`, `tool/*`, approvals, `user_question.v1` cards, `context.lifecycle.v1` compaction events, …) into `src/store/thread-store.ts`, the single source of truth keyed by `client_message_id`. A pure projection layer (`src/store/projection.ts`, envelopes → view-model) runs behind the `octos_projection_v1` flag.
+- **Auth** — session token (`octos_session_token`) and optional admin token (`octos_auth_token`) in localStorage; the WS handshake carries the token as a query parameter.
 
 The protocol contract lives in the octos repo (`crates/octos-core/src/ui_protocol.rs` and the API docs). Server merges do not wait for client releases — the spec is the contract.
 

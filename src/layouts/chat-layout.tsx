@@ -10,6 +10,7 @@ import { ContentBrowser } from "@/components/content-browser";
 import { SessionTitleEditor } from "@/components/session-title-editor";
 import { SessionTaskIndicator } from "@/components/session-task-dock";
 import { UiProtocolApprovalHost } from "@/components/ui-protocol-approval-host";
+import { UiProtocolQuestionHost } from "@/components/ui-protocol-question-host";
 import { useSession } from "@/runtime/session-context";
 import { eventMatchesScope } from "@/runtime/event-scope";
 import {
@@ -296,6 +297,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
         onCloseAudio={closeAudio}
       />
       <UiProtocolApprovalHost />
+      <UiProtocolQuestionHost />
     </div>
   );
 }

@@ -32,6 +32,7 @@ import {
   type AdaptiveMode,
 } from "@/runtime/session-context";
 import { UiProtocolApprovalHost } from "@/components/ui-protocol-approval-host";
+import { UiProtocolQuestionHost } from "@/components/ui-protocol-question-host";
 import * as ThreadStore from "@/store/thread-store";
 import { useWakeLock } from "./use-wake-lock";
 import { StandbyView } from "./standby-view";
@@ -207,6 +208,7 @@ function HomeAssistantShell() {
       </div>
 
       <UiProtocolApprovalHost />
+      <UiProtocolQuestionHost />
     </div>
   );
 }
