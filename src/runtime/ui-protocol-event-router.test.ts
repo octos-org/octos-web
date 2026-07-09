@@ -13,6 +13,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as ThreadStore from "@/store/thread-store";
+import * as TaskStore from "@/store/task-store";
 import {
   __resetProjectionForTests,
   __setProjectionV1ForTests,
@@ -497,6 +498,38 @@ describe("router event mapping", () => {
     expect(progressEvt!.detail.message).toBe("deep_research");
     expect(progressEvt!.detail.turnId).toBe("cmid-3");
     expect(progressEvt!.detail.terminal).toBeUndefined();
+  });
+
+  it("task/updated cancelled drops the task from the active store (mapped to completed)", () => {
+    // The web BackgroundTaskInfo status union has no `cancelled`; pre-fix the
+    // router dropped a `cancelled` update entirely, leaving a cancelled task
+    // stuck showing as running. It must map to a terminal status so the task
+    // leaves the active set.
+    const cfg = {
+      sessionId: SESSION,
+      dispatchEvent: () => {},
+    };
+    TaskStore.replaceTasks(SESSION, [
+      {
+        id: "task-cxl",
+        tool_name: "deep_search",
+        tool_call_id: "tc-cxl",
+        status: "running",
+        started_at: new Date(2026, 0, 1).toISOString(),
+        completed_at: null,
+        output_files: [],
+        error: null,
+      },
+    ]);
+    handleTaskUpdated(cfg, {
+      session_id: SESSION,
+      task_id: "task-cxl",
+      state: "cancelled",
+      title: "deep_search",
+    } as TaskUpdatedEvent);
+    const task = TaskStore.getTasks(SESSION).find((t) => t.id === "task-cxl");
+    expect(task?.status).toBe("completed"); // terminal, not "running", not dropped-update
+    expect(task?.error).toBeNull(); // cancelled is not an error
   });
 
   it("task/updated completed fans out a terminal crew:tool_progress (spawn_only spinner clear)", () => {

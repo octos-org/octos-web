@@ -1052,7 +1052,15 @@ function mergeLiveTask(
           ? "completed"
           : state === "failed" || state === "errored"
             ? "failed"
-            : null;
+            : // A `cancelled` task (harness.task_control.v1 task/cancel, or a
+              // channel-side cancel) is terminal-and-not-an-error. The web
+              // `BackgroundTaskInfo` status union has no `cancelled`, and
+              // dropping the update here (the pre-fix behavior) left a
+              // cancelled task stuck showing as running forever. Map it to
+              // `completed` so it leaves the active set without flashing red.
+              state === "cancelled" || state === "canceled"
+              ? "completed"
+              : null;
   if (!status) return;
 
   const existing = TaskStore.getTasks(sessionId, topic).find(

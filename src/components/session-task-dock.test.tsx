@@ -12,7 +12,7 @@
  * arithmetic.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -20,6 +20,11 @@ import { createRoot, type Root } from "react-dom/client";
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
+
+const cancelTask = vi.fn();
+vi.mock("@/runtime/ui-protocol-runtime", () => ({
+  getActiveBridge: () => ({ cancelTask }),
+}));
 
 import { SessionTaskIndicator } from "./session-task-dock";
 import { SessionContext } from "@/runtime/session-context";
@@ -96,11 +101,84 @@ function seedTasks(n: number): void {
 
 beforeEach(() => {
   TaskStore.clearTasks(SESSION);
+  cancelTask.mockReset();
 });
 
 afterEach(() => {
   for (const node of [...document.body.children]) node.remove();
   TaskStore.clearTasks(SESSION);
+});
+
+describe("SessionTaskIndicator — cancel", () => {
+  it("opens a cancel menu and cancels a running task, dropping it from active", async () => {
+    cancelTask.mockResolvedValue({ task_id: "task-0", status: "cancelled" });
+    seedTasks(1);
+    const harness = mount(
+      <SessionContext.Provider value={makeSessionCtx()}>
+        <SessionTaskIndicator />
+      </SessionContext.Provider>,
+    );
+
+    // Indicator is a button; no menu until opened.
+    const indicator = harness.container.querySelector(
+      '[data-testid="session-task-indicator"]',
+    ) as HTMLButtonElement;
+    expect(indicator).toBeTruthy();
+    expect(
+      harness.container.querySelector(
+        '[data-testid="session-task-cancel-menu"]',
+      ),
+    ).toBeNull();
+
+    act(() => indicator.click());
+    const cancelBtn = harness.container.querySelector(
+      '[data-testid="cancel-task-task-0"]',
+    ) as HTMLButtonElement;
+    expect(cancelBtn).toBeTruthy();
+
+    await act(async () => {
+      cancelBtn.click();
+    });
+
+    expect(cancelTask).toHaveBeenCalledWith("task-0");
+    // Cancelled → mapped to a terminal status → no longer active → indicator
+    // (which only shows for active/failed) disappears.
+    expect(
+      harness.container.querySelector(
+        '[data-testid="session-task-indicator"]',
+      ),
+    ).toBeNull();
+
+    harness.unmount();
+  });
+
+  it("keeps the task active when the server reports it still running", async () => {
+    cancelTask.mockResolvedValue({ task_id: "task-0", status: "running" });
+    seedTasks(1);
+    const harness = mount(
+      <SessionContext.Provider value={makeSessionCtx()}>
+        <SessionTaskIndicator />
+      </SessionContext.Provider>,
+    );
+    const indicator = harness.container.querySelector(
+      '[data-testid="session-task-indicator"]',
+    ) as HTMLButtonElement;
+    act(() => indicator.click());
+    await act(async () => {
+      (
+        harness.container.querySelector(
+          '[data-testid="cancel-task-task-0"]',
+        ) as HTMLButtonElement
+      ).click();
+    });
+    // Still running → indicator remains.
+    expect(
+      harness.container.querySelector(
+        '[data-testid="session-task-indicator"]',
+      ),
+    ).toBeTruthy();
+    harness.unmount();
+  });
 });
 
 describe("SessionTaskIndicator — constellation dot cap", () => {

@@ -105,6 +105,17 @@ export interface ApprovalRespondResult {
 }
 
 /**
+ * Result of `task/cancel` (harness.task_control.v1). `status` is the task's
+ * authoritative post-cancel runtime state — a task that had already finished
+ * comes back `completed`/`failed` rather than `cancelled`, so the caller
+ * renders truth instead of assuming the cancel took.
+ */
+export interface TaskCancelResult {
+  task_id: string;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+}
+
+/**
  * `message/delta` notification per UI Protocol v1 spec § 6 / § 9.
  *
  * The wire payload's text-bearing field is named `text` to match
