@@ -44,8 +44,12 @@ function isPipelineParent(task: BackgroundTaskInfo): boolean {
   return task.tool_name === "run_pipeline";
 }
 
-/** Synthesize a rollup key that never collides across null entries. */
-function rollupKey(task: BackgroundTaskInfo): string {
+/**
+ * Synthesize a rollup key that never collides across null entries. Exported
+ * so a caller can recover every raw member behind a rolled-up representative
+ * (e.g. to cancel a whole pipeline group, not just its representative).
+ */
+export function rollupKey(task: BackgroundTaskInfo): string {
   return task.tool_call_id != null
     ? `${CALL_TAG}${task.tool_call_id}`
     : `${NULL_CALL_TAG}${task.id}`;

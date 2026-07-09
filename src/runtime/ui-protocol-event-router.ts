@@ -933,7 +933,14 @@ export function handleTaskUpdated(
       dispatchToolProgressEvent(cfg, hostThreadId, toolLabel, label);
       break;
     }
-    case "completed": {
+    // `cancelled` shares the completed terminal path: the tool card must
+    // stop animating, a terminal progress frame must fire, and the cache
+    // entry dropped — otherwise the tool card + spinner keep spinning after
+    // the dock row disappears (codex review). `mergeLiveTask` above already
+    // maps its store status to `completed`.
+    case "completed":
+    case "cancelled":
+    case "canceled": {
       if (hostThreadId) {
         ThreadStore.setToolCallStatus(
           hostThreadId,

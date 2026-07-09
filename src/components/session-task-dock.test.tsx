@@ -152,6 +152,66 @@ describe("SessionTaskIndicator — cancel", () => {
     harness.unmount();
   });
 
+  it("cancels every member of a rolled-up pipeline group, not just the representative", async () => {
+    cancelTask.mockResolvedValue({ task_id: "x", status: "cancelled" });
+    // A run_pipeline parent + two pipeline children sharing one tool_call_id
+    // collapse to a single menu row; Cancel must hit all three.
+    const shared = "tc-pipe";
+    TaskStore.replaceTasks(SESSION, [
+      {
+        id: "p-parent",
+        tool_name: "run_pipeline",
+        tool_call_id: shared,
+        status: "running",
+        started_at: new Date(2026, 0, 1, 0, 0, 0).toISOString(),
+        completed_at: null,
+        output_files: [],
+        error: null,
+      },
+      {
+        id: "p-child-1",
+        tool_name: "pipeline:analyze",
+        tool_call_id: shared,
+        status: "running",
+        started_at: new Date(2026, 0, 1, 0, 0, 1).toISOString(),
+        completed_at: null,
+        output_files: [],
+        error: null,
+      },
+      {
+        id: "p-child-2",
+        tool_name: "pipeline:synthesize",
+        tool_call_id: shared,
+        status: "running",
+        started_at: new Date(2026, 0, 1, 0, 0, 2).toISOString(),
+        completed_at: null,
+        output_files: [],
+        error: null,
+      },
+    ]);
+    const harness = mount(
+      <SessionContext.Provider value={makeSessionCtx()}>
+        <SessionTaskIndicator />
+      </SessionContext.Provider>,
+    );
+    const indicator = harness.container.querySelector(
+      '[data-testid="session-task-indicator"]',
+    ) as HTMLButtonElement;
+    act(() => indicator.click());
+    // One collapsed row for the group.
+    const cancelBtn = harness.container.querySelector(
+      '[data-testid="cancel-task-p-parent"]',
+    ) as HTMLButtonElement;
+    expect(cancelBtn).toBeTruthy();
+    await act(async () => {
+      cancelBtn.click();
+    });
+    // All three raw task ids were cancelled.
+    const cancelledIds = cancelTask.mock.calls.map((c) => c[0]).sort();
+    expect(cancelledIds).toEqual(["p-child-1", "p-child-2", "p-parent"]);
+    harness.unmount();
+  });
+
   it("keeps the task active when the server reports it still running", async () => {
     cancelTask.mockResolvedValue({ task_id: "task-0", status: "running" });
     seedTasks(1);

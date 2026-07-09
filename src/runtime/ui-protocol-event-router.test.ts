@@ -567,6 +567,36 @@ describe("router event mapping", () => {
     expect(terminalEvt!.detail.message).toBe("done");
   });
 
+  it("task/updated cancelled fires a terminal crew:tool_progress (tool card stops spinning)", () => {
+    // Codex P1: `cancelled` must share the completed terminal path, else the
+    // tool card + spinner keep animating after the dock row disappears.
+    seedThread("cmid-cxl");
+    const dispatched: Event[] = [];
+    const cfg = {
+      sessionId: SESSION,
+      dispatchEvent: (e: Event) => dispatched.push(e),
+    };
+    handleTaskUpdated(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-cxl",
+      task_id: "task-cxl2",
+      state: "running",
+      title: "deep_search",
+    });
+    handleTaskUpdated(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-cxl",
+      task_id: "task-cxl2",
+      state: "cancelled",
+    });
+    const terminalEvt = dispatched
+      .filter((e) => e.type === "crew:tool_progress")
+      .map((e) => e as CustomEvent)
+      .find((e) => e.detail.terminal === true);
+    expect(terminalEvt).toBeDefined();
+    expect(terminalEvt!.detail.message).toBe("done");
+  });
+
   it("task/updated running passes through new labels (state-only dedupe would suppress spinner refresh)", () => {
     // Codex round-3: a stream of `running` updates with refreshed
     // `title`/`runtime_detail` values must reach the lifted spinner.

@@ -1,10 +1,11 @@
-import { useMemo, useState, type ReactElement } from "react";
+import { useEffect, useMemo, useState, type ReactElement } from "react";
 import type { BackgroundTaskInfo as TaskInfo } from "@/api/types";
 import { mergeTask, useTasks } from "@/store/task-store";
 import { useSession } from "@/runtime/session-context";
 import { getActiveBridge } from "@/runtime/ui-protocol-runtime";
 import {
   displayLabelForRolled,
+  rollupKey,
   rollupTasksByCall,
 } from "@/runtime/task-rollup";
 
@@ -93,45 +94,67 @@ export function SessionTaskIndicator() {
   // until the authoritative `task/updated` flips it to a terminal state.
   const [cancelling, setCancelling] = useState<Record<string, boolean>>({});
 
+  // The indicator stays mounted across session/topic switches, so a menu left
+  // open in one session must not render already-open (and destructive) over a
+  // different cached session's tasks (codex review).
+  useEffect(() => {
+    setOpen(false);
+    setCancelling({});
+  }, [currentSessionId, historyTopic]);
+
   const summary = useMemo(() => buildSummary(currentTasks), [currentTasks]);
 
-  async function cancelTask(task: TaskInfo) {
-    setCancelling((prev) => ({ ...prev, [task.id]: true }));
-    try {
-      const bridge = getActiveBridge(currentSessionId, historyTopic);
-      if (!bridge) throw new Error("bridge not connected");
-      const result = await bridge.cancelTask(task.id);
-      // Optimistically reflect the authoritative post-cancel state; the
-      // server's own `task/updated` confirms it moments later. The web status
-      // union has no `cancelled`, so a cancelled/pending task maps to a
-      // terminal `completed` (drops from the active set, no red flash); a task
-      // that had already finished comes back completed/failed unchanged; a
-      // still-`running` result means the cancel didn't take, so keep it active.
-      const status: TaskInfo["status"] =
-        result.status === "cancelled" || result.status === "pending"
-          ? "completed"
-          : result.status === "running"
-            ? "running"
-            : result.status === "failed"
-              ? "failed"
-              : "completed";
-      mergeTask(currentSessionId, { ...task, status }, historyTopic);
-    } catch {
-      // Leave the task as-is; drop the optimistic "Cancelling…" flag so the
-      // user can retry.
-    } finally {
-      setCancelling((prev) => {
-        const next = { ...prev };
-        delete next[task.id];
-        return next;
-      });
-    }
+  // A menu row is a rolled-up representative (a `run_pipeline` parent can
+  // stand in for several `pipeline:*` children sharing its tool_call_id).
+  // Cancel EVERY active raw task in the representative's group, not just the
+  // representative — otherwise a sibling immediately becomes the next
+  // representative and one Cancel doesn't clear the row (codex review).
+  async function cancelGroup(representative: TaskInfo) {
+    const key = rollupKey(representative);
+    const members = currentTasks.filter(
+      (t) => isTaskActive(t) && rollupKey(t) === key,
+    );
+    const ids = members.length > 0 ? members : [representative];
+    setCancelling((prev) => {
+      const next = { ...prev };
+      for (const m of ids) next[m.id] = true;
+      return next;
+    });
+    const bridge = getActiveBridge(currentSessionId, historyTopic);
+    await Promise.all(
+      ids.map(async (task) => {
+        try {
+          if (!bridge) throw new Error("bridge not connected");
+          const result = await bridge.cancelTask(task.id);
+          // Optimistically reflect the authoritative post-cancel state; the
+          // server's `task/updated` confirms it moments later. The web status
+          // union has no `cancelled`, so cancelled/pending → terminal
+          // `completed` (drops from active, no red flash); an already-finished
+          // task comes back completed/failed; a still-`running` result means
+          // the cancel didn't take, so keep it active.
+          const status: TaskInfo["status"] =
+            result.status === "cancelled" || result.status === "pending"
+              ? "completed"
+              : result.status === "running"
+                ? "running"
+                : result.status === "failed"
+                  ? "failed"
+                  : "completed";
+          mergeTask(currentSessionId, { ...task, status }, historyTopic);
+        } catch {
+          // Leave the task as-is so the user can retry.
+        } finally {
+          setCancelling((prev) => {
+            const next = { ...prev };
+            delete next[task.id];
+            return next;
+          });
+        }
+      }),
+    );
   }
 
-  if (!summary) {
-    if (open) setOpen(false);
-    return null;
-  }
+  if (!summary) return null;
 
   // Header constellation (M9 follow-up, 2026-05-22). Inline dot-per-task
   // visualisation that scales with count, replacing the "glass-pill"
@@ -240,7 +263,7 @@ export function SessionTaskIndicator() {
                   data-testid={`cancel-task-${task.id}`}
                   className="shrink-0 rounded-[6px] border border-border px-2 py-0.5 text-[11px] font-medium text-muted hover:border-rose-400 hover:text-rose-300 disabled:opacity-60"
                   disabled={busy}
-                  onClick={() => void cancelTask(task)}
+                  onClick={() => void cancelGroup(task)}
                 >
                   {busy ? "Cancelling…" : "Cancel"}
                 </button>
