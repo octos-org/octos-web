@@ -198,6 +198,30 @@ function hasSeenSeq(key: string, seq: number): boolean {
 }
 
 /**
+ * PR #243 follow-up (P2): `${thread_id}:${seq}` identities of hydrate
+ * `replayed_tool_envelopes` already applied to the CURRENT thread
+ * state for a store key. `(thread_id, seq)` is the canonical envelope
+ * identity (see `Envelope` in `ui-protocol-types.ts`).
+ *
+ * Why: `applyHydrateDedup` re-runs the tool replay on every WS
+ * `session/hydrate` (initial connect + every reconnect) and after
+ * every `replayHistory` rebuild (the cached-hydrate re-application) —
+ * even twice within ONE hydrate on the M10.5 seed path
+ * (`seedFromHydrateMessages` → `replayHistory` → nested
+ * `applyHydrateDedup`, then the outer pass's own tail call). But
+ * `appendToolProgress` only suppresses *consecutive* duplicate lines,
+ * so replaying the same `tool_progress` envelopes against unchanged
+ * state duplicated every progress line per re-run.
+ *
+ * Lifecycle: an entry is added when the envelope is actually applied.
+ * `replayHistory` drops the key's ledger when it replaces state
+ * wholesale — rebuilt REST rows carry no progress timelines, so the
+ * cached-hydrate re-application MUST re-attach. `clearSession` /
+ * `__resetForTests` release it with the rest of the session state.
+ */
+const appliedHydrateToolEnvelopesByKey = new Map<string, Set<string>>();
+
+/**
  * M10 Phase 6.2 (Bug C): per-session WS `session/hydrate` snapshot
  * cached so that subsequent `replayHistory` calls (the forced retries
  * in chat-thread.tsx fire at 2s/5s/12s) can replay the dedup pass on
@@ -2578,6 +2602,12 @@ export function replayHistory(
   state.threads.sort((a, b) => a.userMsg.timestamp - b.userMsg.timestamp);
   for (const thread of state.threads) sortResponsesInThread(thread);
 
+  // PR #243 follow-up (P2): state for `key` is replaced wholesale and
+  // the rebuilt rows carry no tool progress timelines — drop the
+  // applied-tool-envelope ledger so the cached-hydrate re-application
+  // below is allowed to re-attach the replayed tool state to the
+  // fresh objects.
+  appliedHydrateToolEnvelopesByKey.delete(key);
   sessionsByKey.set(key, state);
   loadedSessions.add(key);
 
@@ -2680,6 +2710,7 @@ export interface HydrateEnvelope {
 export interface HydrateSnapshot {
   messages?: HydrateMessageRow[];
   replayed_envelopes?: HydrateEnvelope[];
+  replayed_tool_envelopes?: Envelope[];
 }
 
 /**
@@ -2712,6 +2743,171 @@ function hydrateRowToMessageInfo(row: HydrateMessageRow): MessageInfo | null {
     timestamp,
     media: row.media,
   };
+}
+
+/**
+ * Merge hydrate media paths into `target`, returning a NEW
+ * `ThreadMessage` (fresh object + fresh `files` array) when anything
+ * was added, or `null` when the merge is a no-op.
+ *
+ * PR #243 follow-up (P2): the first cut pushed into `target.files` in
+ * place. `ThreadUserBubble` / `ThreadAssistantBubble` are `React.memo`
+ * components whose shallow comparison keys on the `message` object
+ * reference, so an in-place push updated store state without ever
+ * repainting the bubble — media merged into an EXISTING (REST-seeded)
+ * message silently didn't display. Same convention as
+ * `replaceAssistantSlot` (see the 2026-05-15 bug note there): every
+ * mutation that changes a message's data MUST replace the containing
+ * `ThreadMessage` object.
+ */
+function mergeMediaIntoMessage(
+  target: ThreadMessage,
+  media?: string[],
+): ThreadMessage | null {
+  if (!media || media.length === 0) return null;
+  const seen = new Set(target.files.map((file) => file.path));
+  const added: MessageFile[] = [];
+  for (const path of media) {
+    if (seen.has(path)) continue;
+    added.push(fileFromMediaPath(path));
+    seen.add(path);
+  }
+  if (added.length === 0) return null;
+  return { ...target, files: [...target.files, ...added] };
+}
+
+function rowTimestampMs(row: HydrateMessageRow): number | null {
+  if (!row.persisted_at) return null;
+  const timestamp = new Date(row.persisted_at).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function hydrateRowMatchesResponse(
+  row: HydrateMessageRow,
+  response: ThreadMessage,
+): boolean {
+  if (typeof row.seq === "number" && response.historySeq === row.seq) {
+    return true;
+  }
+  if (row.content === undefined || response.text !== row.content) return false;
+  const timestamp = rowTimestampMs(row);
+  return timestamp === null || response.timestamp === timestamp;
+}
+
+function mergeHydrateMediaIntoExisting(
+  sessionId: string,
+  topic: string | undefined,
+  rows: HydrateMessageRow[],
+): boolean {
+  if (rows.length === 0) return false;
+  const state = sessionsByKey.get(storeKey(sessionId, topic));
+  if (!state) return false;
+  let changed = false;
+
+  for (const row of rows) {
+    if (!row.media || row.media.length === 0) continue;
+    if (row.role === "user") {
+      const anchor = row.client_message_id ?? row.thread_id;
+      const thread = anchor ? state.byId.get(anchor) : undefined;
+      if (!thread) continue;
+      const mergedUser = mergeMediaIntoMessage(thread.userMsg, row.media);
+      if (mergedUser) {
+        thread.userMsg = mergedUser;
+        changed = true;
+      }
+      continue;
+    }
+
+    const thread = row.thread_id ? state.byId.get(row.thread_id) : undefined;
+    if (!thread) continue;
+    for (let i = 0; i < thread.responses.length; i += 1) {
+      if (hydrateRowMatchesResponse(row, thread.responses[i])) {
+        const merged = mergeMediaIntoMessage(thread.responses[i], row.media);
+        if (merged) {
+          thread.responses[i] = merged;
+          changed = true;
+        }
+        break;
+      }
+    }
+  }
+
+  return changed;
+}
+
+function replayHydrateToolEnvelopes(
+  sessionId: string,
+  topic: string | undefined,
+  envelopes: Envelope[] | undefined,
+): void {
+  if (!envelopes || envelopes.length === 0) return;
+  const key = storeKey(sessionId, topic);
+  // PR #243 follow-up (P2): scope the replay to the hydrating session.
+  // The tool mutators below route by `thread_id` alone — for an
+  // unknown thread `ensureOrphanThread` falls through to
+  // `pickHostSessionForOrphan()`, which would attach the replayed tool
+  // card to an ARBITRARY other session. A hydrate is scoped to ONE
+  // (sessionId, topic); skip envelopes whose thread cannot be resolved
+  // within that scope's own state (the `messages[]` seed pass runs
+  // before us, so any thread the snapshot carries rows for already
+  // exists here).
+  const state = sessionsByKey.get(key);
+  if (!state) return;
+  let applied = appliedHydrateToolEnvelopesByKey.get(key);
+  const ordered = [...envelopes].sort((a, b) => {
+    if (a.thread_id === b.thread_id) return a.seq - b.seq;
+    return a.thread_id.localeCompare(b.thread_id);
+  });
+
+  for (const envelope of ordered) {
+    if (!state.byId.has(envelope.thread_id)) {
+      recordRuntimeCounter("octos_hydrate_tool_envelope_unresolved_total", {
+        surface: "thread_store",
+      });
+      continue;
+    }
+    // PR #243 follow-up (P2): idempotency. This replay re-runs on every
+    // WS reconnect and after every `replayHistory` rebuild, but
+    // `appendToolProgress` only skips *consecutive* duplicate lines —
+    // re-applying the same `tool_progress` envelopes against unchanged
+    // state duplicated every progress line. Skip `(thread_id, seq)`
+    // pairs already applied to the current state generation (see
+    // `appliedHydrateToolEnvelopesByKey`); envelopes skipped above as
+    // unresolved are NOT marked, so a later hydrate that seeds their
+    // thread can still apply them.
+    const envelopeKey = `${envelope.thread_id}:${envelope.seq}`;
+    if (applied?.has(envelopeKey)) continue;
+    if (!applied) {
+      applied = new Set();
+      appliedHydrateToolEnvelopesByKey.set(key, applied);
+    }
+    applied.add(envelopeKey);
+    const payload = envelope.payload;
+    if (payload.type === "tool_start") {
+      addToolCall(
+        envelope.thread_id,
+        payload.data.tool_call_id,
+        payload.data.name,
+        payload.data.arguments,
+      );
+      continue;
+    }
+    if (payload.type === "tool_progress") {
+      appendToolProgress(
+        envelope.thread_id,
+        payload.data.tool_call_id,
+        payload.data.message,
+      );
+      continue;
+    }
+    if (payload.type === "tool_end") {
+      setToolCallStatus(
+        envelope.thread_id,
+        payload.data.tool_call_id,
+        payload.data.status === "error" ? "error" : "complete",
+      );
+    }
+  }
 }
 
 /**
@@ -2964,7 +3160,13 @@ export function applyHydrateDedup(
   // `m10-harden-reload-midstream` catches when both the legacy
   // companion AND the envelope land in the same hydrate response.
   seedFromHydrateMessages(sessionId, topic, messages, envelopes);
-  if (envelopes.length === 0) return;
+  if (mergeHydrateMediaIntoExisting(sessionId, topic, messages)) {
+    notify();
+  }
+  if (envelopes.length === 0) {
+    replayHydrateToolEnvelopes(sessionId, topic, hydrate.replayed_tool_envelopes);
+    return;
+  }
 
   // Build the seq → row metadata index, including media so we can
   // identify per-file companion rows by media-subset against an
@@ -3159,6 +3361,7 @@ export function applyHydrateDedup(
       topic,
     });
   }
+  replayHydrateToolEnvelopes(sessionId, topic, hydrate.replayed_tool_envelopes);
   notify();
 }
 
@@ -3652,6 +3855,7 @@ export function clearSession(sessionId: string, topic?: string): void {
     hydrateSnapshotByKey.delete(key);
     pendingClientMessageIds.delete(key);
     seenSeqsByKey.delete(key);
+    appliedHydrateToolEnvelopesByKey.delete(key);
   } else {
     for (const k of [...sessionsByKey.keys()]) {
       if (k === sessionId || k.startsWith(`${sessionId}#`)) {
@@ -3661,6 +3865,7 @@ export function clearSession(sessionId: string, topic?: string): void {
         hydrateSnapshotByKey.delete(k);
         pendingClientMessageIds.delete(k);
         seenSeqsByKey.delete(k);
+        appliedHydrateToolEnvelopesByKey.delete(k);
       }
     }
     // Codex round-5 P3: a hydrate snapshot may exist without a
@@ -3676,10 +3881,17 @@ export function clearSession(sessionId: string, topic?: string): void {
     }
     // WEB-NEW-17: same orphan-key concern for the seen-seqs cache —
     // sweep it independently so a clear-then-stream sequence doesn't
-    // suppress a fresh re-fired live row.
+    // suppress a fresh re-fired live row. Same for the applied
+    // tool-envelope ledger (PR #243 follow-up): a clear-then-hydrate
+    // sequence must be allowed to re-apply the replayed tool state.
     for (const k of [...seenSeqsByKey.keys()]) {
       if (k === sessionId || k.startsWith(`${sessionId}#`)) {
         seenSeqsByKey.delete(k);
+      }
+    }
+    for (const k of [...appliedHydrateToolEnvelopesByKey.keys()]) {
+      if (k === sessionId || k.startsWith(`${sessionId}#`)) {
+        appliedHydrateToolEnvelopesByKey.delete(k);
       }
     }
   }
@@ -3781,6 +3993,7 @@ export function __resetForTests(): void {
   hydrateSnapshotByKey.clear();
   pendingClientMessageIds.clear();
   seenSeqsByKey.clear();
+  appliedHydrateToolEnvelopesByKey.clear();
   version = 0;
   idCounter = 0;
 }

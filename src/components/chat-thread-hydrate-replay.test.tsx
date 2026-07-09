@@ -45,10 +45,11 @@
  * shell in between.
  */
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import * as React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { waitFor } from "@testing-library/react";
 
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -61,6 +62,9 @@ import * as ThreadStore from "@/store/thread-store";
 import { __resetRouterStateForTest } from "@/runtime/ui-protocol-event-router";
 
 const SESSION = "sess-hydrate-replay";
+const originalFetch = globalThis.fetch;
+const originalCreateObjectURL = URL.createObjectURL;
+const originalRevokeObjectURL = URL.revokeObjectURL;
 
 interface MountedHarness {
   container: HTMLDivElement;
@@ -110,6 +114,19 @@ function mount(node: React.ReactElement): MountedHarness {
 
 afterEach(() => {
   for (const node of [...document.body.children]) node.remove();
+  globalThis.fetch = originalFetch;
+  if (originalCreateObjectURL) {
+    URL.createObjectURL = originalCreateObjectURL;
+  } else {
+    delete (URL as unknown as { createObjectURL?: typeof URL.createObjectURL })
+      .createObjectURL;
+  }
+  if (originalRevokeObjectURL) {
+    URL.revokeObjectURL = originalRevokeObjectURL;
+  } else {
+    delete (URL as unknown as { revokeObjectURL?: typeof URL.revokeObjectURL })
+      .revokeObjectURL;
+  }
   ThreadStore.__resetForTests();
   __resetRouterStateForTest();
 });
@@ -304,5 +321,48 @@ describe("hard-refresh replay for a completed run_pipeline turn", () => {
     expect(toolCallBubble!.textContent ?? "").toContain("run_pipeline");
 
     harness.unmount();
+  });
+});
+
+describe("hard-refresh replay for workspace upload media", () => {
+  it("loads refreshed upload videos through the session-scoped file endpoint", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(new Blob(["video"], { type: "video/webm" })),
+    );
+    globalThis.fetch = fetchMock as typeof fetch;
+    URL.createObjectURL = vi.fn(() => "blob:video");
+    URL.revokeObjectURL = vi.fn();
+
+    act(() => {
+      ThreadStore.replayHistory(SESSION, [
+        {
+          seq: 0,
+          role: "user",
+          content: "[Attached: video-1782874133859.webm]",
+          client_message_id: "cmid-video",
+          thread_id: "cmid-video",
+          timestamp: "2026-07-01T02:53:53Z",
+          media: ["uploads/video-1782874133859.webm"],
+        },
+      ]);
+    });
+
+    const harness = mount(
+      <SessionContext.Provider value={makeSessionCtx()}>
+        <ChatThread />
+      </SessionContext.Provider>,
+    );
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/files?path=uploads%2Fvideo-1782874133859.webm&session=sess-hydrate-replay",
+        { headers: {} },
+      );
+    });
+    await waitFor(() => {
+      expect(harness.container.querySelector("video")?.getAttribute("src")).toBe(
+        "blob:video",
+      );
+    });
   });
 });

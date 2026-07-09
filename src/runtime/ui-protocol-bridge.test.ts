@@ -482,6 +482,16 @@ describe("type guards (fail-closed)", () => {
           media: ["pf/file.md"],
         },
       ],
+      replayed_tool_envelopes: [
+        {
+          thread_id: "synth_0",
+          seq: 7,
+          payload: {
+            type: "tool_start",
+            data: { tool_call_id: "tc-shell-1", name: "shell" },
+          },
+        },
+      ],
     });
     expect(result).not.toBeNull();
     expect(result?.messages).toHaveLength(3);
@@ -492,6 +502,8 @@ describe("type guards (fail-closed)", () => {
     expect(result?.messages?.[0].message_id).toBeUndefined();
     expect(result?.replayed_envelopes).toHaveLength(1);
     expect(result?.replayed_envelopes?.[0].task_id).toBe("task_abc");
+    expect(result?.replayed_tool_envelopes).toHaveLength(1);
+    expect(result?.replayed_tool_envelopes?.[0].payload.type).toBe("tool_start");
   });
 
   it("guardSessionHydrate accepts a back-compat result without new fields (older server)", () => {

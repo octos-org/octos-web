@@ -865,6 +865,7 @@ export interface SessionHydrateResult {
   turns?: unknown[];
   pending_approvals?: unknown[];
   replayed_envelopes?: TurnSpawnCompleteEvent[];
+  replayed_tool_envelopes?: Envelope[];
 }
 
 // ─── M9-γ canonical projection envelope (UPCR-2026-014) ────────────────────
