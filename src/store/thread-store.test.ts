@@ -2982,6 +2982,235 @@ describe.each(FLAG_STATES)(
   });
 
   /**
+   * PR #243 follow-up (P2): the hydrate tool replay re-runs on every
+   * WS reconnect (`setHydrateSnapshot` per `session/hydrate`) and
+   * after every `replayHistory` rebuild (cached-hydrate
+   * re-application), but `appendToolProgress` only suppresses
+   * *consecutive* duplicate lines — so replaying the same envelope set
+   * against unchanged state duplicated every progress line
+   * (["step 1","step 2"] became ["step 1","step 2","step 1","step 2"]).
+   */
+  it("does not duplicate tool progress when the same hydrate tool envelopes replay again", () => {
+    const restRows = [
+      {
+        seq: 0,
+        role: "user",
+        content: "run a shell command",
+        timestamp: "2026-07-01T02:53:00Z",
+        thread_id: "cmid-replay",
+        client_message_id: "cmid-replay",
+      },
+      {
+        seq: 5,
+        role: "assistant",
+        content: "The command finished.",
+        timestamp: "2026-07-01T02:53:05Z",
+        thread_id: "cmid-replay",
+      },
+    ];
+    ThreadStore.replayHistory(SID, restRows);
+
+    const toolEnvelopes = [
+      {
+        thread_id: "cmid-replay",
+        seq: 1,
+        payload: {
+          type: "tool_start" as const,
+          data: { tool_call_id: "tc-shell-1", name: "shell" },
+        },
+      },
+      {
+        thread_id: "cmid-replay",
+        seq: 2,
+        payload: {
+          type: "tool_progress" as const,
+          data: { tool_call_id: "tc-shell-1", message: "step 1" },
+        },
+      },
+      {
+        thread_id: "cmid-replay",
+        seq: 3,
+        payload: {
+          type: "tool_progress" as const,
+          data: { tool_call_id: "tc-shell-1", message: "step 2" },
+        },
+      },
+      {
+        thread_id: "cmid-replay",
+        seq: 4,
+        payload: {
+          type: "tool_end" as const,
+          data: { tool_call_id: "tc-shell-1", status: "complete" as const },
+        },
+      },
+    ];
+    ThreadStore.setHydrateSnapshot(SID, undefined, {
+      replayed_tool_envelopes: toolEnvelopes,
+    });
+    // WS reconnect: the server replays the SAME retained envelopes.
+    ThreadStore.setHydrateSnapshot(SID, undefined, {
+      replayed_tool_envelopes: toolEnvelopes,
+    });
+
+    let response = ThreadStore.getThreads(SID)[0].responses[0];
+    expect(response.toolCalls).toHaveLength(1);
+    expect(response.toolCalls[0].progress.map((e) => e.message)).toEqual([
+      "step 1",
+      "step 2",
+    ]);
+
+    // A later hydrate carrying a NEW envelope (higher seq) still
+    // applies — the ledger only skips (thread_id, seq) pairs already
+    // applied, not the whole thread.
+    ThreadStore.setHydrateSnapshot(SID, undefined, {
+      replayed_tool_envelopes: [
+        ...toolEnvelopes,
+        {
+          thread_id: "cmid-replay",
+          seq: 6,
+          payload: {
+            type: "tool_progress" as const,
+            data: { tool_call_id: "tc-shell-1", message: "step 3" },
+          },
+        },
+      ],
+    });
+    response = ThreadStore.getThreads(SID)[0].responses[0];
+    expect(response.toolCalls[0].progress.map((e) => e.message)).toEqual([
+      "step 1",
+      "step 2",
+      "step 3",
+    ]);
+
+    // REST retry: `replayHistory` rebuilds state wholesale (rebuilt
+    // rows carry no progress timelines) and re-applies the cached
+    // hydrate — the replayed tool state must come back exactly once.
+    ThreadStore.replayHistory(SID, restRows);
+    response = ThreadStore.getThreads(SID)[0].responses[0];
+    expect(response.toolCalls).toHaveLength(1);
+    expect(response.toolCalls[0].status).toBe("complete");
+    expect(response.toolCalls[0].progress.map((e) => e.message)).toEqual([
+      "step 1",
+      "step 2",
+      "step 3",
+    ]);
+  });
+
+  /**
+   * PR #243 follow-up (P2): the replay lane routed by `thread_id`
+   * alone — `ensureOrphanThread`'s `pickHostSessionForOrphan()`
+   * fallback attached tool cards for unknown threads to an ARBITRARY
+   * other session. A hydrate is scoped to one (sessionId, topic);
+   * envelopes that cannot be resolved within that scope are skipped.
+   */
+  it("skips hydrate tool envelopes for unknown threads instead of attaching to another session", () => {
+    // Session A has real thread state; the hydrate below is for a
+    // DIFFERENT session that has none.
+    ThreadStore.replayHistory(SID, [
+      {
+        seq: 0,
+        role: "user",
+        content: "unrelated conversation",
+        timestamp: "2026-07-01T02:53:00Z",
+        thread_id: "cmid-a",
+        client_message_id: "cmid-a",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "sure",
+        timestamp: "2026-07-01T02:53:01Z",
+        thread_id: "cmid-a",
+      },
+    ]);
+
+    const OTHER_SID = "sess-hydrate-scope-other";
+    ThreadStore.setHydrateSnapshot(OTHER_SID, undefined, {
+      replayed_tool_envelopes: [
+        {
+          thread_id: "cmid-ghost",
+          seq: 1,
+          payload: {
+            type: "tool_start" as const,
+            data: { tool_call_id: "tc-ghost-1", name: "shell" },
+          },
+        },
+        {
+          thread_id: "cmid-ghost",
+          seq: 2,
+          payload: {
+            type: "tool_progress" as const,
+            data: { tool_call_id: "tc-ghost-1", message: "leaked" },
+          },
+        },
+      ],
+    });
+
+    // Pre-fix: `pickHostSessionForOrphan()` minted an orphan thread in
+    // session A hosting the foreign tool card.
+    const threadsA = ThreadStore.getThreads(SID);
+    expect(threadsA).toHaveLength(1);
+    expect(threadsA[0].responses[0].toolCalls).toEqual([]);
+    expect(threadsA[0].pendingAssistant).toBeNull();
+    expect(ThreadStore.getThreads(OTHER_SID)).toHaveLength(0);
+  });
+
+  it("does not replay tool envelopes onto another session's thread with the same id", () => {
+    ThreadStore.replayHistory(SID, [
+      {
+        seq: 0,
+        role: "user",
+        content: "session A prompt",
+        timestamp: "2026-07-01T02:53:00Z",
+        thread_id: "cmid-a",
+        client_message_id: "cmid-a",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "session A reply",
+        timestamp: "2026-07-01T02:53:01Z",
+        thread_id: "cmid-a",
+      },
+    ]);
+    const OTHER_SID = "sess-hydrate-scope-b";
+    ThreadStore.replayHistory(OTHER_SID, [
+      {
+        seq: 0,
+        role: "user",
+        content: "session B prompt",
+        timestamp: "2026-07-01T02:54:00Z",
+        thread_id: "cmid-b",
+        client_message_id: "cmid-b",
+      },
+    ]);
+
+    // Session B's hydrate names session A's thread — a server-side
+    // mixup. Pre-fix the cross-session `findThreadById` walk attached
+    // the tool card to session A's bubble.
+    ThreadStore.setHydrateSnapshot(OTHER_SID, undefined, {
+      replayed_tool_envelopes: [
+        {
+          thread_id: "cmid-a",
+          seq: 1,
+          payload: {
+            type: "tool_start" as const,
+            data: { tool_call_id: "tc-cross-1", name: "shell" },
+          },
+        },
+      ],
+    });
+
+    const threadsA = ThreadStore.getThreads(SID);
+    expect(threadsA).toHaveLength(1);
+    expect(threadsA[0].responses[0].toolCalls).toEqual([]);
+    const threadsB = ThreadStore.getThreads(OTHER_SID);
+    expect(threadsB).toHaveLength(1);
+    expect(threadsB[0].responses).toEqual([]);
+    expect(threadsB[0].pendingAssistant).toBeNull();
+  });
+
+  /**
    * Confirm the seed is idempotent: a subsequent `replayHistory` call
    * (REST retries fire at 2s/5s/12s) replaces state wholesale, so a
    * real REST response that lands later WINS for any overlap with the
