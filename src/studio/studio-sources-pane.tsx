@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   Check,
@@ -8,6 +8,7 @@ import {
   Image,
   Music,
   Pencil,
+  MoreHorizontal,
   Plus,
   Search,
   Table,
@@ -77,6 +78,65 @@ function sourcePreviewMode(filename: string): PreviewMode {
   return "unsupported";
 }
 
+const DISMISSED_SOURCES_STORAGE_PREFIX = "octos-studio-dismissed-sources";
+
+function dismissedSourcesStorageKey(sessionId: string): string {
+  return `${DISMISSED_SOURCES_STORAGE_PREFIX}:${sessionId}`;
+}
+
+function sourceRowIdentityKeys(row: SourceRow): string[] {
+  const keys = [
+    row.jobId ? `job:${row.jobId}` : null,
+    row.sourceId ? `source:${row.sourceId}` : null,
+    row.path ? `path:${row.path}` : null,
+    row.sourcePath ? `path:${row.sourcePath}` : null,
+    row.inputPath ? `path:${row.inputPath}` : null,
+    row.materializedPath ? `path:${row.materializedPath}` : null,
+  ].filter((key): key is string => Boolean(key));
+  return Array.from(new Set(keys));
+}
+
+function sourceRowDismissKeys(row: SourceRow): string[] {
+  if (row.sourceId) return sourceRowIdentityKeys(row);
+  if (row.jobId) return [`job:${row.jobId}`];
+  return [`path:${row.path}`];
+}
+
+function isSourceRowDismissed(
+  row: SourceRow,
+  dismissedKeys: ReadonlySet<string>,
+): boolean {
+  return sourceRowIdentityKeys(row).some((key) => dismissedKeys.has(key));
+}
+
+function readDismissedSourceKeys(sessionId: string): Set<string> {
+  try {
+    const parsed = JSON.parse(
+      localStorage.getItem(dismissedSourcesStorageKey(sessionId)) ?? "[]",
+    ) as unknown;
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(
+      parsed.filter((value): value is string => typeof value === "string"),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function persistDismissedSourceKeys(
+  sessionId: string,
+  keys: ReadonlySet<string>,
+): void {
+  try {
+    localStorage.setItem(
+      dismissedSourcesStorageKey(sessionId),
+      JSON.stringify(Array.from(keys)),
+    );
+  } catch {
+    // Dismissal is an interface convenience; storage failures are non-fatal.
+  }
+}
+
 function SourcePreviewDialog({
   row,
   sessionId,
@@ -88,7 +148,7 @@ function SourcePreviewDialog({
 }) {
   const path = sourcePreviewPath(row);
   const url = buildAuthenticatedFileUrl(path, { sessionId });
-  const mode = sourcePreviewMode(row.filename);
+  const mode = sourcePreviewMode(path);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
@@ -116,6 +176,145 @@ function SourcePreviewDialog({
   );
 }
 
+function SourceActionsMenu({
+  row,
+  busy,
+  canRename,
+  canRemoveSource,
+  onPreview,
+  onRename,
+  onRemoveSource,
+  onDismiss,
+}: {
+  row: SourceRow;
+  busy: boolean;
+  canRename: boolean;
+  canRemoveSource: boolean;
+  onPreview: () => void;
+  onRename: () => void;
+  onRemoveSource: () => void;
+  onDismiss: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    menuRef.current?.querySelector("button")?.focus();
+    function closeIfOutside(target: EventTarget | null) {
+      if (rootRef.current && !rootRef.current.contains(target as Node)) {
+        setOpen(false);
+      }
+    }
+    function onDocPointerDown(event: MouseEvent) {
+      closeIfOutside(event.target);
+    }
+    function onDocFocusIn(event: FocusEvent) {
+      closeIfOutside(event.target);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+        return;
+      }
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        const items = Array.from(
+          menuRef.current?.querySelectorAll<HTMLButtonElement>("button") ?? [],
+        );
+        if (items.length === 0) return;
+        event.preventDefault();
+        const index = items.indexOf(
+          document.activeElement as HTMLButtonElement,
+        );
+        const delta = event.key === "ArrowDown" ? 1 : -1;
+        items[(index + delta + items.length) % items.length]?.focus();
+      }
+    }
+    document.addEventListener("mousedown", onDocPointerDown);
+    document.addEventListener("focusin", onDocFocusIn);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onDocPointerDown);
+      document.removeEventListener("focusin", onDocFocusIn);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative shrink-0" ref={rootRef}>
+      <button
+        type="button"
+        ref={triggerRef}
+        className="studio-ghost-button p-1.5"
+        aria-label={`Source actions for ${row.filename}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={busy}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen((o) => !o);
+        }}
+      >
+        <MoreHorizontal size={14} aria-hidden="true" />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          ref={menuRef}
+          className="studio-menu min-w-[10rem]"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className="studio-menu-item"
+            onClick={() => {
+              onPreview();
+              setOpen(false);
+            }}
+          >
+            <Eye size={14} aria-hidden="true" />
+            Preview
+          </button>
+          {canRename && (
+            <button
+              type="button"
+              role="menuitem"
+              className="studio-menu-item"
+              onClick={() => {
+                onRename();
+                setOpen(false);
+              }}
+            >
+              <Pencil size={14} aria-hidden="true" />
+              Rename source
+            </button>
+          )}
+          <button
+            type="button"
+            role="menuitem"
+            className={`studio-menu-item ${canRemoveSource ? "text-red-500" : ""}`}
+            onClick={() => {
+              if (canRemoveSource) {
+                onRemoveSource();
+              } else {
+                onDismiss();
+              }
+              setOpen(false);
+            }}
+          >
+            <Trash2 size={14} aria-hidden="true" />
+            {canRemoveSource ? "Remove source" : "Remove from list"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function StudioSourcesPane({
   sessionId,
   selected,
@@ -135,6 +334,9 @@ export function StudioSourcesPane({
   const [renameValue, setRenameValue] = useState("");
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(() =>
+    readDismissedSourceKeys(sessionId),
+  );
 
   const rows = useMemo(() => {
     const sessionRows: SourceRow[] = allFiles
@@ -151,8 +353,9 @@ export function StudioSourcesPane({
         seen.add(row.path);
         return true;
       })
+      .filter((row) => !isSourceRowDismissed(row, dismissedKeys))
       .sort((a, b) => b.timestamp - a.timestamp);
-  }, [allFiles, sessionId, uploaded]);
+  }, [allFiles, dismissedKeys, sessionId, uploaded]);
 
   const trimmedQuery = query.trim().toLowerCase();
   const visible = trimmedQuery
@@ -204,6 +407,25 @@ export function StudioSourcesPane({
     return row.jobId ?? row.sourceId ?? row.path;
   }
 
+  function dismissSourceRow(row: SourceRow) {
+    const keys = sourceRowDismissKeys(row);
+    const keySet = new Set(keys);
+    setActionError(null);
+    setDismissedKeys((prev) => {
+      const next = new Set(prev);
+      for (const key of keys) next.add(key);
+      persistDismissedSourceKeys(sessionId, next);
+      return next;
+    });
+    if (
+      previewRow &&
+      sourceRowIdentityKeys(previewRow).some((key) => keySet.has(key))
+    ) {
+      setPreviewRow(null);
+    }
+    onRemoved(row);
+  }
+
   function beginRename(row: SourceRow) {
     setActionError(null);
     setRenamingKey(rowKey(row));
@@ -250,10 +472,7 @@ export function StudioSourcesPane({
         const failed = response.results?.find((result) => !result.success);
         throw new Error(failed?.output || "Source remove failed");
       }
-      if (previewRow && rowKey(previewRow) === key) {
-        setPreviewRow(null);
-      }
-      onRemoved(row);
+      dismissSourceRow(row);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Source remove failed");
     } finally {
@@ -335,7 +554,7 @@ export function StudioSourcesPane({
               const key = rowKey(row);
               const isRenaming = renamingKey === key;
               const isBusy = busyKey === key;
-              const canManage = ready && Boolean(row.sourceId);
+              const canManageSource = ready && Boolean(row.sourceId);
               return (
                 <li key={row.jobId ?? row.path} className="studio-list-row">
                   {isRenaming ? (
@@ -394,17 +613,19 @@ export function StudioSourcesPane({
                         <X size={14} />
                       </button>
                     </>
-                  ) : canManage ? (
-                    <>
-                      <button type="button" className="studio-ghost-button p-1.5" aria-label={`Rename ${row.filename}`} disabled={isBusy} onClick={() => beginRename(row)}>
-                        <Pencil size={14} />
-                      </button>
-                      <button type="button" className="studio-ghost-button p-1.5 text-red-500" aria-label={`Remove ${row.filename}`} disabled={isBusy} onClick={() => void removeSource(row)}>
-                        <Trash2 size={14} />
-                      </button>
-                    </>
                   ) : (
-                    <Eye size={14} className="shrink-0 text-muted" aria-hidden="true" />
+                    <SourceActionsMenu
+                      row={row}
+                      busy={isBusy}
+                      canRename={canManageSource}
+                      canRemoveSource={canManageSource}
+                      onPreview={() => setPreviewRow(row)}
+                      onRename={() => beginRename(row)}
+                      onRemoveSource={() => {
+                        void removeSource(row);
+                      }}
+                      onDismiss={() => dismissSourceRow(row)}
+                    />
                   )}
                   <input
                     type="checkbox"

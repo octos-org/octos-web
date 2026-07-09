@@ -4,6 +4,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -225,6 +226,28 @@ describe("StudioPage", () => {
     expect(
       screen.getByText(/1 source selected for notebook grounding/),
     ).toBeTruthy();
+  });
+
+  it("shows source actions for ready session file rows without source ids", async () => {
+    renderStudio();
+
+    const sourcesPane = within(screen.getByTestId("studio-sources-pane"));
+    fireEvent.click(sourcesPane.getByLabelText("Source actions for notes.md"));
+    expect(sourcesPane.getByRole("menuitem", { name: "Preview" })).toBeTruthy();
+    expect(
+      sourcesPane.queryByRole("menuitem", { name: "Rename source" }),
+    ).toBeNull();
+
+    fireEvent.click(sourcesPane.getByRole("menuitem", { name: "Remove from list" }));
+
+    await waitFor(() => {
+      expect(sourcesPane.queryByText("notes.md")).toBeNull();
+    });
+    expect(invokeSkillActionMock).not.toHaveBeenCalledWith(
+      "web-abc",
+      "source.remove",
+      expect.anything(),
+    );
   });
 
   it("sends the skill prompt through the bridge when a tile is clicked", () => {
@@ -477,6 +500,71 @@ describe("StudioPage", () => {
     expect(checkbox.disabled).toBe(true);
   });
 
+  it("dismisses failed source import rows without a source id", async () => {
+    uploadFilesMock.mockResolvedValue(["upload-handle-photo"]);
+    invokeSkillActionMock.mockResolvedValue({
+      action_id: "source.import",
+      ok: true,
+      queued: 1,
+      jobs: [
+        {
+          job_id: "job-photo",
+          batch_id: "batch-photo",
+          profile_id: "alan0x",
+          session_id: "web-abc",
+          action_id: "source.import",
+          skill_id: "mofa-notebook-source",
+          status: "running",
+          input_path: "uploads/photo.jpg",
+          filename: "photo.jpg",
+          created_at: "2026-07-09T01:00:00Z",
+          updated_at: "2026-07-09T01:00:00Z",
+        },
+      ],
+    });
+
+    renderStudio();
+    fireEvent.change(screen.getByTestId("studio-upload-input"), {
+      target: {
+        files: [new File(["image"], "photo.jpg", { type: "image/jpeg" })],
+      },
+    });
+    await screen.findByText("Processing");
+
+    fireEvent(
+      window,
+      new CustomEvent("crew:skill_action_job_updated", {
+        detail: {
+          job_id: "job-photo",
+          batch_id: "batch-photo",
+          profile_id: "alan0x",
+          session_id: "web-abc",
+          action_id: "source.import",
+          skill_id: "mofa-notebook-source",
+          status: "failed",
+          input_path: "uploads/photo.jpg",
+          filename: "photo.jpg",
+          error: "Unsupported image payload",
+          created_at: "2026-07-09T01:00:00Z",
+          updated_at: "2026-07-09T01:02:00Z",
+        },
+      }),
+    );
+    expect(await screen.findByText("Failed")).toBeTruthy();
+    expect(screen.getByText("Unsupported image payload")).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("Source actions for photo.jpg"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove from list" }));
+
+    expect(screen.queryByText("photo.jpg")).toBeNull();
+    expect(screen.queryByText("Unsupported image payload")).toBeNull();
+    expect(invokeSkillActionMock).not.toHaveBeenCalledWith(
+      "web-abc",
+      "source.remove",
+      expect.anything(),
+    );
+  });
+
   it("restores processing source jobs after the bridge reconnects", async () => {
     listSkillActionJobsMock
       .mockResolvedValueOnce([])
@@ -536,7 +624,8 @@ describe("StudioPage", () => {
     renderStudio();
     await screen.findByText("photo.jpg");
 
-    fireEvent.click(screen.getByLabelText("Rename photo.jpg"));
+    fireEvent.click(screen.getByLabelText("Source actions for photo.jpg"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename source" }));
     fireEvent.change(screen.getByLabelText("Rename source title"), {
       target: { value: "Renamed Photo" },
     });
@@ -566,7 +655,8 @@ describe("StudioPage", () => {
     expect(
       screen.getByText(/1 source selected for notebook grounding/),
     ).toBeTruthy();
-    fireEvent.click(screen.getByLabelText("Remove photo.jpg"));
+    fireEvent.click(screen.getByLabelText("Source actions for photo.jpg"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove source" }));
 
     await waitFor(() => {
       expect(invokeSkillActionMock).toHaveBeenCalledWith(
