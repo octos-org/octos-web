@@ -896,6 +896,17 @@ export interface SessionHydrateResult {
   replayed_tool_envelopes?: Envelope[];
 }
 
+/** Result of `session/rollback` — conversation-only rewind. The server
+ *  drops the last `num_turns` USER turns (persisted + in-memory,
+ *  idempotent append-only marker) and returns the trimmed thread
+ *  projected in the same shape as `session/hydrate`. `dropped_turns` is
+ *  clamped to the session's actual turn count. Rejected with
+ *  `invalid_params { kind: "turn_in_progress" }` while a turn is live. */
+export interface SessionRollbackResult {
+  dropped_turns: number;
+  thread: SessionHydrateResult;
+}
+
 // ─── M9-γ canonical projection envelope (UPCR-2026-014) ────────────────────
 //
 // Mirrors `crates/octos-core/src/ui_protocol.rs` (Rust enum uses

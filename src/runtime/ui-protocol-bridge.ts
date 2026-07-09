@@ -44,6 +44,7 @@ import type {
   RouterFailoverEvent,
   RouterStatusEvent,
   RpcErrorPayload,
+  SessionRollbackResult,
   SessionHydrateResult,
   SessionOpenResult,
   TaskOutputDeltaEvent,
@@ -92,6 +93,7 @@ export type {
   SessionHydrateResult,
   SessionOpenResult,
   SessionOpenedResult,
+  SessionRollbackResult,
   TaskOutputDeltaEvent,
   TaskUpdatedEvent,
   ToolCompletedEvent,
@@ -131,6 +133,7 @@ export const METHODS = {
   // client → server
   SESSION_OPEN: "session/open",
   SESSION_HYDRATE: "session/hydrate",
+  SESSION_ROLLBACK: "session/rollback",
   TURN_START: "turn/start",
   TURN_INTERRUPT: "turn/interrupt",
   APPROVAL_RESPOND: "approval/respond",
@@ -404,6 +407,15 @@ export interface UiProtocolBridge {
   hydrateSession(
     include?: ReadonlyArray<"messages" | "threads" | "turns" | "pending_approvals">,
   ): Promise<SessionHydrateResult | null>;
+
+  /**
+   * `session/rollback` — drop the last `numTurns` USER turns from the
+   * session (server-persisted, conversation-only rewind) and return the
+   * trimmed thread in the `session/hydrate` shape. MUTATING. Rejects
+   * with `invalid_params { kind: "turn_in_progress" }` while a turn is
+   * in flight — callers surface that instead of retrying.
+   */
+  rollbackSession(numTurns: number): Promise<SessionRollbackResult>;
 
   /**
    * Generic JSON-RPC request escape hatch.
@@ -2191,6 +2203,29 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       });
       return null;
     }
+  }
+
+  async rollbackSession(numTurns: number): Promise<SessionRollbackResult> {
+    if (!Number.isInteger(numTurns) || numTurns < 1) {
+      throw new Error(
+        "ui-protocol-bridge: rollbackSession requires numTurns >= 1",
+      );
+    }
+    // Scoped id: a topic-suffixed bucket (`session#topic`) is its own
+    // SessionKey server-side; rolling back a slides/site topic must trim
+    // THAT bucket, not the root session (same scoping task/cancel uses).
+    const raw = await this.request<unknown>(METHODS.SESSION_ROLLBACK, {
+      session_id: this.requireScopedSessionId(),
+      num_turns: numTurns,
+    });
+    const record = raw as { dropped_turns?: unknown; thread?: unknown };
+    const thread = guardSessionHydrate(record?.thread);
+    if (!thread || typeof record.dropped_turns !== "number") {
+      throw new Error(
+        "ui-protocol-bridge: session/rollback returned a malformed result",
+      );
+    }
+    return { dropped_turns: record.dropped_turns, thread };
   }
 
   callMethod<T = unknown>(method: string, params?: unknown): Promise<T> {
