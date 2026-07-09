@@ -22,6 +22,7 @@ import {
   Paperclip,
   X,
   FileIcon,
+  Brain,
   Mic,
   Video,
   Camera,
@@ -34,6 +35,11 @@ import {
   Check,
 } from "lucide-react";
 import { useSession } from "@/runtime/session-context";
+import {
+  asReasoningEffortLevel,
+  setThinkingEffort,
+  useThinkingEffort,
+} from "@/store/thinking-store";
 import {
   useThreads,
   type MessageFile,
@@ -1354,6 +1360,10 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
   // existing `queueMode` literal label still renders for sessions that
   // never push anything onto the queue.
   const queueDepth = currentSessionStats?.queue_depth ?? 0;
+  // Thinking-effort selector state (TUI `/thinking` parity). Seeded from
+  // the server-persisted value on every `session/open` ack; the send path
+  // reads the same store so every user turn carries the choice.
+  const thinkingEffort = useThinkingEffort(currentSessionId, historyTopic);
   // M10.5: ThreadStore is the single source of truth — read `isRunning`
   // from the active session's threads.
   const threadsForRunning = useThreads(currentSessionId, historyTopic);
@@ -2148,8 +2158,37 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
                 turn exists OR a legacy `queueMode` label is set, so
                 "N queued" appears regardless of whether the session
                 also has a `queueMode` label. */}
+            {/* Thinking-effort selector (TUI `/thinking` parity). Value is
+                per-session and server-persisted via `turn/start`;
+                "Default" omits the wire field, which also clears the
+                server's stored override on the next send. */}
+            <label
+              className="glass-icon-button ml-auto flex h-8 shrink-0 cursor-pointer items-center gap-1 rounded-[10px] px-2"
+              title="Thinking effort for this session"
+            >
+              <Brain size={14} className="shrink-0" />
+              <select
+                data-testid="thinking-effort-select"
+                aria-label="Thinking effort"
+                value={thinkingEffort ?? ""}
+                onChange={(e) =>
+                  setThinkingEffort(
+                    currentSessionId,
+                    asReasoningEffortLevel(e.target.value),
+                    historyTopic,
+                  )
+                }
+                className="cursor-pointer bg-transparent text-[11px] font-medium text-text-strong outline-none"
+              >
+                <option value="">Thinking: default</option>
+                <option value="low">Thinking: low</option>
+                <option value="medium">Thinking: medium</option>
+                <option value="high">Thinking: high</option>
+                <option value="max">Thinking: max</option>
+              </select>
+            </label>
             {(queueMode || adaptiveMode || queueDepth > 0) && (
-              <div className="ml-auto flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5">
                 {(queueMode || queueDepth > 0) && (
                   <span
                     data-testid="queue-mode-badge"

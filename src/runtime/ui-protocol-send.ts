@@ -18,6 +18,7 @@
  */
 
 import * as ThreadStore from "@/store/thread-store";
+import { getThinkingEffort } from "@/store/thinking-store";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { getActiveBridge, startBridgeForSession } from "./ui-protocol-runtime";
 import { BridgeStoppedError, BridgeTimeoutError } from "./ui-protocol-bridge";
@@ -140,11 +141,22 @@ export function buildTurnStartExtras(
     extras.live_video = true;
   }
 
+  // Thinking-effort parity (TUI `/thinking`): read the per-session store
+  // HERE — centrally — rather than in each send surface. The server
+  // clears its persisted override whenever a user turn omits the field,
+  // so a single surface (voice, studio rail) sending without it would
+  // silently reset the user's choice. "Default" is expressed by absence.
+  const effort = getThinkingEffort(opts.sessionId, opts.historyTopic);
+  if (effort !== null) {
+    extras.reasoning_effort = effort;
+  }
+
   if (
     (extras.media === undefined || extras.media.length === 0) &&
     (extras.topic === undefined || extras.topic.length === 0) &&
     extras.rewrite_for === undefined &&
-    extras.live_video === undefined
+    extras.live_video === undefined &&
+    extras.reasoning_effort === undefined
   ) {
     return undefined;
   }

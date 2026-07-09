@@ -18,6 +18,10 @@ import {
   setHydrateSnapshot,
   suppressPendingDeltasForReplay,
 } from "@/store/thread-store";
+import {
+  asReasoningEffortLevel,
+  setThinkingEffort,
+} from "@/store/thinking-store";
 
 interface ActiveBridge {
   sessionId: string;
@@ -36,6 +40,9 @@ interface ActiveBridge {
    *  envelopes (e.g. a `TurnSpawnComplete` emitted while the WS was
    *  dropped) get replayed via `replayed_envelopes`. */
   unsubscribeReopened: () => void;
+  /** Cleanup fn for the session-opened subscriber (thinking-effort
+   *  seeding). Detached on stop. */
+  unsubscribeSessionOpened: () => void;
 }
 
 let active: ActiveBridge | null = null;
@@ -190,6 +197,21 @@ export async function startBridgeForSession(
       runHydrateFor(sessionId, topic, bridge, myGeneration);
     });
   }
+  // Thinking-effort parity: seed the per-session selector from the
+  // server-persisted value carried on every `session/open` ack, so a
+  // reload/reconnect restores the user's `/thinking`-equivalent choice.
+  // Same defensive-typeof guard as `onReopened` for pre-dating mocks.
+  let unsubscribeSessionOpened: () => void = () => {};
+  if (typeof bridge.onSessionOpened === "function") {
+    unsubscribeSessionOpened = bridge.onSessionOpened((opened) => {
+      if (myGeneration !== generation) return;
+      setThinkingEffort(
+        sessionId,
+        asReasoningEffortLevel(opened.reasoning_effort),
+        topic,
+      );
+    });
+  }
 
   active = {
     sessionId,
@@ -199,6 +221,7 @@ export async function startBridgeForSession(
     connectionState,
     unsubscribeState,
     unsubscribeReopened,
+    unsubscribeSessionOpened,
   };
 
   // M10 Phase 6.2 (Bug C): immediately fire `session/hydrate` to fetch
@@ -349,6 +372,7 @@ export async function stopActiveBridge(): Promise<void> {
   handle.attachment.detach();
   handle.unsubscribeState();
   handle.unsubscribeReopened();
+  handle.unsubscribeSessionOpened();
   try {
     await handle.bridge.stop();
   } catch {
@@ -377,6 +401,7 @@ export async function stopActiveBridgeIfScope(
   handle.attachment.detach();
   handle.unsubscribeState();
   handle.unsubscribeReopened();
+  handle.unsubscribeSessionOpened();
   try {
     await handle.bridge.stop();
   } catch {
@@ -410,5 +435,6 @@ export function __setActiveBridgeForTest(
     connectionState,
     unsubscribeState: () => {},
     unsubscribeReopened: () => {},
+    unsubscribeSessionOpened: () => {},
   };
 }

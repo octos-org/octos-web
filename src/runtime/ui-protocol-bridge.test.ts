@@ -1954,6 +1954,49 @@ describe("notification dispatch", () => {
     expect(req.params?.media).toEqual(["uploads/frame.jpg"]);
   });
 
+  it("sendTurn forwards reasoning_effort onto the wire (thinking parity)", async () => {
+    const { bridge, ws } = await freshConnected();
+    void bridge.sendTurn("turn-re", [{ kind: "text", text: "hi" }], {
+      reasoning_effort: "high",
+    });
+    const req = findRequest(ws, METHODS.TURN_START);
+    expect(req.params?.reasoning_effort).toBe("high");
+  });
+
+  it("sendTurn omits reasoning_effort when unset (omission = default, clears server override)", async () => {
+    const { bridge, ws } = await freshConnected();
+    void bridge.sendTurn("turn-re-d", [{ kind: "text", text: "hi" }], {
+      topic: "slides",
+    });
+    const req = findRequest(ws, METHODS.TURN_START);
+    expect("reasoning_effort" in (req.params ?? {})).toBe(false);
+  });
+
+  it("emits onSessionOpened with the open ack payload (reasoning_effort restore)", async () => {
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    void bridge.start({ sessionId: "sess-1" });
+    await Promise.resolve();
+    const ws = lastInstance();
+    const seen: unknown[] = [];
+    bridge.onSessionOpened((opened) => seen.push(opened));
+    ws.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(ws, METHODS.SESSION_OPEN);
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      result: {
+        opened: { session_id: "sess-1", reasoning_effort: "medium" },
+      },
+    });
+    await Promise.resolve();
+    expect(seen).toHaveLength(1);
+    expect((seen[0] as { reasoning_effort?: string }).reasoning_effort).toBe(
+      "medium",
+    );
+    await bridge.stop();
+  });
+
   it("sendTurn omits live_video when not set (byte-identical legacy shape)", async () => {
     const { bridge, ws } = await freshConnected();
     void bridge.sendTurn("turn-plain", [{ kind: "text", text: "hi" }]);

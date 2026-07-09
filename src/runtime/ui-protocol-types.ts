@@ -75,7 +75,19 @@ export interface TurnStartExtras {
    *  by the voice screen when the camera is on. Omitted (≡ false) otherwise;
    *  the server never infers live-video from attachment types. */
   live_video?: boolean;
+  /** Per-session reasoning/thinking effort (TUI `/thinking` parity).
+   *  Server precedence: a USER turn carrying the field wins AND
+   *  persists it for the session; a user turn OMITTING it clears the
+   *  stored override ("default"); server-initiated continuations fall
+   *  back to the stored value. So once the user picks a non-default
+   *  effort the send path must attach it to EVERY turn (see
+   *  `buildTurnStartExtras` reading the thinking store). */
+  reasoning_effort?: ReasoningEffortLevel;
 }
+
+/** Wire values of `octos_core::ui_protocol::ReasoningEffortLevel`
+ *  (snake_case strings; `max` is the DeepSeek tier). */
+export type ReasoningEffortLevel = "low" | "medium" | "high" | "max";
 
 export interface SessionOpenedResult {
   session_id: string;
@@ -83,6 +95,10 @@ export interface SessionOpenedResult {
   cursor?: UiCursor;
   workspace_root?: string;
   panes?: unknown;
+  /** Server-persisted per-session reasoning effort, surfaced on the
+   *  open ack so a (re)connecting client restores its thinking
+   *  selector. Absent/null when the session never set one. */
+  reasoning_effort?: ReasoningEffortLevel | null;
 }
 
 export interface SessionOpenResult {
