@@ -924,9 +924,14 @@ export const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
             `inline-flex` indicator sits cleanly below the tool-card row
             instead of overlapping it (reported on dspfac 2026-05-22:
             "渡劫中…(13s) is overlapped on task status bubble"). */}
+        {/* Mounted OUTSIDE the live-indicators gate: with projection_v1
+            (skipOptimisticUserMessage) the server's preflight compaction
+            events arrive before any live bubble exists — a gated mount
+            would miss the one-shot crew:compaction events entirely. The
+            component renders null when idle. */}
+        <CompactionIndicator />
         {showLiveIndicators && (
           <div className="mt-2 block">
-            <CompactionIndicator />
             <ThinkingIndicator />
           </div>
         )}
