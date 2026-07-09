@@ -89,19 +89,35 @@ export function expandRolledGroup(
  *   - null      → no member carries this call id (store not hydrated);
  *                 caller falls back to the event's own state.
  *
- * Outcome rule (codex rounds 4–5): a pipeline can RECOVER from a node
- * failure (failure edges, retries, `continue_on_error`) — the failed
- * `pipeline:*` child row is retained in the store while the parent
- * settles successfully. Within a pipeline FAMILY the parent's outcome
- * is therefore authoritative, and the NEWEST parent by `started_at`
- * wins so a relaunch sharing the call id supersedes its failed
- * predecessor (`TaskStore.getTasks` orders newest-first, so list
- * position must NOT be trusted — round-5 P1). Child aggregation — any
- * failed member fails the call — covers the orphan case where only
- * children remain. NON-pipeline groups (unrelated tasks sharing a call
- * id, explicitly supported by the rollup) keep any-failure
- * aggregation: no member is a "parent" that can mask another member's
- * failure (round-5 P2).
+ * Outcome rule (codex rounds 4–6), matching the two REAL server flows
+ * that share a `tool_call_id` (elsewhere tcids are process-unique, see
+ * octos #1412):
+ *
+ *   1. Pipeline family (run_pipeline parent + pipeline:* children): the
+ *      parent's outcome is authoritative — a pipeline can RECOVER from
+ *      a node failure (failure edges, retries, `continue_on_error`), so
+ *      a retained failed child must not fail a successfully-settled
+ *      parent. The NEWEST parent by `started_at` wins so a relaunched
+ *      parent supersedes its failed predecessor. Orphan children (no
+ *      parent row) aggregate any-failure.
+ *   2. Relaunch chain (`TaskSupervisor::relaunch` registers a successor
+ *      with the SAME tool_call_id AND tool_name): the newest member's
+ *      outcome wins, so a successful relaunch clears its failed
+ *      predecessor. Detected as a non-pipeline group whose members all
+ *      share one tool_name.
+ *
+ * A non-pipeline group with MIXED tool names is the defensive
+ * unrelated-tasks case the rollup renders as separate rows — no member
+ * is a "parent" that can mask another member's failure, so any failure
+ * fails the call.
+ *
+ * Timestamp caveat: rows hydrated live by `mergeLiveTask` carry client
+ * receipt time (the `task/updated` wire has no server `started_at`), so
+ * a reconnect replay can momentarily misorder a relaunch chain; the
+ * task watcher's poll rewrites the store with server-authoritative
+ * timestamps within one tick. Ties (and unparseable timestamps) keep
+ * the FIRST seen member, which is the newest under
+ * `TaskStore.getTasks`'s newest-first ordering.
  */
 export function aggregateCallStatus(
   tasks: BackgroundTaskInfo[],
@@ -110,24 +126,35 @@ export function aggregateCallStatus(
   let sawMember = false;
   let sawFailed = false;
   let sawPipeline = false;
+  let sameToolName = true;
+  let firstToolName: string | null = null;
   let parent: BackgroundTaskInfo | null = null;
+  let newest: BackgroundTaskInfo | null = null;
   for (const t of tasks) {
     if (t.tool_call_id !== toolCallId) continue;
     sawMember = true;
     if (t.status === "spawned" || t.status === "running") return "active";
     if (t.status === "failed") sawFailed = true;
+    if (firstToolName === null) firstToolName = t.tool_name;
+    else if (t.tool_name !== firstToolName) sameToolName = false;
     const child = isPipelineChild(t);
     if (child || isPipelineParent(t)) sawPipeline = true;
-    // Track the newest parent-capable member by timestamp. Ties (and
-    // unparseable timestamps) keep the FIRST seen, which is the newest
-    // under the store's newest-first ordering.
     if (!child && (parent === null || startedAtMs(t) > startedAtMs(parent))) {
       parent = t;
     }
+    if (newest === null || startedAtMs(t) > startedAtMs(newest)) {
+      newest = t;
+    }
   }
   if (!sawMember) return null;
-  if (sawPipeline && parent !== null) {
-    return parent.status === "failed" ? "failed" : "settled";
+  if (sawPipeline) {
+    if (parent !== null) {
+      return parent.status === "failed" ? "failed" : "settled";
+    }
+    return sawFailed ? "failed" : "settled";
+  }
+  if (sameToolName && newest !== null) {
+    return newest.status === "failed" ? "failed" : "settled";
   }
   return sawFailed ? "failed" : "settled";
 }

@@ -407,9 +407,9 @@ describe("aggregateCallStatus", () => {
     expect(aggregateCallStatus([newerFailed, olderOk], CALL)).toBe("failed");
   });
 
-  it("keeps any-failure aggregation for non-pipeline groups (no parent masking)", () => {
-    // codex round 5 P2: unrelated ordinary tasks sharing a call id have
-    // no parent/child relationship — one member's success must not mask
+  it("keeps any-failure aggregation for mixed-tool non-pipeline groups (no member masking)", () => {
+    // codex round 5 P2: DIFFERENT ordinary tools sharing a call id have
+    // no lineage relationship — one member's success must not mask
     // another member's failure.
     const tasks = [
       makeTask({
@@ -428,6 +428,45 @@ describe("aggregateCallStatus", () => {
       }),
     ];
     expect(aggregateCallStatus(tasks, CALL)).toBe("failed");
+  });
+
+  it("a successful same-tool relaunch supersedes its failed predecessor (newest wins)", () => {
+    // codex round 6 P2: TaskSupervisor::relaunch registers the successor
+    // with the SAME tool_call_id and tool_name. The retained failed
+    // predecessor must not fail the card once the relaunch settles.
+    const failedOld = makeTask({
+      id: "tts-old",
+      tool_name: "fm_tts",
+      tool_call_id: CALL,
+      status: "failed",
+      started_at: "2026-07-10T00:00:00Z",
+    });
+    const relaunchOk = makeTask({
+      id: "tts-new",
+      tool_name: "fm_tts",
+      tool_call_id: CALL,
+      status: "completed",
+      started_at: "2026-07-10T01:00:00Z",
+    });
+    // Both store (newest-first) and chronological orderings.
+    expect(aggregateCallStatus([relaunchOk, failedOld], CALL)).toBe("settled");
+    expect(aggregateCallStatus([failedOld, relaunchOk], CALL)).toBe("settled");
+    // Inverse: the relaunch itself failed after a completed predecessor.
+    const relaunchBad = makeTask({
+      id: "tts-new-f",
+      tool_name: "fm_tts",
+      tool_call_id: CALL,
+      status: "failed",
+      started_at: "2026-07-10T02:00:00Z",
+    });
+    const okOld = makeTask({
+      id: "tts-old-ok",
+      tool_name: "fm_tts",
+      tool_call_id: CALL,
+      status: "completed",
+      started_at: "2026-07-10T00:30:00Z",
+    });
+    expect(aggregateCallStatus([relaunchBad, okOld], CALL)).toBe("failed");
   });
 
   it("returns null when no member carries the call id", () => {
