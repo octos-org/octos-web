@@ -22,6 +22,7 @@ import {
 import type {
   ApprovalDecision,
   ApprovalRequestedEvent,
+  ApprovalAutoResolvedEvent,
   UserQuestionRequestedEvent,
   UserQuestionRespondResult,
   UserQuestionAnswer,
@@ -70,6 +71,7 @@ import type {
 export type {
   ApprovalDecision,
   ApprovalRequestedEvent,
+  ApprovalAutoResolvedEvent,
   UserQuestionRequestedEvent,
   UserQuestionRespondResult,
   UserQuestionAnswer,
@@ -178,6 +180,7 @@ export const METHODS = {
   // end (replaces scraping an in-band `[[EXIT]]` marker out of the reply).
   VOICE_EXIT: "voice/exit",
   APPROVAL_REQUESTED: "approval/requested",
+  APPROVAL_AUTO_RESOLVED: "approval/auto_resolved",
   WARNING: "warning",
   // Synchronous tool-call lifecycle. Server emits these as
   // `UiNotification::ToolStarted/Progress/Completed` for non-spawn tool
@@ -456,6 +459,9 @@ export interface UiProtocolBridge {
     ) => void,
   ): () => void;
   onApprovalRequested(handler: (e: ApprovalRequestedEvent) => void): () => void;
+  onApprovalAutoResolved(
+    handler: (e: ApprovalAutoResolvedEvent) => void,
+  ): () => void;
   onUserQuestionRequested(
     handler: (e: UserQuestionRequestedEvent) => void,
   ): () => void;
@@ -1238,6 +1244,34 @@ function guardTurnError(p: unknown): TurnErrorEvent | null {
   };
 }
 
+function guardApprovalAutoResolved(
+  p: unknown,
+): ApprovalAutoResolvedEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (
+    !isString(p.session_id) ||
+    !isString(p.approval_id) ||
+    !isString(p.turn_id) ||
+    !isString(p.tool_name) ||
+    !isString(p.scope) ||
+    !isString(p.scope_match)
+  ) {
+    return null;
+  }
+  const decision = p.decision === "deny" ? "deny" : "approve";
+  return {
+    session_id: p.session_id,
+    topic:
+      typeof p.topic === "string" && p.topic.trim() ? p.topic.trim() : undefined,
+    approval_id: p.approval_id,
+    turn_id: p.turn_id,
+    tool_name: p.tool_name,
+    scope: p.scope,
+    scope_match: p.scope_match,
+    decision,
+  };
+}
+
 function guardApprovalRequested(p: unknown): ApprovalRequestedEvent | null {
   if (!isPlainObject(p)) return null;
   if (
@@ -1727,6 +1761,8 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     TurnStartedEvent | TurnCompletedEvent | TurnErrorEvent
   >();
   private readonly subApprovalRequested = new Subscribers<ApprovalRequestedEvent>();
+  private readonly subApprovalAutoResolved =
+    new Subscribers<ApprovalAutoResolvedEvent>();
   private readonly subUserQuestionRequested =
     new Subscribers<UserQuestionRequestedEvent>();
   private readonly subToolStarted = new Subscribers<ToolStartedEvent>();
@@ -1819,6 +1855,11 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     [METHODS.APPROVAL_REQUESTED]: {
       guard: guardApprovalRequested,
       emit: (v) => this.subApprovalRequested.emit(v as ApprovalRequestedEvent),
+    },
+    [METHODS.APPROVAL_AUTO_RESOLVED]: {
+      guard: guardApprovalAutoResolved,
+      emit: (v) =>
+        this.subApprovalAutoResolved.emit(v as ApprovalAutoResolvedEvent),
     },
     [METHODS.USER_QUESTION_REQUESTED]: {
       guard: guardUserQuestionRequested,
@@ -1982,6 +2023,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.subTurnLifecycle.clear();
     this.subContextCompaction.clear();
     this.subApprovalRequested.clear();
+    this.subApprovalAutoResolved.clear();
     this.subUserQuestionRequested.clear();
     this.subToolStarted.clear();
     this.subToolProgress.clear();
@@ -2187,6 +2229,12 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   }
   onApprovalRequested(handler: Listener<ApprovalRequestedEvent>): () => void {
     return this.subApprovalRequested.add(handler);
+  }
+
+  onApprovalAutoResolved(
+    handler: Listener<ApprovalAutoResolvedEvent>,
+  ): () => void {
+    return this.subApprovalAutoResolved.add(handler);
   }
   onToolStarted(handler: Listener<ToolStartedEvent>): () => void {
     return this.subToolStarted.add(handler);
@@ -3054,6 +3102,7 @@ export const __INTERNAL_GUARDS_FOR_TEST__ = {
   guardTurnCompleted,
   guardTurnError,
   guardApprovalRequested,
+  guardApprovalAutoResolved,
   guardUserQuestionRequested,
   guardToolStarted,
   guardToolProgress,

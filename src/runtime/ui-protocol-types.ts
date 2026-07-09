@@ -623,6 +623,23 @@ export interface ApprovalRequestedEvent {
   render_hints?: ApprovalRenderHints;
 }
 
+/**
+ * Emitted when a later approval request auto-resolves against a standing
+ * scope grant (e.g. a prior "Approve for session"), instead of prompting
+ * again. Lets the client show that the grant fired rather than silently
+ * running the command.
+ */
+export interface ApprovalAutoResolvedEvent {
+  session_id: string;
+  topic?: string;
+  approval_id: string;
+  turn_id: string;
+  tool_name: string;
+  scope: string;
+  scope_match: string;
+  decision: ApprovalDecision;
+}
+
 // --- Structured multiple-choice questions (user_question.v1, UPCR-2026-023) ---
 
 export interface UserQuestionOption {

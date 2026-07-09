@@ -24,6 +24,7 @@
 
 import type {
   ApprovalRequestedEvent,
+  ApprovalAutoResolvedEvent,
   UserQuestionRequestedEvent,
   FileAttachedEvent,
   MessageDeltaEvent,
@@ -1679,6 +1680,19 @@ export function handleApprovalRequested(
   );
 }
 
+export function handleApprovalAutoResolved(
+  cfg: RouterConfig,
+  event: ApprovalAutoResolvedEvent,
+): void {
+  // A standing scope grant (e.g. "Approve for session") fired for a later
+  // request. Surface it as a toast so the grant is visible instead of the
+  // command silently running.
+  dispatch(
+    cfg,
+    new CustomEvent("crew:approval_auto_resolved", { detail: event }),
+  );
+}
+
 export function handleUserQuestionRequested(
   cfg: RouterConfig,
   event: UserQuestionRequestedEvent,
@@ -1924,6 +1938,9 @@ export function attachRouter(
   const offApprovalRequested = bridge.onApprovalRequested((e) =>
     handleApprovalRequested(cfg, e),
   );
+  const offApprovalAutoResolved = bridge.onApprovalAutoResolved((e) =>
+    handleApprovalAutoResolved(cfg, e),
+  );
   const offUserQuestionRequested = bridge.onUserQuestionRequested((e) =>
     handleUserQuestionRequested(cfg, e),
   );
@@ -2011,6 +2028,7 @@ export function attachRouter(
       offTaskOutputDelta();
       offTurnLifecycle();
       offApprovalRequested();
+      offApprovalAutoResolved();
       offUserQuestionRequested();
       offToolStarted();
       offToolProgress();
