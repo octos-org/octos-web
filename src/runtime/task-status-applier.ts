@@ -19,14 +19,29 @@ import * as TaskStore from "@/store/task-store";
 import { aggregateCallStatus } from "@/runtime/task-rollup";
 import type { BackgroundTaskInfo } from "@/api/types";
 
-/** Last task_status seen per `task.id`. Used to suppress synthesizing a
- *  duplicate progress line on replays/oscillations — only emit a line
- *  when the status actually changes for that task. Per-task scoping
- *  also means two unrelated tasks sharing one `tool_call_id` (rare but
- *  possible across reconnects) each contribute exactly one entry per
- *  transition rather than collapsing into the previous task's line.
- */
-const lastTaskStatusById = new Map<string, BackgroundTaskInfo["status"]>();
+/** Narration dedupe: last task_status whose progress LINE landed, per
+ *  `task.id`. Suppresses re-synthesizing the same line on replays /
+ *  poll re-dispatches — only emit a line when the status actually
+ *  changes for that task. Per-task scoping also means two unrelated
+ *  tasks sharing one `tool_call_id` (rare but possible across
+ *  reconnects) each contribute exactly one entry per transition rather
+ *  than collapsing into the previous task's line.
+ *
+ *  codex round 4: this is deliberately a SEPARATE map from the flip
+ *  dedupe below. A terminal row deferred on an active pipeline sibling
+ *  must keep re-evaluating the aggregate every poll tick (flip map not
+ *  recorded) WITHOUT re-narrating its line each tick — two deferred
+ *  terminal rows alternate lines that bypass `appendToolProgress`'s
+ *  consecutive-only dedupe and would evict real progress from the
+ *  bounded timeline. */
+const lastNarratedStatusById = new Map<string, BackgroundTaskInfo["status"]>();
+
+/** Flip dedupe: last task_status whose terminal status flip (or
+ *  non-terminal pass-through) fully APPLIED, per `task.id`. Recorded
+ *  only after `setToolCallStatus` confirms application (or on
+ *  non-terminal frames), so a no-oped or deferred flip retries on the
+ *  next poll tick. */
+const lastAppliedStatusById = new Map<string, BackgroundTaskInfo["status"]>();
 
 /** Cap individual task labels and error suffixes so a pathological
  *  payload cannot bloat the in-bubble timeline. The bubble renders
@@ -52,19 +67,18 @@ function displayTaskName(tool: string): string {
 /** Build a human-readable progress line for a task_status transition.
  *  Returns null when the status carries no useful narration (e.g. the
  *  daemon emitted an unknown status string), or when this exact status
- *  was already seen for this task and a duplicate line should be
+ *  was already seen (`previous`) and a duplicate line should be
  *  suppressed at the source.
  *
  *  Bug 2026-05-15 (codex final-3 gap 3): does NOT record the dedupe
- *  entry here — the caller MUST record only AFTER the lookup +
- *  `setToolCallStatus` actually applied. Pre-fix this function wrote
- *  the dedupe before the lookup at the call site succeeded, so a
- *  later retry of the same terminal task was silently suppressed and
- *  the status flip never got another chance. */
+ *  entry here — the caller MUST record only AFTER the append actually
+ *  landed on a resolved thread. Pre-fix this function wrote the dedupe
+ *  before the lookup at the call site succeeded, so a later retry of
+ *  the same terminal task was silently suppressed. */
 function synthesizeTaskProgressLine(
   task: BackgroundTaskInfo,
+  previous: BackgroundTaskInfo["status"] | undefined,
 ): string | null {
-  const previous = lastTaskStatusById.get(task.id);
   if (previous === task.status) return null;
 
   const label = displayTaskName(task.tool_name);
@@ -89,10 +103,11 @@ function synthesizeTaskProgressLine(
   }
 }
 
-/** Reset the per-task status-dedupe map. Tests call this between
+/** Reset the per-task status-dedupe maps. Tests call this between
  *  cases so a transition seen in one case can re-fire in the next. */
 export function __resetTaskStatusDedupForTest(): void {
-  lastTaskStatusById.clear();
+  lastNarratedStatusById.clear();
+  lastAppliedStatusById.clear();
 }
 
 /** Apply a `crew:task_status` payload to ThreadStore: synthesize a
@@ -109,8 +124,17 @@ export function applyTaskStatusToThreadStore(
   topic: string | undefined,
   task: BackgroundTaskInfo,
 ): void {
-  const progressLine = synthesizeTaskProgressLine(task);
-  if (!progressLine || !task.tool_call_id) return;
+  if (!task.tool_call_id) return;
+  const previousNarrated = lastNarratedStatusById.get(task.id);
+  const lineIsNew = previousNarrated !== task.status;
+  const progressLine = lineIsNew
+    ? synthesizeTaskProgressLine(task, previousNarrated)
+    : null;
+  // A fresh status that synthesizes NO line is an unknown status string —
+  // nothing to narrate or flip (pre-split behavior preserved).
+  if (lineIsNew && progressLine === null) return;
+  const flipIsNew = lastAppliedStatusById.get(task.id) !== task.status;
+  if (!lineIsNew && !flipIsNew) return;
   // Mirror into the thread store when it already knows about this
   // tool_call_id (i.e. tool_start arrived before task_status). When
   // the lookup misses we deliberately drop the synthetic progress
@@ -123,7 +147,7 @@ export function applyTaskStatusToThreadStore(
     task.tool_call_id,
   );
   if (!threadId) {
-    // Bug 2026-05-15 (codex final-3 gap 3): DO NOT record the dedupe
+    // Bug 2026-05-15 (codex final-3 gap 3): DO NOT record any dedupe
     // entry — the lookup missed, so a later retry of the same
     // `completed`/`failed` task MUST be allowed to try again. The
     // task watcher's poll loop re-fires the same row on every tick,
@@ -131,13 +155,19 @@ export function applyTaskStatusToThreadStore(
     // the first attempt arrived.
     return;
   }
-  ThreadStore.appendToolProgress(threadId, task.tool_call_id, progressLine);
+  if (progressLine !== null) {
+    ThreadStore.appendToolProgress(threadId, task.tool_call_id, progressLine);
+    // Narration dedupe records as soon as the line lands — even when the
+    // terminal flip below defers — so re-polled deferred rows do not
+    // re-narrate every tick (codex round 4).
+    lastNarratedStatusById.set(task.id, task.status);
+  }
   // Mirror the terminal status into ThreadStore so the spinner clears
   // on the same tick the progress line says "done". Non-terminal
   // `spawned`/`running` lines do NOT flip status (the chip is
   // correctly running during those frames).
   //
-  // Bug 2026-05-15 (codex final-3 gap 3): record the dedupe entry
+  // Bug 2026-05-15 (codex final-3 gap 3): record the flip dedupe entry
   // ONLY AFTER `setToolCallStatus` confirms it actually applied.
   // `setToolCallStatus` returns `true` when it found the target tool
   // call and flipped its status, `false` when the lookup no-oped. If
@@ -161,11 +191,11 @@ export function applyTaskStatusToThreadStore(
         task.tool_call_id,
       ) ?? (task.status === "failed" ? "failed" : "settled");
     if (aggregate === "active") {
-      // Do NOT record the dedupe entry: the next poll tick re-fires this
+      // Do NOT record the flip dedupe: the next poll tick re-fires this
       // terminal row and re-evaluates the aggregate, so the card still
       // settles even if the last sibling's own terminal row is never
-      // observed (self-healing). The re-synthesized progress line is
-      // swallowed by `appendToolProgress`'s consecutive-duplicate dedupe.
+      // observed (self-healing). The narration dedupe above already
+      // recorded, so the retry is silent.
       return;
     }
     applied = ThreadStore.setToolCallStatus(
@@ -177,6 +207,6 @@ export function applyTaskStatusToThreadStore(
   // Non-terminal `spawned`/`running` lines always count as applied
   // (the progress line itself landed; no status flip required).
   if (applied) {
-    lastTaskStatusById.set(task.id, task.status);
+    lastAppliedStatusById.set(task.id, task.status);
   }
 }

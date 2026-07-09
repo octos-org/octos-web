@@ -84,13 +84,19 @@ export function expandRolledGroup(
  * applier) consult this before flipping the card:
  *
  *   - "active"  → at least one member still spawned/running; defer.
- *   - "failed"  → all settled, at least one member failed; settle error.
- *                 The store retains earlier failed rows, so the failure
- *                 outcome survives until the last sibling ends without
- *                 any extra bookkeeping.
- *   - "settled" → all settled, none failed; settle complete.
+ *   - "failed"  → all settled with a failure outcome; settle error.
+ *   - "settled" → all settled successfully; settle complete.
  *   - null      → no member carries this call id (store not hydrated);
  *                 caller falls back to the event's own state.
+ *
+ * Outcome rule (codex round 4): a pipeline can RECOVER from a node
+ * failure (failure edges, retries, `continue_on_error`) — the failed
+ * `pipeline:*` child row is retained in the store while the parent
+ * settles successfully. The parent's outcome is therefore authoritative
+ * when a parent member exists (the LAST parent in list order wins, so a
+ * relaunch sharing the call id supersedes its failed predecessor);
+ * child aggregation — any failed member fails the call — is the
+ * fallback for the orphan case where only children remain.
  */
 export function aggregateCallStatus(
   tasks: BackgroundTaskInfo[],
@@ -98,13 +104,18 @@ export function aggregateCallStatus(
 ): "active" | "failed" | "settled" | null {
   let sawMember = false;
   let sawFailed = false;
+  let parent: BackgroundTaskInfo | null = null;
   for (const t of tasks) {
     if (t.tool_call_id !== toolCallId) continue;
     sawMember = true;
     if (t.status === "spawned" || t.status === "running") return "active";
+    if (!isPipelineChild(t)) parent = t;
     if (t.status === "failed") sawFailed = true;
   }
   if (!sawMember) return null;
+  if (parent !== null) {
+    return parent.status === "failed" ? "failed" : "settled";
+  }
   return sawFailed ? "failed" : "settled";
 }
 

@@ -13,7 +13,11 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { displayLabelForRolled, rollupTasksByCall } from "./task-rollup";
+import {
+  aggregateCallStatus,
+  displayLabelForRolled,
+  rollupTasksByCall,
+} from "./task-rollup";
 import type { BackgroundTaskInfo } from "@/api/types";
 
 function makeTask(
@@ -281,5 +285,112 @@ describe("displayLabelForRolled", () => {
     expect(displayLabelForRolled(t("podcast_generate"))).toBe(
       "podcast generate",
     );
+  });
+});
+
+describe("aggregateCallStatus", () => {
+  const CALL = "tc-agg";
+
+  it("reports active while any member is spawned/running", () => {
+    const tasks = [
+      makeTask({
+        id: "a",
+        tool_name: "pipeline:analyze",
+        tool_call_id: CALL,
+        status: "failed",
+      }),
+      makeTask({
+        id: "b",
+        tool_name: "pipeline:synthesize",
+        tool_call_id: CALL,
+        status: "running",
+      }),
+    ];
+    expect(aggregateCallStatus(tasks, CALL)).toBe("active");
+  });
+
+  it("honors the parent's successful outcome over a retained failed child (recovered pipeline)", () => {
+    // codex round 4: a pipeline can recover from a node failure (failure
+    // edges, retries, continue_on_error) — the failed child row remains
+    // in the store while the parent completes successfully. The parent's
+    // outcome must win, or a successful run renders as an error.
+    const tasks = [
+      makeTask({
+        id: "child-f",
+        tool_name: "pipeline:analyze",
+        tool_call_id: CALL,
+        status: "failed",
+      }),
+      makeTask({
+        id: "parent",
+        tool_name: "run_pipeline",
+        tool_call_id: CALL,
+        status: "completed",
+      }),
+    ];
+    expect(aggregateCallStatus(tasks, CALL)).toBe("settled");
+  });
+
+  it("reports failed when the parent itself failed", () => {
+    const tasks = [
+      makeTask({
+        id: "child-ok",
+        tool_name: "pipeline:analyze",
+        tool_call_id: CALL,
+        status: "completed",
+      }),
+      makeTask({
+        id: "parent",
+        tool_name: "run_pipeline",
+        tool_call_id: CALL,
+        status: "failed",
+      }),
+    ];
+    expect(aggregateCallStatus(tasks, CALL)).toBe("failed");
+  });
+
+  it("falls back to child aggregation when no parent remains (orphan case)", () => {
+    const tasks = [
+      makeTask({
+        id: "c1",
+        tool_name: "pipeline:analyze",
+        tool_call_id: CALL,
+        status: "completed",
+      }),
+      makeTask({
+        id: "c2",
+        tool_name: "pipeline:synthesize",
+        tool_call_id: CALL,
+        status: "failed",
+      }),
+    ];
+    expect(aggregateCallStatus(tasks, CALL)).toBe("failed");
+  });
+
+  it("the latest parent wins over a failed predecessor sharing the call id (relaunch)", () => {
+    const tasks = [
+      makeTask({
+        id: "parent-old",
+        tool_name: "run_pipeline",
+        tool_call_id: CALL,
+        status: "failed",
+      }),
+      makeTask({
+        id: "parent-new",
+        tool_name: "run_pipeline",
+        tool_call_id: CALL,
+        status: "completed",
+      }),
+    ];
+    expect(aggregateCallStatus(tasks, CALL)).toBe("settled");
+  });
+
+  it("returns null when no member carries the call id", () => {
+    expect(
+      aggregateCallStatus(
+        [makeTask({ id: "x", tool_name: "podcast_generate" })],
+        CALL,
+      ),
+    ).toBe(null);
   });
 });

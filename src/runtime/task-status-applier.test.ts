@@ -145,6 +145,65 @@ describe("applyTaskStatusToThreadStore", () => {
     expect(tc?.status).toBe("error");
   });
 
+  it("re-polled deferred terminal rows do not re-narrate duplicate progress lines", () => {
+    // codex round 4: two terminal members waiting on an active sibling
+    // are re-dispatched by the watcher every poll tick. Their distinct
+    // lines alternate, bypassing appendToolProgress's consecutive-only
+    // dedupe — the narration dedupe must record on first landing even
+    // though the terminal flip stays retryable.
+    const cmid = "cmid-live-spam";
+    const callId = "tc-pipe-spam";
+    seedToolCall(cmid, callId, "run_pipeline");
+
+    const base = { started_at: "2026-07-10T00:00:00Z", error: null };
+    const memberA: BackgroundTaskInfo = {
+      id: "sp-a",
+      tool_name: "pipeline:analyze",
+      tool_call_id: callId,
+      status: "completed",
+      ...base,
+    };
+    const memberB: BackgroundTaskInfo = {
+      id: "sp-b",
+      tool_name: "pipeline:plan",
+      tool_call_id: callId,
+      status: "failed",
+      ...base,
+      error: "boom",
+    };
+    const memberC: BackgroundTaskInfo = {
+      id: "sp-c",
+      tool_name: "pipeline:synthesize",
+      tool_call_id: callId,
+      status: "running",
+      ...base,
+    };
+    TaskStore.replaceTasks(SESSION, [memberA, memberB, memberC]);
+
+    const toolCall = () => {
+      const [thread] = ThreadStore.getThreads(SESSION);
+      return thread.responses[0].toolCalls.find((c) => c.id === callId);
+    };
+
+    // Tick 1: both terminal rows land their lines, flips deferred on C.
+    applyTaskStatusToThreadStore(SESSION, undefined, memberA);
+    applyTaskStatusToThreadStore(SESSION, undefined, memberB);
+    const afterTick1 = toolCall()?.progress.length ?? 0;
+    expect(toolCall()?.status).toBe("running");
+
+    // Tick 2: watcher re-dispatches the same rows — no new narration.
+    applyTaskStatusToThreadStore(SESSION, undefined, memberA);
+    applyTaskStatusToThreadStore(SESSION, undefined, memberB);
+    expect(toolCall()?.progress.length ?? 0).toBe(afterTick1);
+    expect(toolCall()?.status).toBe("running");
+
+    // Tick 3: C settles → orphan child aggregation (B failed) → error.
+    const memberCDone: BackgroundTaskInfo = { ...memberC, status: "completed" };
+    TaskStore.replaceTasks(SESSION, [memberA, memberB, memberCDone]);
+    applyTaskStatusToThreadStore(SESSION, undefined, memberCDone);
+    expect(toolCall()?.status).toBe("error");
+  });
+
   it("task.status=running does NOT flip status (the chip is correctly running)", () => {
     const cmid = "cmid-live-3";
     const taskId = "task_pipeline_3";
