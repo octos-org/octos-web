@@ -44,7 +44,8 @@ import {
   type MessageFile,
   type ThreadToolCall,
 } from "@/store/thread-store";
-import { sendMessage as bridgeSend } from "@/runtime/ui-protocol-send";
+import {
+  interruptActiveTurn, sendMessage as bridgeSend } from "@/runtime/ui-protocol-send";
 import { getActiveBridge } from "@/runtime/ui-protocol-runtime";
 import { buildAuthenticatedFileUrl } from "@/api/files";
 import { useHomeSettings } from "./home-settings-context";
@@ -393,7 +394,17 @@ export function ConversationView({ onBack, prefill }: ConversationViewProps) {
           t.pendingAssistant.status === "streaming",
       );
       if (pendingThread) {
-        void bridge.interruptTurn(pendingThread.id, "user cancelled").catch(() => {
+        // codex #261 round-3 P1: route through the shared
+        // seed-ordering-aware helper — a direct `bridge.interruptTurn`
+        // can reach the bridge queue ahead of a `turn/start` still
+        // parked on `whenThinkingSeeded` (send-before-open window),
+        // no-op server-side, and let the cancelled turn run.
+        void interruptActiveTurn({
+          sessionId: currentSessionId,
+          historyTopic,
+          turnId: pendingThread.id,
+          reason: "user cancelled",
+        }).catch(() => {
           // best-effort: swallow transport errors.
         });
       }

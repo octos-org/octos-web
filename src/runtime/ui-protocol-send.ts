@@ -293,6 +293,16 @@ export async function interruptActiveTurn(opts: {
   const bridge = getActiveBridge(opts.sessionId, opts.historyTopic);
   if (!bridge || !turnId) return false;
 
+  // codex #261 rounds 2-3 P1: the send path parks `turn/start` behind
+  // `whenThinkingSeeded` during the initial `session/open` handshake. An
+  // interrupt issued in that window must NOT reach the bridge queue
+  // ahead of the still-parked start — it would no-op server-side and
+  // the supposedly cancelled turn would run. Gating on the SAME promise
+  // preserves pairwise order (waiters resolve in registration order and
+  // the send always registered first). EVERY cancel surface must route
+  // through this helper rather than calling `bridge.interruptTurn`
+  // directly, or it re-opens the race (round 3: /home ConversationView).
+  await whenThinkingSeeded(opts.sessionId, opts.historyTopic);
   const result = await bridge.interruptTurn(turnId, opts.reason);
   if (result.interrupted && control?.turnId === turnId) {
     control.complete();
