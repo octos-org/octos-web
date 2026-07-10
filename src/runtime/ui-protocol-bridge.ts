@@ -153,6 +153,7 @@ export const METHODS = {
   SESSION_OPEN: "session/open",
   SESSION_HYDRATE: "session/hydrate",
   SESSION_ROLLBACK: "session/rollback",
+  SESSION_FORK: "session/fork",
   LOOP_LIST: "loop/list",
   LOOP_PAUSE: "loop/pause",
   LOOP_RESUME: "loop/resume",

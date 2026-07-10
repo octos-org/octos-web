@@ -180,6 +180,29 @@ export async function getMessagesPage(
   );
 }
 
+export interface SessionForkResult {
+  new_session_id: string;
+  parent_session_id: string;
+  copied_messages: number;
+}
+
+/**
+ * `session/fork` — branch a NEW session off `sessionId`, copying its
+ * full history (server default) and recording parent lineage. The
+ * server derives the child key from the parent's key shape; for the
+ * SPA's raw `web-*` handles the child id comes back verbatim.
+ * MUTATING; refuses unknown parents and existing child ids.
+ */
+export async function forkSession(
+  sessionId: string,
+  newChatId: string,
+): Promise<SessionForkResult> {
+  return await callAuxWs<SessionForkResult>(METHODS.SESSION_FORK, {
+    session_id: sessionId,
+    new_chat_id: newChatId,
+  });
+}
+
 export async function deleteSession(sessionId: string): Promise<void> {
   await callAuxWs<Record<string, never>>(METHODS.SESSION_DELETE, {
     session_id: sessionId,

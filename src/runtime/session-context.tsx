@@ -12,6 +12,7 @@ import {
   getMessages,
   getSessionTasks,
   deleteSession as apiDeleteSession,
+  forkSession,
   setSessionTitle as apiSetSessionTitle,
 } from "@/api/sessions";
 import type { BackgroundTaskInfo, SessionInfo, MessageInfo } from "@/api/types";
@@ -190,6 +191,10 @@ export interface SessionContextValue {
   switchSession: (id: string) => void;
   goBack: () => Promise<boolean>;
   createSession: (title?: string) => string;
+  /** Fork `sourceId` into a fresh session (full history copied,
+   *  parent lineage recorded server-side) and switch to it. Resolves
+   *  to the new session id. */
+  branchSession: (sourceId: string) => Promise<string>;
   removeSession: (id: string) => Promise<void>;
   refreshSessions: () => Promise<void>;
   /** Mark the current session as active (has sent at least one message). */
@@ -982,6 +987,21 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return nextId;
   }, [currentSessionId]);
 
+  const branchSession = useCallback(
+    async (sourceId: string) => {
+      // Server-side fork: copies the parent's FULL history and records
+      // parent_key lineage; the SPA then treats the child as any other
+      // session. The child id is minted client-side (raw `web-*`
+      // convention) — the server echoes it back for raw parents.
+      const result = await forkSession(sourceId, generateSessionId());
+      const newId = result.new_session_id;
+      await refreshSessions();
+      switchSession(newId);
+      return newId;
+    },
+    [refreshSessions, switchSession],
+  );
+
   const goBack = useCallback(async () => {
     const previous = previousSessionIdRef.current;
     if (!previous || previous === currentSessionId) return false;
@@ -1075,6 +1095,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         switchSession,
         goBack,
         createSession,
+        branchSession,
         removeSession,
         refreshSessions,
         markSessionActive,
