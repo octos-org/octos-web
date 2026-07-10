@@ -650,10 +650,10 @@ describe("rollbackSessionTurns", () => {
     } as never);
     // Echo alone: gate still closed (sibling has no seq)…
     expect(ThreadStore.hasPlaceholderThreads(SESSION, "slides")).toBe(true);
-    // …but the nudge fired one forced replay; let it land.
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    // …but the nudge fired one forced replay; let it land (macrotask
+    // flush drains the nudge's chained awaits deterministically).
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
     expect(getMessagesPage).toHaveBeenCalledTimes(1);
     expect(ThreadStore.hasPlaceholderThreads(SESSION, "slides")).toBe(false);
     const threads = ThreadStore.getThreads(SESSION, "slides");
@@ -661,6 +661,226 @@ describe("rollbackSessionTurns", () => {
       "sibling",
       "late prompt",
     ]);
+  });
+
+  it("drains a stale in-flight load, then issues a FRESH forced replay (codex round 8 P1)", async () => {
+    // A mount/reconnect load is in flight and its response PREDATES
+    // the echoed row. The nudge must not coalesce onto it — it waits
+    // it out and fires a fresh request that includes the row.
+    ThreadStore.replayHistory(
+      SESSION,
+      [
+        {
+          role: "user",
+          content: "slides anchor",
+          client_message_id: "cmid-anchor8",
+          thread_id: "cmid-anchor8",
+          timestamp: "2026-07-10T00:00:01Z",
+        },
+      ] as never,
+      "slides",
+    );
+    let resolveStale!: (v: unknown) => void;
+    getMessagesPage.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveStale = resolve;
+      }),
+    );
+    const staleLoad = ThreadStore.loadHistory(SESSION, "slides", {
+      force: true,
+    });
+    ThreadStore.appendToolProgress("cmid-late8", "tc-8", "late progress");
+    expect(ThreadStore.hasPlaceholderThreads(SESSION, "slides")).toBe(true);
+    // Fresh (post-echo) response for the SECOND request only.
+    getMessagesPage.mockResolvedValue({
+      messages: [
+        {
+          role: "user",
+          content: "slides anchor",
+          client_message_id: "cmid-anchor8",
+          thread_id: "cmid-anchor8",
+          timestamp: "2026-07-10T00:00:01Z",
+        },
+        {
+          role: "user",
+          content: "late prompt",
+          client_message_id: "cmid-late8",
+          thread_id: "cmid-late8",
+          timestamp: "2026-07-10T00:00:02Z",
+        },
+      ],
+      has_more: false,
+    });
+    ThreadStore.appendPersistedMessage(SESSION, "slides", {
+      seq: 4,
+      role: "user",
+      content: "late prompt",
+      client_message_id: "cmid-late8",
+      thread_id: "cmid-late8",
+      timestamp: "2026-07-10T00:00:02Z",
+    } as never);
+    // The stale response lands WITHOUT the late row.
+    resolveStale({
+      messages: [
+        {
+          role: "user",
+          content: "slides anchor",
+          client_message_id: "cmid-anchor8",
+          thread_id: "cmid-anchor8",
+          timestamp: "2026-07-10T00:00:01Z",
+        },
+      ],
+      has_more: false,
+    });
+    await staleLoad;
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    // stale + fresh = 2 requests; the fresh one resolved the scope.
+    expect(getMessagesPage).toHaveBeenCalledTimes(2);
+    expect(ThreadStore.hasPlaceholderThreads(SESSION, "slides")).toBe(false);
+  });
+
+  it("re-arms the nudge for a later episode in the same scope (codex round 8 P2)", async () => {
+    // Root scope seeded via replay (roots carry no seq — the shape
+    // that makes echoes unresolvable and forces the nudge).
+    ThreadStore.replayHistory(SESSION, [
+      {
+        role: "user",
+        content: "root anchor",
+        client_message_id: "cmid-anchor-r",
+        thread_id: "cmid-anchor-r",
+        timestamp: "2026-07-10T00:00:00Z",
+      },
+    ] as never);
+    // Episode 1: orphan + echo → nudge resolves it.
+    ThreadStore.appendToolProgress("cmid-ep1", "tc-e1", "late progress");
+    getMessagesPage.mockResolvedValue({
+      messages: [
+        {
+          role: "user",
+          content: "root anchor",
+          client_message_id: "cmid-anchor-r",
+          thread_id: "cmid-anchor-r",
+          timestamp: "2026-07-10T00:00:00Z",
+        },
+        {
+          role: "user",
+          content: "ep1 prompt",
+          client_message_id: "cmid-ep1",
+          thread_id: "cmid-ep1",
+          timestamp: "2026-07-10T00:00:01Z",
+        },
+      ],
+      has_more: false,
+    });
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 2,
+      role: "user",
+      content: "ep1 prompt",
+      client_message_id: "cmid-ep1",
+      thread_id: "cmid-ep1",
+      timestamp: "2026-07-10T00:00:01Z",
+    } as never);
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(false);
+    const callsAfterEp1 = getMessagesPage.mock.calls.length;
+    expect(callsAfterEp1).toBeGreaterThan(0);
+    // Episode 2 in the SAME scope: a new orphan must nudge again.
+    ThreadStore.appendToolProgress("cmid-ep2", "tc-e2", "late progress");
+    getMessagesPage.mockResolvedValue({
+      messages: [
+        {
+          role: "user",
+          content: "root anchor",
+          client_message_id: "cmid-anchor-r",
+          thread_id: "cmid-anchor-r",
+          timestamp: "2026-07-10T00:00:00Z",
+        },
+        {
+          role: "user",
+          content: "ep1 prompt",
+          client_message_id: "cmid-ep1",
+          thread_id: "cmid-ep1",
+          timestamp: "2026-07-10T00:00:01Z",
+        },
+        {
+          role: "user",
+          content: "ep2 prompt",
+          client_message_id: "cmid-ep2",
+          thread_id: "cmid-ep2",
+          timestamp: "2026-07-10T00:00:03Z",
+        },
+      ],
+      has_more: false,
+    });
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 4,
+      role: "user",
+      content: "ep2 prompt",
+      client_message_id: "cmid-ep2",
+      thread_id: "cmid-ep2",
+      timestamp: "2026-07-10T00:00:03Z",
+    } as never);
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(getMessagesPage.mock.calls.length).toBeGreaterThan(callsAfterEp1);
+    expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(false);
+  });
+
+  it("nudges the scope that OWNS the orphan, not the event's scope (codex round 8 P2)", async () => {
+    // Orphan lives in the slides scope; the echo arrives addressed to
+    // the ROOT scope but findThreadById locates the bucket in slides.
+    // The forced replay must target slides.
+    ThreadStore.replayHistory(
+      SESSION,
+      [
+        {
+          role: "user",
+          content: "slides anchor",
+          client_message_id: "cmid-anchor9",
+          thread_id: "cmid-anchor9",
+          timestamp: "2026-07-10T00:00:01Z",
+        },
+      ] as never,
+      "slides",
+    );
+    ThreadStore.appendToolProgress("cmid-cross9", "tc-9", "late progress");
+    expect(ThreadStore.hasPlaceholderThreads(SESSION, "slides")).toBe(true);
+    getMessagesPage.mockResolvedValue({
+      messages: [
+        {
+          role: "user",
+          content: "slides anchor",
+          client_message_id: "cmid-anchor9",
+          thread_id: "cmid-anchor9",
+          timestamp: "2026-07-10T00:00:01Z",
+        },
+        {
+          role: "user",
+          content: "cross prompt",
+          client_message_id: "cmid-cross9",
+          thread_id: "cmid-cross9",
+          timestamp: "2026-07-10T00:00:02Z",
+        },
+      ],
+      has_more: false,
+    });
+    // Echo addressed to the ROOT scope (no topic).
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 5,
+      role: "user",
+      content: "cross prompt",
+      client_message_id: "cmid-cross9",
+      thread_id: "cmid-cross9",
+      timestamp: "2026-07-10T00:00:02Z",
+    } as never);
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    // The refetch went to the slides topic (5th arg of getMessagesPage).
+    const topics = getMessagesPage.mock.calls.map((c) => c[4]);
+    expect(topics).toContain("slides");
+    expect(ThreadStore.hasPlaceholderThreads(SESSION, "slides")).toBe(false);
   });
 
   it("orders equal-timestamp roots by seq once every root carries one (codex rounds 5-6)", () => {

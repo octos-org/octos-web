@@ -3613,9 +3613,21 @@ export function appendPersistedMessage(
         typeof message.seq === "number" ? message.seq : undefined,
       );
       adopted = tryAdoptPlaceholders(state);
-      // Unresolvable from live traffic (round 7): fall back to ONE
-      // forced REST replay for the scope.
-      if (!adopted) nudgePlaceholderRefetch(key, state);
+      if (!adopted) {
+        // Unresolvable from live traffic (round 7): fall back to a
+        // forced REST replay. Round 8 P2: `state` may be a DIFFERENT
+        // scope than the incoming (sessionId, topic) when the global
+        // findThreadById fallback located the orphan elsewhere —
+        // nudge the scope that owns the thread we just inspected.
+        let ownerKey = key;
+        for (const [k, s] of sessionsByKey.entries()) {
+          if (s === state) {
+            ownerKey = k;
+            break;
+          }
+        }
+        nudgePlaceholderRefetch(ownerKey, state);
+      }
     }
     const built = buildResponseFromApi(message);
     if (thread.userMsg.text === "" && built.text.trim().length > 0) {
@@ -4037,30 +4049,52 @@ function tryAdoptPlaceholders(state: SessionState): boolean {
   return true;
 }
 
-/** One-shot per scope: a persisted user echo landed while the scope
- *  still had UNRESOLVABLE placeholders — some sibling root carries no
- *  server seq and never will from live traffic (topic scopes skip
- *  `session/hydrate` and REST `messages_page` strips `seq`; codex
- *  #262 round 7). The echoed turn IS persisted now, so ONE forced
- *  REST replay re-roots it in server order and resolves the orphan
- *  without any cross-domain heuristics (`replayHistory` roots user
- *  rows found in the batch; only rows still missing stay gated).
- *  Re-armed when the scope's placeholders fully resolve so a later
- *  episode can nudge again; `loadHistory` itself dedups in-flight
- *  fetches and swallows fetch errors. */
-const placeholderRefetchByKey = new Set<string>();
+/** Fallback replay for a scope whose placeholders CANNOT resolve from
+ *  live traffic — some sibling root carries no server seq and never
+ *  will (topic scopes skip `session/hydrate` and REST `messages_page`
+ *  strips `seq`; codex #262 rounds 7-8). The echoed turn IS persisted
+ *  by the time this runs, so a REST replay begun AFTER the echo
+ *  re-roots it (and every sibling) in server order and resolves the
+ *  orphan without cross-domain heuristics.
+ *
+ *  Latch semantics (round 8): the latch marks an IN-FLIGHT nudge only
+ *  and is always released on completion — each later persisted echo is
+ *  a fresh server-side signal and may nudge again (loadHistory dedups
+ *  concurrent fetches), and a resolved episode re-arms automatically.
+ *  An in-flight mount/reconnect load may PREDATE the echoed row, so
+ *  the nudge waits it out and then issues a genuinely fresh forced
+ *  load if the scope is still gated. */
+const placeholderRefetchInFlight = new Set<string>();
 
 function nudgePlaceholderRefetch(key: string, state: SessionState): void {
-  if (!state.threads.some((t) => t.placeholderOrigin === true)) {
-    placeholderRefetchByKey.delete(key);
-    return;
-  }
-  if (placeholderRefetchByKey.has(key)) return;
-  placeholderRefetchByKey.add(key);
+  if (!state.threads.some((t) => t.placeholderOrigin === true)) return;
+  if (placeholderRefetchInFlight.has(key)) return;
+  placeholderRefetchInFlight.add(key);
   const hashIdx = key.indexOf("#");
   const sessionId = hashIdx === -1 ? key : key.slice(0, hashIdx);
   const topic = hashIdx === -1 ? undefined : key.slice(hashIdx + 1);
-  void loadHistory(sessionId, topic, { force: true });
+  void (async () => {
+    try {
+      // Round 8 P1: `loadHistory` coalesces onto an in-flight load,
+      // which may have started BEFORE the echoed row was persisted.
+      // Drain it first; the forced load below then issues a fresh
+      // request (the finished load's `loadingPromises` entry is gone).
+      const existing = loadingPromises.get(key);
+      if (existing) await existing.catch(() => {});
+      const current = sessionsByKey.get(key);
+      if (
+        !current ||
+        !current.threads.some((t) => t.placeholderOrigin === true)
+      ) {
+        return;
+      }
+      await loadHistory(sessionId, topic, { force: true });
+    } catch {
+      // loadHistory swallows fetch errors itself; defensive only.
+    } finally {
+      placeholderRefetchInFlight.delete(key);
+    }
+  })();
 }
 
 /** True when ANY bucket in the scope is still an orphan placeholder.
@@ -4168,7 +4202,7 @@ export function clearSessionScope(
   pendingClientMessageIds.delete(key);
   seenSeqsByKey.delete(key);
   appliedHydrateToolEnvelopesByKey.delete(key);
-  placeholderRefetchByKey.delete(key);
+  placeholderRefetchInFlight.delete(key);
   notify();
 }
 
@@ -4182,7 +4216,7 @@ export function clearSession(sessionId: string, topic?: string): void {
     pendingClientMessageIds.delete(key);
     seenSeqsByKey.delete(key);
     appliedHydrateToolEnvelopesByKey.delete(key);
-    placeholderRefetchByKey.delete(key);
+    placeholderRefetchInFlight.delete(key);
   } else {
     for (const k of [...sessionsByKey.keys()]) {
       if (k === sessionId || k.startsWith(`${sessionId}#`)) {
@@ -4193,7 +4227,7 @@ export function clearSession(sessionId: string, topic?: string): void {
         pendingClientMessageIds.delete(k);
         seenSeqsByKey.delete(k);
         appliedHydrateToolEnvelopesByKey.delete(k);
-        placeholderRefetchByKey.delete(k);
+        placeholderRefetchInFlight.delete(k);
       }
     }
     // Codex round-5 P3: a hydrate snapshot may exist without a
@@ -4330,7 +4364,7 @@ export function __resetForTests(): void {
   loadingPromises.clear();
   snapshotCache.clear();
   hydrateSnapshotByKey.clear();
-  placeholderRefetchByKey.clear();
+  placeholderRefetchInFlight.clear();
   pendingClientMessageIds.clear();
   seenSeqsByKey.clear();
   appliedHydrateToolEnvelopesByKey.clear();
