@@ -46,8 +46,19 @@ import type {
   RpcErrorPayload,
   SessionRollbackResult,
   SessionHydrateResult,
+  SessionOpenedResult,
   SessionOpenResult,
   TaskOutputDeltaEvent,
+  UiLoopRecord,
+  UiGoalRecord,
+  LoopUpdatedEvent,
+  LoopFiredEvent,
+  LoopCompletedEvent,
+  SessionGoalUpdatedEvent,
+  SessionGoalClearedEvent,
+  LoopListResult,
+  LoopControlResult,
+  SessionGoalGetResult,
   TaskUpdatedEvent,
   ToolCompletedEvent,
   ToolProgressEvent,
@@ -95,6 +106,14 @@ export type {
   SessionOpenedResult,
   SessionRollbackResult,
   TaskOutputDeltaEvent,
+  UiLoopRecord,
+  UiGoalRecord,
+  LoopUpdatedEvent,
+  LoopFiredEvent,
+  LoopCompletedEvent,
+  SessionGoalUpdatedEvent,
+  SessionGoalClearedEvent,
+  LoopControlResult,
   TaskUpdatedEvent,
   ToolCompletedEvent,
   ToolProgressEvent,
@@ -134,6 +153,12 @@ export const METHODS = {
   SESSION_OPEN: "session/open",
   SESSION_HYDRATE: "session/hydrate",
   SESSION_ROLLBACK: "session/rollback",
+  LOOP_LIST: "loop/list",
+  LOOP_PAUSE: "loop/pause",
+  LOOP_RESUME: "loop/resume",
+  LOOP_DELETE: "loop/delete",
+  SESSION_GOAL_GET: "session/goal/get",
+  SESSION_GOAL_CLEAR: "session/goal/clear",
   TURN_START: "turn/start",
   TURN_INTERRUPT: "turn/interrupt",
   APPROVAL_RESPOND: "approval/respond",
@@ -163,6 +188,11 @@ export const METHODS = {
   MESSAGE_DELTA: "message/delta",
   MESSAGE_PERSISTED: "message/persisted",
   TASK_UPDATED: "task/updated",
+  LOOP_UPDATED: "loop/updated",
+  LOOP_FIRED: "loop/fired",
+  LOOP_COMPLETED: "loop/completed",
+  SESSION_GOAL_UPDATED: "session/goal/updated",
+  SESSION_GOAL_CLEARED: "session/goal/cleared",
   TASK_OUTPUT_DELTA: "task/output/delta",
   TURN_STARTED: "turn/started",
   TURN_COMPLETED: "turn/completed",
@@ -286,6 +316,20 @@ export const UI_PROTOCOL_FEATURES = [
   // the SPA's compaction indicator is unreachable in production (the
   // same gap octos-tui#253 fixed for the TUI).
   "context.lifecycle.v1",
+  // M15 autonomy visibility (web parity P2): the server gates every
+  // loop/goal RPC on these negotiated capabilities
+  // (`autonomy_method_available` → `loop_runtime_available()` /
+  // `goal_runtime_available()`), so without the tokens the header
+  // autonomy chip's list/control calls all return method_not_supported.
+  //
+  // codex #263 round 1 P1: once a client sends ANY feature tokens the
+  // server requires the UMBRELLA `coding.autonomy.v1` in ADDITION to
+  // each runtime child (`loop_runtime_available()` = autonomy && loop;
+  // `goal_runtime_available()` = autonomy && goal). Children alone →
+  // every autonomy RPC rejects.
+  "coding.autonomy.v1",
+  "coding.loop_runtime.v1",
+  "coding.goal_runtime.v1",
 ] as const;
 
 /**
@@ -407,6 +451,22 @@ export interface UiProtocolBridge {
   hydrateSession(
     include?: ReadonlyArray<"messages" | "threads" | "turns" | "pending_approvals">,
   ): Promise<SessionHydrateResult | null>;
+
+  /** M15 autonomy visibility (negotiated behind `coding.loop_runtime.v1`
+   *  / `coding.goal_runtime.v1`). List/control this scope's recurring
+   *  loops and read/clear its persisted goal. */
+  listLoops(): Promise<UiLoopRecord[]>;
+  controlLoop(
+    loopId: string,
+    kind: "pause" | "resume" | "delete",
+  ): Promise<LoopControlResult>;
+  getGoal(): Promise<UiGoalRecord | null>;
+  clearGoal(): Promise<UiGoalRecord | null>;
+  onLoopUpdated(handler: (e: LoopUpdatedEvent) => void): () => void;
+  onLoopFired(handler: (e: LoopFiredEvent) => void): () => void;
+  onLoopCompleted(handler: (e: LoopCompletedEvent) => void): () => void;
+  onGoalUpdated(handler: (e: SessionGoalUpdatedEvent) => void): () => void;
+  onGoalCleared(handler: (e: SessionGoalClearedEvent) => void): () => void;
 
   /**
    * `session/rollback` — drop the last `numTurns` USER turns from the
@@ -536,6 +596,11 @@ export interface UiProtocolBridge {
    *  missed completion bubble + media attachment from the durable
    *  ledger via `replayed_envelopes`. */
   onReopened(handler: () => void): () => void;
+  /** Fires on EVERY successful `session/open` ack (initial open AND
+   *  reconnects) with the server's `opened` payload. The runtime layer
+   *  seeds per-session state that the server persists across restarts —
+   *  today the thinking-effort selector (`opened.reasoning_effort`). */
+  onSessionOpened(handler: (opened: SessionOpenedResult) => void): () => void;
   onWarning(handler: (e: WarningEvent) => void): () => void;
   /** Issue #113.2: server-emitted title update for cross-tab and
    *  auto-title flows. SessionProvider subscribes to keep its
@@ -1169,6 +1234,117 @@ function guardTaskUpdated(p: unknown): TaskUpdatedEvent | null {
   };
 }
 
+/** Minimal structural check for a wire `UiLoopRecord`. Field-tolerant —
+ *  only identity + display essentials are required; numeric bookkeeping
+ *  fields default to 0 so a future server adding/omitting one cannot
+ *  drop the whole notification. */
+function guardLoopRecord(p: unknown): UiLoopRecord | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.loop_id) || !isString(p.session_id)) return null;
+  if (!isString(p.status)) return null;
+  return {
+    loop_id: p.loop_id,
+    session_id: p.session_id,
+    profile_id: isString(p.profile_id) ? p.profile_id : null,
+    prompt: isString(p.prompt) ? p.prompt : "",
+    mode: isString(p.mode) ? p.mode : "",
+    interval_seconds:
+      typeof p.interval_seconds === "number" ? p.interval_seconds : null,
+    status: p.status,
+    next_run_at_ms:
+      typeof p.next_run_at_ms === "number" ? p.next_run_at_ms : null,
+    last_run_at_ms:
+      typeof p.last_run_at_ms === "number" ? p.last_run_at_ms : null,
+    expires_at_ms: typeof p.expires_at_ms === "number" ? p.expires_at_ms : 0,
+    created_at_ms: typeof p.created_at_ms === "number" ? p.created_at_ms : 0,
+    updated_at_ms: typeof p.updated_at_ms === "number" ? p.updated_at_ms : 0,
+  };
+}
+
+function guardGoalRecord(p: unknown): UiGoalRecord | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.goal_id) || !isString(p.objective) || !isString(p.status)) {
+    return null;
+  }
+  return {
+    profile_id: isString(p.profile_id) ? p.profile_id : null,
+    goal_id: p.goal_id,
+    objective: p.objective,
+    status: p.status,
+    token_budget: typeof p.token_budget === "number" ? p.token_budget : 0,
+    tokens_used: typeof p.tokens_used === "number" ? p.tokens_used : 0,
+    time_used_seconds:
+      typeof p.time_used_seconds === "number" ? p.time_used_seconds : 0,
+    created_at_ms: typeof p.created_at_ms === "number" ? p.created_at_ms : 0,
+    updated_at_ms: typeof p.updated_at_ms === "number" ? p.updated_at_ms : 0,
+  };
+}
+
+function guardLoopUpdated(p: unknown): LoopUpdatedEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.session_id)) return null;
+  const loop = guardLoopRecord(p.loop);
+  if (!loop) return null;
+  return {
+    session_id: p.session_id,
+    loop_id: isString(p.loop_id) ? p.loop_id : loop.loop_id,
+    loop,
+    ok: typeof p.ok === "boolean" ? p.ok : undefined,
+    status: isString(p.status) ? p.status : undefined,
+    deleted: typeof p.deleted === "boolean" ? p.deleted : undefined,
+  };
+}
+
+function guardLoopFired(p: unknown): LoopFiredEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.session_id) || !isString(p.loop_id)) return null;
+  return {
+    session_id: p.session_id,
+    loop_id: p.loop_id,
+    loop: guardLoopRecord(p.loop) ?? undefined,
+    status: isString(p.status) ? p.status : undefined,
+  };
+}
+
+function guardLoopCompleted(p: unknown): LoopCompletedEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.session_id) || !isString(p.loop_id)) return null;
+  return {
+    session_id: p.session_id,
+    loop_id: p.loop_id,
+    loop: guardLoopRecord(p.loop) ?? undefined,
+    status: isString(p.status) ? p.status : undefined,
+    error: isString(p.error) ? p.error : undefined,
+  };
+}
+
+function guardGoalUpdated(p: unknown): SessionGoalUpdatedEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.session_id)) return null;
+  const goal = guardGoalRecord(p.goal);
+  if (!goal) return null;
+  return {
+    session_id: p.session_id,
+    goal,
+    transition_actor: isString(p.transition_actor)
+      ? p.transition_actor
+      : undefined,
+  };
+}
+
+function guardGoalCleared(p: unknown): SessionGoalClearedEvent | null {
+  if (!isPlainObject(p)) return null;
+  if (!isString(p.session_id)) return null;
+  return {
+    session_id: p.session_id,
+    cleared: typeof p.cleared === "boolean" ? p.cleared : undefined,
+    goal: guardGoalRecord(p.goal),
+    transition_actor: isString(p.transition_actor)
+      ? p.transition_actor
+      : undefined,
+  };
+}
+
 function guardTaskOutputDelta(p: unknown): TaskOutputDeltaEvent | null {
   if (!isPlainObject(p)) return null;
   // Same relaxation as `guardTaskUpdated`: server-side struct has no
@@ -1768,6 +1944,13 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private readonly subVisualFailed = new Subscribers<VisualFailedEvent>();
   private readonly subVoiceExit = new Subscribers<VoiceExitEvent>();
   private readonly subTaskUpdated = new Subscribers<TaskUpdatedEvent>();
+  private readonly subLoopUpdated = new Subscribers<LoopUpdatedEvent>();
+  private readonly subLoopFired = new Subscribers<LoopFiredEvent>();
+  private readonly subLoopCompleted = new Subscribers<LoopCompletedEvent>();
+  private readonly subGoalUpdated =
+    new Subscribers<SessionGoalUpdatedEvent>();
+  private readonly subGoalCleared =
+    new Subscribers<SessionGoalClearedEvent>();
   private readonly subTaskOutputDelta = new Subscribers<TaskOutputDeltaEvent>();
   private readonly subContextCompaction = new Subscribers<
     ContextCompactionStartedEvent | ContextCompactionCompletedEvent
@@ -1795,6 +1978,10 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
    *  to re-issue `session/hydrate` so envelopes emitted while the WS
    *  was disconnected get replayed from `replayed_envelopes`. */
   private readonly subReopened = new Subscribers<void>();
+  /** Fires on every successful `session/open` ack with the `opened`
+   *  payload (initial + reconnect) — carrier for server-persisted
+   *  per-session state like `reasoning_effort`. */
+  private readonly subSessionOpened = new Subscribers<SessionOpenedResult>();
   private readonly subSessionTitleUpdated = new Subscribers<{
     session_id: string;
     title: string;
@@ -1842,6 +2029,26 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     [METHODS.TASK_UPDATED]: {
       guard: guardTaskUpdated,
       emit: (v) => this.subTaskUpdated.emit(v as TaskUpdatedEvent),
+    },
+    [METHODS.LOOP_UPDATED]: {
+      guard: guardLoopUpdated,
+      emit: (v) => this.subLoopUpdated.emit(v as LoopUpdatedEvent),
+    },
+    [METHODS.LOOP_FIRED]: {
+      guard: guardLoopFired,
+      emit: (v) => this.subLoopFired.emit(v as LoopFiredEvent),
+    },
+    [METHODS.LOOP_COMPLETED]: {
+      guard: guardLoopCompleted,
+      emit: (v) => this.subLoopCompleted.emit(v as LoopCompletedEvent),
+    },
+    [METHODS.SESSION_GOAL_UPDATED]: {
+      guard: guardGoalUpdated,
+      emit: (v) => this.subGoalUpdated.emit(v as SessionGoalUpdatedEvent),
+    },
+    [METHODS.SESSION_GOAL_CLEARED]: {
+      guard: guardGoalCleared,
+      emit: (v) => this.subGoalCleared.emit(v as SessionGoalClearedEvent),
     },
     [METHODS.TASK_OUTPUT_DELTA]: {
       guard: guardTaskOutputDelta,
@@ -2047,8 +2254,14 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.subRouterStatus.clear();
     this.subRouterFailover.clear();
     this.subQueueState.clear();
+    this.subLoopUpdated.clear();
+    this.subLoopFired.clear();
+    this.subLoopCompleted.clear();
+    this.subGoalUpdated.clear();
+    this.subGoalCleared.clear();
     this.subWarning.clear();
     this.subState.clear();
+    this.subSessionOpened.clear();
     this.subSessionTitleUpdated.clear();
   }
 
@@ -2087,6 +2300,14 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     // server always saw `live_video=false` and forwarded zero reference frames.
     if (extras?.live_video) {
       params.live_video = true;
+    }
+    // Thinking-effort parity (`/thinking`): forward the per-session
+    // reasoning effort. Omission is MEANINGFUL to the server (a user
+    // turn without the field clears the stored override), so this maps
+    // only-when-populated like the other extras — the "default"
+    // selection is expressed by absence.
+    if (extras?.reasoning_effort) {
+      params.reasoning_effort = extras.reasoning_effort;
     }
     return this.request<TurnStartResult>(METHODS.TURN_START, params);
   }
@@ -2228,6 +2449,88 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     return { dropped_turns: record.dropped_turns, thread };
   }
 
+  /** Params shared by every autonomy RPC. The server resolves these
+   *  calls independently from `session/open`: on an admin/unscoped
+   *  connection an omitted `profile_id` falls back to the session key's
+   *  embedded profile or `_main`, so a bridge viewing a non-main
+   *  profile must forward it explicitly (codex #263 round 1 P1). */
+  private autonomyParams(extra?: Record<string, unknown>): Record<string, unknown> {
+    const params: Record<string, unknown> = {
+      session_id: this.requireScopedSessionId(),
+      ...extra,
+    };
+    if (this.profileId) params.profile_id = this.profileId;
+    return params;
+  }
+
+  async listLoops(): Promise<UiLoopRecord[]> {
+    const raw = await this.request<unknown>(
+      METHODS.LOOP_LIST,
+      this.autonomyParams(),
+    );
+    const record = raw as LoopListResult;
+    if (!Array.isArray(record?.loops)) return [];
+    const loops: UiLoopRecord[] = [];
+    for (const entry of record.loops) {
+      const guarded = guardLoopRecord(entry);
+      if (guarded) loops.push(guarded);
+    }
+    return loops;
+  }
+
+  /** loop/pause | loop/resume | loop/delete on one loop. */
+  async controlLoop(
+    loopId: string,
+    kind: "pause" | "resume" | "delete",
+  ): Promise<LoopControlResult> {
+    if (!isString(loopId) || loopId.length === 0) {
+      throw new Error("ui-protocol-bridge: controlLoop requires loopId");
+    }
+    const method =
+      kind === "pause"
+        ? METHODS.LOOP_PAUSE
+        : kind === "resume"
+          ? METHODS.LOOP_RESUME
+          : METHODS.LOOP_DELETE;
+    const raw = await this.request<unknown>(
+      method,
+      this.autonomyParams({ loop_id: loopId }),
+    );
+    const record = raw as {
+      ok?: unknown;
+      status?: unknown;
+      loop_id?: unknown;
+      loop?: unknown;
+    };
+    return {
+      ok: typeof record?.ok === "boolean" ? record.ok : undefined,
+      status: isString(record?.status) ? record.status : undefined,
+      loop_id: isString(record?.loop_id) ? record.loop_id : undefined,
+      loop: guardLoopRecord(record?.loop) ?? undefined,
+    };
+  }
+
+  /** `session/goal/get`. Requires `coding.goal_runtime.v1`. */
+  async getGoal(): Promise<UiGoalRecord | null> {
+    const raw = await this.request<unknown>(
+      METHODS.SESSION_GOAL_GET,
+      this.autonomyParams(),
+    );
+    const record = raw as SessionGoalGetResult;
+    return guardGoalRecord(record?.goal);
+  }
+
+  /** `session/goal/clear`. Returns the cleared goal when the server
+   *  echoes it. */
+  async clearGoal(): Promise<UiGoalRecord | null> {
+    const raw = await this.request<unknown>(
+      METHODS.SESSION_GOAL_CLEAR,
+      this.autonomyParams(),
+    );
+    const record = raw as { goal?: unknown };
+    return guardGoalRecord(record?.goal);
+  }
+
   callMethod<T = unknown>(method: string, params?: unknown): Promise<T> {
     if (!isString(method)) {
       return Promise.reject(
@@ -2260,6 +2563,21 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   }
   onVoiceExit(handler: Listener<VoiceExitEvent>): () => void {
     return this.subVoiceExit.add(handler);
+  }
+  onLoopUpdated(handler: Listener<LoopUpdatedEvent>): () => void {
+    return this.subLoopUpdated.add(handler);
+  }
+  onLoopFired(handler: Listener<LoopFiredEvent>): () => void {
+    return this.subLoopFired.add(handler);
+  }
+  onLoopCompleted(handler: Listener<LoopCompletedEvent>): () => void {
+    return this.subLoopCompleted.add(handler);
+  }
+  onGoalUpdated(handler: Listener<SessionGoalUpdatedEvent>): () => void {
+    return this.subGoalUpdated.add(handler);
+  }
+  onGoalCleared(handler: Listener<SessionGoalClearedEvent>): () => void {
+    return this.subGoalCleared.add(handler);
   }
   onTaskUpdated(handler: Listener<TaskUpdatedEvent>): () => void {
     return this.subTaskUpdated.add(handler);
@@ -2315,6 +2633,9 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   }
   onReopened(handler: Listener<void>): () => void {
     return this.subReopened.add(handler);
+  }
+  onSessionOpened(handler: Listener<SessionOpenedResult>): () => void {
+    return this.subSessionOpened.add(handler);
   }
   onWarning(handler: Listener<WarningEvent>): () => void {
     return this.subWarning.add(handler);
@@ -2503,6 +2824,12 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       const isReopen = this.hasEverOpened;
       this.hasEverOpened = true;
       this.setState("connected");
+      // Surface the `opened` payload (initial + reopen) so the runtime
+      // layer can seed server-persisted per-session state — today the
+      // thinking-effort selector (`opened.reasoning_effort`).
+      if (openResult?.opened) {
+        this.subSessionOpened.emit(openResult.opened);
+      }
       this.startKeepalive();
       this.flushSendQueue();
       if (isReopen) {

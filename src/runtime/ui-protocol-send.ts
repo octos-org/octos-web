@@ -18,6 +18,10 @@
  */
 
 import * as ThreadStore from "@/store/thread-store";
+import {
+  getThinkingEffort,
+  whenThinkingSeeded,
+} from "@/store/thinking-store";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { getActiveBridge, startBridgeForSession } from "./ui-protocol-runtime";
 import { isRollbackBusy, whenRollbackIdle } from "./session-rollback";
@@ -141,11 +145,22 @@ export function buildTurnStartExtras(
     extras.live_video = true;
   }
 
+  // Thinking-effort parity (TUI `/thinking`): read the per-session store
+  // HERE — centrally — rather than in each send surface. The server
+  // clears its persisted override whenever a user turn omits the field,
+  // so a single surface (voice, studio rail) sending without it would
+  // silently reset the user's choice. "Default" is expressed by absence.
+  const effort = getThinkingEffort(opts.sessionId, opts.historyTopic);
+  if (effort !== null) {
+    extras.reasoning_effort = effort;
+  }
+
   if (
     (extras.media === undefined || extras.media.length === 0) &&
     (extras.topic === undefined || extras.topic.length === 0) &&
     extras.rewrite_for === undefined &&
-    extras.live_video === undefined
+    extras.live_video === undefined &&
+    extras.reasoning_effort === undefined
   ) {
     return undefined;
   }
@@ -279,6 +294,16 @@ export async function interruptActiveTurn(opts: {
   const bridge = getActiveBridge(opts.sessionId, opts.historyTopic);
   if (!bridge || !turnId) return false;
 
+  // codex #261 rounds 2-3 P1: the send path parks `turn/start` behind
+  // `whenThinkingSeeded` during the initial `session/open` handshake. An
+  // interrupt issued in that window must NOT reach the bridge queue
+  // ahead of the still-parked start — it would no-op server-side and
+  // the supposedly cancelled turn would run. Gating on the SAME promise
+  // preserves pairwise order (waiters resolve in registration order and
+  // the send always registered first). EVERY cancel surface must route
+  // through this helper rather than calling `bridge.interruptTurn`
+  // directly, or it re-opens the race (round 3: /home ConversationView).
+  await whenThinkingSeeded(opts.sessionId, opts.historyTopic);
   const result = await bridge.interruptTurn(turnId, opts.reason);
   if (result.interrupted && control?.turnId === turnId) {
     control.complete();
@@ -636,6 +661,12 @@ async function sendMessageV1(
     // from the populated `SendOptions` fields. The bridge serialises
     // only the populated extras onto the wire, so a text-only send
     // produces the same bytes a pre-β-1 build did.
+    // codex #261 P2: a send racing the `session/open` handshake must not
+    // serialise its frame before the server-persisted thinking effort has
+    // been observed — the frame would omit `reasoning_effort` and the
+    // server treats user-turn omission as "clear the stored override".
+    // Bounded fail-open (3s) so a broken handshake can't wedge sends.
+    await whenThinkingSeeded(opts.sessionId, opts.historyTopic);
     const extras = buildTurnStartExtras(opts);
     const result = await bridge.sendTurn(
       clientMessageId,

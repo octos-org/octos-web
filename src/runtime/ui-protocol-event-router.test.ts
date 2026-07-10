@@ -14,6 +14,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as ThreadStore from "@/store/thread-store";
 import * as TaskStore from "@/store/task-store";
+import * as AutonomyStore from "@/store/autonomy-store";
 import {
   __resetProjectionForTests,
   __setProjectionV1ForTests,
@@ -22,6 +23,10 @@ import {
 } from "@/store/projection-store";
 import { project } from "@/store/projection";
 import {
+  handleLoopUpdated,
+  handleLoopCompleted,
+  handleGoalUpdated,
+  handleGoalCleared,
   __resetRouterStateForTest,
   __resetTurnMetaForTest,
   attachRouter,
@@ -4312,5 +4317,76 @@ describe("Wave4-A: queue/state fans out into crew:queue_state", () => {
     const detail = (dispatched[0] as CustomEvent).detail;
     expect(detail.pendingCount).toBe(3);
     expect(detail.head).toBe("cmid-head");
+  });
+});
+
+describe("autonomy handlers → autonomy-store", () => {
+  const cfg = { sessionId: SESSION, dispatchEvent: () => {} };
+  const baseLoop = {
+    loop_id: "l-router",
+    session_id: SESSION,
+    prompt: "p",
+    mode: "interval" as const,
+    status: "active",
+    expires_at_ms: 0,
+    created_at_ms: 1,
+    updated_at_ms: 1,
+  };
+
+  afterEach(() => {
+    AutonomyStore.__resetAutonomyStoreForTest();
+  });
+
+  it("loop/updated upserts; deleted flag removes", () => {
+    handleLoopUpdated(cfg, {
+      session_id: SESSION,
+      loop_id: "l-router",
+      loop: { ...baseLoop, status: "paused" },
+    });
+    expect(
+      AutonomyStore.getAutonomyState(SESSION).loops[0]?.status,
+    ).toBe("paused");
+    handleLoopUpdated(cfg, {
+      session_id: SESSION,
+      loop_id: "l-router",
+      loop: { ...baseLoop, status: "paused" },
+      deleted: true,
+    });
+    expect(AutonomyStore.getAutonomyState(SESSION).loops).toHaveLength(0);
+  });
+
+  it("loop/completed without a record drops the row so the chip clears", () => {
+    handleLoopUpdated(cfg, {
+      session_id: SESSION,
+      loop_id: "l-router",
+      loop: baseLoop,
+    });
+    handleLoopCompleted(cfg, {
+      session_id: SESSION,
+      loop_id: "l-router",
+      status: "completed",
+    });
+    expect(AutonomyStore.getAutonomyState(SESSION).loops).toHaveLength(0);
+  });
+
+  it("goal updated/cleared round-trip", () => {
+    handleGoalUpdated(cfg, {
+      session_id: SESSION,
+      goal: {
+        goal_id: "g-router",
+        objective: "o",
+        status: "active",
+        token_budget: 1,
+        tokens_used: 0,
+        time_used_seconds: 0,
+        created_at_ms: 1,
+        updated_at_ms: 1,
+      },
+    });
+    expect(AutonomyStore.getAutonomyState(SESSION).goal?.goal_id).toBe(
+      "g-router",
+    );
+    handleGoalCleared(cfg, { session_id: SESSION, cleared: true });
+    expect(AutonomyStore.getAutonomyState(SESSION).goal).toBe(null);
   });
 });

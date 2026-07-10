@@ -23,6 +23,7 @@ import {
   X,
   FileIcon,
   RotateCcw,
+  Brain,
   Mic,
   Video,
   Camera,
@@ -40,6 +41,12 @@ import {
   useRollbackBusy,
 } from "@/runtime/session-rollback";
 import {
+  asStoredEffort,
+  KNOWN_EFFORT_LEVELS,
+  setThinkingEffort,
+  useThinkingEffort,
+} from "@/store/thinking-store";
+import {
   isPlaceholderThread,
   useThreads,
   type MessageFile,
@@ -50,7 +57,10 @@ import {
 } from "@/store/thread-store";
 import { isProjectionV1Enabled } from "@/store/projection-store";
 import { uploadFiles } from "@/api/chat";
-import { sendMessage as bridgeSend } from "@/runtime/ui-protocol-send";
+import {
+  interruptActiveTurn,
+  sendMessage as bridgeSend,
+} from "@/runtime/ui-protocol-send";
 import { getActiveBridge } from "@/runtime/ui-protocol-runtime";
 import { MarkdownContent } from "./markdown-renderer";
 import { ThinkingIndicator } from "./thinking-indicator";
@@ -1504,6 +1514,10 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
   // existing `queueMode` literal label still renders for sessions that
   // never push anything onto the queue.
   const queueDepth = currentSessionStats?.queue_depth ?? 0;
+  // Thinking-effort selector state (TUI `/thinking` parity). Seeded from
+  // the server-persisted value on every `session/open` ack; the send path
+  // reads the same store so every user turn carries the choice.
+  const thinkingEffort = useThinkingEffort(currentSessionId, historyTopic);
   // M10.5: ThreadStore is the single source of truth — read `isRunning`
   // from the active session's threads.
   const threadsForRunning = useThreads(currentSessionId, historyTopic);
@@ -2042,7 +2056,17 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
           t.pendingAssistant.status === "streaming",
       )?.id;
       if (pendingTurnId) {
-        void bridge.interruptTurn(pendingTurnId, "user cancelled").catch(() => {
+        // codex #261 rounds 2-3 P1: route through the shared
+        // seed-ordering-aware helper — a direct `bridge.interruptTurn`
+        // here can reach the bridge queue ahead of a `turn/start` still
+        // parked on `whenThinkingSeeded`, no-op server-side, and let
+        // the supposedly cancelled turn run.
+        void interruptActiveTurn({
+          sessionId: currentSessionId,
+          historyTopic,
+          turnId: pendingTurnId,
+          reason: "user cancelled",
+        }).catch(() => {
           // best-effort: swallow transport errors.
         });
       }
@@ -2321,8 +2345,49 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
                 turn exists OR a legacy `queueMode` label is set, so
                 "N queued" appears regardless of whether the session
                 also has a `queueMode` label. */}
+            {/* Thinking-effort selector (TUI `/thinking` parity). Value is
+                per-session and server-persisted via `turn/start`;
+                "Default" omits the wire field, which also clears the
+                server's stored override on the next send. */}
+            <label
+              className="glass-icon-button ml-auto flex h-8 shrink-0 cursor-pointer items-center gap-1 rounded-[10px] px-2"
+              title="Thinking effort for this session"
+            >
+              <Brain size={14} className="shrink-0" />
+              <select
+                data-testid="thinking-effort-select"
+                aria-label="Thinking effort"
+                value={thinkingEffort ?? ""}
+                onChange={(e) =>
+                  setThinkingEffort(
+                    currentSessionId,
+                    asStoredEffort(e.target.value),
+                    historyTopic,
+                  )
+                }
+                className="cursor-pointer bg-transparent text-[11px] font-medium text-text-strong outline-none"
+              >
+                <option value="">Thinking: default</option>
+                <option value="low">Thinking: low</option>
+                <option value="medium">Thinking: medium</option>
+                <option value="high">Thinking: high</option>
+                <option value="max">Thinking: max</option>
+                {/* A newer server can persist a tier this client does
+                    not know; keep it selectable so it round-trips
+                    verbatim instead of being destroyed by omission
+                    (codex #261 P2). */}
+                {thinkingEffort !== null &&
+                  !(KNOWN_EFFORT_LEVELS as readonly string[]).includes(
+                    thinkingEffort,
+                  ) && (
+                    <option value={thinkingEffort}>
+                      Thinking: {thinkingEffort}
+                    </option>
+                  )}
+              </select>
+            </label>
             {(queueMode || adaptiveMode || queueDepth > 0) && (
-              <div className="ml-auto flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5">
                 {(queueMode || queueDepth > 0) && (
                   <span
                     data-testid="queue-mode-badge"
