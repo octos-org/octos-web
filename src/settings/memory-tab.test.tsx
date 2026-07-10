@@ -133,6 +133,24 @@ describe("MemoryTab", () => {
     expect(
       screen.getByTestId("memory-truncation-notice").textContent,
     ).toContain("of 200 KB");
+    cleanup();
+
+    // codex web#268 r4 P2: shown bytes are UTF-8, matching the server's
+    // *_total_bytes unit — 32768 CJK chars are 96 KiB on the wire, not
+    // the 32 KiB that string.length (UTF-16 code units) would claim.
+    apiMocks.getMyMemory.mockResolvedValue({
+      ...OVERVIEW,
+      long_term: "\u6c49".repeat(32 * 1024),
+      long_term_truncated: true,
+      long_term_total_bytes: 200 * 1024,
+    });
+    render(<MemoryTab />);
+    await waitFor(() =>
+      expect(screen.getByTestId("memory-truncation-notice")).toBeTruthy(),
+    );
+    expect(
+      screen.getByTestId("memory-truncation-notice").textContent,
+    ).toContain("first 96 KB of 200 KB");
 
     fireEvent.click(screen.getByText("fleet"));
     await waitFor(() =>

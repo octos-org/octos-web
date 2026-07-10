@@ -777,6 +777,68 @@ describe("ensureAuxBridge — sessionless auxiliary singleton", () => {
     expect(aux1.stopCalls).toBe(1);
   });
 
+  it("rejects a REPLACEMENT start when the token clears during the internal stop", async () => {
+    // codex web#268 r4 P1: the replacement path stops the old slot
+    // first; a token clear landing while that stop is yielding must
+    // still invalidate the replacement (the r3 guard captured its
+    // generation AFTER the stop and absorbed the clear as baseline).
+    const aux1 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux1.bridge);
+    const p1 = ensureAuxBridge();
+    aux1.resolveStart();
+    await p1;
+    aux1.setTerminal();
+
+    // Gate the old slot's stop so the clear can land mid-await.
+    let releaseStop: () => void = () => {};
+    (aux1.bridge.stop as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      async () => {
+        await new Promise<void>((resolve) => {
+          releaseStop = resolve;
+        });
+      },
+    );
+    const aux2 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux2.bridge);
+    const pending = ensureAuxBridge();
+    await Promise.resolve(); // enter the gated internal stop
+
+    window.dispatchEvent(new CustomEvent("crew:token_cleared"));
+    await Promise.resolve();
+    releaseStop();
+    aux2.resolveStart();
+
+    await expect(pending).rejects.toThrow("superseded by token clear");
+    expect(aux2.stopCalls).toBe(1); // stale replacement stopped, never published
+  });
+
+  it("a settling invalidated start does not erase a newer start's shared handle", async () => {
+    // codex web#268 r4 P2: start A is invalidated by a token clear;
+    // start B begins under the fresh generation; A settles LATE. A's
+    // cleanup must not clear B's shared in-flight handle — otherwise a
+    // third caller races bridge C against B.
+    const aux1 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux1.bridge);
+    const p1 = ensureAuxBridge(); // A pending
+
+    window.dispatchEvent(new CustomEvent("crew:token_cleared"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const aux2 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux2.bridge);
+    const p2 = ensureAuxBridge(); // B pending under the new generation
+
+    aux1.resolveStart(); // A settles AFTER B took the handle
+    await expect(p1).rejects.toThrow("superseded by token clear");
+
+    const p3 = ensureAuxBridge(); // must join B, not start C
+    aux2.resolveStart();
+    expect(await p2).toBe(aux2.bridge);
+    expect(await p3).toBe(aux2.bridge);
+    expect(createBridgeSpy).toHaveBeenCalledTimes(2);
+  });
+
   it("surfaces a start failure and does not cache the dead bridge", async () => {
     const aux1 = makeDeferredBridge();
     createBridgeSpy.mockReturnValueOnce(aux1.bridge);

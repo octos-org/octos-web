@@ -448,14 +448,17 @@ export async function ensureAuxBridge(): Promise<UiProtocolBridge> {
     return auxSlot.bridge;
   }
   if (auxStartInFlight) return auxStartInFlight;
-  auxStartInFlight = (async () => {
-    if (auxSlot) {
-      await stopAuxBridge();
-    }
-    // Captured AFTER the internal stop above (which bumps it) so only
-    // an EXTERNAL teardown — token clear / auth expiry racing this
-    // start — invalidates us (codex web#268 r3 P1).
+  const myStart = (async () => {
+    // Captured BEFORE any await (codex web#268 r4 P1): the internal
+    // replacement stop below uses `stopAuxSlotOnly` (no generation
+    // bump), so ANY bump observed later is an external teardown —
+    // including one that fires while that stop is yielding. The r3
+    // version captured after the stop and absorbed such a clear as
+    // its baseline, publishing a bridge opened post-logout.
     const myGeneration = auxGeneration;
+    if (auxSlot) {
+      await stopAuxSlotOnly();
+    }
     const bridge = createUiProtocolBridge();
     let connectionState: ConnectionState = "connecting";
     const unsubscribeState = bridge.onConnectionStateChange((s) => {
@@ -494,10 +497,34 @@ export async function ensureAuxBridge(): Promise<UiProtocolBridge> {
     auxSlot = { bridge, connectionState, unsubscribeState };
     return bridge;
   })();
+  auxStartInFlight = myStart;
   try {
-    return await auxStartInFlight;
+    return await myStart;
   } finally {
-    auxStartInFlight = null;
+    // Only the OWNER clears the shared handle (codex web#268 r4 P2):
+    // when a token clear invalidated this start and a newer start B
+    // already took the slot, an unconditional clear here would erase
+    // B's handle and let a third caller race a bridge C against it.
+    if (auxStartInFlight === myStart) {
+      auxStartInFlight = null;
+    }
+  }
+}
+
+/** Stop and detach the CURRENT aux slot without touching the teardown
+ *  generation or the in-flight handle. Internal replacement path only —
+ *  external teardown (logout/auth-expiry) goes through
+ *  [`stopAuxBridge`], whose generation bump is exactly what
+ *  `ensureAuxBridge` uses to detect it. */
+async function stopAuxSlotOnly(): Promise<void> {
+  const slot = auxSlot;
+  if (!slot) return;
+  auxSlot = null;
+  slot.unsubscribeState();
+  try {
+    await slot.bridge.stop();
+  } catch {
+    // best-effort
   }
 }
 
@@ -509,15 +536,7 @@ export async function ensureAuxBridge(): Promise<UiProtocolBridge> {
 export async function stopAuxBridge(): Promise<void> {
   auxGeneration++;
   auxStartInFlight = null;
-  const slot = auxSlot;
-  if (!slot) return;
-  auxSlot = null;
-  slot.unsubscribeState();
-  try {
-    await slot.bridge.stop();
-  } catch {
-    // best-effort
-  }
+  await stopAuxSlotOnly();
 }
 
 // The aux bridge is identity-bound (authenticated at the WS upgrade),

@@ -61,12 +61,20 @@ function DailyNoteRow({
           <TruncationNotice
             truncated={truncated}
             totalBytes={totalBytes}
-            shownBytes={content.length}
+            shownBytes={utf8Len(content)}
           />
         </div>
       ) : null}
     </div>
   );
+}
+
+/** `*_total_bytes` is a UTF-8 byte count from the server; JS
+ *  `string.length` counts UTF-16 code units — for CJK/emoji content the
+ *  two diverge ~3× (codex web#268 r4 P2). Measure shown prefixes the
+ *  same way the server measures totals. */
+function utf8Len(s: string): number {
+  return new TextEncoder().encode(s).length;
 }
 
 /** Honest-cap notice (octos #1621 codex r1): the server declares when a
@@ -155,7 +163,7 @@ function EntityRow({ name, summary }: { name: string; summary: string }) {
               <TruncationNotice
                 truncated={page?.truncated}
                 totalBytes={page?.totalBytes}
-                shownBytes={page?.content.length ?? 0}
+                shownBytes={page ? utf8Len(page.content) : 0}
               />
             </>
           )}
@@ -302,7 +310,7 @@ export function MemoryTab() {
           <TruncationNotice
             truncated={overview.long_term_truncated}
             totalBytes={overview.long_term_total_bytes}
-            shownBytes={overview.long_term.length}
+            shownBytes={utf8Len(overview.long_term)}
           />
         </section>
       ) : null}
@@ -321,7 +329,7 @@ export function MemoryTab() {
               <TruncationNotice
                 truncated={overview.today_truncated}
                 totalBytes={overview.today_total_bytes}
-                shownBytes={overview.today.length}
+                shownBytes={utf8Len(overview.today)}
               />
             </div>
           ) : null}
