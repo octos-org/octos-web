@@ -4065,34 +4065,47 @@ function tryAdoptPlaceholders(state: SessionState): boolean {
  *  the nudge waits it out and then issues a genuinely fresh forced
  *  load if the scope is still gated. */
 const placeholderRefetchInFlight = new Set<string>();
+// Round 9 P1a: echoes that land while a nudge is in flight are QUEUED
+// here — the running task loops and issues another fresh load, so a
+// request that predates the newer echo can never be the last word.
+const placeholderRefetchDirty = new Set<string>();
 
 function nudgePlaceholderRefetch(key: string, state: SessionState): void {
   if (!state.threads.some((t) => t.placeholderOrigin === true)) return;
-  if (placeholderRefetchInFlight.has(key)) return;
+  if (placeholderRefetchInFlight.has(key)) {
+    placeholderRefetchDirty.add(key);
+    return;
+  }
   placeholderRefetchInFlight.add(key);
   const hashIdx = key.indexOf("#");
   const sessionId = hashIdx === -1 ? key : key.slice(0, hashIdx);
   const topic = hashIdx === -1 ? undefined : key.slice(hashIdx + 1);
   void (async () => {
     try {
-      // Round 8 P1: `loadHistory` coalesces onto an in-flight load,
-      // which may have started BEFORE the echoed row was persisted.
-      // Drain it first; the forced load below then issues a fresh
-      // request (the finished load's `loadingPromises` entry is gone).
-      const existing = loadingPromises.get(key);
-      if (existing) await existing.catch(() => {});
-      const current = sessionsByKey.get(key);
-      if (
-        !current ||
-        !current.threads.some((t) => t.placeholderOrigin === true)
-      ) {
-        return;
-      }
-      await loadHistory(sessionId, topic, { force: true });
+      do {
+        placeholderRefetchDirty.delete(key);
+        // Round 8 P1: `loadHistory` coalesces onto an in-flight load,
+        // which may have started BEFORE the echoed row was persisted.
+        // Drain it first; the forced load below then issues a fresh
+        // request (the finished load's `loadingPromises` entry is
+        // gone).
+        const existing = loadingPromises.get(key);
+        if (existing) await existing.catch(() => {});
+        if (!sessionsByKey.has(key)) return; // scope cleared — moot
+        // Round 9 P1b: fetch UNCONDITIONALLY once per armed signal.
+        // The previous post-drain placeholder scan skipped the fetch
+        // when a stale replay had SWEPT the orphan bucket (replay
+        // carries only pending assistants), leaving the echoed turn
+        // absent until an unrelated event. The armed echo itself is
+        // the trigger; the worst case of not scanning is one
+        // redundant history request in a rare overlap.
+        await loadHistory(sessionId, topic, { force: true });
+      } while (placeholderRefetchDirty.has(key));
     } catch {
       // loadHistory swallows fetch errors itself; defensive only.
     } finally {
       placeholderRefetchInFlight.delete(key);
+      placeholderRefetchDirty.delete(key);
     }
   })();
 }
@@ -4203,6 +4216,7 @@ export function clearSessionScope(
   seenSeqsByKey.delete(key);
   appliedHydrateToolEnvelopesByKey.delete(key);
   placeholderRefetchInFlight.delete(key);
+  placeholderRefetchDirty.delete(key);
   notify();
 }
 
@@ -4217,6 +4231,7 @@ export function clearSession(sessionId: string, topic?: string): void {
     seenSeqsByKey.delete(key);
     appliedHydrateToolEnvelopesByKey.delete(key);
     placeholderRefetchInFlight.delete(key);
+    placeholderRefetchDirty.delete(key);
   } else {
     for (const k of [...sessionsByKey.keys()]) {
       if (k === sessionId || k.startsWith(`${sessionId}#`)) {
@@ -4228,6 +4243,7 @@ export function clearSession(sessionId: string, topic?: string): void {
         seenSeqsByKey.delete(k);
         appliedHydrateToolEnvelopesByKey.delete(k);
         placeholderRefetchInFlight.delete(k);
+        placeholderRefetchDirty.delete(k);
       }
     }
     // Codex round-5 P3: a hydrate snapshot may exist without a
@@ -4365,6 +4381,7 @@ export function __resetForTests(): void {
   snapshotCache.clear();
   hydrateSnapshotByKey.clear();
   placeholderRefetchInFlight.clear();
+  placeholderRefetchDirty.clear();
   pendingClientMessageIds.clear();
   seenSeqsByKey.clear();
   appliedHydrateToolEnvelopesByKey.clear();

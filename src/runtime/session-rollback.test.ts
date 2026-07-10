@@ -883,6 +883,83 @@ describe("rollbackSessionTurns", () => {
     expect(ThreadStore.hasPlaceholderThreads(SESSION, "slides")).toBe(false);
   });
 
+  it("queues an echo that lands during an in-flight nudge and fetches again (codex round 9 P1)", async () => {
+    // Scope seeded via replay (roots carry no seq → echoes can't open
+    // the gate → nudges fire).
+    ThreadStore.replayHistory(SESSION, [
+      {
+        role: "user",
+        content: "anchor",
+        client_message_id: "cmid-anchor-q",
+        thread_id: "cmid-anchor-q",
+        timestamp: "2026-07-10T00:00:00Z",
+      },
+    ] as never);
+    ThreadStore.appendToolProgress("cmid-qa", "tc-qa", "late progress");
+    ThreadStore.appendToolProgress("cmid-qb", "tc-qb", "late progress");
+    const anchorRow = {
+      role: "user",
+      content: "anchor",
+      client_message_id: "cmid-anchor-q",
+      thread_id: "cmid-anchor-q",
+      timestamp: "2026-07-10T00:00:00Z",
+    };
+    const rowA = {
+      role: "user",
+      content: "prompt A",
+      client_message_id: "cmid-qa",
+      thread_id: "cmid-qa",
+      timestamp: "2026-07-10T00:00:01Z",
+    };
+    const rowB = {
+      role: "user",
+      content: "prompt B",
+      client_message_id: "cmid-qb",
+      thread_id: "cmid-qb",
+      timestamp: "2026-07-10T00:00:02Z",
+    };
+    // Nudge #1's fetch: response predates echo B (no rowB) and is held
+    // open until after echo B lands.
+    let resolveFirst!: (v: unknown) => void;
+    getMessagesPage.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveFirst = resolve;
+      }),
+    );
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 2,
+      role: "user",
+      content: "prompt A",
+      client_message_id: "cmid-qa",
+      thread_id: "cmid-qa",
+      timestamp: "2026-07-10T00:00:01Z",
+    } as never);
+    await new Promise((r) => setTimeout(r, 0));
+    // Echo B arrives while nudge #1 is fetching → queued, not dropped.
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 4,
+      role: "user",
+      content: "prompt B",
+      client_message_id: "cmid-qb",
+      thread_id: "cmid-qb",
+      timestamp: "2026-07-10T00:00:02Z",
+    } as never);
+    // Follow-up fetch sees the full post-B history.
+    getMessagesPage.mockResolvedValue({
+      messages: [anchorRow, rowA, rowB],
+      has_more: false,
+    });
+    resolveFirst({ messages: [anchorRow, rowA], has_more: false });
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    // Two forced loads: the in-flight one + the queued follow-up.
+    expect(getMessagesPage.mock.calls.length).toBe(2);
+    expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(false);
+    expect(
+      ThreadStore.getThreads(SESSION).map((t) => t.userMsg.text),
+    ).toEqual(["anchor", "prompt A", "prompt B"]);
+  });
+
   it("orders equal-timestamp roots by seq once every root carries one (codex rounds 5-6)", () => {
     ThreadStore.replayHistory(SESSION, [
       {
