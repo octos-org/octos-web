@@ -733,6 +733,50 @@ describe("ensureAuxBridge — sessionless auxiliary singleton", () => {
     expect(await p2).toBe(aux2.bridge);
   });
 
+  it("invalidates an IN-FLIGHT start when the token clears mid-handshake", async () => {
+    // codex web#268 r3 P1: logout while `bridge.start({})` is pending
+    // finds auxSlot null (nothing to stop). The stale start must NOT
+    // publish its old-token socket after the logout.
+    const aux = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux.bridge);
+    const pending = ensureAuxBridge();
+
+    window.dispatchEvent(new CustomEvent("crew:token_cleared"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    aux.resolveStart(); // handshake resolves AFTER the token clear
+    await expect(pending).rejects.toThrow("superseded by token clear");
+    expect(aux.stopCalls).toBe(1);
+
+    // Next caller (post-relogin) gets a FRESH bridge.
+    const aux2 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux2.bridge);
+    const p2 = ensureAuxBridge();
+    aux2.resolveStart();
+    expect(await p2).toBe(aux2.bridge);
+  });
+
+  it("replaces a singleton the REMOTE closed normally (code 1000)", async () => {
+    // codex web#268 r3 P2: a normal remote close parks the bridge at
+    // `closed` with no reconnect — isTerminal() reports it and the
+    // next ensure() must start fresh instead of returning the corpse.
+    const aux1 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux1.bridge);
+    const p1 = ensureAuxBridge();
+    aux1.resolveStart();
+    await p1;
+
+    aux1.setTerminal(); // mock stand-in for state === "closed"
+
+    const aux2 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux2.bridge);
+    const p2 = ensureAuxBridge();
+    aux2.resolveStart();
+    expect(await p2).toBe(aux2.bridge);
+    expect(aux1.stopCalls).toBe(1);
+  });
+
   it("surfaces a start failure and does not cache the dead bridge", async () => {
     const aux1 = makeDeferredBridge();
     createBridgeSpy.mockReturnValueOnce(aux1.bridge);

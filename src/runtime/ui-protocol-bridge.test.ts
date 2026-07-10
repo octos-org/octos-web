@@ -3062,6 +3062,35 @@ describe("sessionless (auxiliary) mode", () => {
     ).toThrow();
   });
 
+  it("reports terminal after a NORMAL remote close (code 1000)", async () => {
+    // codex web#268 r3 P2: the server closing an auxiliary socket with
+    // 1000 parks the bridge at `closed` (no reconnect, callMethod
+    // rejects) — isTerminal() must say so, or the settings singleton
+    // returns the corpse forever.
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const startPromise = bridge.start({});
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await startPromise;
+    expect(bridge.isTerminal()).toBe(false);
+
+    ws.triggerClose(1000, "server going away");
+    expect(bridge.isTerminal()).toBe(true);
+
+    // A RECOVERABLE drop is NOT terminal (r2 P2 contract preserved).
+    const bridge2 = createUiProtocolBridge(makeBridgeOpts());
+    const start2 = bridge2.start({});
+    await Promise.resolve();
+    const ws2 = lastInstance();
+    ws2.triggerOpen();
+    await start2;
+    ws2.triggerClose(1006, "abnormal");
+    expect(bridge2.isTerminal()).toBe(false);
+    await bridge2.stop();
+    await bridge.stop();
+  });
+
   it("still throws on a non-string sessionId", async () => {
     const bridge = createUiProtocolBridge(makeBridgeOpts());
     await expect(

@@ -433,12 +433,13 @@ export interface UiProtocolBridge {
   stop(): Promise<void>;
 
   /** True when this bridge will never serve another RPC: it was
-   *  `stop()`ed, or it abandoned reconnecting (attempt budget spent, or
-   *  latched on auth rejection). A transient `"error"` state during a
-   *  RECOVERABLE drop is NOT terminal — the bridge queues sends and
-   *  flushes them after the reconnect (codex web#268 r2 P2: the aux
-   *  singleton must not be replaced mid-recovery, which would reject
-   *  the queued RPCs). */
+   *  `stop()`ed, it abandoned reconnecting (attempt budget spent, or
+   *  latched on auth rejection), or the remote closed it normally
+   *  (code 1000 — parked at `closed` with no reconnect, codex web#268
+   *  r3 P2). A transient `"error"` state during a RECOVERABLE drop is
+   *  NOT terminal — the bridge queues sends and flushes them after the
+   *  reconnect (codex web#268 r2 P2: the aux singleton must not be
+   *  replaced mid-recovery, which would reject the queued RPCs). */
   isTerminal(): boolean;
 
   sendTurn(
@@ -2244,7 +2245,13 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   }
 
   isTerminal(): boolean {
-    return this.stopped || this.reconnectAbandoned;
+    // `closed` covers BOTH `stop()` and a NORMAL remote closure (code
+    // 1000): `onWsClose` parks the bridge there without scheduling a
+    // reconnect and every later `callMethod` rejects, so a consumer
+    // holding it must replace it (codex web#268 r3 P2). Recoverable
+    // drops never pass through `closed` — they go `error` →
+    // `reconnecting`.
+    return this.stopped || this.reconnectAbandoned || this.state === "closed";
   }
 
   async stop(): Promise<void> {

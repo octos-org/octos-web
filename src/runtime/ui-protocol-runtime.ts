@@ -420,6 +420,13 @@ interface AuxBridgeSlot {
 
 let auxSlot: AuxBridgeSlot | null = null;
 let auxStartInFlight: Promise<UiProtocolBridge> | null = null;
+/** Monotonic teardown counter (codex web#268 r3 P1): `stopAuxBridge`
+ *  bumps it, and an in-flight `ensureAuxBridge` start compares its
+ *  captured value before publishing. Without this, a token clear that
+ *  lands while `bridge.start({})` is still awaiting finds `auxSlot`
+ *  null (nothing to stop) — and the old-token socket would publish
+ *  itself AFTER the logout, surviving into the next account's session. */
+let auxGeneration = 0;
 
 /**
  * Return a bridge suitable for auxiliary (non-session-scoped) RPCs.
@@ -445,6 +452,10 @@ export async function ensureAuxBridge(): Promise<UiProtocolBridge> {
     if (auxSlot) {
       await stopAuxBridge();
     }
+    // Captured AFTER the internal stop above (which bumps it) so only
+    // an EXTERNAL teardown — token clear / auth expiry racing this
+    // start — invalidates us (codex web#268 r3 P1).
+    const myGeneration = auxGeneration;
     const bridge = createUiProtocolBridge();
     let connectionState: ConnectionState = "connecting";
     const unsubscribeState = bridge.onConnectionStateChange((s) => {
@@ -465,6 +476,21 @@ export async function ensureAuxBridge(): Promise<UiProtocolBridge> {
       }
       throw err;
     }
+    if (myGeneration !== auxGeneration) {
+      // A token clear landed while the handshake was in flight: this
+      // socket authenticated with the CLEARED token and must not
+      // publish. Stop it and reject so the caller retries under the
+      // live credentials.
+      unsubscribeState();
+      try {
+        await bridge.stop();
+      } catch {
+        // best-effort
+      }
+      throw new Error(
+        "ui-protocol-runtime: auxiliary bridge start superseded by token clear",
+      );
+    }
     auxSlot = { bridge, connectionState, unsubscribeState };
     return bridge;
   })();
@@ -475,8 +501,14 @@ export async function ensureAuxBridge(): Promise<UiProtocolBridge> {
   }
 }
 
-/** Stop and clear the sessionless auxiliary bridge (auth expiry, tests). */
+/** Stop and clear the sessionless auxiliary bridge (auth expiry,
+ *  logout, tests). Also invalidates any IN-FLIGHT `ensureAuxBridge`
+ *  start (codex web#268 r3 P1) — the pending promise rejects instead
+ *  of publishing a socket authenticated with the cleared token — and
+ *  drops the shared in-flight handle so the next caller starts fresh. */
 export async function stopAuxBridge(): Promise<void> {
+  auxGeneration++;
+  auxStartInFlight = null;
   const slot = auxSlot;
   if (!slot) return;
   auxSlot = null;
@@ -590,6 +622,7 @@ export function __resetUiProtocolRuntimeForTest(): void {
   }
   auxSlot = null;
   auxStartInFlight = null;
+  auxGeneration = 0;
 }
 
 /** Test-only injection so unit tests can drive a mock bridge into the
