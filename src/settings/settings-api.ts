@@ -1041,6 +1041,49 @@ export async function disableOminixModel(modelId: string): Promise<AdminActionRe
   });
 }
 
+// ── Memory panel (read-only viewer: /api/my/memory*) ──
+
+export interface MemoryDailyNote {
+  date: string;
+  content: string;
+}
+
+export interface MemoryEntitySummary {
+  name: string;
+  summary: string;
+}
+
+export interface MemoryOverview {
+  ok: boolean;
+  long_term: string;
+  long_term_updated_at?: string;
+  today: string;
+  recent: MemoryDailyNote[];
+  entities: MemoryEntitySummary[];
+  /** Bank enumeration stopped at the server cap — list is partial. */
+  entities_truncated?: boolean;
+  staging_notes: number;
+  /** Staging scan stopped early — `staging_notes` is a lower bound. */
+  staging_truncated?: boolean;
+  refresh_enabled: boolean;
+}
+
+export interface MemoryEntityPage {
+  ok: boolean;
+  name: string;
+  content: string;
+}
+
+export async function getMyMemory(): Promise<MemoryOverview> {
+  return await request<MemoryOverview>("/api/my/memory");
+}
+
+export async function getMyMemoryEntity(name: string): Promise<MemoryEntityPage> {
+  return await request<MemoryEntityPage>(
+    `/api/my/memory/entities/${encodeURIComponent(name)}`,
+  );
+}
+
 // ── Cron panel (/api/my/cron*) ──
 
 export type CronScheduleWire =
