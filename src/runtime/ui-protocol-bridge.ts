@@ -419,9 +419,14 @@ export interface UiProtocolBridge {
    *  broadcast to the negotiated topic (separate server PR), this is
    *  best-effort defense — only events whose Rust struct includes the
    *  `topic` field carry it on the wire (e.g. `TurnStartedEvent`); other
-   *  envelopes pass through unfiltered. */
+   *  envelopes pass through unfiltered.
+   *
+   *  Omit `sessionId` for a SESSIONLESS (auxiliary) bridge: no
+   *  `session/open` handshake, no event scope — the connection serves
+   *  auth-bound auxiliary RPCs only (settings memory/cron panels,
+   *  web#268 r1 P1); session-bound methods throw. */
   start(opts: {
-    sessionId: string;
+    sessionId?: string;
     profileId?: string;
     topic?: string;
   }): Promise<void>;
@@ -2195,15 +2200,19 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   // ----- public API --------------------------------------------------------
 
   async start(opts: {
-    sessionId: string;
+    /** Omit for a SESSIONLESS (auxiliary) bridge: no `session/open`
+     *  handshake, no event scope — the connection serves auth-bound
+     *  auxiliary RPCs only (settings memory/cron panels, web#268 r1
+     *  P1). Session-bound methods (`sendTurn`, hydrate, …) throw. */
+    sessionId?: string;
     profileId?: string;
     topic?: string;
   }): Promise<void> {
-    if (!opts || !isString(opts.sessionId)) {
-      throw new Error("ui-protocol-bridge: start requires sessionId");
+    if (!opts || (opts.sessionId !== undefined && !isString(opts.sessionId))) {
+      throw new Error("ui-protocol-bridge: sessionId must be a string when provided");
     }
     this.stopped = false;
-    this.sessionId = opts.sessionId;
+    this.sessionId = opts.sessionId ?? null;
     this.profileId = opts.profileId ?? this.cfg.getProfileId();
     // Codex BLOCK E: stash the topic scope for the client-side
     // envelope-mismatch drop. Empty string => no scope (root).
@@ -2793,6 +2802,24 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private async onWsOpen(): Promise<void> {
     if (this.stopped) return;
     this.lastInboundAt = this.cfg.now();
+    if (!this.sessionId) {
+      // Sessionless (auxiliary) mode: there is no session to open — the
+      // socket itself is the lifecycle gate. Auxiliary methods bind to
+      // the connection identity from the upgrade (`?token=`), not to a
+      // session scope, so the bridge goes `connected` on open and skips
+      // the `session/open` handshake, cursor seeding, `opened` payload
+      // emit, and the reopen-hydrate hook (nothing to replay — aux RPCs
+      // are request/response only).
+      this.reconnectAttempts = 0;
+      this.reconnectAbandoned = false;
+      this.latchReason = null;
+      this.visibilityReconnectInFlight = false;
+      this.hasEverOpened = true;
+      this.setState("connected");
+      this.startKeepalive();
+      this.flushSendQueue();
+      return;
+    }
     try {
       const params: Record<string, unknown> = {
         session_id: this.requireSessionId(),

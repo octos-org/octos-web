@@ -35,6 +35,8 @@ vi.mock("./ui-protocol-bridge", async () => {
 
 import {
   __resetUiProtocolRuntimeForTest,
+  __setActiveBridgeForTest,
+  ensureAuxBridge,
   getActiveBridge,
   startBridgeForSession,
   stopActiveBridge,
@@ -54,6 +56,9 @@ interface DeferredBridge {
    *  fire `setConnected()` after `await startBridgeForSession(...)`
    *  for `getActiveBridge` to return the bridge. */
   setConnected: () => void;
+  /** Drive the connection-state subscriber to an arbitrary state (the
+   *  aux-singleton tests use `"error"` to exercise replacement). */
+  setState: (state: ConnectionState) => void;
   startCalls: number;
   stopCalls: number;
 }
@@ -135,6 +140,7 @@ function makeDeferredBridge(): DeferredBridge {
     resolveStart: () => resolveStart(),
     rejectStart: (err) => rejectStart(err),
     setConnected: () => stateHandler?.("connected"),
+    setState: (state: ConnectionState) => stateHandler?.(state),
     /** Simulate the bridge's post-reconnect `session/open` ack
      *  (reload-bug fix Yue 2026-05-15). The runtime layer subscribes via
      *  `onReopened` to re-fire `session/hydrate`. */
@@ -596,5 +602,95 @@ describe("autonomy snapshot resilience (codex #263 round 1 P2)", () => {
     expect(
       AutonomyStore.getAutonomyState("sess-snap").loops.map((l) => l.loop_id),
     ).toEqual(["l1"]);
+  });
+});
+
+describe("ensureAuxBridge — sessionless auxiliary singleton", () => {
+  it("prefers a connected chat-scoped bridge and starts nothing", async () => {
+    const chat = makeDeferredBridge();
+    __setActiveBridgeForTest("sess-1", chat.bridge);
+
+    const got = await ensureAuxBridge();
+
+    expect(got).toBe(chat.bridge);
+    expect(createBridgeSpy).not.toHaveBeenCalled();
+  });
+
+  it("starts ONE sessionless bridge and shares it across concurrent callers", async () => {
+    const aux = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux.bridge);
+
+    const p1 = ensureAuxBridge();
+    const p2 = ensureAuxBridge();
+    aux.resolveStart();
+    const [b1, b2] = await Promise.all([p1, p2]);
+
+    expect(b1).toBe(aux.bridge);
+    expect(b2).toBe(aux.bridge);
+    expect(createBridgeSpy).toHaveBeenCalledTimes(1);
+    expect(aux.startCalls).toBe(1);
+    // Sessionless: start carries NO sessionId.
+    expect(aux.bridge.start).toHaveBeenCalledWith({});
+    // Subsequent calls reuse the live singleton without a new start.
+    const b3 = await ensureAuxBridge();
+    expect(b3).toBe(aux.bridge);
+    expect(aux.startCalls).toBe(1);
+  });
+
+  it("replaces a singleton that reached a terminal state", async () => {
+    const aux1 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux1.bridge);
+    const p1 = ensureAuxBridge();
+    aux1.resolveStart();
+    await p1;
+
+    aux1.setState("error");
+
+    const aux2 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux2.bridge);
+    const p2 = ensureAuxBridge();
+    aux2.resolveStart();
+    const got = await p2;
+
+    expect(got).toBe(aux2.bridge);
+    expect(aux1.stopCalls).toBe(1);
+    expect(aux2.startCalls).toBe(1);
+  });
+
+  it("tears the singleton down on crew:auth_expired", async () => {
+    const aux = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux.bridge);
+    const p = ensureAuxBridge();
+    aux.resolveStart();
+    await p;
+
+    window.dispatchEvent(new CustomEvent("crew:auth_expired"));
+    // stopAuxBridge is async fire-and-forget off the event; drain it.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(aux.stopCalls).toBe(1);
+    // The next caller after re-login gets a FRESH bridge.
+    const aux2 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux2.bridge);
+    const p2 = ensureAuxBridge();
+    aux2.resolveStart();
+    expect(await p2).toBe(aux2.bridge);
+  });
+
+  it("surfaces a start failure and does not cache the dead bridge", async () => {
+    const aux1 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux1.bridge);
+    const p1 = ensureAuxBridge();
+    aux1.rejectStart(new Error("ws refused"));
+    await expect(p1).rejects.toThrow("ws refused");
+    expect(aux1.stopCalls).toBe(1);
+
+    // Retry path: a fresh call creates a fresh bridge.
+    const aux2 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux2.bridge);
+    const p2 = ensureAuxBridge();
+    aux2.resolveStart();
+    expect(await p2).toBe(aux2.bridge);
   });
 });

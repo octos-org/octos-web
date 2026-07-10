@@ -1,6 +1,6 @@
 import { request } from "@/api/client";
 import { BridgeRpcError, METHODS } from "@/runtime/ui-protocol-bridge";
-import { getAnyConnectedBridge } from "@/runtime/ui-protocol-runtime";
+import { ensureAuxBridge } from "@/runtime/ui-protocol-runtime";
 
 function stringFromUnknown(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -1046,18 +1046,19 @@ export async function disableOminixModel(modelId: string): Promise<AdminActionRe
 // ── Memory panel (read-only viewer: `memory/overview` + `memory/entity`) ──
 //
 // The memory + cron panels ride the ui-protocol WS bridge (octos PR
-// #1621) rather than the tokened REST surface. Unlike
-// `src/api/content.ts`'s wrapper, this helper deliberately does NOT
-// flatten `BridgeRpcError` into a plain `Error`: the typed `data`
-// payload (`data.detail`, `data.rest_status`) is the contract
-// `cronToggleRefusalReason` branches on for the gateway-owns-the-store
-// refusal, and flattening would reduce it to string matching.
+// #1621) rather than the tokened REST surface. The settings page
+// mounts OUTSIDE `OctosRuntimeProvider`, so there is no chat-scoped
+// bridge here — `ensureAuxBridge` reuses a connected chat bridge when
+// one exists and otherwise lazily starts the SESSIONLESS auxiliary
+// singleton (codex web#268 r1 P1). Unlike `src/api/content.ts`'s
+// wrapper, this helper deliberately does NOT flatten `BridgeRpcError`
+// into a plain `Error`: the typed `data` payload (`data.detail`,
+// `data.rest_status`) is the contract `cronToggleRefusalReason`
+// branches on for the gateway-owns-the-store refusal, and flattening
+// would reduce it to string matching.
 
 async function callAuxWs<T>(method: string, params: unknown): Promise<T> {
-  const bridge = getAnyConnectedBridge();
-  if (!bridge) {
-    throw new Error("ui-protocol-bridge: no connected bridge for " + method);
-  }
+  const bridge = await ensureAuxBridge();
   return await bridge.callMethod<T>(method, params);
 }
 

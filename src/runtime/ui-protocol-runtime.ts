@@ -401,6 +401,102 @@ export function getAnyConnectedBridge(): UiProtocolBridge | null {
   return active.bridge;
 }
 
+// ---- Sessionless auxiliary bridge (settings surface) ----
+
+/** The settings page mounts OUTSIDE `OctosRuntimeProvider`, so no
+ *  session-scoped bridge exists there — and navigating chat → settings
+ *  unmounts the provider, which stops the chat bridge (codex web#268 r1
+ *  P1). Auxiliary methods (`memory/overview`, `memory/entity`,
+ *  `cron/list`, `cron/toggle`) bind to connection identity only, so one
+ *  lazy SESSIONLESS bridge (no `session/open`, no event scope) serves
+ *  the whole page. Singleton by design: reused across tabs/visits,
+ *  replaced when it reaches a terminal state, torn down on
+ *  `crew:auth_expired` alongside the token. */
+interface AuxBridgeSlot {
+  bridge: UiProtocolBridge;
+  connectionState: ConnectionState;
+  unsubscribeState: () => void;
+}
+
+let auxSlot: AuxBridgeSlot | null = null;
+let auxStartInFlight: Promise<UiProtocolBridge> | null = null;
+
+/**
+ * Return a bridge suitable for auxiliary (non-session-scoped) RPCs.
+ * Prefers a connected chat-scoped bridge; otherwise starts (or reuses)
+ * the sessionless singleton. Concurrent callers share one start.
+ * A singleton in a terminal state (`closed`/`error`) is stopped and
+ * replaced so a "Reload" after re-login gets a live socket.
+ */
+export async function ensureAuxBridge(): Promise<UiProtocolBridge> {
+  const chat = getAnyConnectedBridge();
+  if (chat) return chat;
+  if (
+    auxSlot &&
+    auxSlot.connectionState !== "closed" &&
+    auxSlot.connectionState !== "error"
+  ) {
+    // `connecting` is fine: `callMethod` parks requests on the bridge's
+    // send queue and `flushSendQueue` drains it on `connected`.
+    return auxSlot.bridge;
+  }
+  if (auxStartInFlight) return auxStartInFlight;
+  auxStartInFlight = (async () => {
+    if (auxSlot) {
+      await stopAuxBridge();
+    }
+    const bridge = createUiProtocolBridge();
+    let connectionState: ConnectionState = "connecting";
+    const unsubscribeState = bridge.onConnectionStateChange((s) => {
+      if (auxSlot?.bridge === bridge) {
+        auxSlot.connectionState = s;
+      } else {
+        connectionState = s;
+      }
+    });
+    try {
+      await bridge.start({});
+    } catch (err) {
+      unsubscribeState();
+      try {
+        await bridge.stop();
+      } catch {
+        // best-effort
+      }
+      throw err;
+    }
+    auxSlot = { bridge, connectionState, unsubscribeState };
+    return bridge;
+  })();
+  try {
+    return await auxStartInFlight;
+  } finally {
+    auxStartInFlight = null;
+  }
+}
+
+/** Stop and clear the sessionless auxiliary bridge (auth expiry, tests). */
+export async function stopAuxBridge(): Promise<void> {
+  const slot = auxSlot;
+  if (!slot) return;
+  auxSlot = null;
+  slot.unsubscribeState();
+  try {
+    await slot.bridge.stop();
+  } catch {
+    // best-effort
+  }
+}
+
+// A dead token latches the aux bridge into a reconnect loop that can
+// never succeed — tear it down with the token. The next `/settings`
+// visit after re-login starts a fresh one.
+if (typeof window !== "undefined") {
+  window.addEventListener("crew:auth_expired", () => {
+    void stopAuxBridge();
+  });
+}
+
 /**
  * Force-restart a bridge for the given scope. Unlike
  * `startBridgeForSession` (which returns the existing same-scope
@@ -475,6 +571,15 @@ export async function stopActiveBridgeIfScope(
 export function __resetUiProtocolRuntimeForTest(): void {
   active = null;
   generation = 0;
+  if (auxSlot) {
+    auxSlot.unsubscribeState();
+    // Best-effort async stop; tests inject mocks whose `stop()` resolves
+    // synchronously, and a leaked real socket would be closed by jsdom
+    // teardown anyway.
+    void auxSlot.bridge.stop().catch(() => {});
+  }
+  auxSlot = null;
+  auxStartInFlight = null;
 }
 
 /** Test-only injection so unit tests can drive a mock bridge into the
