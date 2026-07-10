@@ -517,7 +517,7 @@ export interface SkillActionJob {
   updated_at: string;
 }
 
-export interface SkillActionJobUpdatedEvent extends SkillActionJob {}
+export type SkillActionJobUpdatedEvent = SkillActionJob;
 
 export interface TaskUpdatedEvent {
   session_id: string;

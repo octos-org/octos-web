@@ -2,13 +2,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const callMethodMock = vi.hoisted(() => vi.fn());
 const bridgeMock = vi.hoisted(() => ({ callMethod: callMethodMock }));
+const getActiveBridgeMock = vi.hoisted(() => vi.fn(() => bridgeMock));
 
 vi.mock("@/runtime/ui-protocol-runtime", () => ({
-  getAnyConnectedBridge: () => bridgeMock,
+  getActiveBridge: getActiveBridgeMock,
 }));
 
 import {
   invokeSkillAction,
+  listSkillActions,
   listSkillActionJobs,
   readSkillActionJob,
   type SkillActionJob,
@@ -31,6 +33,8 @@ const JOB: SkillActionJob = {
 
 beforeEach(() => {
   callMethodMock.mockReset();
+  getActiveBridgeMock.mockClear();
+  getActiveBridgeMock.mockReturnValue(bridgeMock);
 });
 
 describe("skill action API", () => {
@@ -53,6 +57,31 @@ describe("skill action API", () => {
     });
     expect(result.jobs).toEqual([JOB]);
     expect(result.queued).toBe(1);
+    expect(getActiveBridgeMock).toHaveBeenCalledWith("web-abc");
+  });
+
+  it("lists available actions through the requested session bridge", async () => {
+    callMethodMock.mockResolvedValueOnce({
+      actions: [{ id: "quiz.generate", label: "Quiz", available: true }],
+    });
+
+    const actions = await listSkillActions("web-abc", "studio.skills");
+
+    expect(getActiveBridgeMock).toHaveBeenCalledWith("web-abc");
+    expect(callMethodMock).toHaveBeenCalledWith(METHODS.SKILL_ACTION_LIST, {
+      session_id: "web-abc",
+      surface: "studio.skills",
+    });
+    expect(actions[0].id).toBe("quiz.generate");
+  });
+
+  it("fails closed when another session owns the active bridge", async () => {
+    getActiveBridgeMock.mockReturnValueOnce(null);
+
+    await expect(listSkillActionJobs("web-other")).rejects.toThrow(
+      "no connected bridge for skill/action/job/list",
+    );
+    expect(callMethodMock).not.toHaveBeenCalled();
   });
 
   it("lists skill action jobs for a session", async () => {

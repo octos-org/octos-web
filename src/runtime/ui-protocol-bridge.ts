@@ -324,6 +324,7 @@ export const UI_PROTOCOL_FEATURES = [
   "state.session_hydrate.v1",
   // UPCR-2026-027: persisted background jobs for manifest-declared
   // skill actions such as notebook source import.
+  "skill.actions.v1",
   "skill.action_jobs.v1",
   // UPCR-2026-026 (octos #1558) + UPCR-2026-022: the server filters the
   // context lifecycle family (context/compaction_started,

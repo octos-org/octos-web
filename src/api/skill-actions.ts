@@ -4,7 +4,7 @@ import {
   BridgeTimeoutError,
   METHODS,
 } from "@/runtime/ui-protocol-bridge";
-import { getAnyConnectedBridge } from "@/runtime/ui-protocol-runtime";
+import { getActiveBridge } from "@/runtime/ui-protocol-runtime";
 import type { SkillActionJob } from "@/runtime/ui-protocol-types";
 
 export type { SkillActionJob, SkillActionJobStatus } from "@/runtime/ui-protocol-types";
@@ -27,6 +27,20 @@ export interface SkillActionInvokeResponse {
   jobs?: SkillActionJob[];
 }
 
+export interface SkillActionDefinition {
+  id: string;
+  skill_id: string;
+  label: string;
+  description?: string;
+  tags: string[];
+  surfaces: string[];
+  input_schema: Record<string, unknown>;
+  ui_schema?: Record<string, unknown>;
+  execution: "sync" | "background";
+  available: boolean;
+  unavailable_reason?: string;
+}
+
 export interface SkillActionJobListOptions {
   batchId?: string;
   actionId?: string;
@@ -40,8 +54,12 @@ function translateBridgeError(err: unknown): Error {
   return new Error(String(err));
 }
 
-async function callSkillActionWs<T>(method: string, params: unknown): Promise<T> {
-  const bridge = getAnyConnectedBridge();
+async function callSkillActionWs<T>(
+  sessionId: string,
+  method: string,
+  params: unknown,
+): Promise<T> {
+  const bridge = getActiveBridge(sessionId);
   if (!bridge) {
     throw new Error("ui-protocol-bridge: no connected bridge for " + method);
   }
@@ -57,11 +75,25 @@ export async function invokeSkillAction(
   actionId: string,
   args: Record<string, unknown>,
 ): Promise<SkillActionInvokeResponse> {
-  return callSkillActionWs<SkillActionInvokeResponse>(METHODS.SKILL_ACTION_INVOKE, {
+  return callSkillActionWs<SkillActionInvokeResponse>(sessionId, METHODS.SKILL_ACTION_INVOKE, {
     session_id: sessionId,
     action_id: actionId,
     arguments: args,
   });
+}
+
+export async function listSkillActions(
+  sessionId: string,
+  surface?: string,
+): Promise<SkillActionDefinition[]> {
+  const params: Record<string, unknown> = { session_id: sessionId };
+  if (surface) params.surface = surface;
+  const response = await callSkillActionWs<{ actions?: SkillActionDefinition[] }>(
+    sessionId,
+    METHODS.SKILL_ACTION_LIST,
+    params,
+  );
+  return response.actions ?? [];
 }
 
 export async function listSkillActionJobs(
@@ -77,6 +109,7 @@ export async function listSkillActionJobs(
   }
 
   const response = await callSkillActionWs<{ jobs?: SkillActionJob[] }>(
+    sessionId,
     METHODS.SKILL_ACTION_JOB_LIST,
     params,
   );
@@ -88,6 +121,7 @@ export async function readSkillActionJob(
   jobId: string,
 ): Promise<SkillActionJob> {
   const response = await callSkillActionWs<{ job: SkillActionJob }>(
+    sessionId,
     METHODS.SKILL_ACTION_JOB_READ,
     { session_id: sessionId, job_id: jobId },
   );
