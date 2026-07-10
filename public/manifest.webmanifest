@@ -2,22 +2,22 @@
   "name": "Octos",
   "short_name": "Octos",
   "description": "Octos — your always-on AI agent: chat, voice, slides, sites, and background automation.",
-  "id": "/",
-  "start_url": "/",
-  "scope": "/",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#1a1714",
   "theme_color": "#1a1714",
   "icons": [
     {
-      "src": "/images/octos-logo-color.svg",
+      "src": "images/octos-logo-color.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any"
     },
     {
-      "src": "/images/octos-logo-color.svg",
+      "src": "images/octos-logo-color.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "maskable"
