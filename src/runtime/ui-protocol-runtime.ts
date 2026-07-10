@@ -401,6 +401,163 @@ export function getAnyConnectedBridge(): UiProtocolBridge | null {
   return active.bridge;
 }
 
+// ---- Sessionless auxiliary bridge (settings surface) ----
+
+/** The settings page mounts OUTSIDE `OctosRuntimeProvider`, so no
+ *  session-scoped bridge exists there — and navigating chat → settings
+ *  unmounts the provider, which stops the chat bridge (codex web#268 r1
+ *  P1). Auxiliary methods (`memory/overview`, `memory/entity`,
+ *  `cron/list`, `cron/toggle`) bind to connection identity only, so one
+ *  lazy SESSIONLESS bridge (no `session/open`, no event scope) serves
+ *  the whole page. Singleton by design: reused across tabs/visits,
+ *  replaced when it reaches a terminal state, torn down on
+ *  `crew:auth_expired` alongside the token. */
+interface AuxBridgeSlot {
+  bridge: UiProtocolBridge;
+  connectionState: ConnectionState;
+  unsubscribeState: () => void;
+}
+
+let auxSlot: AuxBridgeSlot | null = null;
+let auxStartInFlight: Promise<UiProtocolBridge> | null = null;
+/** Monotonic teardown counter (codex web#268 r3 P1): `stopAuxBridge`
+ *  bumps it, and an in-flight `ensureAuxBridge` start compares its
+ *  captured value before publishing. Without this, a token clear that
+ *  lands while `bridge.start({})` is still awaiting finds `auxSlot`
+ *  null (nothing to stop) — and the old-token socket would publish
+ *  itself AFTER the logout, surviving into the next account's session. */
+let auxGeneration = 0;
+
+/**
+ * Return a bridge suitable for auxiliary (non-session-scoped) RPCs.
+ * Prefers a connected chat-scoped bridge; otherwise starts (or reuses)
+ * the sessionless singleton. Concurrent callers share one start.
+ * A singleton in a terminal state (`closed`/`error`) is stopped and
+ * replaced so a "Reload" after re-login gets a live socket.
+ */
+export async function ensureAuxBridge(): Promise<UiProtocolBridge> {
+  const chat = getAnyConnectedBridge();
+  if (chat) return chat;
+  if (auxSlot && !auxSlot.bridge.isTerminal()) {
+    // Reuse across `connecting`, transient `error`, and `reconnecting`:
+    // `callMethod` parks requests on the bridge's send queue and
+    // `flushSendQueue` drains it after (re)connect. Replacing on a
+    // transient `error` would reject those queued RPCs mid-recovery
+    // (codex web#268 r2 P2) — only a TERMINAL bridge (stopped, or
+    // reconnect abandoned / auth-latched) is torn down and replaced.
+    return auxSlot.bridge;
+  }
+  if (auxStartInFlight) return auxStartInFlight;
+  const myStart = (async () => {
+    // Captured BEFORE any await (codex web#268 r4 P1): the internal
+    // replacement stop below uses `stopAuxSlotOnly` (no generation
+    // bump), so ANY bump observed later is an external teardown —
+    // including one that fires while that stop is yielding. The r3
+    // version captured after the stop and absorbed such a clear as
+    // its baseline, publishing a bridge opened post-logout.
+    const myGeneration = auxGeneration;
+    if (auxSlot) {
+      await stopAuxSlotOnly();
+    }
+    const bridge = createUiProtocolBridge();
+    let connectionState: ConnectionState = "connecting";
+    const unsubscribeState = bridge.onConnectionStateChange((s) => {
+      if (auxSlot?.bridge === bridge) {
+        auxSlot.connectionState = s;
+      } else {
+        connectionState = s;
+      }
+    });
+    try {
+      await bridge.start({});
+    } catch (err) {
+      unsubscribeState();
+      try {
+        await bridge.stop();
+      } catch {
+        // best-effort
+      }
+      throw err;
+    }
+    if (myGeneration !== auxGeneration) {
+      // A token clear landed while the handshake was in flight: this
+      // socket authenticated with the CLEARED token and must not
+      // publish. Stop it and reject so the caller retries under the
+      // live credentials.
+      unsubscribeState();
+      try {
+        await bridge.stop();
+      } catch {
+        // best-effort
+      }
+      throw new Error(
+        "ui-protocol-runtime: auxiliary bridge start superseded by token clear",
+      );
+    }
+    auxSlot = { bridge, connectionState, unsubscribeState };
+    return bridge;
+  })();
+  auxStartInFlight = myStart;
+  try {
+    return await myStart;
+  } finally {
+    // Only the OWNER clears the shared handle (codex web#268 r4 P2):
+    // when a token clear invalidated this start and a newer start B
+    // already took the slot, an unconditional clear here would erase
+    // B's handle and let a third caller race a bridge C against it.
+    if (auxStartInFlight === myStart) {
+      auxStartInFlight = null;
+    }
+  }
+}
+
+/** Stop and detach the CURRENT aux slot without touching the teardown
+ *  generation or the in-flight handle. Internal replacement path only —
+ *  external teardown (logout/auth-expiry) goes through
+ *  [`stopAuxBridge`], whose generation bump is exactly what
+ *  `ensureAuxBridge` uses to detect it. */
+async function stopAuxSlotOnly(): Promise<void> {
+  const slot = auxSlot;
+  if (!slot) return;
+  auxSlot = null;
+  slot.unsubscribeState();
+  try {
+    await slot.bridge.stop();
+  } catch {
+    // best-effort
+  }
+}
+
+/** Stop and clear the sessionless auxiliary bridge (auth expiry,
+ *  logout, tests). Also invalidates any IN-FLIGHT `ensureAuxBridge`
+ *  start (codex web#268 r3 P1) — the pending promise rejects instead
+ *  of publishing a socket authenticated with the cleared token — and
+ *  drops the shared in-flight handle so the next caller starts fresh. */
+export async function stopAuxBridge(): Promise<void> {
+  auxGeneration++;
+  auxStartInFlight = null;
+  await stopAuxSlotOnly();
+}
+
+// The aux bridge is identity-bound (authenticated at the WS upgrade),
+// so it must not outlive the token that authenticated it:
+//  - `crew:auth_expired` — a dead token latches the bridge into a
+//    reconnect loop that can never succeed.
+//  - `crew:token_cleared` — an ORDINARY logout never fires
+//    `auth_expired` (codex web#268 r2 P1); without this, a
+//    logout → login as another account would reuse the socket still
+//    authenticated as the PREVIOUS user for memory/cron reads and
+//    toggles.
+// The next `/settings` visit after re-login starts a fresh one.
+if (typeof window !== "undefined") {
+  window.addEventListener("crew:auth_expired", () => {
+    void stopAuxBridge();
+  });
+  window.addEventListener("crew:token_cleared", () => {
+    void stopAuxBridge();
+  });
+}
+
 /**
  * Force-restart a bridge for the given scope. Unlike
  * `startBridgeForSession` (which returns the existing same-scope
@@ -475,6 +632,16 @@ export async function stopActiveBridgeIfScope(
 export function __resetUiProtocolRuntimeForTest(): void {
   active = null;
   generation = 0;
+  if (auxSlot) {
+    auxSlot.unsubscribeState();
+    // Best-effort async stop; tests inject mocks whose `stop()` resolves
+    // synchronously, and a leaked real socket would be closed by jsdom
+    // teardown anyway.
+    void auxSlot.bridge.stop().catch(() => {});
+  }
+  auxSlot = null;
+  auxStartInFlight = null;
+  auxGeneration = 0;
 }
 
 /** Test-only injection so unit tests can drive a mock bridge into the

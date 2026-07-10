@@ -32,7 +32,17 @@ function formatUpdatedAt(iso: string | undefined): string | null {
 }
 
 /** One collapsible daily-note row (recent notes default collapsed). */
-function DailyNoteRow({ date, content }: { date: string; content: string }) {
+function DailyNoteRow({
+  date,
+  content,
+  truncated,
+  totalBytes,
+}: {
+  date: string;
+  content: string;
+  truncated?: boolean;
+  totalBytes?: number;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <div className="rounded-lg border border-border/60">
@@ -48,16 +58,56 @@ function DailyNoteRow({ date, content }: { date: string; content: string }) {
       {open ? (
         <div className="border-t border-border/60 px-3 py-2">
           <MarkdownContent text={content} className="text-sm" />
+          <TruncationNotice
+            truncated={truncated}
+            totalBytes={totalBytes}
+            shownBytes={utf8Len(content)}
+          />
         </div>
       ) : null}
     </div>
   );
 }
 
+/** `*_total_bytes` is a UTF-8 byte count from the server; JS
+ *  `string.length` counts UTF-16 code units — for CJK/emoji content the
+ *  two diverge ~3× (codex web#268 r4 P2). Measure shown prefixes the
+ *  same way the server measures totals. */
+function utf8Len(s: string): number {
+  return new TextEncoder().encode(s).length;
+}
+
+/** Honest-cap notice (octos #1621 codex r1): the server declares when a
+ *  document field was capped to fit the WS frame; surface it instead of
+ *  letting a silently shorter document masquerade as complete. */
+function TruncationNotice({
+  truncated,
+  totalBytes,
+  shownBytes,
+}: {
+  truncated?: boolean;
+  totalBytes?: number;
+  shownBytes: number;
+}) {
+  if (!truncated) return null;
+  const fmt = (n: number) => `${Math.max(1, Math.round(n / 1024))} KB`;
+  return (
+    <p className="mt-2 text-xs text-muted" data-testid="memory-truncation-notice">
+      Showing the first {fmt(shownBytes)}
+      {typeof totalBytes === "number" ? ` of ${fmt(totalBytes)}` : ""} — large
+      documents are capped in this panel.
+    </p>
+  );
+}
+
 /** One entity row; the full page is fetched lazily on expand. */
 function EntityRow({ name, summary }: { name: string; summary: string }) {
   const [open, setOpen] = useState(false);
-  const [page, setPage] = useState<string | null>(null);
+  const [page, setPage] = useState<{
+    content: string;
+    truncated?: boolean;
+    totalBytes?: number;
+  } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -69,7 +119,11 @@ function EntityRow({ name, summary }: { name: string; summary: string }) {
     setError(null);
     try {
       const resp = await getMyMemoryEntity(name);
-      setPage(resp.content);
+      setPage({
+        content: resp.content,
+        truncated: resp.content_truncated,
+        totalBytes: resp.content_total_bytes,
+      });
     } catch (err) {
       setError(formatSettingsError(err, "Failed to load entity page."));
     } finally {
@@ -104,7 +158,14 @@ function EntityRow({ name, summary }: { name: string; summary: string }) {
           ) : error ? (
             <p className="py-2 text-sm text-red-400">{error}</p>
           ) : (
-            <MarkdownContent text={page ?? ""} className="text-sm" />
+            <>
+              <MarkdownContent text={page?.content ?? ""} className="text-sm" />
+              <TruncationNotice
+                truncated={page?.truncated}
+                totalBytes={page?.totalBytes}
+                shownBytes={page ? utf8Len(page.content) : 0}
+              />
+            </>
           )}
         </div>
       ) : null}
@@ -246,6 +307,11 @@ export function MemoryTab() {
             ) : null}
           </div>
           <MarkdownContent text={overview.long_term} className="text-sm" />
+          <TruncationNotice
+            truncated={overview.long_term_truncated}
+            totalBytes={overview.long_term_total_bytes}
+            shownBytes={utf8Len(overview.long_term)}
+          />
         </section>
       ) : null}
 
@@ -260,12 +326,23 @@ export function MemoryTab() {
             <div className="mb-3">
               <p className="mb-1 text-xs font-medium text-muted">Today</p>
               <MarkdownContent text={overview.today} className="text-sm" />
+              <TruncationNotice
+                truncated={overview.today_truncated}
+                totalBytes={overview.today_total_bytes}
+                shownBytes={utf8Len(overview.today)}
+              />
             </div>
           ) : null}
           {overview.recent.length > 0 ? (
             <div className="space-y-2">
               {overview.recent.map((note) => (
-                <DailyNoteRow key={note.date} date={note.date} content={note.content} />
+                <DailyNoteRow
+                  key={note.date}
+                  date={note.date}
+                  content={note.content}
+                  truncated={note.content_truncated}
+                  totalBytes={note.content_total_bytes}
+                />
               ))}
             </div>
           ) : null}

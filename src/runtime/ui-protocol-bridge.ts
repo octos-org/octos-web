@@ -184,6 +184,12 @@ export const METHODS = {
   CONTENT_LIST: "content/list",
   CONTENT_DELETE: "content/delete",
   CONTENT_BULK_DELETE: "content/bulk_delete",
+  // Memory/cron settings panels (octos PR #1621): WS wrappers over the
+  // `/api/my/memory*` + `/api/my/cron*` REST panel handlers.
+  MEMORY_OVERVIEW: "memory/overview",
+  MEMORY_ENTITY: "memory/entity",
+  CRON_LIST: "cron/list",
+  CRON_TOGGLE: "cron/toggle",
   // server → client
   // Bridge hygiene (parity audit P3): `user_question/requested` is a
   // NOTIFICATION the server pushes; it was mislisted in the
@@ -413,13 +419,28 @@ export interface UiProtocolBridge {
    *  broadcast to the negotiated topic (separate server PR), this is
    *  best-effort defense — only events whose Rust struct includes the
    *  `topic` field carry it on the wire (e.g. `TurnStartedEvent`); other
-   *  envelopes pass through unfiltered. */
+   *  envelopes pass through unfiltered.
+   *
+   *  Omit `sessionId` for a SESSIONLESS (auxiliary) bridge: no
+   *  `session/open` handshake, no event scope — the connection serves
+   *  auth-bound auxiliary RPCs only (settings memory/cron panels,
+   *  web#268 r1 P1); session-bound methods throw. */
   start(opts: {
-    sessionId: string;
+    sessionId?: string;
     profileId?: string;
     topic?: string;
   }): Promise<void>;
   stop(): Promise<void>;
+
+  /** True when this bridge will never serve another RPC: it was
+   *  `stop()`ed, it abandoned reconnecting (attempt budget spent, or
+   *  latched on auth rejection), or the remote closed it normally
+   *  (code 1000 — parked at `closed` with no reconnect, codex web#268
+   *  r3 P2). A transient `"error"` state during a RECOVERABLE drop is
+   *  NOT terminal — the bridge queues sends and flushes them after the
+   *  reconnect (codex web#268 r2 P2: the aux singleton must not be
+   *  replaced mid-recovery, which would reject the queued RPCs). */
+  isTerminal(): boolean;
 
   sendTurn(
     turn_id: string,
@@ -2189,15 +2210,19 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   // ----- public API --------------------------------------------------------
 
   async start(opts: {
-    sessionId: string;
+    /** Omit for a SESSIONLESS (auxiliary) bridge: no `session/open`
+     *  handshake, no event scope — the connection serves auth-bound
+     *  auxiliary RPCs only (settings memory/cron panels, web#268 r1
+     *  P1). Session-bound methods (`sendTurn`, hydrate, …) throw. */
+    sessionId?: string;
     profileId?: string;
     topic?: string;
   }): Promise<void> {
-    if (!opts || !isString(opts.sessionId)) {
-      throw new Error("ui-protocol-bridge: start requires sessionId");
+    if (!opts || (opts.sessionId !== undefined && !isString(opts.sessionId))) {
+      throw new Error("ui-protocol-bridge: sessionId must be a string when provided");
     }
     this.stopped = false;
-    this.sessionId = opts.sessionId;
+    this.sessionId = opts.sessionId ?? null;
     this.profileId = opts.profileId ?? this.cfg.getProfileId();
     // Codex BLOCK E: stash the topic scope for the client-side
     // envelope-mismatch drop. Empty string => no scope (root).
@@ -2217,6 +2242,16 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.lastCursor = null;
     this.installVisibilityListener();
     await this.openSocket();
+  }
+
+  isTerminal(): boolean {
+    // `closed` covers BOTH `stop()` and a NORMAL remote closure (code
+    // 1000): `onWsClose` parks the bridge there without scheduling a
+    // reconnect and every later `callMethod` rejects, so a consumer
+    // holding it must replace it (codex web#268 r3 P2). Recoverable
+    // drops never pass through `closed` — they go `error` →
+    // `reconnecting`.
+    return this.stopped || this.reconnectAbandoned || this.state === "closed";
   }
 
   async stop(): Promise<void> {
@@ -2787,6 +2822,24 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private async onWsOpen(): Promise<void> {
     if (this.stopped) return;
     this.lastInboundAt = this.cfg.now();
+    if (!this.sessionId) {
+      // Sessionless (auxiliary) mode: there is no session to open — the
+      // socket itself is the lifecycle gate. Auxiliary methods bind to
+      // the connection identity from the upgrade (`?token=`), not to a
+      // session scope, so the bridge goes `connected` on open and skips
+      // the `session/open` handshake, cursor seeding, `opened` payload
+      // emit, and the reopen-hydrate hook (nothing to replay — aux RPCs
+      // are request/response only).
+      this.reconnectAttempts = 0;
+      this.reconnectAbandoned = false;
+      this.latchReason = null;
+      this.visibilityReconnectInFlight = false;
+      this.hasEverOpened = true;
+      this.setState("connected");
+      this.startKeepalive();
+      this.flushSendQueue();
+      return;
+    }
     try {
       const params: Record<string, unknown> = {
         session_id: this.requireSessionId(),

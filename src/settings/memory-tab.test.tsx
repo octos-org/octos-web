@@ -92,7 +92,6 @@ describe("MemoryTab", () => {
   it("lazily fetches an entity page on expand", async () => {
     apiMocks.getMyMemory.mockResolvedValue(OVERVIEW);
     apiMocks.getMyMemoryEntity.mockResolvedValue({
-      ok: true,
       name: "fleet",
       content: "# fleet\n\nfive minis and a WireGuard hub\n",
     });
@@ -110,6 +109,53 @@ describe("MemoryTab", () => {
     fireEvent.click(screen.getByText("fleet"));
     fireEvent.click(screen.getByText("fleet"));
     expect(apiMocks.getMyMemoryEntity).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces the server's truncation declaration on capped documents", async () => {
+    // octos #1621 codex r1: capped fields arrive as clean prefixes with
+    // <field>_truncated + <field>_total_bytes DECLARED — the tab must
+    // say so rather than render a shorter document as complete.
+    apiMocks.getMyMemory.mockResolvedValue({
+      ...OVERVIEW,
+      long_term_truncated: true,
+      long_term_total_bytes: 200 * 1024,
+    });
+    apiMocks.getMyMemoryEntity.mockResolvedValue({
+      name: "fleet",
+      content: "# fleet prefix",
+      content_truncated: true,
+      content_total_bytes: 512 * 1024,
+    });
+    render(<MemoryTab />);
+    await waitFor(() =>
+      expect(screen.getByText(/remembers things/)).toBeTruthy(),
+    );
+    expect(
+      screen.getByTestId("memory-truncation-notice").textContent,
+    ).toContain("of 200 KB");
+    cleanup();
+
+    // codex web#268 r4 P2: shown bytes are UTF-8, matching the server's
+    // *_total_bytes unit — 32768 CJK chars are 96 KiB on the wire, not
+    // the 32 KiB that string.length (UTF-16 code units) would claim.
+    apiMocks.getMyMemory.mockResolvedValue({
+      ...OVERVIEW,
+      long_term: "\u6c49".repeat(32 * 1024),
+      long_term_truncated: true,
+      long_term_total_bytes: 200 * 1024,
+    });
+    render(<MemoryTab />);
+    await waitFor(() =>
+      expect(screen.getByTestId("memory-truncation-notice")).toBeTruthy(),
+    );
+    expect(
+      screen.getByTestId("memory-truncation-notice").textContent,
+    ).toContain("first 96 KB of 200 KB");
+
+    fireEvent.click(screen.getByText("fleet"));
+    await waitFor(() =>
+      expect(screen.getAllByTestId("memory-truncation-notice")).toHaveLength(2),
+    );
   });
 
   it("keeps the snapshot but flags a failed reload", async () => {

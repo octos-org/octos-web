@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { mergeProfileConfig, normalizeProfileConfig } from "./settings-api";
+import {
+  cronToggleRefusalReason,
+  mergeProfileConfig,
+  normalizeProfileConfig,
+} from "./settings-api";
+import { BridgeRpcError } from "@/runtime/ui-protocol-bridge";
 
 describe("mergeProfileConfig — voice TTS fields", () => {
   it("should carry tts_provider and tts_cloud through a patch", () => {
@@ -16,5 +21,30 @@ describe("mergeProfileConfig — voice TTS fields", () => {
     const cfg = normalizeProfileConfig({});
     expect(cfg.tts_provider).toBeUndefined();
     expect(cfg.tts_cloud ?? undefined).toBeUndefined();
+  });
+});
+
+describe("cronToggleRefusalReason — WS bridge refusal contract", () => {
+  it("reads the reason from BridgeRpcError data.detail", () => {
+    const err = new BridgeRpcError(
+      -32602,
+      "cron/toggle: REST returned 409 conflict",
+      { detail: "gateway_running", rest_status: 409 },
+    );
+    expect(cronToggleRefusalReason(err)).toBe("gateway_running");
+  });
+
+  it("returns null for a BridgeRpcError without string detail", () => {
+    const err = new BridgeRpcError(-32001, "auth required", {
+      kind: "auth_unavailable",
+    });
+    expect(cronToggleRefusalReason(err)).toBeNull();
+  });
+
+  it("returns null for plain errors (legacy REST body parsing is gone)", () => {
+    const err = new Error(
+      JSON.stringify({ ok: false, reason: "gateway_running" }),
+    );
+    expect(cronToggleRefusalReason(err)).toBeNull();
   });
 });
