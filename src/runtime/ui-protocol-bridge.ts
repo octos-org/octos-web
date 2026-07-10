@@ -163,7 +163,6 @@ export const METHODS = {
   TURN_INTERRUPT: "turn/interrupt",
   APPROVAL_RESPOND: "approval/respond",
   USER_QUESTION_RESPOND: "user_question/respond",
-  USER_QUESTION_REQUESTED: "user_question/requested",
   DIFF_PREVIEW_GET: "diff/preview/get",
   PING: "ping",
   // M12 Phase D-1 (octos PR #912): auxiliary.rest_to_ws.v1 methods.
@@ -185,6 +184,10 @@ export const METHODS = {
   CONTENT_DELETE: "content/delete",
   CONTENT_BULK_DELETE: "content/bulk_delete",
   // server → client
+  // Bridge hygiene (parity audit P3): `user_question/requested` is a
+  // NOTIFICATION the server pushes; it was mislisted in the
+  // client→server half above.
+  USER_QUESTION_REQUESTED: "user_question/requested",
   MESSAGE_DELTA: "message/delta",
   MESSAGE_PERSISTED: "message/persisted",
   TASK_UPDATED: "task/updated",
