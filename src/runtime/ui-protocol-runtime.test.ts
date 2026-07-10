@@ -57,8 +57,13 @@ interface DeferredBridge {
    *  for `getActiveBridge` to return the bridge. */
   setConnected: () => void;
   /** Drive the connection-state subscriber to an arbitrary state (the
-   *  aux-singleton tests use `"error"` to exercise replacement). */
+   *  aux-singleton tests use `"error"` to exercise the transient-error
+   *  reuse path). */
   setState: (state: ConnectionState) => void;
+  /** Mark the bridge terminal (stopped / reconnect abandoned) — the
+   *  aux-singleton replacement gate consults `isTerminal()`, not the
+   *  connection state (codex web#268 r2 P2). */
+  setTerminal: () => void;
   startCalls: number;
   stopCalls: number;
 }
@@ -72,6 +77,7 @@ function makeDeferredBridge(): DeferredBridge {
   });
   let startCalls = 0;
   let stopCalls = 0;
+  let terminal = false;
   // Track the current state subscriber so the test can drive the bridge
   // to `"connected"` after `start()` resolves — `getActiveBridge` only
   // surfaces a bridge that has reached `connected` (codex M10.5 round 2
@@ -88,7 +94,9 @@ function makeDeferredBridge(): DeferredBridge {
     }),
     stop: vi.fn(async () => {
       stopCalls++;
+      terminal = true;
     }),
+    isTerminal: vi.fn(() => terminal),
     sendTurn: vi.fn(async () => ({ accepted: true })),
     interruptTurn: vi.fn(async () => ({ interrupted: true })),
     respondToApproval: vi.fn(async () => ({
@@ -141,6 +149,9 @@ function makeDeferredBridge(): DeferredBridge {
     rejectStart: (err) => rejectStart(err),
     setConnected: () => stateHandler?.("connected"),
     setState: (state: ConnectionState) => stateHandler?.(state),
+    setTerminal: () => {
+      terminal = true;
+    },
     /** Simulate the bridge's post-reconnect `session/open` ack
      *  (reload-bug fix Yue 2026-05-15). The runtime layer subscribes via
      *  `onReopened` to re-fire `session/hydrate`. */
@@ -637,13 +648,15 @@ describe("ensureAuxBridge — sessionless auxiliary singleton", () => {
     expect(aux.startCalls).toBe(1);
   });
 
-  it("replaces a singleton that reached a terminal state", async () => {
+  it("replaces a singleton that reached a TERMINAL state", async () => {
     const aux1 = makeDeferredBridge();
     createBridgeSpy.mockReturnValueOnce(aux1.bridge);
     const p1 = ensureAuxBridge();
     aux1.resolveStart();
     await p1;
 
+    // Reconnect abandoned (attempt budget spent / auth latch).
+    aux1.setTerminal();
     aux1.setState("error");
 
     const aux2 = makeDeferredBridge();
@@ -655,6 +668,48 @@ describe("ensureAuxBridge — sessionless auxiliary singleton", () => {
     expect(got).toBe(aux2.bridge);
     expect(aux1.stopCalls).toBe(1);
     expect(aux2.startCalls).toBe(1);
+  });
+
+  it("does NOT replace a bridge in a transient error state (recoverable drop)", async () => {
+    // codex web#268 r2 P2: `onerror` fires state="error" BEFORE
+    // `onclose` moves to "reconnecting"; the bridge queues sends across
+    // that gap. A caller landing in the gap must reuse the recovering
+    // singleton, not stop it (stopping rejects the queued RPCs).
+    const aux = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux.bridge);
+    const p = ensureAuxBridge();
+    aux.resolveStart();
+    await p;
+
+    aux.setState("error"); // transient — isTerminal() stays false
+
+    const got = await ensureAuxBridge();
+    expect(got).toBe(aux.bridge);
+    expect(aux.stopCalls).toBe(0);
+    expect(createBridgeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("tears the singleton down on crew:token_cleared (ordinary logout)", async () => {
+    // codex web#268 r2 P1: a normal logout clears the token WITHOUT
+    // firing crew:auth_expired. The aux socket is authenticated as the
+    // logged-out user at the upgrade — reusing it after a different
+    // account logs in would serve the previous user's memory/cron.
+    const aux = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux.bridge);
+    const p = ensureAuxBridge();
+    aux.resolveStart();
+    await p;
+
+    window.dispatchEvent(new CustomEvent("crew:token_cleared"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(aux.stopCalls).toBe(1);
+    const aux2 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux2.bridge);
+    const p2 = ensureAuxBridge();
+    aux2.resolveStart();
+    expect(await p2).toBe(aux2.bridge);
   });
 
   it("tears the singleton down on crew:auth_expired", async () => {

@@ -431,13 +431,13 @@ let auxStartInFlight: Promise<UiProtocolBridge> | null = null;
 export async function ensureAuxBridge(): Promise<UiProtocolBridge> {
   const chat = getAnyConnectedBridge();
   if (chat) return chat;
-  if (
-    auxSlot &&
-    auxSlot.connectionState !== "closed" &&
-    auxSlot.connectionState !== "error"
-  ) {
-    // `connecting` is fine: `callMethod` parks requests on the bridge's
-    // send queue and `flushSendQueue` drains it on `connected`.
+  if (auxSlot && !auxSlot.bridge.isTerminal()) {
+    // Reuse across `connecting`, transient `error`, and `reconnecting`:
+    // `callMethod` parks requests on the bridge's send queue and
+    // `flushSendQueue` drains it after (re)connect. Replacing on a
+    // transient `error` would reject those queued RPCs mid-recovery
+    // (codex web#268 r2 P2) — only a TERMINAL bridge (stopped, or
+    // reconnect abandoned / auth-latched) is torn down and replaced.
     return auxSlot.bridge;
   }
   if (auxStartInFlight) return auxStartInFlight;
@@ -488,11 +488,21 @@ export async function stopAuxBridge(): Promise<void> {
   }
 }
 
-// A dead token latches the aux bridge into a reconnect loop that can
-// never succeed — tear it down with the token. The next `/settings`
-// visit after re-login starts a fresh one.
+// The aux bridge is identity-bound (authenticated at the WS upgrade),
+// so it must not outlive the token that authenticated it:
+//  - `crew:auth_expired` — a dead token latches the bridge into a
+//    reconnect loop that can never succeed.
+//  - `crew:token_cleared` — an ORDINARY logout never fires
+//    `auth_expired` (codex web#268 r2 P1); without this, a
+//    logout → login as another account would reuse the socket still
+//    authenticated as the PREVIOUS user for memory/cron reads and
+//    toggles.
+// The next `/settings` visit after re-login starts a fresh one.
 if (typeof window !== "undefined") {
   window.addEventListener("crew:auth_expired", () => {
+    void stopAuxBridge();
+  });
+  window.addEventListener("crew:token_cleared", () => {
     void stopAuxBridge();
   });
 }

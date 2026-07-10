@@ -432,6 +432,15 @@ export interface UiProtocolBridge {
   }): Promise<void>;
   stop(): Promise<void>;
 
+  /** True when this bridge will never serve another RPC: it was
+   *  `stop()`ed, or it abandoned reconnecting (attempt budget spent, or
+   *  latched on auth rejection). A transient `"error"` state during a
+   *  RECOVERABLE drop is NOT terminal — the bridge queues sends and
+   *  flushes them after the reconnect (codex web#268 r2 P2: the aux
+   *  singleton must not be replaced mid-recovery, which would reject
+   *  the queued RPCs). */
+  isTerminal(): boolean;
+
   sendTurn(
     turn_id: string,
     input: TurnStartInput[],
@@ -2232,6 +2241,10 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.lastCursor = null;
     this.installVisibilityListener();
     await this.openSocket();
+  }
+
+  isTerminal(): boolean {
+    return this.stopped || this.reconnectAbandoned;
   }
 
   async stop(): Promise<void> {
