@@ -208,7 +208,7 @@ export function AdminSettingsPage() {
                       onProfileUpdated={setProfile}
                     />
                   )}
-                  {activeTab === "memory" && <MemoryTab />}
+                  {activeTab === "memory" && <MemoryTab key={profile.id} />}
                   {activeTab === "skills" && <SkillsTab />}
                   {activeTab === "channels" && <ChannelsTab profile={profile} onProfileUpdated={setProfile} />}
                   {activeTab === "sandbox" && (

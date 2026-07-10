@@ -112,6 +112,24 @@ describe("MemoryTab", () => {
     expect(apiMocks.getMyMemoryEntity).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the snapshot but flags a failed reload", async () => {
+    apiMocks.getMyMemory.mockResolvedValueOnce(OVERVIEW);
+    apiMocks.getMyMemory.mockRejectedValueOnce(new Error("reload boom"));
+    render(<MemoryTab />);
+    await waitFor(() =>
+      expect(screen.getByText(/remembers things/)).toBeTruthy(),
+    );
+
+    fireEvent.click(screen.getByText("Reload"));
+    await waitFor(() =>
+      expect(screen.getByTestId("memory-reload-error").textContent).toContain(
+        "reload boom",
+      ),
+    );
+    // The stale snapshot stays on screen, flagged — not silently kept.
+    expect(screen.getByText(/remembers things/)).toBeTruthy();
+  });
+
   it("surfaces a load error with a retry", async () => {
     apiMocks.getMyMemory.mockRejectedValueOnce(new Error("boom"));
     apiMocks.getMyMemory.mockResolvedValueOnce(OVERVIEW);

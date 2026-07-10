@@ -159,6 +159,10 @@ export function MemoryTab() {
   if (!overview) return null;
 
   const updatedAt = formatUpdatedAt(overview.long_term_updated_at);
+  // Reload failure with a snapshot on screen: keep the snapshot but
+  // say it's stale (codex web#265 r1 P2) — the blocking error screen
+  // above only covers the nothing-loaded-yet case.
+  const reloadError = error;
   const hasAnything =
     overview.long_term.trim() !== "" ||
     overview.today.trim() !== "" ||
@@ -209,6 +213,14 @@ export function MemoryTab() {
             Reload
           </button>
         </div>
+        {reloadError ? (
+          <p
+            className="mt-3 text-xs text-red-400"
+            data-testid="memory-reload-error"
+          >
+            {reloadError} Showing the last loaded snapshot.
+          </p>
+        ) : null}
       </section>
 
       {!hasAnything ? (
