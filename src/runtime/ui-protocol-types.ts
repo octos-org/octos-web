@@ -75,7 +75,22 @@ export interface TurnStartExtras {
    *  by the voice screen when the camera is on. Omitted (≡ false) otherwise;
    *  the server never infers live-video from attachment types. */
   live_video?: boolean;
+  /** Per-session reasoning/thinking effort (TUI `/thinking` parity).
+   *  Server precedence: a USER turn carrying the field wins AND
+   *  persists it for the session; a user turn OMITTING it clears the
+   *  stored override ("default"); server-initiated continuations fall
+   *  back to the stored value. So once the user picks a non-default
+   *  effort the send path must attach it to EVERY turn (see
+   *  `buildTurnStartExtras` reading the thinking store).
+   *  Typed wider than the known union: a NEWER server may have
+   *  persisted a tier this client does not know, and it must
+   *  round-trip verbatim rather than be destroyed by omission. */
+  reasoning_effort?: ReasoningEffortLevel | (string & {});
 }
+
+/** Wire values of `octos_core::ui_protocol::ReasoningEffortLevel`
+ *  (snake_case strings; `max` is the DeepSeek tier). */
+export type ReasoningEffortLevel = "low" | "medium" | "high" | "max";
 
 export interface SessionOpenedResult {
   session_id: string;
@@ -83,10 +98,104 @@ export interface SessionOpenedResult {
   cursor?: UiCursor;
   workspace_root?: string;
   panes?: unknown;
+  /** Server-persisted per-session reasoning effort, surfaced on the
+   *  open ack so a (re)connecting client restores its thinking
+   *  selector. Absent/null when the session never set one. May carry
+   *  a tier newer than this client's known union. */
+  reasoning_effort?: ReasoningEffortLevel | (string & {}) | null;
 }
 
 export interface SessionOpenResult {
   opened: SessionOpenedResult;
+}
+
+// ─── M15 autonomy surfaces: recurring loops + persisted goal ───────────────
+// Wire mirrors of `octos_core::ui_protocol::{UiLoopRecord, UiGoalRecord}`
+// and the loop/goal notification structs. Negotiated behind
+// `coding.loop_runtime.v1` / `coding.goal_runtime.v1`.
+
+export interface UiLoopRecord {
+  loop_id: string;
+  session_id: string;
+  profile_id?: string | null;
+  prompt: string;
+  mode: string;
+  interval_seconds?: number | null;
+  status: string;
+  next_run_at_ms?: number | null;
+  last_run_at_ms?: number | null;
+  expires_at_ms: number;
+  created_at_ms: number;
+  updated_at_ms: number;
+}
+
+export interface UiGoalRecord {
+  profile_id?: string | null;
+  goal_id: string;
+  objective: string;
+  status: string;
+  token_budget: number;
+  tokens_used: number;
+  time_used_seconds: number;
+  created_at_ms: number;
+  updated_at_ms: number;
+}
+
+/** `loop/updated` — control-plane transitions (create/pause/resume/delete).
+ *  The wire field is `loop` (serde rename of `loop_state`). */
+export interface LoopUpdatedEvent {
+  session_id: string;
+  loop_id?: string;
+  loop: UiLoopRecord;
+  ok?: boolean;
+  status?: string;
+  deleted?: boolean;
+}
+
+/** `loop/fired` — the scheduler queued a continuation for the loop. */
+export interface LoopFiredEvent {
+  session_id: string;
+  loop_id: string;
+  loop?: UiLoopRecord;
+  status?: string;
+}
+
+/** `loop/completed` — a loop reached a terminal state. */
+export interface LoopCompletedEvent {
+  session_id: string;
+  loop_id: string;
+  loop?: UiLoopRecord;
+  status?: string;
+  error?: string;
+}
+
+export interface SessionGoalUpdatedEvent {
+  session_id: string;
+  goal: UiGoalRecord;
+  transition_actor?: string;
+}
+
+export interface SessionGoalClearedEvent {
+  session_id: string;
+  cleared?: boolean;
+  goal?: UiGoalRecord | null;
+  transition_actor?: string;
+}
+
+export interface LoopListResult {
+  loops: UiLoopRecord[];
+}
+
+/** Result of loop/pause | loop/resume | loop/delete. */
+export interface LoopControlResult {
+  ok?: boolean;
+  status?: string;
+  loop_id?: string;
+  loop?: UiLoopRecord;
+}
+
+export interface SessionGoalGetResult {
+  goal: UiGoalRecord | null;
 }
 
 export interface TurnStartResult {
@@ -102,6 +211,17 @@ export interface ApprovalRespondResult {
   accepted: boolean;
   status: string;
   runtime_resumed?: boolean;
+}
+
+/**
+ * Result of `task/cancel` (harness.task_control.v1). `status` is the task's
+ * authoritative post-cancel runtime state — a task that had already finished
+ * comes back `completed`/`failed` rather than `cancelled`, so the caller
+ * renders truth instead of assuming the cancel took.
+ */
+export interface TaskCancelResult {
+  task_id: string;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
 }
 
 /**
@@ -653,6 +773,23 @@ export interface ApprovalRequestedEvent {
   render_hints?: ApprovalRenderHints;
 }
 
+/**
+ * Emitted when a later approval request auto-resolves against a standing
+ * scope grant (e.g. a prior "Approve for session"), instead of prompting
+ * again. Lets the client show that the grant fired rather than silently
+ * running the command.
+ */
+export interface ApprovalAutoResolvedEvent {
+  session_id: string;
+  topic?: string;
+  approval_id: string;
+  turn_id: string;
+  tool_name: string;
+  scope: string;
+  scope_match: string;
+  decision: ApprovalDecision;
+}
+
 // --- Structured multiple-choice questions (user_question.v1, UPCR-2026-023) ---
 
 export interface UserQuestionOption {
@@ -896,6 +1033,17 @@ export interface SessionHydrateResult {
   pending_approvals?: unknown[];
   replayed_envelopes?: TurnSpawnCompleteEvent[];
   replayed_tool_envelopes?: Envelope[];
+}
+
+/** Result of `session/rollback` — conversation-only rewind. The server
+ *  drops the last `num_turns` USER turns (persisted + in-memory,
+ *  idempotent append-only marker) and returns the trimmed thread
+ *  projected in the same shape as `session/hydrate`. `dropped_turns` is
+ *  clamped to the session's actual turn count. Rejected with
+ *  `invalid_params { kind: "turn_in_progress" }` while a turn is live. */
+export interface SessionRollbackResult {
+  dropped_turns: number;
+  thread: SessionHydrateResult;
 }
 
 // ─── M9-γ canonical projection envelope (UPCR-2026-014) ────────────────────

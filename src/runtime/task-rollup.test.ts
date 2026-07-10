@@ -13,7 +13,11 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { displayLabelForRolled, rollupTasksByCall } from "./task-rollup";
+import {
+  aggregateCallStatus,
+  displayLabelForRolled,
+  rollupTasksByCall,
+} from "./task-rollup";
 import type { BackgroundTaskInfo } from "@/api/types";
 
 function makeTask(
@@ -281,5 +285,196 @@ describe("displayLabelForRolled", () => {
     expect(displayLabelForRolled(t("podcast_generate"))).toBe(
       "podcast generate",
     );
+  });
+});
+
+describe("aggregateCallStatus", () => {
+  const CALL = "tc-agg";
+
+  it("reports active while any member is spawned/running", () => {
+    const tasks = [
+      makeTask({
+        id: "a",
+        tool_name: "pipeline:analyze",
+        tool_call_id: CALL,
+        status: "failed",
+      }),
+      makeTask({
+        id: "b",
+        tool_name: "pipeline:synthesize",
+        tool_call_id: CALL,
+        status: "running",
+      }),
+    ];
+    expect(aggregateCallStatus(tasks, CALL)).toBe("active");
+  });
+
+  it("honors the parent's successful outcome over a retained failed child (recovered pipeline)", () => {
+    // codex round 4: a pipeline can recover from a node failure (failure
+    // edges, retries, continue_on_error) — the failed child row remains
+    // in the store while the parent completes successfully. The parent's
+    // outcome must win, or a successful run renders as an error.
+    const tasks = [
+      makeTask({
+        id: "child-f",
+        tool_name: "pipeline:analyze",
+        tool_call_id: CALL,
+        status: "failed",
+      }),
+      makeTask({
+        id: "parent",
+        tool_name: "run_pipeline",
+        tool_call_id: CALL,
+        status: "completed",
+      }),
+    ];
+    expect(aggregateCallStatus(tasks, CALL)).toBe("settled");
+  });
+
+  it("reports failed when the parent itself failed", () => {
+    const tasks = [
+      makeTask({
+        id: "child-ok",
+        tool_name: "pipeline:analyze",
+        tool_call_id: CALL,
+        status: "completed",
+      }),
+      makeTask({
+        id: "parent",
+        tool_name: "run_pipeline",
+        tool_call_id: CALL,
+        status: "failed",
+      }),
+    ];
+    expect(aggregateCallStatus(tasks, CALL)).toBe("failed");
+  });
+
+  it("falls back to child aggregation when no parent remains (orphan case)", () => {
+    const tasks = [
+      makeTask({
+        id: "c1",
+        tool_name: "pipeline:analyze",
+        tool_call_id: CALL,
+        status: "completed",
+      }),
+      makeTask({
+        id: "c2",
+        tool_name: "pipeline:synthesize",
+        tool_call_id: CALL,
+        status: "failed",
+      }),
+    ];
+    expect(aggregateCallStatus(tasks, CALL)).toBe("failed");
+  });
+
+  it("the newest parent by started_at wins over a failed predecessor, regardless of list order", () => {
+    // codex round 5 P1: TaskStore.getTasks orders newest-first, so list
+    // position must not decide — a relaunched parent must supersede its
+    // failed predecessor under BOTH orderings.
+    const older = makeTask({
+      id: "parent-old",
+      tool_name: "run_pipeline",
+      tool_call_id: CALL,
+      status: "failed",
+      started_at: "2026-07-10T00:00:00Z",
+    });
+    const newer = makeTask({
+      id: "parent-new",
+      tool_name: "run_pipeline",
+      tool_call_id: CALL,
+      status: "completed",
+      started_at: "2026-07-10T01:00:00Z",
+    });
+    // Production (store) ordering: newest first.
+    expect(aggregateCallStatus([newer, older], CALL)).toBe("settled");
+    // Chronological ordering: oldest first.
+    expect(aggregateCallStatus([older, newer], CALL)).toBe("settled");
+    // Inverse case: the RELAUNCH failed while the predecessor succeeded.
+    const newerFailed = makeTask({
+      id: "parent-new-f",
+      tool_name: "run_pipeline",
+      tool_call_id: CALL,
+      status: "failed",
+      started_at: "2026-07-10T01:00:00Z",
+    });
+    const olderOk = makeTask({
+      id: "parent-old-ok",
+      tool_name: "run_pipeline",
+      tool_call_id: CALL,
+      status: "completed",
+      started_at: "2026-07-10T00:00:00Z",
+    });
+    expect(aggregateCallStatus([newerFailed, olderOk], CALL)).toBe("failed");
+  });
+
+  it("keeps any-failure aggregation for mixed-tool non-pipeline groups (no member masking)", () => {
+    // codex round 5 P2: DIFFERENT ordinary tools sharing a call id have
+    // no lineage relationship — one member's success must not mask
+    // another member's failure.
+    const tasks = [
+      makeTask({
+        id: "ord-ok",
+        tool_name: "podcast_generate",
+        tool_call_id: CALL,
+        status: "completed",
+        started_at: "2026-07-10T01:00:00Z",
+      }),
+      makeTask({
+        id: "ord-fail",
+        tool_name: "fm_tts",
+        tool_call_id: CALL,
+        status: "failed",
+        started_at: "2026-07-10T00:00:00Z",
+      }),
+    ];
+    expect(aggregateCallStatus(tasks, CALL)).toBe("failed");
+  });
+
+  it("a successful same-tool relaunch supersedes its failed predecessor (newest wins)", () => {
+    // codex round 6 P2: TaskSupervisor::relaunch registers the successor
+    // with the SAME tool_call_id and tool_name. The retained failed
+    // predecessor must not fail the card once the relaunch settles.
+    const failedOld = makeTask({
+      id: "tts-old",
+      tool_name: "fm_tts",
+      tool_call_id: CALL,
+      status: "failed",
+      started_at: "2026-07-10T00:00:00Z",
+    });
+    const relaunchOk = makeTask({
+      id: "tts-new",
+      tool_name: "fm_tts",
+      tool_call_id: CALL,
+      status: "completed",
+      started_at: "2026-07-10T01:00:00Z",
+    });
+    // Both store (newest-first) and chronological orderings.
+    expect(aggregateCallStatus([relaunchOk, failedOld], CALL)).toBe("settled");
+    expect(aggregateCallStatus([failedOld, relaunchOk], CALL)).toBe("settled");
+    // Inverse: the relaunch itself failed after a completed predecessor.
+    const relaunchBad = makeTask({
+      id: "tts-new-f",
+      tool_name: "fm_tts",
+      tool_call_id: CALL,
+      status: "failed",
+      started_at: "2026-07-10T02:00:00Z",
+    });
+    const okOld = makeTask({
+      id: "tts-old-ok",
+      tool_name: "fm_tts",
+      tool_call_id: CALL,
+      status: "completed",
+      started_at: "2026-07-10T00:30:00Z",
+    });
+    expect(aggregateCallStatus([relaunchBad, okOld], CALL)).toBe("failed");
+  });
+
+  it("returns null when no member carries the call id", () => {
+    expect(
+      aggregateCallStatus(
+        [makeTask({ id: "x", tool_name: "podcast_generate" })],
+        CALL,
+      ),
+    ).toBe(null);
   });
 });

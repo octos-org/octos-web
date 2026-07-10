@@ -62,6 +62,10 @@ vi.mock("./ui-protocol-bridge", async () => {
 
 import * as ThreadStore from "@/store/thread-store";
 import {
+  __resetThinkingStoreForTest,
+  setThinkingEffort,
+} from "@/store/thinking-store";
+import {
   buildTurnStartExtras,
   interruptActiveTurn,
   sendMessage,
@@ -96,6 +100,7 @@ function makeBridge(): UiProtocolBridge & {
     onTaskOutputDelta: vi.fn(() => () => {}),
     onTurnLifecycle: vi.fn(() => () => {}),
     onApprovalRequested: vi.fn(() => () => {}),
+    onApprovalAutoResolved: vi.fn(() => () => {}),
     onUserQuestionRequested: vi.fn(() => () => {}),
     onRouterStatus: vi.fn(() => () => {}),
     onRouterFailover: vi.fn(() => () => {}),
@@ -122,6 +127,36 @@ afterEach(() => {
   __resetUiProtocolRuntimeForTest();
   __resetSendQueueForTest();
   __bridgeFactoryOverride.current = null;
+});
+
+describe("buildTurnStartExtras reasoning_effort (thinking parity)", () => {
+  const base = { sessionId: SESSION, text: "", media: [] as string[] };
+
+  afterEach(() => {
+    __resetThinkingStoreForTest();
+  });
+
+  it("attaches the session's stored thinking effort to the envelope", () => {
+    setThinkingEffort(SESSION, "high");
+    expect(buildTurnStartExtras({ ...base })?.reasoning_effort).toBe("high");
+  });
+
+  it("scopes the lookup by (session, topic)", () => {
+    setThinkingEffort(SESSION, "low", "slides");
+    // Default-topic send: no override stored for the bare session.
+    expect(buildTurnStartExtras({ ...base })).toBeUndefined();
+    // Topic-scoped send picks up the topic's value.
+    expect(
+      buildTurnStartExtras({ ...base, historyTopic: "slides" })
+        ?.reasoning_effort,
+    ).toBe("low");
+  });
+
+  it("omits the field entirely for default (omission clears the server override)", () => {
+    // No store entry → envelope stays undefined so the wire bytes are
+    // identical to a plain text send.
+    expect(buildTurnStartExtras({ ...base })).toBeUndefined();
+  });
 });
 
 describe("buildTurnStartExtras live_video (#1478)", () => {
@@ -175,6 +210,7 @@ describe("sendMessage", () => {
       onTaskOutputDelta: vi.fn(() => () => {}),
       onTurnLifecycle: vi.fn(() => () => {}),
       onApprovalRequested: vi.fn(() => () => {}),
+    onApprovalAutoResolved: vi.fn(() => () => {}),
     onUserQuestionRequested: vi.fn(() => () => {}),
       onRouterStatus: vi.fn(() => () => {}),
       onRouterFailover: vi.fn(() => () => {}),
@@ -895,6 +931,7 @@ describe("sendMessage", () => {
       onTaskOutputDelta: vi.fn(() => () => {}),
       onTurnLifecycle: vi.fn(() => () => {}),
       onApprovalRequested: vi.fn(() => () => {}),
+    onApprovalAutoResolved: vi.fn(() => () => {}),
     onUserQuestionRequested: vi.fn(() => () => {}),
       onRouterStatus: vi.fn(() => () => {}),
       onRouterFailover: vi.fn(() => () => {}),

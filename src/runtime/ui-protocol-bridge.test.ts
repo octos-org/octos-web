@@ -23,6 +23,7 @@ import {
   vi,
 } from "vitest";
 import {
+  UI_PROTOCOL_FEATURES,
   BridgeRpcError,
   BridgeStoppedError,
   BridgeTimeoutError,
@@ -728,6 +729,34 @@ describe("type guards (fail-closed)", () => {
       approval_scope: "forever",
     });
     expect(bogus?.approval_scope).toBeUndefined();
+  });
+
+  it("guards approval/auto_resolved: keeps valid, drops malformed", () => {
+    const ok = guards.guardApprovalAutoResolved({
+      session_id: "s",
+      topic: "chat",
+      approval_id: "a",
+      turn_id: "t",
+      tool_name: "shell",
+      scope: "session",
+      scope_match: "*",
+      decision: "approve",
+    });
+    expect(ok?.tool_name).toBe("shell");
+    expect(ok?.scope).toBe("session");
+    expect(ok?.decision).toBe("approve");
+    // Unknown decision normalizes to approve (auto-resolve only fires on a
+    // standing grant); a missing required field rejects the whole event.
+    expect(
+      guards.guardApprovalAutoResolved({
+        session_id: "s",
+        approval_id: "a",
+        turn_id: "t",
+        tool_name: "shell",
+        // scope + scope_match missing
+        decision: "approve",
+      }),
+    ).toBeNull();
   });
 
   it("guards user_question/requested: keeps valid options, drops garbled questions", () => {
@@ -2009,6 +2038,202 @@ describe("notification dispatch", () => {
     const req = findRequest(ws, METHODS.TURN_START);
     expect(req.params?.live_video).toBe(true);
     expect(req.params?.media).toEqual(["uploads/frame.jpg"]);
+  });
+
+  it("sendTurn forwards reasoning_effort onto the wire (thinking parity)", async () => {
+    const { bridge, ws } = await freshConnected();
+    void bridge.sendTurn("turn-re", [{ kind: "text", text: "hi" }], {
+      reasoning_effort: "high",
+    });
+    const req = findRequest(ws, METHODS.TURN_START);
+    expect(req.params?.reasoning_effort).toBe("high");
+  });
+
+  it("sendTurn omits reasoning_effort when unset (omission = default, clears server override)", async () => {
+    const { bridge, ws } = await freshConnected();
+    void bridge.sendTurn("turn-re-d", [{ kind: "text", text: "hi" }], {
+      topic: "slides",
+    });
+    const req = findRequest(ws, METHODS.TURN_START);
+    expect("reasoning_effort" in (req.params ?? {})).toBe(false);
+  });
+
+  it("emits onSessionOpened with the open ack payload (reasoning_effort restore)", async () => {
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    void bridge.start({ sessionId: "sess-1" });
+    await Promise.resolve();
+    const ws = lastInstance();
+    const seen: unknown[] = [];
+    bridge.onSessionOpened((opened) => seen.push(opened));
+    ws.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(ws, METHODS.SESSION_OPEN);
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      result: {
+        opened: { session_id: "sess-1", reasoning_effort: "medium" },
+      },
+    });
+    await Promise.resolve();
+    expect(seen).toHaveLength(1);
+    expect((seen[0] as { reasoning_effort?: string }).reasoning_effort).toBe(
+      "medium",
+    );
+    await bridge.stop();
+  });
+
+  it("negotiates the M15 autonomy capabilities incl. the umbrella token", () => {
+    // codex #263 round 1 P1: once ANY tokens are sent the server
+    // requires `coding.autonomy.v1` AND the runtime child — children
+    // alone reject every autonomy RPC with method_not_supported.
+    expect(UI_PROTOCOL_FEATURES).toContain("coding.autonomy.v1");
+    expect(UI_PROTOCOL_FEATURES).toContain("coding.loop_runtime.v1");
+    expect(UI_PROTOCOL_FEATURES).toContain("coding.goal_runtime.v1");
+  });
+
+  it("autonomy RPCs forward the bridge profile_id (admin-unscoped WS)", async () => {
+    // codex #263 round 1 P1: the server resolves these calls
+    // independently from `session/open` — on an unscoped connection an
+    // omitted profile_id defaults to the session key's profile or
+    // `_main`, silently missing / controlling the wrong profile.
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    void bridge.start({ sessionId: "sess-1", profileId: "prof-y" });
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(ws, METHODS.SESSION_OPEN);
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+    // Swallow: stop() below rejects the never-answered RPCs.
+    void bridge.listLoops().catch(() => {});
+    void bridge.controlLoop("l1", "pause").catch(() => {});
+    void bridge.getGoal().catch(() => {});
+    void bridge.clearGoal().catch(() => {});
+    for (const method of [
+      METHODS.LOOP_LIST,
+      METHODS.LOOP_PAUSE,
+      METHODS.SESSION_GOAL_GET,
+      METHODS.SESSION_GOAL_CLEAR,
+    ]) {
+      const req = findRequest(ws, method);
+      expect(req.params?.profile_id).toBe("prof-y");
+      expect(req.params?.session_id).toBe("sess-1");
+    }
+    await bridge.stop();
+  });
+
+  it("listLoops sends the scoped session id and guards the rows", async () => {
+    const { bridge, ws } = await freshConnected();
+    const call = bridge.listLoops();
+    const req = findRequest(ws, METHODS.LOOP_LIST);
+    expect(req.params?.session_id).toBe("sess-1");
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: req.id,
+      result: {
+        loops: [
+          {
+            loop_id: "l1",
+            session_id: "sess-1",
+            prompt: "p",
+            mode: "interval",
+            status: "active",
+            expires_at_ms: 0,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+          },
+          { rubbish: true },
+        ],
+      },
+    });
+    const loops = await call;
+    expect(loops.map((l) => l.loop_id)).toEqual(["l1"]);
+  });
+
+  it("controlLoop maps pause/resume/delete onto their methods", async () => {
+    const { bridge, ws } = await freshConnected();
+    void bridge.controlLoop("l1", "pause");
+    expect(findRequest(ws, METHODS.LOOP_PAUSE).params?.loop_id).toBe("l1");
+    void bridge.controlLoop("l1", "resume");
+    expect(findRequest(ws, METHODS.LOOP_RESUME).params?.loop_id).toBe("l1");
+    void bridge.controlLoop("l1", "delete");
+    expect(findRequest(ws, METHODS.LOOP_DELETE).params?.loop_id).toBe("l1");
+  });
+
+  it("routes loop/updated through the guard to onLoopUpdated", async () => {
+    const { bridge, ws } = await freshConnected();
+    const seen: unknown[] = [];
+    bridge.onLoopUpdated((e) => seen.push(e));
+    // Malformed (no loop record) → dropped by the guard.
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.LOOP_UPDATED,
+      params: { session_id: "sess-1" },
+    });
+    expect(seen).toHaveLength(0);
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.LOOP_UPDATED,
+      params: {
+        session_id: "sess-1",
+        loop_id: "l1",
+        loop: {
+          loop_id: "l1",
+          session_id: "sess-1",
+          prompt: "p",
+          mode: "interval",
+          status: "paused",
+          expires_at_ms: 0,
+          created_at_ms: 1,
+          updated_at_ms: 2,
+        },
+        ok: true,
+        status: "paused",
+      },
+    });
+    expect(seen).toHaveLength(1);
+    expect((seen[0] as { loop: { status: string } }).loop.status).toBe(
+      "paused",
+    );
+  });
+
+  it("routes session/goal/updated and /cleared to their handlers", async () => {
+    const { bridge, ws } = await freshConnected();
+    const updated: unknown[] = [];
+    const cleared: unknown[] = [];
+    bridge.onGoalUpdated((e) => updated.push(e));
+    bridge.onGoalCleared((e) => cleared.push(e));
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.SESSION_GOAL_UPDATED,
+      params: {
+        session_id: "sess-1",
+        goal: {
+          goal_id: "g1",
+          objective: "o",
+          status: "active",
+          token_budget: 1,
+          tokens_used: 0,
+          time_used_seconds: 0,
+          created_at_ms: 1,
+          updated_at_ms: 1,
+        },
+        transition_actor: "user",
+      },
+    });
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.SESSION_GOAL_CLEARED,
+      params: { session_id: "sess-1", cleared: true, transition_actor: "user" },
+    });
+    expect(updated).toHaveLength(1);
+    expect(cleared).toHaveLength(1);
   });
 
   it("sendTurn omits live_video when not set (byte-identical legacy shape)", async () => {

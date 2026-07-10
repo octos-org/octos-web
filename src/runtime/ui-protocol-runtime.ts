@@ -12,12 +12,22 @@ import {
   createUiProtocolBridge,
   type UiProtocolBridge,
 } from "./ui-protocol-bridge";
-import type { ConnectionState } from "./ui-protocol-types";
+import type {
+  ConnectionState,
+  UiGoalRecord,
+  UiLoopRecord,
+} from "./ui-protocol-types";
 import { attachRouter, type RouterAttachment } from "./ui-protocol-event-router";
+import * as AutonomyStore from "@/store/autonomy-store";
 import {
   setHydrateSnapshot,
   suppressPendingDeltasForReplay,
 } from "@/store/thread-store";
+import {
+  asStoredEffort,
+  markThinkingSeeded,
+  setThinkingEffort,
+} from "@/store/thinking-store";
 
 interface ActiveBridge {
   sessionId: string;
@@ -36,6 +46,9 @@ interface ActiveBridge {
    *  envelopes (e.g. a `TurnSpawnComplete` emitted while the WS was
    *  dropped) get replayed via `replayed_envelopes`. */
   unsubscribeReopened: () => void;
+  /** Cleanup fn for the session-opened subscriber (thinking-effort
+   *  seeding). Detached on stop. */
+  unsubscribeSessionOpened: () => void;
 }
 
 let active: ActiveBridge | null = null;
@@ -188,7 +201,34 @@ export async function startBridgeForSession(
       // included), unlike the topic-gated hydrate below.
       suppressPendingDeltasForReplay(sessionId, topic);
       runHydrateFor(sessionId, topic, bridge, myGeneration);
+      runAutonomySnapshotFor(sessionId, topic, bridge, myGeneration);
     });
+  }
+  // Thinking-effort parity: seed the per-session selector from the
+  // server-persisted value carried on every `session/open` ack, so a
+  // reload/reconnect restores the user's `/thinking`-equivalent choice.
+  // ROOT scope only (codex #261 P1): the bridge's `session/open` sends
+  // the bare session id, so `opened.reasoning_effort` describes the
+  // ROOT bucket — applying it to a topic key would restore the wrong
+  // value and let the topic's next turn overwrite the root's choice.
+  // Topic scopes are marked seeded-without-value instead (no restore is
+  // possible over the current wire; selector still works live).
+  // Same defensive-typeof guard as `onReopened` for pre-dating mocks —
+  // those are marked seeded too so sends never wait on a seed that
+  // cannot arrive.
+  let unsubscribeSessionOpened: () => void = () => {};
+  const scopeHasTopic = Boolean(topic && topic.trim() !== "");
+  if (!scopeHasTopic && typeof bridge.onSessionOpened === "function") {
+    unsubscribeSessionOpened = bridge.onSessionOpened((opened) => {
+      if (myGeneration !== generation) return;
+      setThinkingEffort(
+        sessionId,
+        asStoredEffort(opened.reasoning_effort),
+        topic,
+      );
+    });
+  } else {
+    markThinkingSeeded(sessionId, topic);
   }
 
   active = {
@@ -199,6 +239,7 @@ export async function startBridgeForSession(
     connectionState,
     unsubscribeState,
     unsubscribeReopened,
+    unsubscribeSessionOpened,
   };
 
   // M10 Phase 6.2 (Bug C): immediately fire `session/hydrate` to fetch
@@ -219,6 +260,7 @@ export async function startBridgeForSession(
   // pre-fix N+1 limitation. This avoids cross-topic envelope leakage
   // (codex round-2 P2).
   runHydrateFor(sessionId, topic, bridge, myGeneration);
+  runAutonomySnapshotFor(sessionId, topic, bridge, myGeneration);
 
   return bridge;
 }
@@ -264,6 +306,48 @@ function runHydrateFor(
       replayed_envelopes: hydrate.replayed_envelopes,
       replayed_tool_envelopes: hydrate.replayed_tool_envelopes,
     });
+  })();
+}
+
+/** M15 autonomy chip: snapshot this scope's loops + goal after a
+ *  successful (re)open. Live `loop/*` / `session/goal/*` notifications
+ *  keep it fresh afterwards; this seeds the store for state created
+ *  before the page loaded (the invisible-runaway-loop gap). Best-effort:
+ *  an older server rejects the RPCs (feature not negotiated /
+ *  method_not_supported) and the chip simply stays hidden. Unlike the
+ *  hydrate above this ALSO runs for topic scopes — loops are keyed by
+ *  the scoped SessionKey. */
+function runAutonomySnapshotFor(
+  sessionId: string,
+  topic: string | undefined,
+  bridge: UiProtocolBridge,
+  capturedGeneration: number,
+): void {
+  void (async () => {
+    if (capturedGeneration !== generation) return;
+    if (
+      typeof bridge.listLoops !== "function" ||
+      typeof bridge.getGoal !== "function"
+    ) {
+      return;
+    }
+    // Distinct FAILURE sentinel (codex #263 round 1 P2): `getGoal()`
+    // legitimately resolves `null` for "no goal" and that null is
+    // authoritative — but a REJECTED read (timeout, reconnect blip,
+    // method_not_supported) must not masquerade as it and wipe a
+    // previously loaded or live-updated goal. Same for loops.
+    const failed = Symbol("autonomy-read-failed");
+    const [loops, goal] = await Promise.all([
+      bridge.listLoops().catch(() => failed),
+      bridge.getGoal().catch(() => failed),
+    ]);
+    if (capturedGeneration !== generation) return;
+    if (loops !== failed) {
+      AutonomyStore.replaceLoops(sessionId, loops as UiLoopRecord[], topic);
+    }
+    if (goal !== failed) {
+      AutonomyStore.setGoal(sessionId, goal as UiGoalRecord | null, topic);
+    }
   })();
 }
 
@@ -349,6 +433,7 @@ export async function stopActiveBridge(): Promise<void> {
   handle.attachment.detach();
   handle.unsubscribeState();
   handle.unsubscribeReopened();
+  handle.unsubscribeSessionOpened();
   try {
     await handle.bridge.stop();
   } catch {
@@ -377,6 +462,7 @@ export async function stopActiveBridgeIfScope(
   handle.attachment.detach();
   handle.unsubscribeState();
   handle.unsubscribeReopened();
+  handle.unsubscribeSessionOpened();
   try {
     await handle.bridge.stop();
   } catch {
@@ -410,5 +496,10 @@ export function __setActiveBridgeForTest(
     connectionState,
     unsubscribeState: () => {},
     unsubscribeReopened: () => {},
+    unsubscribeSessionOpened: () => {},
   };
+  // Injected bridges skip the real `session/open` handshake, so mark the
+  // thinking-effort scope seeded — otherwise every test send would stall
+  // on `whenThinkingSeeded`'s fail-open timeout.
+  markThinkingSeeded(sessionId, topic);
 }

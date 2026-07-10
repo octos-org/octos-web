@@ -1,9 +1,11 @@
-import { useMemo, type ReactElement } from "react";
+import { useEffect, useMemo, useState, type ReactElement } from "react";
 import type { BackgroundTaskInfo as TaskInfo } from "@/api/types";
-import { useTasks } from "@/store/task-store";
+import { mergeTask, useTasks } from "@/store/task-store";
 import { useSession } from "@/runtime/session-context";
+import { getActiveBridge } from "@/runtime/ui-protocol-runtime";
 import {
   displayLabelForRolled,
+  expandRolledGroup,
   rollupTasksByCall,
 } from "@/runtime/task-rollup";
 
@@ -87,8 +89,76 @@ const DOT_PALETTE = ["bg-accent", "bg-accent/70", "bg-accent/40"] as const;
 export function SessionTaskIndicator() {
   const { currentSessionId, historyTopic } = useSession();
   const currentTasks = useTasks(currentSessionId, historyTopic);
+  const [open, setOpen] = useState(false);
+  // Task ids with an in-flight cancel request, so the row shows "Cancelling…"
+  // until the authoritative `task/updated` flips it to a terminal state.
+  const [cancelling, setCancelling] = useState<Record<string, boolean>>({});
+
+  // The indicator stays mounted across session/topic switches, so a menu left
+  // open in one session must not render already-open (and destructive) over a
+  // different cached session's tasks (codex review).
+  useEffect(() => {
+    setOpen(false);
+    setCancelling({});
+  }, [currentSessionId, historyTopic]);
 
   const summary = useMemo(() => buildSummary(currentTasks), [currentTasks]);
+
+  // A menu row is a rolled-up representative (a `run_pipeline` parent can
+  // stand in for several `pipeline:*` children sharing its tool_call_id).
+  // Cancel EVERY active raw task in the representative's group, not just the
+  // representative — otherwise a sibling immediately becomes the next
+  // representative and one Cancel doesn't clear the row (codex review).
+  // `expandRolledGroup` mirrors the rollup's collapse rule: ONLY pipeline
+  // families expand; unrelated tasks sharing a `tool_call_id` render as
+  // separate rows, so their Cancel must stay per-row (codex round 2).
+  // Expand over the SAME active subset `buildSummary` rolled up — a
+  // retained terminal pipeline row must not re-classify a key that the
+  // renderer treated as non-pipeline rows (codex round 3).
+  async function cancelGroup(representative: TaskInfo) {
+    const members = expandRolledGroup(
+      representative,
+      currentTasks.filter(isTaskActive),
+    );
+    const ids = members.length > 0 ? members : [representative];
+    setCancelling((prev) => {
+      const next = { ...prev };
+      for (const m of ids) next[m.id] = true;
+      return next;
+    });
+    const bridge = getActiveBridge(currentSessionId, historyTopic);
+    await Promise.all(
+      ids.map(async (task) => {
+        try {
+          if (!bridge) throw new Error("bridge not connected");
+          const result = await bridge.cancelTask(task.id);
+          // Optimistically reflect the authoritative post-cancel state; the
+          // server's `task/updated` confirms it moments later. The web status
+          // union has no `cancelled`, so cancelled/pending → terminal
+          // `completed` (drops from active, no red flash); an already-finished
+          // task comes back completed/failed; a still-`running` result means
+          // the cancel didn't take, so keep it active.
+          const status: TaskInfo["status"] =
+            result.status === "cancelled" || result.status === "pending"
+              ? "completed"
+              : result.status === "running"
+                ? "running"
+                : result.status === "failed"
+                  ? "failed"
+                  : "completed";
+          mergeTask(currentSessionId, { ...task, status }, historyTopic);
+        } catch {
+          // Leave the task as-is so the user can retry.
+        } finally {
+          setCancelling((prev) => {
+            const next = { ...prev };
+            delete next[task.id];
+            return next;
+          });
+        }
+      }),
+    );
+  }
 
   if (!summary) return null;
 
@@ -153,24 +223,61 @@ export function SessionTaskIndicator() {
   }
 
   const count = summary.state === "failed" ? 1 : summary.active.length;
+  // Only running/spawned tasks are cancellable; a failed-only summary has none.
+  const cancellable = summary.active;
 
   return (
-    <div
-      data-testid="session-task-indicator"
-      data-task-count={count}
-      data-task-state={summary.state}
-      className="session-task-indicator inline-flex items-center gap-2"
-      title={summary.detail}
-    >
-      <span
-        className="inline-flex items-center gap-1"
-        aria-hidden="true"
+    <div className="relative inline-flex">
+      <button
+        type="button"
+        data-testid="session-task-indicator"
+        data-task-count={count}
+        data-task-state={summary.state}
+        className="session-task-indicator inline-flex items-center gap-2 rounded-[8px] px-1 py-0.5 hover:bg-surface-container disabled:cursor-default"
+        title={summary.detail}
+        aria-haspopup={cancellable.length > 0 ? "menu" : undefined}
+        aria-expanded={cancellable.length > 0 ? open : undefined}
+        disabled={cancellable.length === 0}
+        onClick={() => setOpen((v) => !v)}
       >
-        {dots}
-      </span>
-      <span className="truncate text-[12px] font-medium text-text-strong">
-        {summary.label}
-      </span>
+        <span className="inline-flex items-center gap-1" aria-hidden="true">
+          {dots}
+        </span>
+        <span className="truncate text-[12px] font-medium text-text-strong">
+          {summary.label}
+        </span>
+      </button>
+
+      {open && cancellable.length > 0 && (
+        <div
+          role="menu"
+          data-testid="session-task-cancel-menu"
+          className="absolute right-0 top-full z-50 mt-1 w-64 rounded-[10px] border border-border bg-surface-container p-1 shadow-lg"
+        >
+          {cancellable.map((task) => {
+            const busy = cancelling[task.id] === true;
+            return (
+              <div
+                key={task.id}
+                className="flex items-center justify-between gap-2 rounded-[8px] px-2 py-1.5 hover:bg-surface"
+              >
+                <span className="truncate text-[12px] text-text">
+                  {taskDisplayName(task)}
+                </span>
+                <button
+                  type="button"
+                  data-testid={`cancel-task-${task.id}`}
+                  className="shrink-0 rounded-[6px] border border-border px-2 py-0.5 text-[11px] font-medium text-muted hover:border-rose-400 hover:text-rose-300 disabled:opacity-60"
+                  disabled={busy}
+                  onClick={() => void cancelGroup(task)}
+                >
+                  {busy ? "Cancelling…" : "Cancel"}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

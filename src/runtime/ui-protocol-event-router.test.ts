@@ -13,6 +13,8 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as ThreadStore from "@/store/thread-store";
+import * as TaskStore from "@/store/task-store";
+import * as AutonomyStore from "@/store/autonomy-store";
 import {
   __resetProjectionForTests,
   __setProjectionV1ForTests,
@@ -21,6 +23,10 @@ import {
 } from "@/store/projection-store";
 import { project } from "@/store/projection";
 import {
+  handleLoopUpdated,
+  handleLoopCompleted,
+  handleGoalUpdated,
+  handleGoalCleared,
   __resetRouterStateForTest,
   __resetTurnMetaForTest,
   attachRouter,
@@ -501,6 +507,38 @@ describe("router event mapping", () => {
     expect(progressEvt!.detail.terminal).toBeUndefined();
   });
 
+  it("task/updated cancelled drops the task from the active store (mapped to completed)", () => {
+    // The web BackgroundTaskInfo status union has no `cancelled`; pre-fix the
+    // router dropped a `cancelled` update entirely, leaving a cancelled task
+    // stuck showing as running. It must map to a terminal status so the task
+    // leaves the active set.
+    const cfg = {
+      sessionId: SESSION,
+      dispatchEvent: () => {},
+    };
+    TaskStore.replaceTasks(SESSION, [
+      {
+        id: "task-cxl",
+        tool_name: "deep_search",
+        tool_call_id: "tc-cxl",
+        status: "running",
+        started_at: new Date(2026, 0, 1).toISOString(),
+        completed_at: null,
+        output_files: [],
+        error: null,
+      },
+    ]);
+    handleTaskUpdated(cfg, {
+      session_id: SESSION,
+      task_id: "task-cxl",
+      state: "cancelled",
+      title: "deep_search",
+    } as TaskUpdatedEvent);
+    const task = TaskStore.getTasks(SESSION).find((t) => t.id === "task-cxl");
+    expect(task?.status).toBe("completed"); // terminal, not "running", not dropped-update
+    expect(task?.error).toBeNull(); // cancelled is not an error
+  });
+
   it("task/updated completed fans out a terminal crew:tool_progress (spawn_only spinner clear)", () => {
     // Spawn_only tools (podcast_generate, fm_tts, deep_search,
     // mofa_slides) emit their lifecycle exclusively through
@@ -534,6 +572,164 @@ describe("router event mapping", () => {
     expect(terminalEvt).toBeDefined();
     expect(terminalEvt!.detail.turnId).toBe("cmid-spawnonly");
     expect(terminalEvt!.detail.message).toBe("done");
+  });
+
+  it("task/updated cancelled fires a terminal crew:tool_progress (tool card stops spinning)", () => {
+    // Codex P1: `cancelled` must share the completed terminal path, else the
+    // tool card + spinner keep animating after the dock row disappears.
+    seedThread("cmid-cxl");
+    const dispatched: Event[] = [];
+    const cfg = {
+      sessionId: SESSION,
+      dispatchEvent: (e: Event) => dispatched.push(e),
+    };
+    handleTaskUpdated(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-cxl",
+      task_id: "task-cxl2",
+      state: "running",
+      title: "deep_search",
+    });
+    handleTaskUpdated(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-cxl",
+      task_id: "task-cxl2",
+      state: "cancelled",
+    });
+    const terminalEvt = dispatched
+      .filter((e) => e.type === "crew:tool_progress")
+      .map((e) => e as CustomEvent)
+      .find((e) => e.detail.terminal === true);
+    expect(terminalEvt).toBeDefined();
+    expect(terminalEvt!.detail.message).toBe("done");
+  });
+
+  it("task/updated cancelled for one pipeline member defers card terminalization until the last sibling ends", () => {
+    // codex round 2 P2: pipeline members share one tool call, but
+    // `task/updated` fires per raw task. Cancelling one member while a
+    // sibling keeps running (a supported task/cancel outcome) must NOT
+    // settle the shared card — later running frames never restore it.
+    // Terminalize only when no active sibling remains on the call.
+    seedThread("cmid-sib");
+    const dispatched: Event[] = [];
+    const cfg = {
+      sessionId: SESSION,
+      dispatchEvent: (e: Event) => dispatched.push(e),
+    };
+    const shared = "tc-pipe-sib";
+    const base = {
+      started_at: new Date(2026, 0, 1).toISOString(),
+      completed_at: null,
+      output_files: [],
+      error: null,
+    };
+    TaskStore.replaceTasks(SESSION, [
+      {
+        id: "sib-a",
+        tool_name: "pipeline:analyze",
+        tool_call_id: shared,
+        status: "running",
+        ...base,
+      },
+      {
+        id: "sib-b",
+        tool_name: "pipeline:synthesize",
+        tool_call_id: shared,
+        status: "running",
+        ...base,
+      },
+    ]);
+    const terminalFrames = () =>
+      dispatched
+        .filter((e) => e.type === "crew:tool_progress")
+        .map((e) => e as CustomEvent)
+        .filter((e) => e.detail.terminal === true);
+    handleTaskUpdated(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-sib",
+      task_id: "sib-a",
+      tool_call_id: shared,
+      state: "cancelled",
+    } as TaskUpdatedEvent);
+    // Sibling sib-b still running on the same call — no terminal frame yet.
+    expect(terminalFrames()).toHaveLength(0);
+    // The cancelled member's OWN store row still went terminal (its dock
+    // row clears); only the shared card transition is deferred.
+    expect(
+      TaskStore.getTasks(SESSION).find((t) => t.id === "sib-a")?.status,
+    ).toBe("completed");
+    handleTaskUpdated(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-sib",
+      task_id: "sib-b",
+      tool_call_id: shared,
+      state: "cancelled",
+    } as TaskUpdatedEvent);
+    // Last active member gone → the shared card terminalizes now.
+    expect(terminalFrames()).toHaveLength(1);
+  });
+
+  it("task/updated failed for one pipeline member defers, and the failure outcome wins when the last sibling completes", () => {
+    // codex round 3: the failed/errored branch bypassed the sibling
+    // deferral — one member's failure settled the shared card while the
+    // other member kept running. The failure must defer like the other
+    // terminals, and its store row must carry the error outcome to the
+    // final settle.
+    seedThread("cmid-sibfail");
+    const dispatched: Event[] = [];
+    const cfg = {
+      sessionId: SESSION,
+      dispatchEvent: (e: Event) => dispatched.push(e),
+    };
+    const shared = "tc-pipe-fail";
+    const base = {
+      started_at: new Date(2026, 0, 1).toISOString(),
+      completed_at: null,
+      output_files: [],
+      error: null,
+    };
+    TaskStore.replaceTasks(SESSION, [
+      {
+        id: "sf-a",
+        tool_name: "pipeline:analyze",
+        tool_call_id: shared,
+        status: "running",
+        ...base,
+      },
+      {
+        id: "sf-b",
+        tool_name: "pipeline:synthesize",
+        tool_call_id: shared,
+        status: "running",
+        ...base,
+      },
+    ]);
+    const terminalFrames = () =>
+      dispatched
+        .filter((e) => e.type === "crew:tool_progress")
+        .map((e) => e as CustomEvent)
+        .filter((e) => e.detail.terminal === true);
+    handleTaskUpdated(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-sibfail",
+      task_id: "sf-a",
+      tool_call_id: shared,
+      state: "failed",
+      runtime_detail: "boom",
+    } as TaskUpdatedEvent);
+    // Sibling still running → even a failure defers the shared card.
+    expect(terminalFrames()).toHaveLength(0);
+    handleTaskUpdated(cfg, {
+      session_id: SESSION,
+      turn_id: "cmid-sibfail",
+      task_id: "sf-b",
+      tool_call_id: shared,
+      state: "completed",
+    } as TaskUpdatedEvent);
+    // All settled; sf-a's retained failed row decides the outcome.
+    const frames = terminalFrames();
+    expect(frames).toHaveLength(1);
+    expect(frames[0].detail.message).toBe("error");
   });
 
   it("task/updated running passes through new labels (state-only dedupe would suppress spinner refresh)", () => {
@@ -2852,6 +3048,9 @@ class FakeBridge implements UiProtocolBridge {
   onUserQuestionRequested(_h: unknown) {
     return () => {};
   }
+  onApprovalAutoResolved(_h: unknown) {
+    return () => {};
+  }
   onToolStarted(h: (e: ToolStartedEvent) => void) {
     this.emitToolStarted = h;
     return () => {
@@ -4159,5 +4358,76 @@ describe("Wave4-A: queue/state fans out into crew:queue_state", () => {
     const detail = (dispatched[0] as CustomEvent).detail;
     expect(detail.pendingCount).toBe(3);
     expect(detail.head).toBe("cmid-head");
+  });
+});
+
+describe("autonomy handlers → autonomy-store", () => {
+  const cfg = { sessionId: SESSION, dispatchEvent: () => {} };
+  const baseLoop = {
+    loop_id: "l-router",
+    session_id: SESSION,
+    prompt: "p",
+    mode: "interval" as const,
+    status: "active",
+    expires_at_ms: 0,
+    created_at_ms: 1,
+    updated_at_ms: 1,
+  };
+
+  afterEach(() => {
+    AutonomyStore.__resetAutonomyStoreForTest();
+  });
+
+  it("loop/updated upserts; deleted flag removes", () => {
+    handleLoopUpdated(cfg, {
+      session_id: SESSION,
+      loop_id: "l-router",
+      loop: { ...baseLoop, status: "paused" },
+    });
+    expect(
+      AutonomyStore.getAutonomyState(SESSION).loops[0]?.status,
+    ).toBe("paused");
+    handleLoopUpdated(cfg, {
+      session_id: SESSION,
+      loop_id: "l-router",
+      loop: { ...baseLoop, status: "paused" },
+      deleted: true,
+    });
+    expect(AutonomyStore.getAutonomyState(SESSION).loops).toHaveLength(0);
+  });
+
+  it("loop/completed without a record drops the row so the chip clears", () => {
+    handleLoopUpdated(cfg, {
+      session_id: SESSION,
+      loop_id: "l-router",
+      loop: baseLoop,
+    });
+    handleLoopCompleted(cfg, {
+      session_id: SESSION,
+      loop_id: "l-router",
+      status: "completed",
+    });
+    expect(AutonomyStore.getAutonomyState(SESSION).loops).toHaveLength(0);
+  });
+
+  it("goal updated/cleared round-trip", () => {
+    handleGoalUpdated(cfg, {
+      session_id: SESSION,
+      goal: {
+        goal_id: "g-router",
+        objective: "o",
+        status: "active",
+        token_budget: 1,
+        tokens_used: 0,
+        time_used_seconds: 0,
+        created_at_ms: 1,
+        updated_at_ms: 1,
+      },
+    });
+    expect(AutonomyStore.getAutonomyState(SESSION).goal?.goal_id).toBe(
+      "g-router",
+    );
+    handleGoalCleared(cfg, { session_id: SESSION, cleared: true });
+    expect(AutonomyStore.getAutonomyState(SESSION).goal).toBe(null);
   });
 });

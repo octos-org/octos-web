@@ -23,7 +23,14 @@
  */
 
 import type {
+  LoopUpdatedEvent,
+  LoopFiredEvent,
+  LoopCompletedEvent,
+  SessionGoalUpdatedEvent,
+  SessionGoalClearedEvent,
+
   ApprovalRequestedEvent,
+  ApprovalAutoResolvedEvent,
   UserQuestionRequestedEvent,
   FileAttachedEvent,
   MessageDeltaEvent,
@@ -54,6 +61,8 @@ import type { MessageMeta } from "@/store/thread-store";
 import type { MessageInfo } from "@/api/types";
 import { recordRuntimeCounter } from "./observability";
 import { isSpawnOnlyToolName } from "./spawn-only-tools";
+import { aggregateCallStatus } from "./task-rollup";
+import * as AutonomyStore from "@/store/autonomy-store";
 
 // ---------------------------------------------------------------------------
 // Per-turn meta snapshot
@@ -934,46 +943,55 @@ export function handleTaskUpdated(
       dispatchToolProgressEvent(cfg, hostThreadId, toolLabel, label);
       break;
     }
-    case "completed": {
-      if (hostThreadId) {
-        ThreadStore.setToolCallStatus(
-          hostThreadId,
-          resolvedToolCallId,
-          "complete",
-        );
-      }
-      dispatchToolProgressEvent(
-        cfg,
-        hostThreadId,
-        toolLabel,
-        "done",
-        /* terminal */ true,
-      );
-      // Drop the cache entry — the task is done, no further frames
-      // should land on this id (mirrors `handleToolCompleted`). Drop
-      // both identifier shapes.
-      toolNameByCallId.delete(event.task_id);
-      if (resolvedToolCallId !== event.task_id) {
-        toolNameByCallId.delete(resolvedToolCallId);
-      }
-      break;
-    }
+    // All terminal states share one path: the tool card must stop
+    // animating, a terminal progress frame must fire, and the cache
+    // entry dropped — otherwise the tool card + spinner keep spinning
+    // after the dock row disappears (codex review). `cancelled` maps its
+    // store status to `completed` in `mergeLiveTask`.
+    //
+    // Pipeline members share one tool card (`resolvedToolCallId`) but
+    // `task/updated` fires per raw task, and a cancel or failure can
+    // terminate one member while siblings keep running — an explicitly
+    // supported task/cancel outcome. Settling the card on the FIRST
+    // terminal member freezes it while the dock still shows active work,
+    // and later running frames never restore it (codex rounds 2–3).
+    // Defer the card's terminal transition while any active member
+    // shares the call id — `mergeLiveTask` above already flipped THIS
+    // task's store row terminal, so an active match is a different,
+    // still-live member. A deferred failure is retained by its store
+    // row: when the last sibling settles, the aggregate reports
+    // "failed" and the card lands on error.
+    case "completed":
+    case "cancelled":
+    case "canceled":
     case "failed":
     case "errored": {
+      const isFailureEvent =
+        event.state === "failed" || event.state === "errored";
+      const aggregate =
+        aggregateCallStatus(
+          TaskStore.getTasks(cfg.sessionId, cfg.topic),
+          resolvedToolCallId,
+        ) ?? (isFailureEvent ? "failed" : "settled");
+      if (aggregate === "active") break;
+      const isError = aggregate === "failed";
       if (hostThreadId) {
         ThreadStore.setToolCallStatus(
           hostThreadId,
           resolvedToolCallId,
-          "error",
+          isError ? "error" : "complete",
         );
       }
       dispatchToolProgressEvent(
         cfg,
         hostThreadId,
         toolLabel,
-        "error",
+        isError ? "error" : "done",
         /* terminal */ true,
       );
+      // Drop the cache entry — the call is done, no further frames
+      // should land on this id (mirrors `handleToolCompleted`). Drop
+      // both identifier shapes.
       toolNameByCallId.delete(event.task_id);
       if (resolvedToolCallId !== event.task_id) {
         toolNameByCallId.delete(resolvedToolCallId);
@@ -1053,7 +1071,15 @@ function mergeLiveTask(
           ? "completed"
           : state === "failed" || state === "errored"
             ? "failed"
-            : null;
+            : // A `cancelled` task (harness.task_control.v1 task/cancel, or a
+              // channel-side cancel) is terminal-and-not-an-error. The web
+              // `BackgroundTaskInfo` status union has no `cancelled`, and
+              // dropping the update here (the pre-fix behavior) left a
+              // cancelled task stuck showing as running forever. Map it to
+              // `completed` so it leaves the active set without flashing red.
+              state === "cancelled" || state === "canceled"
+              ? "completed"
+              : null;
   if (!status) return;
 
   const existing = TaskStore.getTasks(sessionId, topic).find(
@@ -1680,6 +1706,19 @@ export function handleApprovalRequested(
   );
 }
 
+export function handleApprovalAutoResolved(
+  cfg: RouterConfig,
+  event: ApprovalAutoResolvedEvent,
+): void {
+  // A standing scope grant (e.g. "Approve for session") fired for a later
+  // request. Surface it as a toast so the grant is visible instead of the
+  // command silently running.
+  dispatch(
+    cfg,
+    new CustomEvent("crew:approval_auto_resolved", { detail: event }),
+  );
+}
+
 export function handleUserQuestionRequested(
   cfg: RouterConfig,
   event: UserQuestionRequestedEvent,
@@ -1897,6 +1936,60 @@ export function handleSkillActionJobUpdated(
  * removes every listener registered here — call it before swapping the
  * bridge out (e.g. session change) to avoid event leaks.
  */
+/** M15 autonomy visibility — merge loop/goal notifications into the
+ *  autonomy store the header chip reads. Scoped by the router cfg (same
+ *  convention as `handleTaskUpdated`): the bridge only delivers this
+ *  scope's envelopes. A `loop/updated` carrying `deleted` (or a
+ *  tombstone `status === "deleted"`) removes the row. */
+export function handleLoopUpdated(
+  cfg: RouterConfig,
+  event: LoopUpdatedEvent,
+): void {
+  if (event.deleted === true || event.loop.status === "deleted") {
+    AutonomyStore.removeLoop(cfg.sessionId, event.loop.loop_id, cfg.topic);
+    return;
+  }
+  AutonomyStore.upsertLoop(cfg.sessionId, event.loop, cfg.topic);
+}
+
+export function handleLoopFired(
+  cfg: RouterConfig,
+  event: LoopFiredEvent,
+): void {
+  if (event.loop) {
+    AutonomyStore.upsertLoop(cfg.sessionId, event.loop, cfg.topic);
+  }
+}
+
+export function handleLoopCompleted(
+  cfg: RouterConfig,
+  event: LoopCompletedEvent,
+): void {
+  if (event.loop) {
+    AutonomyStore.upsertLoop(cfg.sessionId, event.loop, cfg.topic);
+    return;
+  }
+  // Terminal without a record — drop the row so the chip clears.
+  AutonomyStore.removeLoop(cfg.sessionId, event.loop_id, cfg.topic);
+}
+
+export function handleGoalUpdated(
+  cfg: RouterConfig,
+  event: SessionGoalUpdatedEvent,
+): void {
+  AutonomyStore.setGoal(cfg.sessionId, event.goal, cfg.topic);
+}
+
+export function handleGoalCleared(
+  cfg: RouterConfig,
+  // The event payload carries no state the store needs — a clear is a
+  // clear. Keep the param for the uniform (cfg, event) handler shape.
+  event: SessionGoalClearedEvent,
+): void {
+  void event;
+  AutonomyStore.setGoal(cfg.sessionId, null, cfg.topic);
+}
+
 export function attachRouter(
   bridge: UiProtocolBridge,
   cfg: RouterConfig,
@@ -1938,6 +2031,9 @@ export function attachRouter(
   const offApprovalRequested = bridge.onApprovalRequested((e) =>
     handleApprovalRequested(cfg, e),
   );
+  const offApprovalAutoResolved = bridge.onApprovalAutoResolved((e) =>
+    handleApprovalAutoResolved(cfg, e),
+  );
   const offUserQuestionRequested = bridge.onUserQuestionRequested((e) =>
     handleUserQuestionRequested(cfg, e),
   );
@@ -1972,6 +2068,21 @@ export function attachRouter(
           };
     dispatch(cfg, new CustomEvent("crew:compaction", { detail }));
   });
+  // M15 autonomy chip feeds. Optional-called — test mocks predating the
+  // loop/goal surface simply don't wire them.
+  const offLoopUpdated = bridge.onLoopUpdated?.((e) =>
+    handleLoopUpdated(cfg, e),
+  );
+  const offLoopFired = bridge.onLoopFired?.((e) => handleLoopFired(cfg, e));
+  const offLoopCompleted = bridge.onLoopCompleted?.((e) =>
+    handleLoopCompleted(cfg, e),
+  );
+  const offGoalUpdated = bridge.onGoalUpdated?.((e) =>
+    handleGoalUpdated(cfg, e),
+  );
+  const offGoalCleared = bridge.onGoalCleared?.((e) =>
+    handleGoalCleared(cfg, e),
+  );
   const offToolStarted = bridge.onToolStarted((e) => handleToolStarted(cfg, e));
   const offToolProgress = bridge.onToolProgress((e) =>
     handleToolProgress(cfg, e),
@@ -2026,12 +2137,18 @@ export function attachRouter(
       offSkillActionJobUpdated();
       offTurnLifecycle();
       offApprovalRequested();
+      offApprovalAutoResolved();
       offUserQuestionRequested();
       offToolStarted();
       offToolProgress();
       offToolCompleted();
       offProgressUpdated();
       offContextCompaction?.();
+      offLoopUpdated?.();
+      offLoopFired?.();
+      offLoopCompleted?.();
+      offGoalUpdated?.();
+      offGoalCleared?.();
       offRouterStatus();
       offRouterFailover();
       offQueueState();
