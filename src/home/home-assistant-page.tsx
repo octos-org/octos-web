@@ -267,6 +267,9 @@ export function HomeAssistantPage() {
       goBack: async () => false,
       createSession: () => homeSessionId,
       removeSession: async () => {},
+      branchSession: async () => {
+        throw new Error("session fork is not available on this surface");
+      },
       refreshSessions: async () => {},
       markSessionActive: () => {},
     }),

@@ -47,6 +47,7 @@ function makeSessionCtx(
     switchSession: () => {},
     goBack: async () => false,
     createSession: () => SESSION_ID,
+    branchSession: async () => SESSION_ID,
     removeSession: async () => {},
     refreshSessions: async () => {},
     markSessionActive: () => {},

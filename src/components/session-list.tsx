@@ -17,6 +17,7 @@ import {
   Plus,
   MessageSquare,
   Trash2,
+  GitBranch,
   Check,
   X,
   Loader2,
@@ -44,6 +45,7 @@ export function SessionList() {
     currentSessionId,
     switchSession,
     createSession,
+    branchSession,
     removeSession,
     markSessionActive,
     refreshSessions,
@@ -51,6 +53,7 @@ export function SessionList() {
   const taskEntries = useAllTasksBySession();
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [forkingId, setForkingId] = useState<string | null>(null);
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [pendingTemplate, setPendingTemplate] =
     useState<Exclude<SessionTemplateKind, "chat"> | null>(null);
@@ -106,6 +109,21 @@ export function SessionList() {
       return next;
     });
   }, []);
+
+  const handleFork = useCallback(
+    async (id: string) => {
+      if (forkingId) return; // one fork at a time
+      setForkingId(id);
+      try {
+        await branchSession(id);
+      } catch (error) {
+        console.error("Failed to fork session", error);
+      } finally {
+        setForkingId(null);
+      }
+    },
+    [branchSession, forkingId],
+  );
 
   const handleDelete = useCallback(async (id: string) => {
     setDeletingId(id);
@@ -380,6 +398,22 @@ export function SessionList() {
                             {isBusy ? "Live session" : sessionLabel}
                           </div>
                         </div>
+                      </button>
+                      <button
+                        data-testid="session-fork-button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleFork(s.id);
+                        }}
+                        disabled={forkingId !== null}
+                        className="glass-icon-button shrink-0 rounded-[10px] p-1.5 opacity-60 hover:text-accent group-hover:opacity-100 disabled:opacity-30"
+                        title="Branch this conversation into a new session"
+                      >
+                        {forkingId === s.id ? (
+                          <Loader2 size={12} className="animate-spin" />
+                        ) : (
+                          <GitBranch size={12} />
+                        )}
                       </button>
                       <button
                         data-testid="session-delete-button"

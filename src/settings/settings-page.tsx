@@ -17,6 +17,7 @@ import {
   Palette,
   Volume2,
   Brain,
+  AlarmClock,
 } from "lucide-react";
 import {
   WorkbenchStatusPill,
@@ -38,8 +39,9 @@ import { OminixTab } from "./ominix-tab";
 import { AppearanceTab } from "./appearance-tab";
 import { VoiceTab } from "./voice-tab";
 import { MemoryTab } from "./memory-tab";
+import { CronTab } from "./cron-tab";
 
-type TabId = "profile" | "appearance" | "llm" | "voice" | "memory" | "skills" | "channels" | "sandbox" | "tools" | "users" | "system" | "server" | "ominix";
+type TabId = "profile" | "appearance" | "llm" | "voice" | "memory" | "schedule" | "skills" | "channels" | "sandbox" | "tools" | "users" | "system" | "server" | "ominix";
 
 interface TabDef {
   id: TabId;
@@ -54,6 +56,7 @@ const TABS: TabDef[] = [
   { id: "llm", label: "LLM", icon: Cpu },
   { id: "voice", label: "Voice", icon: Volume2 },
   { id: "memory", label: "Memory", icon: Brain },
+  { id: "schedule", label: "Schedule", icon: AlarmClock },
   { id: "skills", label: "Skills", icon: Puzzle },
   { id: "channels", label: "Channels", icon: Radio },
   { id: "sandbox", label: "Sandbox", icon: Shield },
@@ -209,6 +212,7 @@ export function AdminSettingsPage() {
                     />
                   )}
                   {activeTab === "memory" && <MemoryTab key={selectedProfileId} />}
+                  {activeTab === "schedule" && <CronTab key={selectedProfileId} />}
                   {activeTab === "skills" && <SkillsTab />}
                   {activeTab === "channels" && <ChannelsTab profile={profile} onProfileUpdated={setProfile} />}
                   {activeTab === "sandbox" && (

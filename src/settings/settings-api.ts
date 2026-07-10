@@ -1060,7 +1060,11 @@ export interface MemoryOverview {
   today: string;
   recent: MemoryDailyNote[];
   entities: MemoryEntitySummary[];
+  /** Bank enumeration stopped at the server cap — list is partial. */
+  entities_truncated?: boolean;
   staging_notes: number;
+  /** Staging scan stopped early — `staging_notes` is a lower bound. */
+  staging_truncated?: boolean;
   refresh_enabled: boolean;
 }
 
@@ -1077,5 +1081,57 @@ export async function getMyMemory(): Promise<MemoryOverview> {
 export async function getMyMemoryEntity(name: string): Promise<MemoryEntityPage> {
   return await request<MemoryEntityPage>(
     `/api/my/memory/entities/${encodeURIComponent(name)}`,
+  );
+}
+
+// ── Cron panel (/api/my/cron*) ──
+
+export type CronScheduleWire =
+  | { kind: "At"; at_ms: number }
+  | { kind: "Every"; every_ms: number }
+  | { kind: "Cron"; expr: string };
+
+export interface CronJobRow {
+  id: string;
+  name: string;
+  enabled: boolean;
+  schedule: CronScheduleWire;
+  message: string;
+  channel: string | null;
+  last_run: string | null;
+  last_status: string | null;
+  next_in: string | null;
+  timezone: string | null;
+}
+
+export interface CronOverview {
+  ok: boolean;
+  count: number;
+  jobs: CronJobRow[];
+  gateway_running: boolean;
+}
+
+export async function getMyCron(): Promise<CronOverview> {
+  return await request<CronOverview>("/api/my/cron");
+}
+
+/** Thrown reason when the toggle is refused (409 etc.). */
+export function cronToggleRefusalReason(err: unknown): string | null {
+  if (!(err instanceof Error)) return null;
+  try {
+    const body = JSON.parse(err.message) as { reason?: unknown };
+    return typeof body.reason === "string" ? body.reason : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function setMyCronEnabled(
+  jobId: string,
+  enabled: boolean,
+): Promise<{ ok: boolean; job: CronJobRow }> {
+  return await request<{ ok: boolean; job: CronJobRow }>(
+    `/api/my/cron/${encodeURIComponent(jobId)}/enabled`,
+    { method: "PUT", body: JSON.stringify({ enabled }) },
   );
 }
