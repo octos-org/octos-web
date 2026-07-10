@@ -134,28 +134,36 @@ export function CronTab() {
   const [error, setError] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [toggleError, setToggleError] = useState<string | null>(null);
-  // Generation gate: a Reload GET that was in flight when a toggle
-  // PUT resolved would overwrite the fresh server row with the old
-  // snapshot (codex web#266 r1 P2). Every toggle bumps the
-  // generation; a load only applies if no toggle landed after it
-  // started.
-  const loadGenRef = useRef(0);
+  // Two independent guards (codex web#266 r1+r2 P2):
+  //  - loadSeqRef: newest-load-wins. Bumped ONLY by load(), it gates
+  //    BOTH the result AND the loading flag, so a superseded StrictMode
+  //    double-mount load never clears loading while the winning load is
+  //    still pending (which would blank the tab via `!overview`).
+  //  - toggleStampRef: bumped by each toggle. A Reload GET in flight
+  //    when a toggle PUT resolved carries a pre-toggle snapshot — it is
+  //    rejected so it cannot clobber the fresh server row. Kept
+  //    separate from loadSeqRef so a toggle never strands `loading`.
+  const loadSeqRef = useRef(0);
+  const toggleStampRef = useRef(0);
 
   const load = useCallback(async () => {
-    const gen = ++loadGenRef.current;
+    const seq = ++loadSeqRef.current;
+    const toggleStamp = toggleStampRef.current;
     setLoading(true);
     setError(null);
     try {
       const next = await getMyCron();
-      if (gen === loadGenRef.current) setOverview(next);
+      if (seq === loadSeqRef.current && toggleStamp === toggleStampRef.current) {
+        setOverview(next);
+      }
     } catch (err) {
-      if (gen === loadGenRef.current) {
+      if (seq === loadSeqRef.current) {
         setError(formatSettingsError(err, "Failed to load schedule."));
       }
     } finally {
-      // Unconditional: an invalidated load must not leave the spinner
-      // wedged on (its RESULT is gated above, its liveness is not).
-      setLoading(false);
+      // Only the newest load controls the spinner — a superseded load
+      // must NOT clear it while the winner is still in flight.
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, []);
 
@@ -170,7 +178,7 @@ export function CronTab() {
       const resp = await setMyCronEnabled(job.id, enabled);
       // Invalidate any in-flight GET that started before this PUT
       // resolved — its snapshot predates the toggle.
-      loadGenRef.current++;
+      toggleStampRef.current++;
       setOverview((prev) =>
         prev
           ? {

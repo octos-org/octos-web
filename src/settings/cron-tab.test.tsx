@@ -164,6 +164,33 @@ describe("CronTab", () => {
     );
   });
 
+  it("does not blank the tab when a superseded load resolves first", async () => {
+    // codex web#266 r2 P2: StrictMode mounts two loads. If the FIRST
+    // (superseded) resolves before the second, it must not clear
+    // loading while overview is still null — the tab would go blank.
+    let resolveFirst: (v: typeof OVERVIEW) => void = () => {};
+    apiMocks.getMyCron.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveFirst = resolve as (v: typeof OVERVIEW) => void;
+        }),
+    );
+    apiMocks.getMyCron.mockResolvedValueOnce(OVERVIEW);
+    render(<CronTab />);
+
+    // Simulate the StrictMode second mount: a second load supersedes.
+    // (Both effects run; the component instance is the same.) Resolve
+    // the FIRST after the second is armed.
+    await new Promise((r) => setTimeout(r, 0));
+    resolveFirst({ ...OVERVIEW, count: 99 });
+
+    // The winning (second) load renders the real jobs; the tab is
+    // never stuck blank.
+    await waitFor(() =>
+      expect(screen.getByText("morning briefing")).toBeTruthy(),
+    );
+  });
+
   it("rejects a stale reload snapshot that resolves after a toggle", async () => {
     // codex web#266 r1 P2: GET starts (old rows) → PUT resolves and
     // applies the toggled row → GET resolves late. The stale snapshot
