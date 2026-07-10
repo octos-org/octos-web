@@ -122,6 +122,13 @@ function readySourceJob(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function mockSourceImportJobs(jobs: unknown[] = [readySourceJob()]) {
+  listSkillActionJobsMock.mockImplementation(
+    (_sessionId: string, options?: { actionId?: string }) =>
+      Promise.resolve(options?.actionId === "source.import" ? jobs : []),
+  );
+}
+
 function renderStudio(path = "/studio/web-abc") {
   return render(
     <MemoryRouter initialEntries={[path]}>
@@ -274,7 +281,7 @@ describe("StudioPage", () => {
   });
 
   it("invokes a notebook skill action with selected imported source ids", async () => {
-    listSkillActionJobsMock.mockResolvedValueOnce([readySourceJob()]);
+    mockSourceImportJobs();
     invokeSkillActionMock.mockResolvedValueOnce({
       action_id: "quiz.generate",
       ok: true,
@@ -315,7 +322,7 @@ describe("StudioPage", () => {
   });
 
   it("previews and downloads artifacts from completed studio action jobs", async () => {
-    listSkillActionJobsMock.mockResolvedValueOnce([readySourceJob()]);
+    mockSourceImportJobs();
     invokeSkillActionMock.mockResolvedValueOnce({
       action_id: "quiz.generate",
       ok: true,
@@ -374,6 +381,44 @@ describe("StudioPage", () => {
     );
   });
 
+  it("restores persisted generated assets after a page refresh", async () => {
+    listSkillActionJobsMock.mockImplementation(
+      (_sessionId: string, options?: { actionId?: string }) =>
+        Promise.resolve(
+          options?.actionId === "source.import"
+            ? []
+            : [
+                {
+                  job_id: "job-restored-quiz",
+                  batch_id: "batch-restored-quiz",
+                  profile_id: "alan0x",
+                  session_id: "web-abc",
+                  action_id: "quiz.generate",
+                  skill_id: "mofa-notebook-study",
+                  status: "succeeded",
+                  result: {
+                    files_to_send: [
+                      "/Users/alan0x/.octos/profiles/alan0x/data/users/web-abc/workspace/notebook-outputs/study/quiz/restored-quiz.md",
+                    ],
+                  },
+                  created_at: "2026-07-09T01:00:00Z",
+                  updated_at: "2026-07-09T01:01:00Z",
+                },
+              ],
+        ),
+    );
+
+    renderStudio();
+
+    expect(await screen.findByText("restored-quiz.md")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Preview restored-quiz.md" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Download restored-quiz.md" }),
+    ).toBeTruthy();
+  });
+
   it("disables source-required action skills until a source is selected", () => {
     renderStudio();
 
@@ -387,7 +432,7 @@ describe("StudioPage", () => {
   });
 
   it("does not send selected notebook sources as chat turn media attachments", async () => {
-    listSkillActionJobsMock.mockResolvedValueOnce([readySourceJob()]);
+    mockSourceImportJobs();
     invokeSkillActionMock.mockResolvedValueOnce({
       action_id: "mindmap.generate",
       ok: true,
@@ -667,27 +712,34 @@ describe("StudioPage", () => {
   });
 
   it("restores processing source jobs after the bridge reconnects", async () => {
-    listSkillActionJobsMock
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([
-        {
-          job_id: "job-restored",
-          batch_id: "batch-restored",
-          profile_id: "alan0x",
-          session_id: "web-abc",
-          action_id: "source.import",
-          skill_id: "mofa-notebook-source",
-          status: "running",
-          input_path: "uploads/restored.pdf",
-          filename: "restored.pdf",
-          created_at: "2026-07-09T01:00:00Z",
-          updated_at: "2026-07-09T01:02:00Z",
-        },
-      ]);
+    let sourceRestoreCount = 0;
+    listSkillActionJobsMock.mockImplementation(
+      (_sessionId: string, options?: { actionId?: string }) => {
+        if (options?.actionId !== "source.import") return Promise.resolve([]);
+        sourceRestoreCount += 1;
+        return Promise.resolve(sourceRestoreCount === 1 ? [] : [
+          {
+            job_id: "job-restored",
+            batch_id: "batch-restored",
+            profile_id: "alan0x",
+            session_id: "web-abc",
+            action_id: "source.import",
+            skill_id: "mofa-notebook-source",
+            status: "running",
+            input_path: "uploads/restored.pdf",
+            filename: "restored.pdf",
+            created_at: "2026-07-09T01:00:00Z",
+            updated_at: "2026-07-09T01:02:00Z",
+          },
+        ]);
+      },
+    );
 
     renderStudio();
     await waitFor(() =>
-      expect(listSkillActionJobsMock).toHaveBeenCalledTimes(1),
+      expect(listSkillActionJobsMock).toHaveBeenCalledWith("web-abc", {
+        actionId: "source.import",
+      }),
     );
 
     fireEvent(window, new Event("crew:bridge_connected"));
@@ -700,7 +752,7 @@ describe("StudioPage", () => {
   });
 
   it("previews the original uploaded file for an imported source", async () => {
-    listSkillActionJobsMock.mockResolvedValueOnce([readySourceJob()]);
+    mockSourceImportJobs();
 
     renderStudio();
 
@@ -715,7 +767,7 @@ describe("StudioPage", () => {
   });
 
   it("renames an imported source through the source rename action", async () => {
-    listSkillActionJobsMock.mockResolvedValueOnce([readySourceJob()]);
+    mockSourceImportJobs();
     invokeSkillActionMock.mockResolvedValueOnce({
       action_id: "source.rename",
       ok: true,
@@ -743,7 +795,7 @@ describe("StudioPage", () => {
   });
 
   it("removes an imported source through the source remove action", async () => {
-    listSkillActionJobsMock.mockResolvedValueOnce([readySourceJob()]);
+    mockSourceImportJobs();
     invokeSkillActionMock.mockResolvedValueOnce({
       action_id: "source.remove",
       ok: true,

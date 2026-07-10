@@ -6,6 +6,7 @@ import { buildApiHeaders } from "@/api/client";
 import { buildFileUrl } from "@/api/files";
 import {
   invokeSkillAction,
+  listSkillActionJobs,
   type SkillActionJob,
   type SkillActionJobStatus,
 } from "@/api/skill-actions";
@@ -159,6 +160,29 @@ export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Pr
     window.addEventListener("crew:skill_action_job_updated", onJobUpdated);
     return () => {
       window.removeEventListener("crew:skill_action_job_updated", onJobUpdated);
+    };
+  }, [sessionId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const restoreJobs = () => {
+      void listSkillActionJobs(sessionId)
+        .then((restored) => {
+          if (!cancelled) {
+            setJobs((current) => mergeJobs(current, restored));
+          }
+        })
+        // The bridge may not be connected on first render. The connection
+        // event below retries this persisted-job restore without surfacing a
+        // spurious user-facing error.
+        .catch(() => {});
+    };
+
+    restoreJobs();
+    window.addEventListener("crew:bridge_connected", restoreJobs);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("crew:bridge_connected", restoreJobs);
     };
   }, [sessionId]);
 
