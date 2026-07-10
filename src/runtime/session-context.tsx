@@ -465,22 +465,34 @@ export function rollbackOptimisticRename(
 }
 
 /**
- * Compose the scoped parent key for a session fork. A session opened
- * under a topic (e.g. `/new slides …`) lives in its own `id#topic`
- * SessionKey server-side; forking the bare id would branch the default
- * bucket instead — copying the wrong (or empty) history, or 404ing as
- * `unknown_session` (codex web#267 r1 P1). Mirror the ui-protocol
- * bridge's `requireScopedSessionId`: append the stored topic unless the
- * id already carries a `#` scope. Returns the bare id when the session
- * has no topic. The server derives the child from `base_key` (topic
- * dropped), so the child is always a fresh raw conversation.
+ * Resolve which server-side bucket a sidebar session id denotes — THE
+ * single authority shared by `switchSession` (what clicking a row
+ * shows) and `branchSession` (what forking a row copies), so the two
+ * can never diverge (codex web#267 r1 P1 + r2 P1).
+ *
+ * A session opened under a topic (e.g. `/new slides …`) lives in its
+ * own `id#topic` SessionKey server-side. The SPA keys sidebar rows by
+ * BARE id and tracks the active topic in `sessionTopics`; clicking a
+ * bare row loads `(id, topics[id])` — i.e. the row denotes the TOPIC
+ * bucket whenever the map holds one, and the default bucket under that
+ * base id is not reachable from that row. Forking follows the same
+ * resolution: it copies exactly the conversation the row opens.
+ *
+ * An id that already carries a `#` scope (a server list row for a
+ * topic bucket) is authoritative as-is — the topic map never overrides
+ * it, mirroring the bridge's `requireScopedSessionId` pass-through.
+ * The server derives a fork child from `base_key` (topic dropped), so
+ * the child is always a fresh raw conversation regardless of scope.
  */
-export function scopedForkParent(
-  sourceId: string,
-  topic: string | undefined,
-): string {
-  if (!topic || sourceId.includes("#")) return sourceId;
-  return `${sourceId}#${topic}`;
+export function resolveSessionScope(
+  id: string,
+  topics: Record<string, string>,
+): { scopedId: string; topic: string | undefined } {
+  if (id.includes("#")) {
+    return { scopedId: id, topic: undefined };
+  }
+  const topic = topics[id] || undefined;
+  return { scopedId: topic ? `${id}#${topic}` : id, topic };
 }
 
 export function SessionProvider({ children }: { children: ReactNode }) {
@@ -587,7 +599,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     restoredRef.current = true;
     const saved = localStorage.getItem("octos_current_session");
     if (saved && saved.startsWith("web-")) {
-      const restoredTopic = sessionTopics[saved];
+      const { topic: restoredTopic } = resolveSessionScope(saved, sessionTopics);
       void ThreadStore.loadHistory(saved, restoredTopic);
       getSessionTasks(saved, restoredTopic)
         .then((tasks) => {
@@ -962,7 +974,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     // pages through `getMessagesPage` so >500-msg sessions render in
     // full instead of silent truncation.
     const requestId = ++switchRequestRef.current;
-    const topic = sessionTopics[id];
+    // Shared bucket resolution with branchSession — see
+    // resolveSessionScope.
+    const { topic } = resolveSessionScope(id, sessionTopics);
     setCurrentSessionId(id);
     setActiveHistoryTopic(topic);
     setInitialMessages([]);
@@ -1008,17 +1022,23 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const branchSession = useCallback(
     async (sourceId: string) => {
-      // Fork the SCOPED parent key (see `scopedForkParent`): a
-      // topic-scoped session must be forked as `id#topic`, not the bare
-      // id, or the server branches the wrong bucket (codex web#267 r1
-      // P1). Server-side fork copies the parent's FULL message history
-      // and records parent_key lineage — matching the CLI `/new` fork.
-      // Workspace artifacts (uploads, generated files) intentionally
-      // stay with the parent, same as the CLI: the child inherits the
+      // Fork the bucket the row DENOTES — the same resolution
+      // switchSession uses (see resolveSessionScope), so a fork always
+      // copies exactly the conversation clicking that row shows: the
+      // topic bucket when the map holds a topic for a bare id, the
+      // scoped id as-is for a topic-bucket row, the default bucket
+      // otherwise (codex web#267 r1 P1 + r2 P1). Server-side fork
+      // copies the parent's FULL message history and records
+      // parent_key lineage — matching the CLI `/new` fork. Workspace
+      // artifacts (uploads, generated files) intentionally stay with
+      // the parent, same as the CLI: the child inherits the
       // conversation, not the parent's on-disk resources. The child id
       // is minted client-side (raw `web-*` convention); the server
       // echoes it back for raw parents.
-      const scopedSource = scopedForkParent(sourceId, sessionTopics[sourceId]);
+      const { scopedId: scopedSource } = resolveSessionScope(
+        sourceId,
+        sessionTopics,
+      );
       const result = await forkSession(scopedSource, generateSessionId());
       const newId = result.new_session_id;
       await refreshSessions();

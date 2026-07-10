@@ -45,8 +45,8 @@ vi.mock("@/api/sessions", () => ({
 import {
   applyOptimisticRename,
   mergeSessionLists,
+  resolveSessionScope,
   rollbackOptimisticRename,
-  scopedForkParent,
   sessionTimestamp,
   SessionProvider,
   SESSION_LIST_RENDER_CAP,
@@ -694,33 +694,54 @@ describe("renameSession rollback wiring (replicated from SessionProvider)", () =
 });
 
 // ---------------------------------------------------------------------------
-// Session fork scoping (codex web#267 r1 P1)
+// Session bucket resolution (codex web#267 r1 P1 + r2 P1)
 // ---------------------------------------------------------------------------
 //
 // A session opened under a topic (`/new slides …`) lives in its own
-// `id#topic` SessionKey server-side. `branchSession` must fork that
-// scoped key, not the bare id — otherwise `session/fork` branches the
-// default bucket, copying the wrong (or empty) history. We test the pure
-// `scopedForkParent` composition helper, then the wiring end-to-end
-// through the real provider callback with a seeded topic.
+// `id#topic` SessionKey server-side. `resolveSessionScope` is the ONE
+// authority for which bucket a sidebar row denotes — shared by
+// `switchSession` (what clicking shows) and `branchSession` (what
+// forking copies), so fork ≡ click-view by construction: a fork can
+// never copy a conversation the row would not open.
 
-describe("scopedForkParent", () => {
-  it("returns the bare id when the session has no topic", () => {
-    expect(scopedForkParent("web-123", undefined)).toBe("web-123");
-    expect(scopedForkParent("web-123", "")).toBe("web-123");
+describe("resolveSessionScope", () => {
+  it("resolves a bare id with no topic to itself (default bucket)", () => {
+    expect(resolveSessionScope("web-123", {})).toEqual({
+      scopedId: "web-123",
+      topic: undefined,
+    });
   });
 
-  it("appends the stored topic as a `#scope` suffix", () => {
-    expect(scopedForkParent("web-123", "slides")).toBe("web-123#slides");
+  it("resolves a bare id with a stored topic to the topic bucket", () => {
+    // This mirrors switchSession: clicking this row loads the TOPIC
+    // history, so forking it must copy that same conversation.
+    expect(resolveSessionScope("web-123", { "web-123": "slides" })).toEqual({
+      scopedId: "web-123#slides",
+      topic: "slides",
+    });
   });
 
-  it("does not double-scope an id that already carries a topic", () => {
-    // Defensive: an already-scoped id is passed through untouched so the
-    // suffix is never applied twice.
-    expect(scopedForkParent("web-123#slides", "slides")).toBe(
-      "web-123#slides",
-    );
-    expect(scopedForkParent("web-123#slides", "other")).toBe("web-123#slides");
+  it("treats an already-scoped id as authoritative", () => {
+    // A topic-bucket row from the server list forks as-is; the topic
+    // map never overrides an explicit scope (codex web#267 r2 P1:
+    // "preserve the selected row's scope") — and it is never
+    // double-suffixed.
+    expect(
+      resolveSessionScope("web-123#slides", { "web-123#slides": "other" }),
+    ).toEqual({ scopedId: "web-123#slides", topic: undefined });
+    expect(resolveSessionScope("web-123#slides", {})).toEqual({
+      scopedId: "web-123#slides",
+      topic: undefined,
+    });
+  });
+
+  it("ignores topics stored under OTHER ids", () => {
+    // codex web#267 r2 P1 scenario: base id web-123 has both a default
+    // and a topic history. The scoped row `web-123#slides` keeps its
+    // own scope; a DIFFERENT bare row (another session) is untouched
+    // by web-123's map entry.
+    const topics = { "web-123": "slides" };
+    expect(resolveSessionScope("web-456", topics).scopedId).toBe("web-456");
   });
 });
 
