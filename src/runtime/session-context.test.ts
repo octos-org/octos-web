@@ -745,6 +745,38 @@ describe("resolveSessionScope", () => {
   });
 });
 
+describe("SessionProvider initial topic restore", () => {
+  it("resolves the FIRST render's topic through the resolver for a scoped saved id", async () => {
+    // codex web#267 r3 P2: with a scoped id saved as the current
+    // session and a STALE map entry under that scoped key (e.g. after
+    // `/s other` on that row), the state initializer used the raw map
+    // and exposed `other` to children's mount effects for the first
+    // render — the restore effect only corrected it afterwards. The
+    // initializer must apply the same resolution: scoped id ⇒ its own
+    // scope is authoritative ⇒ topic undefined.
+    const scopedId = `${idAt(900, "scoped")}#slides`;
+    localStorage.setItem("octos_current_session", scopedId);
+    localStorage.setItem(
+      SESSION_TOPIC_STORAGE_KEY,
+      JSON.stringify({ [scopedId]: "other" }),
+    );
+
+    const seenTopics: Array<string | undefined> = [];
+    const harness = mountSessionProvider((ctx) => {
+      seenTopics.push(ctx.historyTopic);
+    });
+    try {
+      expect(seenTopics.length).toBeGreaterThan(0);
+      expect(seenTopics[0]).toBeUndefined();
+      await flushReactWork();
+      // …and it stays resolved after the restore effect runs.
+      expect(seenTopics[seenTopics.length - 1]).toBeUndefined();
+    } finally {
+      harness.unmount();
+    }
+  });
+});
+
 describe("SessionProvider branchSession fork scoping", () => {
   it("forks the topic-scoped parent key for a session opened under a topic", async () => {
     const topicSessionId = idAt(700, "slides");

@@ -503,9 +503,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return saved || generateSessionId();
   });
   const [activeHistoryTopic, setActiveHistoryTopic] = useState<string | undefined>(() => {
+    // Through the resolver, NOT a raw map read (codex web#267 r3 P2):
+    // a restored scoped id (`web-123#slides`) is authoritative as-is,
+    // and a stale map entry under that scoped key must not expose a
+    // different topic to children's mount effects for the first render
+    // — the restore effect would only correct it AFTER mount.
     const saved = localStorage.getItem("octos_current_session");
-    const topics = loadStoredTopics();
-    return saved ? topics[saved] : undefined;
+    return saved
+      ? resolveSessionScope(saved, loadStoredTopics()).topic
+      : undefined;
   });
   const [initialMessages, setInitialMessages] = useState<MessageInfo[]>([]);
   const [serverTaskActiveBySession, setServerTaskActiveBySession] = useState<
