@@ -464,6 +464,25 @@ export function rollbackOptimisticRename(
   );
 }
 
+/**
+ * Compose the scoped parent key for a session fork. A session opened
+ * under a topic (e.g. `/new slides …`) lives in its own `id#topic`
+ * SessionKey server-side; forking the bare id would branch the default
+ * bucket instead — copying the wrong (or empty) history, or 404ing as
+ * `unknown_session` (codex web#267 r1 P1). Mirror the ui-protocol
+ * bridge's `requireScopedSessionId`: append the stored topic unless the
+ * id already carries a `#` scope. Returns the bare id when the session
+ * has no topic. The server derives the child from `base_key` (topic
+ * dropped), so the child is always a fresh raw conversation.
+ */
+export function scopedForkParent(
+  sourceId: string,
+  topic: string | undefined,
+): string {
+  if (!topic || sourceId.includes("#")) return sourceId;
+  return `${sourceId}#${topic}`;
+}
+
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [sessions, setSessions] = useState<SessionWithTitle[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState(() => {
@@ -989,17 +1008,24 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const branchSession = useCallback(
     async (sourceId: string) => {
-      // Server-side fork: copies the parent's FULL history and records
-      // parent_key lineage; the SPA then treats the child as any other
-      // session. The child id is minted client-side (raw `web-*`
-      // convention) — the server echoes it back for raw parents.
-      const result = await forkSession(sourceId, generateSessionId());
+      // Fork the SCOPED parent key (see `scopedForkParent`): a
+      // topic-scoped session must be forked as `id#topic`, not the bare
+      // id, or the server branches the wrong bucket (codex web#267 r1
+      // P1). Server-side fork copies the parent's FULL message history
+      // and records parent_key lineage — matching the CLI `/new` fork.
+      // Workspace artifacts (uploads, generated files) intentionally
+      // stay with the parent, same as the CLI: the child inherits the
+      // conversation, not the parent's on-disk resources. The child id
+      // is minted client-side (raw `web-*` convention); the server
+      // echoes it back for raw parents.
+      const scopedSource = scopedForkParent(sourceId, sessionTopics[sourceId]);
+      const result = await forkSession(scopedSource, generateSessionId());
       const newId = result.new_session_id;
       await refreshSessions();
       switchSession(newId);
       return newId;
     },
-    [refreshSessions, switchSession],
+    [sessionTopics, refreshSessions, switchSession],
   );
 
   const goBack = useCallback(async () => {
