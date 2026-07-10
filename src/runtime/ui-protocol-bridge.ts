@@ -44,6 +44,7 @@ import type {
   RouterFailoverEvent,
   RouterStatusEvent,
   RpcErrorPayload,
+  SessionRollbackResult,
   SessionHydrateResult,
   SessionOpenedResult,
   SessionOpenResult,
@@ -103,6 +104,7 @@ export type {
   SessionHydrateResult,
   SessionOpenResult,
   SessionOpenedResult,
+  SessionRollbackResult,
   TaskOutputDeltaEvent,
   UiLoopRecord,
   UiGoalRecord,
@@ -150,6 +152,7 @@ export const METHODS = {
   // client → server
   SESSION_OPEN: "session/open",
   SESSION_HYDRATE: "session/hydrate",
+  SESSION_ROLLBACK: "session/rollback",
   LOOP_LIST: "loop/list",
   LOOP_PAUSE: "loop/pause",
   LOOP_RESUME: "loop/resume",
@@ -464,6 +467,15 @@ export interface UiProtocolBridge {
   onLoopCompleted(handler: (e: LoopCompletedEvent) => void): () => void;
   onGoalUpdated(handler: (e: SessionGoalUpdatedEvent) => void): () => void;
   onGoalCleared(handler: (e: SessionGoalClearedEvent) => void): () => void;
+
+  /**
+   * `session/rollback` — drop the last `numTurns` USER turns from the
+   * session (server-persisted, conversation-only rewind) and return the
+   * trimmed thread in the `session/hydrate` shape. MUTATING. Rejects
+   * with `invalid_params { kind: "turn_in_progress" }` while a turn is
+   * in flight — callers surface that instead of retrying.
+   */
+  rollbackSession(numTurns: number): Promise<SessionRollbackResult>;
 
   /**
    * Generic JSON-RPC request escape hatch.
@@ -2414,7 +2426,29 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     }
   }
 
-  /** `loop/list` for this scope. Requires `coding.loop_runtime.v1`. */
+  async rollbackSession(numTurns: number): Promise<SessionRollbackResult> {
+    if (!Number.isInteger(numTurns) || numTurns < 1) {
+      throw new Error(
+        "ui-protocol-bridge: rollbackSession requires numTurns >= 1",
+      );
+    }
+    // Scoped id: a topic-suffixed bucket (`session#topic`) is its own
+    // SessionKey server-side; rolling back a slides/site topic must trim
+    // THAT bucket, not the root session (same scoping task/cancel uses).
+    const raw = await this.request<unknown>(METHODS.SESSION_ROLLBACK, {
+      session_id: this.requireScopedSessionId(),
+      num_turns: numTurns,
+    });
+    const record = raw as { dropped_turns?: unknown; thread?: unknown };
+    const thread = guardSessionHydrate(record?.thread);
+    if (!thread || typeof record.dropped_turns !== "number") {
+      throw new Error(
+        "ui-protocol-bridge: session/rollback returned a malformed result",
+      );
+    }
+    return { dropped_turns: record.dropped_turns, thread };
+  }
+
   /** Params shared by every autonomy RPC. The server resolves these
    *  calls independently from `session/open`: on an admin/unscoped
    *  connection an omitted `profile_id` falls back to the session key's

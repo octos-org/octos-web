@@ -24,6 +24,7 @@ import {
 } from "@/store/thinking-store";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { getActiveBridge, startBridgeForSession } from "./ui-protocol-runtime";
+import { isRollbackBusy, whenRollbackIdle } from "./session-rollback";
 import { BridgeStoppedError, BridgeTimeoutError } from "./ui-protocol-bridge";
 import type { TurnStartExtras, TurnStartMediaRef } from "./ui-protocol-types";
 import { request } from "@/api/client";
@@ -311,6 +312,17 @@ export async function interruptActiveTurn(opts: {
 }
 
 async function enqueueSendV1(opts: SendOptions): Promise<void> {
+  // codex #262 P1: a rollback's suffix trim is RELATIVE to the thread
+  // list — a turn mirrored/sent while the trim applies would be wiped
+  // locally (and re-appended server-side against the trimmed state the
+  // user hasn't seen yet). Park the whole send behind the applying
+  // rollback. Conditional so the idle path stays FULLY synchronous —
+  // the Wave4-A queue-state dispatch below must fire before any await;
+  // the wait itself fails open after 5s so a stuck lock cannot wedge
+  // sends.
+  if (isRollbackBusy(opts.sessionId, opts.historyTopic)) {
+    await whenRollbackIdle(opts.sessionId, opts.historyTopic);
+  }
   const key = queueKey(opts.sessionId);
   const prev = turnQueues.get(key) ?? Promise.resolve();
 

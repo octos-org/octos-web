@@ -125,6 +125,15 @@ export interface Thread {
   /** In-flight assistant message for the current turn (becomes part of
    *  `responses` when `finalizeAssistant` is called). */
   pendingAssistant: ThreadMessage | null;
+  /** Set when this bucket was MINTED as an orphan placeholder (a late
+   *  event arrived before its user message). Cleared when the real
+   *  user message adopts the bucket. While set, the thread's turn-ness
+   *  is UNKNOWN — the underlying turn may exist server-side and simply
+   *  not be hydrated yet — so rollback math must not run against a
+   *  list containing one (codex #262 round 2: shape-inference
+   *  misclassified a persisted-but-unhydrated turn as a non-turn and
+   *  sent a destructive num_turns for the wrong bubble). */
+  placeholderOrigin?: boolean;
   /** #245 P2: set on a reconnect reopen while this thread had in-flight
    *  streamed text. While set, `appendAssistantToken` drops tokens for this
    *  thread — the server's `after` replay re-emits deltas with no client
@@ -369,6 +378,7 @@ function ensureOrphanThread(threadId: string): {
     userMsg: placeholderUser,
     responses: [],
     pendingAssistant: null,
+    placeholderOrigin: true,
   };
   insertThreadInTimestampOrder(host, thread);
   recordRuntimeCounter("octos_thread_orphan_created_total", {
@@ -686,6 +696,8 @@ export function addUserMessage(
   const existing = state.byId.get(opts.clientMessageId);
   if (existing) {
     existing.userMsg = userMsg;
+    // The real user message arrived — the bucket is a known turn now.
+    existing.placeholderOrigin = false;
     if (!existing.pendingAssistant) {
       const alreadyAnswered = existing.responses.some(
         (r) => r.role === "assistant",
@@ -724,6 +736,8 @@ export function addUserMessage(
       pendingAssistant: orphanAlreadyAnswered
         ? null
         : (orphan.pendingAssistant ?? pendingAssistant),
+      // The real user message arrived — the bucket is a known turn now.
+      placeholderOrigin: false,
     };
     // Detach from the wrong session.
     otherState.byId.delete(opts.clientMessageId);
@@ -1504,6 +1518,7 @@ export function appendCompletionBubble(
           userMsg: placeholderUser,
           responses: [],
           pendingAssistant: null,
+          placeholderOrigin: true,
         };
         insertThreadInTimestampOrder(state, orphan);
         recordRuntimeCounter("octos_thread_orphan_created_total", {
@@ -2485,7 +2500,11 @@ export function replayHistory(
       userMsg.role = "user";
       userMsg.clientMessageId = apiMessage.client_message_id ?? threadId;
       if (thread) {
+        // The bucket was synthesized earlier in this replay (assistant
+        // row preceded its user row) — the user row makes it a known
+        // turn.
         thread.userMsg = userMsg;
+        markThreadAdopted(thread);
       } else {
         thread = {
           id: threadId,
@@ -2518,6 +2537,9 @@ export function replayHistory(
         userMsg: placeholderUser,
         responses: [],
         pendingAssistant: carryPending.get(threadId) ?? null,
+        // Bucket synthesized WITHOUT its user row — turn-ness unknown
+        // (see `isPlaceholderThread`).
+        placeholderOrigin: true,
       };
       state.byId.set(threadId, thread);
       state.threads.push(thread);
@@ -2590,6 +2612,10 @@ export function replayHistory(
           userMsg: prevThread.userMsg,
           responses: prevThread.responses,
           pendingAssistant: pending,
+          // Carried forward VERBATIM — an unresolved orphan stays an
+          // orphan (codex #262 round 3 P1: dropping the flag here let
+          // the bucket bypass the rewind gate and inflate num_turns).
+          placeholderOrigin: prevThread.placeholderOrigin,
         };
         state.byId.set(tid, carried);
         state.threads.push(carried);
@@ -2794,6 +2820,43 @@ function hydrateRowMatchesResponse(
   return timestamp === null || response.timestamp === timestamp;
 }
 
+/** Consume the server order carried by EVERY hydrate user row — media
+ *  or not (codex #262 round 6 P2: normal user rows have no media and
+ *  were skipped, so REST-seeded roots never learned their seq and the
+ *  rewind gate could stay closed after a complete hydrate). Stamps
+ *  `(persisted_at, seq)` onto matching user roots, then retries orphan
+ *  adoption against the now-normalized scope. */
+function normalizeHydrateUserOrder(
+  sessionId: string,
+  topic: string | undefined,
+  rows: HydrateMessageRow[],
+): boolean {
+  if (rows.length === 0) return false;
+  const state = sessionsByKey.get(storeKey(sessionId, topic));
+  if (!state) return false;
+  let changed = false;
+  for (const row of rows) {
+    if (row.role !== "user") continue;
+    const anchor = row.client_message_id ?? row.thread_id;
+    const thread = anchor ? state.byId.get(anchor) : undefined;
+    if (!thread) continue;
+    const timestampMs = row.persisted_at
+      ? Date.parse(row.persisted_at)
+      : Number.NaN;
+    if (
+      normalizeUserRootOrder(
+        thread,
+        timestampMs,
+        typeof row.seq === "number" ? row.seq : undefined,
+      )
+    ) {
+      changed = true;
+    }
+  }
+  if (tryAdoptPlaceholders(state)) changed = true;
+  return changed;
+}
+
 function mergeHydrateMediaIntoExisting(
   sessionId: string,
   topic: string | undefined,
@@ -2815,6 +2878,9 @@ function mergeHydrateMediaIntoExisting(
         thread.userMsg = mergedUser;
         changed = true;
       }
+      // Order/adoption is handled by `normalizeHydrateUserOrder` (which
+      // also consumes NO-media user rows — codex #262 round 6 P2);
+      // this pass merges media only.
       continue;
     }
 
@@ -3163,6 +3229,9 @@ export function applyHydrateDedup(
   if (mergeHydrateMediaIntoExisting(sessionId, topic, messages)) {
     notify();
   }
+  if (normalizeHydrateUserOrder(sessionId, topic, messages)) {
+    notify();
+  }
   if (envelopes.length === 0) {
     replayHydrateToolEnvelopes(sessionId, topic, hydrate.replayed_tool_envelopes);
     return;
@@ -3382,6 +3451,13 @@ export function applyVoiceTranscript(
     ...thread.userMsg,
     text,
   };
+  // NOTE (codex #262 rounds 3→6): a transcript proves the user turn
+  // exists but carries NO order information (no persisted timestamp or
+  // seq), so it must not open the rewind gate on a true orphan — the
+  // persisted user echo that follows carries both, and adoption runs
+  // through `tryAdoptPlaceholders` once every root is server-ordered.
+  // Real voice turns are minted by `addUserMessage` and were never
+  // placeholders.
   notify();
   return true;
 }
@@ -3501,6 +3577,10 @@ export function appendPersistedMessage(
       userMsg: placeholderUser,
       responses: [],
       pendingAssistant: null,
+      // Same provenance rule as `ensureOrphanThread`: a bucket minted
+      // without its user message is turn-ness-UNKNOWN until the real
+      // user record (below) or `addUserMessage` adopts it.
+      placeholderOrigin: true,
     };
     insertThreadInTimestampOrder(state, thread);
   }
@@ -3518,6 +3598,37 @@ export function appendPersistedMessage(
     // are optimistically inserted with an audio file and empty text; the
     // persisted echo carries the ASR transcript, so keep local media while
     // filling the transcript in.
+    // A persisted USER record carries this root's server order — stamp
+    // it even when the bubble text is already filled (rounds 3+6: the
+    // echo used to update only empty bubbles, so optimistic siblings
+    // never entered the server clock domain and orphan adoption had to
+    // compare against client `Date.now()`). Adoption itself only
+    // happens through `tryAdoptPlaceholders`, i.e. once EVERY root in
+    // the scope is server-ordered.
+    let adopted = false;
+    if (state) {
+      normalizeUserRootOrder(
+        thread,
+        message.timestamp ? Date.parse(message.timestamp) : Number.NaN,
+        typeof message.seq === "number" ? message.seq : undefined,
+      );
+      adopted = tryAdoptPlaceholders(state);
+      if (!adopted) {
+        // Unresolvable from live traffic (round 7): fall back to a
+        // forced REST replay. Round 8 P2: `state` may be a DIFFERENT
+        // scope than the incoming (sessionId, topic) when the global
+        // findThreadById fallback located the orphan elsewhere —
+        // nudge the scope that owns the thread we just inspected.
+        let ownerKey = key;
+        for (const [k, s] of sessionsByKey.entries()) {
+          if (s === state) {
+            ownerKey = k;
+            break;
+          }
+        }
+        nudgePlaceholderRefetch(ownerKey, state);
+      }
+    }
     const built = buildResponseFromApi(message);
     if (thread.userMsg.text === "" && built.text.trim().length > 0) {
       thread.userMsg = {
@@ -3538,6 +3649,8 @@ export function appendPersistedMessage(
         intra_thread_seq: built.intra_thread_seq,
         clientMessageId: message.client_message_id ?? threadId,
       };
+      notify();
+    } else if (adopted) {
       notify();
     }
     return;
@@ -3846,6 +3959,267 @@ export function getKnownFilePaths(
   return out;
 }
 
+/** True when the thread was minted as an orphan placeholder (a late
+ *  assistant/tool event whose user message never landed in the store)
+ *  rather than a real persisted user turn: empty text AND no files. A
+ *  file-only user message is a real turn (text empty, files non-empty).
+ *  Rollback math (`session/rollback` counts persisted USER turns only)
+ *  must skip placeholders — counting them both inflates `num_turns`
+ *  and grows a Rewind affordance on a bubble that is not a turn.
+ *
+ *  PROVENANCE, not shape (codex #262 round 2): the flag is set when
+ *  the bucket is MINTED as an orphan and cleared when the real user
+ *  message adopts it. Shape-inference ("empty text + no files") also
+ *  matched real-but-unhydrated turns and empty-text turns replayed by
+ *  hydrate, silently shifting relative rollback counts. */
+export function isPlaceholderThread(thread: Thread): boolean {
+  return thread.placeholderOrigin === true;
+}
+
+/** Centralized adoption (codex #262 round 3): EVERY path that applies
+ *  an authoritative user row — live add, orphan adoption, replay
+ *  rebuild, persisted user echo, hydrate user-media merge, ASR
+ *  transcript — must clear provenance, or the scope's rewind gate
+ *  (`hasPlaceholderThreads`) sticks closed forever. Returns whether
+ *  the flag actually flipped so callers can decide to notify. */
+function markThreadAdopted(thread: Thread): boolean {
+  if (thread.placeholderOrigin !== true) return false;
+  thread.placeholderOrigin = false;
+  return true;
+}
+
+/** Stamp server order (persisted timestamp + per-session seq) onto a
+ *  user root. Returns whether anything changed. Content is untouched —
+ *  this only normalizes the ORDER axes so `tryAdoptPlaceholders` can
+ *  compare turns within a single server-authoritative domain
+ *  (codex #262 round 6 P1: comparing an orphan's server timestamp
+ *  against a sibling's optimistic `Date.now()` mixes clock domains,
+ *  and skew re-orders real turns before opening the rewind gate). */
+function normalizeUserRootOrder(
+  thread: Thread,
+  timestampMs: number,
+  seq: number | undefined,
+): boolean {
+  let changed = false;
+  if (
+    Number.isFinite(timestampMs) &&
+    timestampMs > 0 &&
+    thread.userMsg.timestamp !== timestampMs
+  ) {
+    thread.userMsg = { ...thread.userMsg, timestamp: timestampMs };
+    changed = true;
+  }
+  if (typeof seq === "number" && thread.userMsg.historySeq !== seq) {
+    thread.userMsg = { ...thread.userMsg, historySeq: seq };
+    changed = true;
+  }
+  return changed;
+}
+
+/** Open the rewind gate for orphan buckets ONLY from a single
+ *  server-authoritative total order (codex #262 rounds 4-6): when
+ *  EVERY user root in the scope carries a per-session `historySeq`,
+ *  sort the scope by seq and clear provenance. Seq is the one axis the
+ *  server guarantees monotonic — timestamps are display-only and may
+ *  tie at millisecond precision or come from the client clock for
+ *  optimistic turns. Any root without seq (optimistic send whose echo
+ *  hasn't landed, REST rows stripped by messages_page) keeps the gate
+ *  closed; its own echo / the next hydrate normalizes it and retries
+ *  here. Returns whether anything was adopted. */
+function tryAdoptPlaceholders(state: SessionState): boolean {
+  let sawPlaceholder = false;
+  for (const t of state.threads) {
+    if (t.placeholderOrigin === true) {
+      sawPlaceholder = true;
+      break;
+    }
+  }
+  if (!sawPlaceholder) return false;
+  const allOrdered = state.threads.every(
+    (t) => typeof t.userMsg.historySeq === "number",
+  );
+  if (!allOrdered) return false;
+  state.threads.sort(
+    (a, b) =>
+      (a.userMsg.historySeq as number) - (b.userMsg.historySeq as number),
+  );
+  for (const t of state.threads) {
+    if (t.placeholderOrigin === true) t.placeholderOrigin = false;
+  }
+  return true;
+}
+
+/** Fallback replay for a scope whose placeholders CANNOT resolve from
+ *  live traffic — some sibling root carries no server seq and never
+ *  will (topic scopes skip `session/hydrate` and REST `messages_page`
+ *  strips `seq`; codex #262 rounds 7-8). The echoed turn IS persisted
+ *  by the time this runs, so a REST replay begun AFTER the echo
+ *  re-roots it (and every sibling) in server order and resolves the
+ *  orphan without cross-domain heuristics.
+ *
+ *  Latch semantics (round 8): the latch marks an IN-FLIGHT nudge only
+ *  and is always released on completion — each later persisted echo is
+ *  a fresh server-side signal and may nudge again (loadHistory dedups
+ *  concurrent fetches), and a resolved episode re-arms automatically.
+ *  An in-flight mount/reconnect load may PREDATE the echoed row, so
+ *  the nudge waits it out and then issues a genuinely fresh forced
+ *  load if the scope is still gated. */
+const placeholderRefetchInFlight = new Set<string>();
+// Round 9 P1a: echoes that land while a nudge is in flight are QUEUED
+// here — the running task loops and issues another fresh load, so a
+// request that predates the newer echo can never be the last word.
+const placeholderRefetchDirty = new Set<string>();
+
+function nudgePlaceholderRefetch(key: string, state: SessionState): void {
+  if (!state.threads.some((t) => t.placeholderOrigin === true)) return;
+  if (placeholderRefetchInFlight.has(key)) {
+    placeholderRefetchDirty.add(key);
+    return;
+  }
+  placeholderRefetchInFlight.add(key);
+  const hashIdx = key.indexOf("#");
+  const sessionId = hashIdx === -1 ? key : key.slice(0, hashIdx);
+  const topic = hashIdx === -1 ? undefined : key.slice(hashIdx + 1);
+  void (async () => {
+    try {
+      do {
+        placeholderRefetchDirty.delete(key);
+        // Round 8 P1: `loadHistory` coalesces onto an in-flight load,
+        // which may have started BEFORE the echoed row was persisted.
+        // Drain it first; the forced load below then issues a fresh
+        // request (the finished load's `loadingPromises` entry is
+        // gone).
+        const existing = loadingPromises.get(key);
+        if (existing) await existing.catch(() => {});
+        if (!sessionsByKey.has(key)) return; // scope cleared — moot
+        // Round 9 P1b: fetch UNCONDITIONALLY once per armed signal.
+        // The previous post-drain placeholder scan skipped the fetch
+        // when a stale replay had SWEPT the orphan bucket (replay
+        // carries only pending assistants), leaving the echoed turn
+        // absent until an unrelated event. The armed echo itself is
+        // the trigger; the worst case of not scanning is one
+        // redundant history request in a rare overlap.
+        await loadHistory(sessionId, topic, { force: true });
+      } while (placeholderRefetchDirty.has(key));
+    } catch {
+      // loadHistory swallows fetch errors itself; defensive only.
+    } finally {
+      placeholderRefetchInFlight.delete(key);
+      placeholderRefetchDirty.delete(key);
+    }
+  })();
+}
+
+/** True when ANY bucket in the scope is still an orphan placeholder.
+ *  While one exists the local turn list is KNOWN-incomplete (a late
+ *  event arrived for a turn we have not seen the user message for), so
+ *  relative rollback indices computed from it may target the wrong
+ *  turn — the UI must withhold every Rewind affordance until hydration
+ *  resolves the orphan (codex #262 round 2). */
+export function hasPlaceholderThreads(
+  sessionId: string,
+  topic?: string,
+): boolean {
+  const state = sessionsByKey.get(storeKey(sessionId, topic));
+  if (!state) return false;
+  return state.threads.some((t) => isPlaceholderThread(t));
+}
+
+/** Conversation-suffix trim for `session/rollback`: drop the last
+ *  `dropTurns` REAL user-turn threads and EVERY thread after the cut
+ *  (trailing orphan placeholders carry late events for the dropped
+ *  suffix). Exact-key scope — topic caches are untouched by a root
+ *  rollback. Keeps surviving thread objects intact, so their tool
+ *  cards / progress timelines / meta survive (unlike a clear+reseed,
+ *  whose HydratedMessage rows carry none of that state).
+ *  Returns how many user turns were actually dropped. */
+export function dropLastUserTurnThreads(
+  sessionId: string,
+  topic: string | undefined,
+  dropTurns: number,
+): number {
+  if (!Number.isInteger(dropTurns) || dropTurns < 1) return 0;
+  const key = storeKey(sessionId, topic);
+  const state = sessionsByKey.get(key);
+  if (!state) return 0;
+  const userTurnIndices: number[] = [];
+  state.threads.forEach((thread, index) => {
+    if (!isPlaceholderThread(thread)) userTurnIndices.push(index);
+  });
+  if (userTurnIndices.length === 0) return 0;
+  const dropped = Math.min(dropTurns, userTurnIndices.length);
+  const cutIndex = userTurnIndices[userTurnIndices.length - dropped];
+  const removed = state.threads.slice(cutIndex);
+  state.threads = state.threads.slice(0, cutIndex);
+  for (const thread of removed) {
+    state.byId.delete(thread.id);
+  }
+  // Rebuild the seq-dedup ledger from the SURVIVING rows (codex #262
+  // round 2): `seq` is a per-session committed-row index and the
+  // server renumbers from the trimmed length, so the first messages
+  // persisted AFTER a rollback REUSE the seqs the dropped suffix
+  // burned. A stale ledger would make `hasSeenSeq` silently discard
+  // those fresh rows. Surviving rows keep their entries so hydrate /
+  // replay dedup still works for them.
+  const survivingSeqs = new Set<number>();
+  for (const thread of state.threads) {
+    const msgs = [thread.userMsg, ...thread.responses];
+    if (thread.pendingAssistant) msgs.push(thread.pendingAssistant);
+    for (const msg of msgs) {
+      if (typeof msg.historySeq === "number") {
+        survivingSeqs.add(msg.historySeq);
+      }
+    }
+  }
+  if (survivingSeqs.size > 0) seenSeqsByKey.set(key, survivingSeqs);
+  else seenSeqsByKey.delete(key);
+  notify();
+  return dropped;
+}
+
+/** Union authoritative seqs into a scope's seen-seq ledger. Used by
+ *  the rollback applier after a surgical trim: the post-trim rebuild in
+ *  `dropLastUserTurnThreads` derives entries from surviving rows'
+ *  `historySeq` alone, but a prior forced `messages_page` replay can
+ *  have stripped those fields and companion merges collapse multiple
+ *  seqs into one row (codex #262 round 3). The rollback RESULT carries
+ *  the authoritative surviving rows WITH seqs — union them in so live
+ *  re-emissions for surviving rows keep deduping. */
+export function unionSeenSeqs(
+  sessionId: string,
+  topic: string | undefined,
+  seqs: number[],
+): void {
+  const key = storeKey(sessionId, topic);
+  for (const seq of seqs) {
+    if (typeof seq === "number" && Number.isFinite(seq)) {
+      rememberSeq(key, seq);
+    }
+  }
+}
+
+/** Exact-key variant of `clearSession`: clears ONLY the addressed
+ *  scope. `clearSession(sessionId)` intentionally sweeps every
+ *  topic-suffixed key too (session delete), which is wrong for a root
+ *  `session/rollback` — the RPC mutates only the root SessionKey, so
+ *  cached slides/site topic histories must survive locally. */
+export function clearSessionScope(
+  sessionId: string,
+  topic?: string,
+): void {
+  const key = storeKey(sessionId, topic);
+  sessionsByKey.delete(key);
+  loadedSessions.delete(key);
+  loadingPromises.delete(key);
+  hydrateSnapshotByKey.delete(key);
+  pendingClientMessageIds.delete(key);
+  seenSeqsByKey.delete(key);
+  appliedHydrateToolEnvelopesByKey.delete(key);
+  placeholderRefetchInFlight.delete(key);
+  placeholderRefetchDirty.delete(key);
+  notify();
+}
+
 export function clearSession(sessionId: string, topic?: string): void {
   const key = storeKey(sessionId, topic);
   if (topic?.trim()) {
@@ -3856,6 +4230,8 @@ export function clearSession(sessionId: string, topic?: string): void {
     pendingClientMessageIds.delete(key);
     seenSeqsByKey.delete(key);
     appliedHydrateToolEnvelopesByKey.delete(key);
+    placeholderRefetchInFlight.delete(key);
+    placeholderRefetchDirty.delete(key);
   } else {
     for (const k of [...sessionsByKey.keys()]) {
       if (k === sessionId || k.startsWith(`${sessionId}#`)) {
@@ -3866,6 +4242,8 @@ export function clearSession(sessionId: string, topic?: string): void {
         pendingClientMessageIds.delete(k);
         seenSeqsByKey.delete(k);
         appliedHydrateToolEnvelopesByKey.delete(k);
+        placeholderRefetchInFlight.delete(k);
+        placeholderRefetchDirty.delete(k);
       }
     }
     // Codex round-5 P3: a hydrate snapshot may exist without a
@@ -3984,6 +4362,17 @@ export function resolveEventThreadId(
 }
 
 /** Test-only helper: reset all in-memory state. Not exported in production. */
+/** Test-only: read the cached hydrate snapshot for a scope. Rollback
+ *  must REPLACE it with the trimmed projection (codex #262 round 2) —
+ *  a stale cache resurrects dropped turns on the next replay/dedup
+ *  pass, and that staleness is otherwise unobservable from outside. */
+export function __getHydrateSnapshotForTest(
+  sessionId: string,
+  topic?: string,
+): HydrateSnapshot | undefined {
+  return hydrateSnapshotByKey.get(storeKey(sessionId, topic));
+}
+
 export function __resetForTests(): void {
   sessionsByKey.clear();
   listeners.clear();
@@ -3991,6 +4380,8 @@ export function __resetForTests(): void {
   loadingPromises.clear();
   snapshotCache.clear();
   hydrateSnapshotByKey.clear();
+  placeholderRefetchInFlight.clear();
+  placeholderRefetchDirty.clear();
   pendingClientMessageIds.clear();
   seenSeqsByKey.clear();
   appliedHydrateToolEnvelopesByKey.clear();

@@ -22,6 +22,7 @@ import {
   Paperclip,
   X,
   FileIcon,
+  RotateCcw,
   Brain,
   Mic,
   Video,
@@ -36,12 +37,17 @@ import {
 } from "lucide-react";
 import { useSession } from "@/runtime/session-context";
 import {
+  rollbackSessionTurns,
+  useRollbackBusy,
+} from "@/runtime/session-rollback";
+import {
   asStoredEffort,
   KNOWN_EFFORT_LEVELS,
   setThinkingEffort,
   useThinkingEffort,
 } from "@/store/thinking-store";
 import {
+  isPlaceholderThread,
   useThreads,
   type MessageFile,
   type MessageMeta,
@@ -575,12 +581,74 @@ const ThreadUserBubble = memo(function ThreadUserBubble({
   message,
   threadId,
   sessionId,
+  historyTopic,
+  turnsFromEnd,
 }: {
   message: ThreadMessage;
   threadId: string;
   sessionId?: string;
+  historyTopic?: string;
+  /** 1 = newest user turn. Rewinding AT this bubble drops this turn and
+   *  everything after it (`session/rollback num_turns`). */
+  turnsFromEnd?: number;
 }) {
   const visibleText = threadMessageVisibleText(message);
+  // A rollback applying anywhere in this scope disables every Rewind
+  // button: rollback counts are RELATIVE ("last N"), so a second click
+  // confirmed against pre-trim indices would delete unintended turns
+  // (codex #262 P1). The applier itself also refuses concurrent runs.
+  const rollbackBusy = useRollbackBusy(sessionId ?? "", historyTopic);
+  // Rewind affordance state: idle → confirm (second click required) →
+  // busy. Errors render inline under the bubble and reset to idle.
+  const [rewindState, setRewindState] = useState<
+    "idle" | "confirm" | "busy" | "error"
+  >("idle");
+  const [rewindError, setRewindError] = useState<string | null>(null);
+  // Leaving confirm-state on blur/timeout keeps a stray first click from
+  // arming a destructive second click minutes later.
+  useEffect(() => {
+    if (rewindState !== "confirm") return;
+    const timer = setTimeout(() => setRewindState("idle"), 4000);
+    return () => clearTimeout(timer);
+  }, [rewindState]);
+
+  async function runRewind() {
+    if (!sessionId || !turnsFromEnd || turnsFromEnd < 1) return;
+    setRewindState("busy");
+    setRewindError(null);
+    const textForPrefill = visibleText;
+    const outcome = await rollbackSessionTurns(
+      sessionId,
+      historyTopic,
+      turnsFromEnd,
+    );
+    if (!outcome.ok) {
+      setRewindState("error");
+      setRewindError(
+        outcome.reason === "turn_in_progress"
+          ? "A turn is running — stop it first."
+          : outcome.reason === "no_bridge"
+            ? "Not connected."
+            : "Rewind failed.",
+      );
+      setTimeout(() => {
+        setRewindState("idle");
+        setRewindError(null);
+      }, 4000);
+      return;
+    }
+    // The bubble (this component) is unmounted by the store rebuild the
+    // moment the rollback applies — no local state reset needed. Hand the
+    // dropped prompt to the composer so rewind = edit-and-resend.
+    if (textForPrefill) {
+      window.dispatchEvent(
+        new CustomEvent("crew:composer_prefill", {
+          detail: { sessionId, topic: historyTopic, text: textForPrefill },
+        }),
+      );
+    }
+  }
+
   // Visual layout is shared with `<GhostBubble>` via `<UserBubbleShell>`
   // so the optimistic overlay and the canonical user bubble cannot drift
   // (codex BLOCK 4 fix). Only the file-row content differs: the real
@@ -594,11 +662,62 @@ const ThreadUserBubble = memo(function ThreadUserBubble({
         ))}
       </>
     ) : null;
+  // Rewind control lives in the shell's `trailing` slot (right-aligned
+  // under the footer). Subtle at rest; explicit two-click confirm.
+  const canRewind = Boolean(sessionId && turnsFromEnd && turnsFromEnd >= 1);
+  const rewindControl = canRewind ? (
+    <span className="flex items-center gap-1">
+      {rewindState === "error" && rewindError && (
+        <span
+          data-testid="rewind-error"
+          className="text-[10px] text-rose-400"
+        >
+          {rewindError}
+        </span>
+      )}
+      <button
+        type="button"
+        data-testid={`rewind-to-${threadId}`}
+        aria-label={
+          rewindState === "confirm"
+            ? "Confirm rewind — drops this turn and everything after it"
+            : "Rewind to before this message"
+        }
+        title={
+          rewindState === "confirm"
+            ? `Drops the last ${turnsFromEnd} turn${turnsFromEnd === 1 ? "" : "s"} — click again to confirm`
+            : "Rewind to before this message"
+        }
+        disabled={rewindState === "busy" || rollbackBusy}
+        onClick={() => {
+          if (rewindState === "idle" || rewindState === "error") {
+            setRewindState("confirm");
+          } else if (rewindState === "confirm") {
+            void runRewind();
+          }
+        }}
+        className={`flex items-center gap-1 rounded-[6px] px-1.5 py-0.5 text-[10px] font-medium transition-opacity ${
+          rewindState === "confirm"
+            ? "border border-rose-400 text-rose-300"
+            : "text-muted opacity-40 hover:opacity-100"
+        } disabled:opacity-60`}
+      >
+        <RotateCcw size={10} />
+        {rewindState === "busy"
+          ? "Rewinding…"
+          : rewindState === "confirm"
+            ? "Confirm rewind?"
+            : "Rewind"}
+      </button>
+    </span>
+  ) : null;
+
   return (
     <UserBubbleShell
       text={visibleText || null}
       files={fileRows}
       footer={formatTimestamp(message.timestamp)}
+      trailing={rewindControl}
       textTestId="user-message"
       textDataAttributes={{ "data-thread-id": threadId }}
     />
@@ -1094,9 +1213,13 @@ function isVisibleResponse(
 function ThreadView({
   thread,
   hideFileOnlyAssistantMessages,
+  turnsFromEnd,
 }: {
   thread: Thread;
   hideFileOnlyAssistantMessages: boolean;
+  /** 1 for the newest user turn, N for the oldest — the `num_turns`
+   *  a rewind AT this bubble sends to `session/rollback`. */
+  turnsFromEnd: number;
 }) {
   const visibleResponses = thread.responses.filter((r) =>
     isVisibleResponse(r, hideFileOnlyAssistantMessages),
@@ -1123,6 +1246,8 @@ function ThreadView({
         message={thread.userMsg}
         threadId={thread.id}
         sessionId={currentSessionId}
+        historyTopic={historyTopic}
+        turnsFromEnd={turnsFromEnd}
       />
       {visibleResponses.map((response) => (
         <ThreadAssistantBubble
@@ -1166,6 +1291,30 @@ function ThreadList({
   onSettleGhost: (clientMessageId: string) => void;
   hideFileOnlyAssistantMessages: boolean;
 }) {
+  // Rewind math (codex #262 P1): `session/rollback` counts persisted
+  // USER turns only, but `threads` can contain placeholder orphans
+  // (late-event buckets with no user message). Counting those both
+  // inflates `num_turns` (rewinding B in [A, B, orphan] would send 2
+  // and delete A too) and puts a Rewind button on a non-turn.
+  // Placeholders map to 0 → no affordance.
+  //
+  // Round 2: while ANY orphan placeholder exists in the scope, the
+  // local turn list is KNOWN-incomplete — the orphan may be a real
+  // persisted turn whose user message simply hasn't hydrated, so every
+  // relative index computed from the list may be off by one or more.
+  // Withhold ALL rewind affordances (everything maps to 0) until
+  // hydration resolves the orphan.
+  const turnsFromEndByThreadId = useMemo(() => {
+    const byId = new Map<string, number>();
+    if (threads.some((t) => isPlaceholderThread(t))) return byId;
+    let fromEnd = 0;
+    for (let i = threads.length - 1; i >= 0; i -= 1) {
+      fromEnd += 1;
+      byId.set(threads[i].id, fromEnd);
+    }
+    return byId;
+  }, [threads]);
+
   const viewportRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
 
@@ -1202,6 +1351,7 @@ function ThreadList({
             key={thread.id}
             thread={thread}
             hideFileOnlyAssistantMessages={hideFileOnlyAssistantMessages}
+            turnsFromEnd={turnsFromEndByThreadId.get(thread.id) ?? 0}
           />
         ))}
         {ghosts.map((g) => (
@@ -1384,6 +1534,29 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
   const [text, setText] = useState("");
   const [cmdFeedback, setCmdFeedback] = useState<string | null>(null);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
+
+  // Rewind → edit-and-resend: `ThreadUserBubble` dispatches
+  // `crew:composer_prefill` with the dropped user prompt after a
+  // successful `session/rollback`, so the user lands with the old text
+  // ready to edit. Scope-checked — a prefill for another session/topic
+  // (stale event across a fast switch) must not clobber this composer.
+  useEffect(() => {
+    function onPrefill(e: Event) {
+      const detail = (e as CustomEvent).detail as
+        | { sessionId?: string; topic?: string; text?: string }
+        | undefined;
+      if (!detail || typeof detail.text !== "string") return;
+      if (detail.sessionId !== currentSessionId) return;
+      const evTopic = detail.topic?.trim() || undefined;
+      const myTopic = historyTopic?.trim() || undefined;
+      if (evTopic !== myTopic) return;
+      setText(detail.text);
+      textareaRef.current?.focus();
+    }
+    window.addEventListener("crew:composer_prefill", onPrefill);
+    return () =>
+      window.removeEventListener("crew:composer_prefill", onPrefill);
+  }, [currentSessionId, historyTopic]);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
