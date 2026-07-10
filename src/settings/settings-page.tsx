@@ -16,6 +16,7 @@ import {
   Settings as SettingsIcon,
   Palette,
   Volume2,
+  AlarmClock,
 } from "lucide-react";
 import {
   WorkbenchStatusPill,
@@ -36,8 +37,9 @@ import { ServerTab } from "./server-tab";
 import { OminixTab } from "./ominix-tab";
 import { AppearanceTab } from "./appearance-tab";
 import { VoiceTab } from "./voice-tab";
+import { CronTab } from "./cron-tab";
 
-type TabId = "profile" | "appearance" | "llm" | "voice" | "skills" | "channels" | "sandbox" | "tools" | "users" | "system" | "server" | "ominix";
+type TabId = "profile" | "appearance" | "llm" | "voice" | "schedule" | "skills" | "channels" | "sandbox" | "tools" | "users" | "system" | "server" | "ominix";
 
 interface TabDef {
   id: TabId;
@@ -51,6 +53,7 @@ const TABS: TabDef[] = [
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "llm", label: "LLM", icon: Cpu },
   { id: "voice", label: "Voice", icon: Volume2 },
+  { id: "schedule", label: "Schedule", icon: AlarmClock },
   { id: "skills", label: "Skills", icon: Puzzle },
   { id: "channels", label: "Channels", icon: Radio },
   { id: "sandbox", label: "Sandbox", icon: Shield },
@@ -205,6 +208,7 @@ export function AdminSettingsPage() {
                       onProfileUpdated={setProfile}
                     />
                   )}
+                  {activeTab === "schedule" && <CronTab key={selectedProfileId} />}
                   {activeTab === "skills" && <SkillsTab />}
                   {activeTab === "channels" && <ChannelsTab profile={profile} onProfileUpdated={setProfile} />}
                   {activeTab === "sandbox" && (
