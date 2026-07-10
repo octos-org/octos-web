@@ -6,13 +6,15 @@ import { buildApiHeaders } from "@/api/client";
 import { buildFileUrl } from "@/api/files";
 import {
   invokeSkillAction,
+  listSkillActions,
   listSkillActionJobs,
   type SkillActionJob,
   type SkillActionJobStatus,
 } from "@/api/skill-actions";
 import { useAllFiles } from "@/store/file-store";
 
-import { STUDIO_SKILLS, STUDIO_SKILL_ACTION_IDS, STUDIO_SKILL_LABEL_BY_ACTION_ID } from "./skills";
+import { resolveStudioSkills } from "./action-catalog";
+import { STUDIO_SKILL_ACTION_IDS, STUDIO_SKILL_LABEL_BY_ACTION_ID } from "./skills";
 import { fileNameFromPath, relativeTime, sourceKind, type SourceKind } from "./source-media";
 import { StudioFilePreviewDialog } from "./studio-file-preview";
 
@@ -135,6 +137,7 @@ export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Pr
   const [actionError, setActionError] = useState<string | null>(null);
   const [busySkillId, setBusySkillId] = useState<string | null>(null);
   const [jobs, setJobs] = useState<SkillActionJob[]>([]);
+  const [skills, setSkills] = useState(() => resolveStudioSkills([]));
   const [previewArtifact, setPreviewArtifact] = useState<GeneratedArtifact | null>(null);
   const actionArtifacts = useMemo(
     () => jobs.flatMap(artifactsFromJob),
@@ -150,6 +153,25 @@ export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Pr
         .slice(0, ASSET_LIST_CAP),
     [actionArtifacts, allFiles, sessionId],
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    const refreshActions = () => {
+      void listSkillActions(sessionId, "studio.skills")
+        .then((actions) => {
+          if (!cancelled) setSkills(resolveStudioSkills(actions));
+        })
+        .catch(() => {
+          if (!cancelled) setSkills(resolveStudioSkills([]));
+        });
+    };
+    refreshActions();
+    window.addEventListener("crew:bridge_connected", refreshActions);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("crew:bridge_connected", refreshActions);
+    };
+  }, [sessionId]);
 
   useEffect(() => {
     const onJobUpdated = (event: Event) => {
@@ -186,7 +208,7 @@ export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Pr
     };
   }, [sessionId]);
 
-  async function runSkill(skill: (typeof STUDIO_SKILLS)[number]): Promise<void> {
+  async function runSkill(skill: (typeof skills)[number]): Promise<void> {
     if (!skill.actionId) return;
     setActionError(null);
     setBusySkillId(skill.id);
@@ -219,7 +241,7 @@ export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Pr
       <section className="flex shrink-0 flex-col gap-3">
         <h3 className="text-lg font-medium text-text-strong">Skills</h3>
         <div className="grid grid-cols-3 gap-2">
-          {STUDIO_SKILLS.map((skill) => {
+          {skills.map((skill) => {
             const disabled =
               !skill.actionId ||
               busySkillId === skill.id ||

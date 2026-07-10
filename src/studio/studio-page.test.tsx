@@ -32,6 +32,27 @@ const invokeSkillActionMock = vi.hoisted(() =>
   })),
 );
 const listSkillActionJobsMock = vi.hoisted(() => vi.fn(async () => []));
+const listSkillActionsMock = vi.hoisted(() =>
+  vi.fn(async () =>
+    [
+      ["video_overview.generate", "Video Overview"],
+      ["mindmap.generate", "Mind Map"],
+      ["reports.generate", "Reports"],
+      ["flashcards.generate", "Flashcards"],
+      ["quiz.generate", "Quiz"],
+      ["data_table.generate", "Data Table"],
+    ].map(([id, label]) => ({
+      id,
+      skill_id: "test-skill",
+      label,
+      tags: ["notebook"],
+      surfaces: ["studio.skills"],
+      input_schema: {},
+      execution: "background",
+      available: true,
+    })),
+  ),
+);
 const fileFixtures = vi.hoisted(() => [
   {
     id: "f1",
@@ -95,6 +116,7 @@ vi.mock("@/api/chat", () => ({
 }));
 vi.mock("@/api/skill-actions", () => ({
   invokeSkillAction: invokeSkillActionMock,
+  listSkillActions: listSkillActionsMock,
   listSkillActionJobs: listSkillActionJobsMock,
 }));
 
