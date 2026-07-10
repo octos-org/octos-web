@@ -53,6 +53,16 @@ describe("describeSchedule", () => {
     expect(describeSchedule({ kind: "Every", every_ms: 45_000 })).toBe(
       "every 45s",
     );
+    // Remainders survive — 90s is NOT "every 2m" (codex web#266 r1 P2).
+    expect(describeSchedule({ kind: "Every", every_ms: 90_000 })).toBe(
+      "every 1m 30s",
+    );
+    expect(describeSchedule({ kind: "Every", every_ms: 3_599_000 })).toBe(
+      "every 59m 59s",
+    );
+    expect(describeSchedule({ kind: "Every", every_ms: 3_690_000 })).toBe(
+      "every 1h 1m 30s",
+    );
     expect(describeSchedule({ kind: "Cron", expr: "0 0 9 * * * *" })).toBe(
       "0 0 9 * * * *",
     );
@@ -151,6 +161,45 @@ describe("CronTab", () => {
     // The refetch adopted the lock state.
     await waitFor(() =>
       expect(screen.getByTestId("cron-gateway-lock")).toBeTruthy(),
+    );
+  });
+
+  it("rejects a stale reload snapshot that resolves after a toggle", async () => {
+    // codex web#266 r1 P2: GET starts (old rows) → PUT resolves and
+    // applies the toggled row → GET resolves late. The stale snapshot
+    // must NOT overwrite the fresh row.
+    let resolveStaleLoad: (v: typeof OVERVIEW) => void = () => {};
+    apiMocks.getMyCron.mockResolvedValueOnce(OVERVIEW);
+    apiMocks.setMyCronEnabled.mockResolvedValue({
+      ok: true,
+      job: { ...JOB, enabled: false, next_in: null },
+    });
+    render(<CronTab />);
+    await waitFor(() => expect(screen.getByRole("switch")).toBeTruthy());
+
+    // Arm the SECOND load (Reload click) as a hanging promise.
+    apiMocks.getMyCron.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveStaleLoad = resolve as (v: typeof OVERVIEW) => void;
+        }),
+    );
+    fireEvent.click(screen.getByText("Reload"));
+
+    // Toggle lands while the reload is still in flight.
+    fireEvent.click(screen.getByRole("switch"));
+    await waitFor(() =>
+      expect(screen.getByRole("switch").getAttribute("aria-checked")).toBe(
+        "false",
+      ),
+    );
+
+    // The stale reload resolves with the OLD (enabled) row — rejected.
+    resolveStaleLoad(OVERVIEW);
+    await waitFor(() =>
+      expect(screen.getByRole("switch").getAttribute("aria-checked")).toBe(
+        "false",
+      ),
     );
   });
 

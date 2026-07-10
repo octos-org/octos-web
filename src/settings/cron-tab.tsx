@@ -10,7 +10,7 @@
 // `gateway_running`, so the UI disables the switches and points at
 // the Profile tab's stop/start controls instead of offering writes
 // that would be refused.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AlarmClock, Loader2, RefreshCw } from "lucide-react";
 
 import {
@@ -63,13 +63,19 @@ export function describeSchedule(schedule: CronScheduleWire): string {
         : `once at ${when.toLocaleString()}`;
     }
     case "Every": {
+      // Preserve remainders: 90s is "every 1m 30s", not "every 2m"
+      // (codex web#266 r1 P2 — rounding misstated valid intervals).
       const totalSecs = Math.round(schedule.every_ms / 1000);
       if (totalSecs < 60) return `every ${totalSecs}s`;
-      const totalMins = Math.round(totalSecs / 60);
-      if (totalMins < 60) return `every ${totalMins}m`;
-      const hours = Math.floor(totalMins / 60);
-      const mins = totalMins % 60;
-      return mins === 0 ? `every ${hours}h` : `every ${hours}h ${mins}m`;
+      const mins = Math.floor(totalSecs / 60);
+      const secs = totalSecs % 60;
+      if (mins < 60) {
+        return secs === 0 ? `every ${mins}m` : `every ${mins}m ${secs}s`;
+      }
+      const parts = [`${Math.floor(mins / 60)}h`];
+      if (mins % 60 !== 0) parts.push(`${mins % 60}m`);
+      if (secs !== 0) parts.push(`${secs}s`);
+      return `every ${parts.join(" ")}`;
     }
     case "Cron":
       return schedule.expr;
@@ -128,15 +134,27 @@ export function CronTab() {
   const [error, setError] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [toggleError, setToggleError] = useState<string | null>(null);
+  // Generation gate: a Reload GET that was in flight when a toggle
+  // PUT resolved would overwrite the fresh server row with the old
+  // snapshot (codex web#266 r1 P2). Every toggle bumps the
+  // generation; a load only applies if no toggle landed after it
+  // started.
+  const loadGenRef = useRef(0);
 
   const load = useCallback(async () => {
+    const gen = ++loadGenRef.current;
     setLoading(true);
     setError(null);
     try {
-      setOverview(await getMyCron());
+      const next = await getMyCron();
+      if (gen === loadGenRef.current) setOverview(next);
     } catch (err) {
-      setError(formatSettingsError(err, "Failed to load schedule."));
+      if (gen === loadGenRef.current) {
+        setError(formatSettingsError(err, "Failed to load schedule."));
+      }
     } finally {
+      // Unconditional: an invalidated load must not leave the spinner
+      // wedged on (its RESULT is gated above, its liveness is not).
       setLoading(false);
     }
   }, []);
@@ -150,6 +168,9 @@ export function CronTab() {
     setToggleError(null);
     try {
       const resp = await setMyCronEnabled(job.id, enabled);
+      // Invalidate any in-flight GET that started before this PUT
+      // resolved — its snapshot predates the toggle.
+      loadGenRef.current++;
       setOverview((prev) =>
         prev
           ? {
