@@ -3,18 +3,18 @@ import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CronTab, describeSchedule } from "./cron-tab";
+import { BridgeRpcError } from "@/runtime/ui-protocol-bridge";
 
 const apiMocks = vi.hoisted(() => ({
   getMyCron: vi.fn(),
   setMyCronEnabled: vi.fn(),
+  // Mirrors the real implementation (settings-api.ts): the WS bridge
+  // surfaces `cron/toggle` refusals as `BridgeRpcError` with the REST
+  // `reason` forwarded in `data.detail` (octos PR #1621).
   cronToggleRefusalReason: vi.fn((err: unknown) => {
-    if (!(err instanceof Error)) return null;
-    try {
-      const body = JSON.parse(err.message) as { reason?: unknown };
-      return typeof body.reason === "string" ? body.reason : null;
-    } catch {
-      return null;
-    }
+    if (!(err && typeof err === "object" && "data" in err)) return null;
+    const data = (err as { data?: { detail?: unknown } }).data;
+    return typeof data?.detail === "string" ? data.detail : null;
   }),
   formatSettingsError: vi.fn((err: unknown, fallback = "Request failed.") =>
     err instanceof Error ? err.message : fallback,
@@ -37,7 +37,6 @@ const JOB = {
 };
 
 const OVERVIEW = {
-  ok: true,
   count: 1,
   jobs: [JOB],
   gateway_running: false,
@@ -97,7 +96,6 @@ describe("CronTab", () => {
 
   it("renders the zero state without jobs", async () => {
     apiMocks.getMyCron.mockResolvedValue({
-      ok: true,
       count: 0,
       jobs: [],
       gateway_running: false,
@@ -112,7 +110,6 @@ describe("CronTab", () => {
   it("toggles a job and applies the server row", async () => {
     apiMocks.getMyCron.mockResolvedValue(OVERVIEW);
     apiMocks.setMyCronEnabled.mockResolvedValue({
-      ok: true,
       job: { ...JOB, enabled: false, next_in: null },
     });
     render(<CronTab />);
@@ -144,7 +141,10 @@ describe("CronTab", () => {
   it("reflects a 409 gateway_running refusal and refreshes", async () => {
     apiMocks.getMyCron.mockResolvedValueOnce(OVERVIEW);
     apiMocks.setMyCronEnabled.mockRejectedValue(
-      new Error(JSON.stringify({ ok: false, reason: "gateway_running" })),
+      new BridgeRpcError(-32602, "cron/toggle: REST returned 409 conflict", {
+        detail: "gateway_running",
+        rest_status: 409,
+      }),
     );
     apiMocks.getMyCron.mockResolvedValueOnce({
       ...OVERVIEW,
@@ -216,7 +216,6 @@ describe("CronTab", () => {
     let resolveStaleLoad: (v: typeof OVERVIEW) => void = () => {};
     apiMocks.getMyCron.mockResolvedValueOnce(OVERVIEW);
     apiMocks.setMyCronEnabled.mockResolvedValue({
-      ok: true,
       job: { ...JOB, enabled: false, next_in: null },
     });
     render(<CronTab />);

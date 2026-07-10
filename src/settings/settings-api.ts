@@ -1,4 +1,6 @@
 import { request } from "@/api/client";
+import { BridgeRpcError, METHODS } from "@/runtime/ui-protocol-bridge";
+import { getAnyConnectedBridge } from "@/runtime/ui-protocol-runtime";
 
 function stringFromUnknown(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -1041,7 +1043,23 @@ export async function disableOminixModel(modelId: string): Promise<AdminActionRe
   });
 }
 
-// ── Memory panel (read-only viewer: /api/my/memory*) ──
+// ── Memory panel (read-only viewer: `memory/overview` + `memory/entity`) ──
+//
+// The memory + cron panels ride the ui-protocol WS bridge (octos PR
+// #1621) rather than the tokened REST surface. Unlike
+// `src/api/content.ts`'s wrapper, this helper deliberately does NOT
+// flatten `BridgeRpcError` into a plain `Error`: the typed `data`
+// payload (`data.detail`, `data.rest_status`) is the contract
+// `cronToggleRefusalReason` branches on for the gateway-owns-the-store
+// refusal, and flattening would reduce it to string matching.
+
+async function callAuxWs<T>(method: string, params: unknown): Promise<T> {
+  const bridge = getAnyConnectedBridge();
+  if (!bridge) {
+    throw new Error("ui-protocol-bridge: no connected bridge for " + method);
+  }
+  return await bridge.callMethod<T>(method, params);
+}
 
 export interface MemoryDailyNote {
   date: string;
@@ -1069,22 +1087,25 @@ export interface MemoryOverview {
 }
 
 export interface MemoryEntityPage {
-  ok: boolean;
   name: string;
   content: string;
 }
 
 export async function getMyMemory(): Promise<MemoryOverview> {
-  return await request<MemoryOverview>("/api/my/memory");
+  // `memory/overview` forwards the REST panel body whole under
+  // `overview`, so the interface above stays byte-compatible.
+  const result = await callAuxWs<{ overview: MemoryOverview }>(
+    METHODS.MEMORY_OVERVIEW,
+    {},
+  );
+  return result.overview;
 }
 
 export async function getMyMemoryEntity(name: string): Promise<MemoryEntityPage> {
-  return await request<MemoryEntityPage>(
-    `/api/my/memory/entities/${encodeURIComponent(name)}`,
-  );
+  return await callAuxWs<MemoryEntityPage>(METHODS.MEMORY_ENTITY, { name });
 }
 
-// ── Cron panel (/api/my/cron*) ──
+// ── Cron panel (`cron/list` + `cron/toggle`) ──
 
 export type CronScheduleWire =
   | { kind: "At"; at_ms: number }
@@ -1105,33 +1126,33 @@ export interface CronJobRow {
 }
 
 export interface CronOverview {
-  ok: boolean;
   count: number;
   jobs: CronJobRow[];
   gateway_running: boolean;
 }
 
 export async function getMyCron(): Promise<CronOverview> {
-  return await request<CronOverview>("/api/my/cron");
+  return await callAuxWs<CronOverview>(METHODS.CRON_LIST, {});
 }
 
-/** Thrown reason when the toggle is refused (409 etc.). */
+/**
+ * Refusal reason when `cron/toggle` is rejected. The server forwards
+ * the REST error body's `reason` as the RPC error's `data.detail`
+ * (octos PR #1621): `"gateway_running"` when a spawned gateway owns
+ * `cron.json` (rest_status 409), `"job_not_found"` on a stale row.
+ */
 export function cronToggleRefusalReason(err: unknown): string | null {
-  if (!(err instanceof Error)) return null;
-  try {
-    const body = JSON.parse(err.message) as { reason?: unknown };
-    return typeof body.reason === "string" ? body.reason : null;
-  } catch {
-    return null;
-  }
+  if (!(err instanceof BridgeRpcError)) return null;
+  const data = err.data as { detail?: unknown } | null | undefined;
+  return typeof data?.detail === "string" ? data.detail : null;
 }
 
 export async function setMyCronEnabled(
   jobId: string,
   enabled: boolean,
-): Promise<{ ok: boolean; job: CronJobRow }> {
-  return await request<{ ok: boolean; job: CronJobRow }>(
-    `/api/my/cron/${encodeURIComponent(jobId)}/enabled`,
-    { method: "PUT", body: JSON.stringify({ enabled }) },
-  );
+): Promise<{ job: CronJobRow }> {
+  return await callAuxWs<{ job: CronJobRow }>(METHODS.CRON_TOGGLE, {
+    job_id: jobId,
+    enabled,
+  });
 }

@@ -92,7 +92,6 @@ describe("MemoryTab", () => {
   it("lazily fetches an entity page on expand", async () => {
     apiMocks.getMyMemory.mockResolvedValue(OVERVIEW);
     apiMocks.getMyMemoryEntity.mockResolvedValue({
-      ok: true,
       name: "fleet",
       content: "# fleet\n\nfive minis and a WireGuard hub\n",
     });

@@ -184,6 +184,12 @@ export const METHODS = {
   CONTENT_LIST: "content/list",
   CONTENT_DELETE: "content/delete",
   CONTENT_BULK_DELETE: "content/bulk_delete",
+  // Memory/cron settings panels (octos PR #1621): WS wrappers over the
+  // `/api/my/memory*` + `/api/my/cron*` REST panel handlers.
+  MEMORY_OVERVIEW: "memory/overview",
+  MEMORY_ENTITY: "memory/entity",
+  CRON_LIST: "cron/list",
+  CRON_TOGGLE: "cron/toggle",
   // server → client
   // Bridge hygiene (parity audit P3): `user_question/requested` is a
   // NOTIFICATION the server pushes; it was mislisted in the
