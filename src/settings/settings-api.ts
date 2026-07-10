@@ -1065,6 +1065,10 @@ async function callAuxWs<T>(method: string, params: unknown): Promise<T> {
 export interface MemoryDailyNote {
   date: string;
   content: string;
+  /** WS wire only (octos #1621 codex r1): note capped at the RPC-layer
+   *  byte budget — `content` is a clean prefix, never spliced. */
+  content_truncated?: boolean;
+  content_total_bytes?: number;
 }
 
 export interface MemoryEntitySummary {
@@ -1085,11 +1089,21 @@ export interface MemoryOverview {
   /** Staging scan stopped early — `staging_notes` is a lower bound. */
   staging_truncated?: boolean;
   refresh_enabled: boolean;
+  /** WS wire only (octos #1621 codex r1): the RPC layer caps each
+   *  document field so the result fits one WS frame; capped fields are
+   *  clean prefixes DECLARED here, never silently spliced. */
+  long_term_truncated?: boolean;
+  long_term_total_bytes?: number;
+  today_truncated?: boolean;
+  today_total_bytes?: number;
 }
 
 export interface MemoryEntityPage {
   name: string;
   content: string;
+  /** True when `content` is the RPC-layer capped prefix of the page. */
+  content_truncated?: boolean;
+  content_total_bytes?: number;
 }
 
 export async function getMyMemory(): Promise<MemoryOverview> {

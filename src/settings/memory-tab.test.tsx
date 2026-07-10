@@ -111,6 +111,35 @@ describe("MemoryTab", () => {
     expect(apiMocks.getMyMemoryEntity).toHaveBeenCalledTimes(1);
   });
 
+  it("surfaces the server's truncation declaration on capped documents", async () => {
+    // octos #1621 codex r1: capped fields arrive as clean prefixes with
+    // <field>_truncated + <field>_total_bytes DECLARED — the tab must
+    // say so rather than render a shorter document as complete.
+    apiMocks.getMyMemory.mockResolvedValue({
+      ...OVERVIEW,
+      long_term_truncated: true,
+      long_term_total_bytes: 200 * 1024,
+    });
+    apiMocks.getMyMemoryEntity.mockResolvedValue({
+      name: "fleet",
+      content: "# fleet prefix",
+      content_truncated: true,
+      content_total_bytes: 512 * 1024,
+    });
+    render(<MemoryTab />);
+    await waitFor(() =>
+      expect(screen.getByText(/remembers things/)).toBeTruthy(),
+    );
+    expect(
+      screen.getByTestId("memory-truncation-notice").textContent,
+    ).toContain("of 200 KB");
+
+    fireEvent.click(screen.getByText("fleet"));
+    await waitFor(() =>
+      expect(screen.getAllByTestId("memory-truncation-notice")).toHaveLength(2),
+    );
+  });
+
   it("keeps the snapshot but flags a failed reload", async () => {
     apiMocks.getMyMemory.mockResolvedValueOnce(OVERVIEW);
     apiMocks.getMyMemory.mockRejectedValueOnce(new Error("reload boom"));
