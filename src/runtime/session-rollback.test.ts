@@ -16,6 +16,13 @@ const rollbackSession = vi.fn();
 vi.mock("./ui-protocol-runtime", () => ({
   getActiveBridge: () => mockBridge,
 }));
+// The round-7 placeholder-refetch nudge drives ThreadStore.loadHistory →
+// getMessagesPage. Default: reject (loadHistory swallows), so gate-closed
+// tests stay inert; the nudge liveness test resolves it with history.
+const getMessagesPage = vi.fn();
+vi.mock("@/api/sessions", () => ({
+  getMessagesPage: (...args: unknown[]) => getMessagesPage(...args),
+}));
 // Reassigned per-test; `null` simulates a disconnected scope.
 let mockBridge: { rollbackSession: typeof rollbackSession } | null = {
   rollbackSession,
@@ -55,6 +62,8 @@ function trimmedResult(): SessionRollbackResult {
 beforeEach(() => {
   mockBridge = { rollbackSession };
   rollbackSession.mockReset();
+  getMessagesPage.mockReset();
+  getMessagesPage.mockRejectedValue(new Error("no fetch in test"));
 });
 
 afterEach(() => {
@@ -582,6 +591,76 @@ describe("rollbackSessionTurns", () => {
       timestamp: "2026-07-10T00:00:05Z",
     } as never);
     expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(true);
+  });
+
+  it("nudges ONE forced REST replay when an echo cannot resolve the scope (codex round 7)", async () => {
+    // Topic-scope shape: the sibling came from messages_page (no seq)
+    // and no hydrate will ever supply one. The orphan's echo cannot
+    // open the gate — but the echoed turn IS persisted now, so the
+    // store falls back to one forced REST replay, which re-roots both
+    // user rows in server order and resolves the placeholder.
+    ThreadStore.replayHistory(
+      SESSION,
+      [
+        {
+          role: "user",
+          content: "sibling",
+          client_message_id: "cmid-sib3",
+          thread_id: "cmid-sib3",
+          timestamp: "2026-07-10T00:00:01Z",
+        },
+      ] as never,
+      "slides",
+    );
+    ThreadStore.appendToolProgress("cmid-late3", "tc-1", "late progress");
+    // The orphan landed in the slides scope alongside the sibling.
+    expect(ThreadStore.hasPlaceholderThreads(SESSION, "slides")).toBe(true);
+    getMessagesPage.mockResolvedValue({
+      messages: [
+        {
+          role: "user",
+          content: "sibling",
+          client_message_id: "cmid-sib3",
+          thread_id: "cmid-sib3",
+          timestamp: "2026-07-10T00:00:01Z",
+        },
+        {
+          role: "user",
+          content: "late prompt",
+          client_message_id: "cmid-late3",
+          thread_id: "cmid-late3",
+          timestamp: "2026-07-10T00:00:02Z",
+        },
+        {
+          role: "assistant",
+          content: "late reply",
+          thread_id: "cmid-late3",
+          timestamp: "2026-07-10T00:00:03Z",
+        },
+      ],
+      has_more: false,
+    });
+    ThreadStore.appendPersistedMessage(SESSION, "slides", {
+      seq: 4,
+      role: "user",
+      content: "late prompt",
+      client_message_id: "cmid-late3",
+      thread_id: "cmid-late3",
+      timestamp: "2026-07-10T00:00:02Z",
+    } as never);
+    // Echo alone: gate still closed (sibling has no seq)…
+    expect(ThreadStore.hasPlaceholderThreads(SESSION, "slides")).toBe(true);
+    // …but the nudge fired one forced replay; let it land.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(getMessagesPage).toHaveBeenCalledTimes(1);
+    expect(ThreadStore.hasPlaceholderThreads(SESSION, "slides")).toBe(false);
+    const threads = ThreadStore.getThreads(SESSION, "slides");
+    expect(threads.map((t) => t.userMsg.text)).toEqual([
+      "sibling",
+      "late prompt",
+    ]);
   });
 
   it("orders equal-timestamp roots by seq once every root carries one (codex rounds 5-6)", () => {

@@ -3613,6 +3613,9 @@ export function appendPersistedMessage(
         typeof message.seq === "number" ? message.seq : undefined,
       );
       adopted = tryAdoptPlaceholders(state);
+      // Unresolvable from live traffic (round 7): fall back to ONE
+      // forced REST replay for the scope.
+      if (!adopted) nudgePlaceholderRefetch(key, state);
     }
     const built = buildResponseFromApi(message);
     if (thread.userMsg.text === "" && built.text.trim().length > 0) {
@@ -4034,6 +4037,32 @@ function tryAdoptPlaceholders(state: SessionState): boolean {
   return true;
 }
 
+/** One-shot per scope: a persisted user echo landed while the scope
+ *  still had UNRESOLVABLE placeholders — some sibling root carries no
+ *  server seq and never will from live traffic (topic scopes skip
+ *  `session/hydrate` and REST `messages_page` strips `seq`; codex
+ *  #262 round 7). The echoed turn IS persisted now, so ONE forced
+ *  REST replay re-roots it in server order and resolves the orphan
+ *  without any cross-domain heuristics (`replayHistory` roots user
+ *  rows found in the batch; only rows still missing stay gated).
+ *  Re-armed when the scope's placeholders fully resolve so a later
+ *  episode can nudge again; `loadHistory` itself dedups in-flight
+ *  fetches and swallows fetch errors. */
+const placeholderRefetchByKey = new Set<string>();
+
+function nudgePlaceholderRefetch(key: string, state: SessionState): void {
+  if (!state.threads.some((t) => t.placeholderOrigin === true)) {
+    placeholderRefetchByKey.delete(key);
+    return;
+  }
+  if (placeholderRefetchByKey.has(key)) return;
+  placeholderRefetchByKey.add(key);
+  const hashIdx = key.indexOf("#");
+  const sessionId = hashIdx === -1 ? key : key.slice(0, hashIdx);
+  const topic = hashIdx === -1 ? undefined : key.slice(hashIdx + 1);
+  void loadHistory(sessionId, topic, { force: true });
+}
+
 /** True when ANY bucket in the scope is still an orphan placeholder.
  *  While one exists the local turn list is KNOWN-incomplete (a late
  *  event arrived for a turn we have not seen the user message for), so
@@ -4139,6 +4168,7 @@ export function clearSessionScope(
   pendingClientMessageIds.delete(key);
   seenSeqsByKey.delete(key);
   appliedHydrateToolEnvelopesByKey.delete(key);
+  placeholderRefetchByKey.delete(key);
   notify();
 }
 
@@ -4152,6 +4182,7 @@ export function clearSession(sessionId: string, topic?: string): void {
     pendingClientMessageIds.delete(key);
     seenSeqsByKey.delete(key);
     appliedHydrateToolEnvelopesByKey.delete(key);
+    placeholderRefetchByKey.delete(key);
   } else {
     for (const k of [...sessionsByKey.keys()]) {
       if (k === sessionId || k.startsWith(`${sessionId}#`)) {
@@ -4162,6 +4193,7 @@ export function clearSession(sessionId: string, topic?: string): void {
         pendingClientMessageIds.delete(k);
         seenSeqsByKey.delete(k);
         appliedHydrateToolEnvelopesByKey.delete(k);
+        placeholderRefetchByKey.delete(k);
       }
     }
     // Codex round-5 P3: a hydrate snapshot may exist without a
@@ -4298,6 +4330,7 @@ export function __resetForTests(): void {
   loadingPromises.clear();
   snapshotCache.clear();
   hydrateSnapshotByKey.clear();
+  placeholderRefetchByKey.clear();
   pendingClientMessageIds.clear();
   seenSeqsByKey.clear();
   appliedHydrateToolEnvelopesByKey.clear();
