@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CronTab, describeSchedule } from "./cron-tab";
@@ -165,27 +166,44 @@ describe("CronTab", () => {
   });
 
   it("does not blank the tab when a superseded load resolves first", async () => {
-    // codex web#266 r2 P2: StrictMode mounts two loads. If the FIRST
-    // (superseded) resolves before the second, it must not clear
-    // loading while overview is still null — the tab would go blank.
+    // codex web#266 r2 P2: under real StrictMode the effect runs
+    // TWICE, starting two loads. If the FIRST (superseded) resolves
+    // while the SECOND (winning) is still pending, the superseded load
+    // must NOT clear loading — otherwise `!overview` blanks the tab.
     let resolveFirst: (v: typeof OVERVIEW) => void = () => {};
+    let resolveSecond: (v: typeof OVERVIEW) => void = () => {};
     apiMocks.getMyCron.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           resolveFirst = resolve as (v: typeof OVERVIEW) => void;
         }),
     );
-    apiMocks.getMyCron.mockResolvedValueOnce(OVERVIEW);
-    render(<CronTab />);
+    apiMocks.getMyCron.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSecond = resolve as (v: typeof OVERVIEW) => void;
+        }),
+    );
+    render(
+      <StrictMode>
+        <CronTab />
+      </StrictMode>,
+    );
+    // Both effects have run → two pending GETs. Loader is visible.
+    await waitFor(() =>
+      expect(screen.getByText(/Loading schedule/)).toBeTruthy(),
+    );
 
-    // Simulate the StrictMode second mount: a second load supersedes.
-    // (Both effects run; the component instance is the same.) Resolve
-    // the FIRST after the second is armed.
-    await new Promise((r) => setTimeout(r, 0));
+    // The SUPERSEDED (first) load resolves. With the old unconditional
+    // clear this stopped the spinner while overview was still null →
+    // blank tab. The fix keeps the loader up until the winner resolves.
     resolveFirst({ ...OVERVIEW, count: 99 });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.getByText(/Loading schedule/)).toBeTruthy();
+    expect(screen.queryByText("morning briefing")).toBeNull();
 
-    // The winning (second) load renders the real jobs; the tab is
-    // never stuck blank.
+    // The WINNING (second) load resolves → real content, loader gone.
+    resolveSecond(OVERVIEW);
     await waitFor(() =>
       expect(screen.getByText("morning briefing")).toBeTruthy(),
     );
