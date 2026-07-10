@@ -384,7 +384,15 @@ describe("rollbackSessionTurns", () => {
     );
     expect(applied).toBe(true);
     expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(true);
-    // The persisted echo (timestamp + seq) is what adopts it.
+    // The persisted echoes (timestamp + seq for EVERY root) adopt it.
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 5,
+      role: "user",
+      content: "anchor",
+      client_message_id: "cmid-anchor",
+      thread_id: "cmid-anchor",
+      timestamp: "2026-07-10T00:00:04Z",
+    } as never);
     ThreadStore.appendPersistedMessage(SESSION, undefined, {
       seq: 7,
       role: "user",
@@ -443,12 +451,13 @@ describe("rollbackSessionTurns", () => {
     expect(ThreadStore.getThreads(SESSION)[0].responses).toHaveLength(before);
   });
 
-  it("hydrate media adoption re-anchors the orphan's order before opening the rewind gate", () => {
-    // codex #262 round 4 P1: a late background assistant mints the
+  it("hydrate rows (media or not) normalize order and adopt the orphan by seq", () => {
+    // codex #262 rounds 4-6: a late background assistant mints the
     // orphan at ASSISTANT-arrival time, placing an OLDER media turn
-    // AFTER a newer prompt. Adoption must restore the server order
-    // (row.persisted_at) — otherwise rewinding the newer prompt sends
-    // num_turns=2 and deletes both turns.
+    // AFTER a newer prompt. The gate opens only once EVERY user root
+    // carries server order; the sibling's order arrives via its
+    // NO-media hydrate row (round 6 P2), the orphan's via its media
+    // row. Sorting by per-session seq restores the server order.
     ThreadStore.addUserMessage(SESSION, {
       text: "newer prompt",
       clientMessageId: "cmid-new",
@@ -467,7 +476,14 @@ describe("rollbackSessionTurns", () => {
           content: "older prompt",
           client_message_id: "cmid-old",
           media: ["uploads/x.wav"],
-          persisted_at: "2020-01-01T00:00:00Z",
+          persisted_at: "2026-07-09T00:00:00Z",
+        },
+        {
+          seq: 3,
+          role: "user",
+          content: "newer prompt",
+          client_message_id: "cmid-new",
+          persisted_at: "2026-07-09T00:00:01Z",
         },
       ],
     });
@@ -479,7 +495,10 @@ describe("rollbackSessionTurns", () => {
     expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(false);
   });
 
-  it("hydrate media adoption keeps the gate closed without a usable persisted_at", () => {
+  it("keeps the gate closed while ANY user root lacks server order", () => {
+    // The orphan's own row carries seq, but the optimistic sibling's
+    // echo hasn't landed — its root is still in the client clock
+    // domain, so placement would mix domains (round 6 P1).
     ThreadStore.addUserMessage(SESSION, {
       text: "newer prompt",
       clientMessageId: "cmid-new2",
@@ -493,14 +512,14 @@ describe("rollbackSessionTurns", () => {
           content: "older prompt",
           client_message_id: "cmid-old2",
           media: ["uploads/y.wav"],
-          // no persisted_at → order unknowable → stay withheld
+          persisted_at: "2026-07-09T00:00:00Z",
         },
       ],
     });
     expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(true);
   });
 
-  it("persisted-echo adoption re-anchors the orphan's order (codex round 5 P1)", () => {
+  it("persisted echoes normalize every root; the second echo adopts and reorders (codex rounds 5-6)", () => {
     // Newer real prompt first; late stream mints the orphan AFTER it.
     ThreadStore.addUserMessage(SESSION, {
       text: "newer prompt",
@@ -511,14 +530,26 @@ describe("rollbackSessionTurns", () => {
       "cmid-new5",
       "cmid-old5",
     ]);
-    // The persisted user echo carries the true (older) order.
+    // The orphan's echo alone must NOT open the gate: the optimistic
+    // sibling is still client-clocked (round 6 P1 — mixed domains).
     ThreadStore.appendPersistedMessage(SESSION, undefined, {
       seq: 1,
       role: "user",
       content: "older prompt",
       client_message_id: "cmid-old5",
       thread_id: "cmid-old5",
-      timestamp: "2020-01-01T00:00:00Z",
+      timestamp: "2026-07-09T00:00:00Z",
+    } as never);
+    expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(true);
+    // The sibling's own echo lands moments later (normal send flow) —
+    // every root is now server-ordered, so adoption sorts by seq.
+    ThreadStore.appendPersistedMessage(SESSION, undefined, {
+      seq: 3,
+      role: "user",
+      content: "newer prompt",
+      client_message_id: "cmid-new5",
+      thread_id: "cmid-new5",
+      timestamp: "2026-07-09T00:00:01Z",
     } as never);
     expect(ThreadStore.getThreads(SESSION).map((t) => t.id)).toEqual([
       "cmid-old5",
@@ -527,9 +558,11 @@ describe("rollbackSessionTurns", () => {
     expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(false);
   });
 
-  it("keeps the gate closed on an equal-timestamp tie without a seq tiebreak (codex round 5 P2)", () => {
-    // Sibling built by replay with a known timestamp but NO seq
-    // (messages_page strips it) …
+  it("keeps the gate closed while a seq-stripped sibling remains (codex rounds 5-6)", () => {
+    // Sibling built by replay WITHOUT seq (messages_page strips it) —
+    // even an identical timestamp cannot order the pair (sub-ms server
+    // times collapse under Date.parse), so seq is the only axis and
+    // the sibling doesn't have one yet.
     ThreadStore.replayHistory(SESSION, [
       {
         role: "user",
@@ -540,8 +573,6 @@ describe("rollbackSessionTurns", () => {
       },
     ] as never);
     ThreadStore.appendAssistantToken("cmid-tie", "late stream");
-    // …and the echo lands in the SAME millisecond: placement between
-    // the two is a guess — the gate must stay closed.
     ThreadStore.appendPersistedMessage(SESSION, undefined, {
       seq: 4,
       role: "user",
@@ -553,7 +584,7 @@ describe("rollbackSessionTurns", () => {
     expect(ThreadStore.hasPlaceholderThreads(SESSION)).toBe(true);
   });
 
-  it("breaks an equal-timestamp tie by seq when both sides carry one (codex round 5 P2)", () => {
+  it("orders equal-timestamp roots by seq once every root carries one (codex rounds 5-6)", () => {
     ThreadStore.replayHistory(SESSION, [
       {
         seq: 3,
