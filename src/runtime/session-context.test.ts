@@ -29,6 +29,7 @@ const apiMocks = vi.hoisted(() => ({
   getSessionTasks: vi.fn(),
   deleteSession: vi.fn(),
   setSessionTitle: vi.fn(),
+  forkSession: vi.fn(),
 }));
 
 vi.mock("@/api/sessions", () => ({
@@ -38,11 +39,13 @@ vi.mock("@/api/sessions", () => ({
   getSessionTasks: apiMocks.getSessionTasks,
   deleteSession: apiMocks.deleteSession,
   setSessionTitle: apiMocks.setSessionTitle,
+  forkSession: apiMocks.forkSession,
 }));
 
 import {
   applyOptimisticRename,
   mergeSessionLists,
+  resolveSessionScope,
   rollbackOptimisticRename,
   sessionTimestamp,
   SessionProvider,
@@ -58,6 +61,8 @@ import type { BackgroundTaskInfo, SessionInfo } from "@/api/types";
 const NO_TITLES: Record<string, string> = {};
 const NO_DELETES = new Set<string>();
 const SESSION_TITLES_KEY = "octos_session_titles";
+// Mirrors the private SESSION_TOPIC_STORAGE_KEY in session-context.tsx.
+const SESSION_TOPIC_STORAGE_KEY = "octos_session_topics";
 
 // `sessionTimestamp` rejects ms timestamps < 1700000000000 (~Nov 2023) so
 // fixtures need a realistic base.
@@ -169,6 +174,7 @@ beforeEach(() => {
   apiMocks.getSessionTasks.mockResolvedValue([]);
   apiMocks.deleteSession.mockResolvedValue(undefined);
   apiMocks.setSessionTitle.mockResolvedValue(undefined);
+  apiMocks.forkSession.mockReset();
 });
 
 afterEach(() => {
@@ -683,6 +689,158 @@ describe("renameSession rollback wiring (replicated from SessionProvider)", () =
       expect(latest.find((s) => s.id === "web-1")?.title).toBeUndefined();
     } finally {
       console.warn = warn;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session bucket resolution (codex web#267 r1 P1 + r2 P1)
+// ---------------------------------------------------------------------------
+//
+// A session opened under a topic (`/new slides …`) lives in its own
+// `id#topic` SessionKey server-side. `resolveSessionScope` is the ONE
+// authority for which bucket a sidebar row denotes — shared by
+// `switchSession` (what clicking shows) and `branchSession` (what
+// forking copies), so fork ≡ click-view by construction: a fork can
+// never copy a conversation the row would not open.
+
+describe("resolveSessionScope", () => {
+  it("resolves a bare id with no topic to itself (default bucket)", () => {
+    expect(resolveSessionScope("web-123", {})).toEqual({
+      scopedId: "web-123",
+      topic: undefined,
+    });
+  });
+
+  it("resolves a bare id with a stored topic to the topic bucket", () => {
+    // This mirrors switchSession: clicking this row loads the TOPIC
+    // history, so forking it must copy that same conversation.
+    expect(resolveSessionScope("web-123", { "web-123": "slides" })).toEqual({
+      scopedId: "web-123#slides",
+      topic: "slides",
+    });
+  });
+
+  it("treats an already-scoped id as authoritative", () => {
+    // A topic-bucket row from the server list forks as-is; the topic
+    // map never overrides an explicit scope (codex web#267 r2 P1:
+    // "preserve the selected row's scope") — and it is never
+    // double-suffixed.
+    expect(
+      resolveSessionScope("web-123#slides", { "web-123#slides": "other" }),
+    ).toEqual({ scopedId: "web-123#slides", topic: undefined });
+    expect(resolveSessionScope("web-123#slides", {})).toEqual({
+      scopedId: "web-123#slides",
+      topic: undefined,
+    });
+  });
+
+  it("ignores topics stored under OTHER ids", () => {
+    // codex web#267 r2 P1 scenario: base id web-123 has both a default
+    // and a topic history. The scoped row `web-123#slides` keeps its
+    // own scope; a DIFFERENT bare row (another session) is untouched
+    // by web-123's map entry.
+    const topics = { "web-123": "slides" };
+    expect(resolveSessionScope("web-456", topics).scopedId).toBe("web-456");
+  });
+});
+
+describe("SessionProvider initial topic restore", () => {
+  it("resolves the FIRST render's topic through the resolver for a scoped saved id", async () => {
+    // codex web#267 r3 P2: with a scoped id saved as the current
+    // session and a STALE map entry under that scoped key (e.g. after
+    // `/s other` on that row), the state initializer used the raw map
+    // and exposed `other` to children's mount effects for the first
+    // render — the restore effect only corrected it afterwards. The
+    // initializer must apply the same resolution: scoped id ⇒ its own
+    // scope is authoritative ⇒ topic undefined.
+    const scopedId = `${idAt(900, "scoped")}#slides`;
+    localStorage.setItem("octos_current_session", scopedId);
+    localStorage.setItem(
+      SESSION_TOPIC_STORAGE_KEY,
+      JSON.stringify({ [scopedId]: "other" }),
+    );
+
+    const seenTopics: Array<string | undefined> = [];
+    const harness = mountSessionProvider((ctx) => {
+      seenTopics.push(ctx.historyTopic);
+    });
+    try {
+      expect(seenTopics.length).toBeGreaterThan(0);
+      expect(seenTopics[0]).toBeUndefined();
+      await flushReactWork();
+      // …and it stays resolved after the restore effect runs.
+      expect(seenTopics[seenTopics.length - 1]).toBeUndefined();
+    } finally {
+      harness.unmount();
+    }
+  });
+});
+
+describe("SessionProvider branchSession fork scoping", () => {
+  it("forks the topic-scoped parent key for a session opened under a topic", async () => {
+    const topicSessionId = idAt(700, "slides");
+    // The session was opened via `/new slides …`, so it lives under the
+    // `slides` topic — persisted in localStorage as the provider hydrates.
+    localStorage.setItem(
+      SESSION_TOPIC_STORAGE_KEY,
+      JSON.stringify({ [topicSessionId]: "slides" }),
+    );
+    apiMocks.listSessions.mockResolvedValue([
+      { id: topicSessionId, message_count: 4, title: "deck" },
+    ] satisfies SessionInfo[]);
+    apiMocks.forkSession.mockResolvedValue({
+      new_session_id: "web-1777700000900-child",
+      parent_session_id: `${topicSessionId}#slides`,
+      copied_messages: 4,
+    });
+
+    let latest: SessionContextValue | null = null;
+    const harness = mountSessionProvider((ctx) => {
+      latest = ctx;
+    });
+    try {
+      await flushReactWork();
+      await act(async () => {
+        await latest?.branchSession(topicSessionId);
+      });
+      // The bare id would have branched the default bucket; the fix
+      // appends the stored topic so the right conversation is copied.
+      expect(apiMocks.forkSession).toHaveBeenCalledTimes(1);
+      const call = apiMocks.forkSession.mock.calls[0];
+      expect(call[0]).toBe(`${topicSessionId}#slides`);
+      // The child id is minted client-side (raw `web-*`), never scoped.
+      expect(String(call[1])).toMatch(/^web-/);
+      expect(String(call[1])).not.toContain("#");
+    } finally {
+      harness.unmount();
+    }
+  });
+
+  it("forks the bare id for a session with no topic", async () => {
+    const plainSessionId = idAt(800, "plain");
+    apiMocks.listSessions.mockResolvedValue([
+      { id: plainSessionId, message_count: 2 },
+    ] satisfies SessionInfo[]);
+    apiMocks.forkSession.mockResolvedValue({
+      new_session_id: "web-1777700000950-child",
+      parent_session_id: plainSessionId,
+      copied_messages: 2,
+    });
+
+    let latest: SessionContextValue | null = null;
+    const harness = mountSessionProvider((ctx) => {
+      latest = ctx;
+    });
+    try {
+      await flushReactWork();
+      await act(async () => {
+        await latest?.branchSession(plainSessionId);
+      });
+      expect(apiMocks.forkSession).toHaveBeenCalledTimes(1);
+      expect(apiMocks.forkSession.mock.calls[0][0]).toBe(plainSessionId);
+    } finally {
+      harness.unmount();
     }
   });
 });

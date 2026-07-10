@@ -12,6 +12,7 @@ import {
   getMessages,
   getSessionTasks,
   deleteSession as apiDeleteSession,
+  forkSession,
   setSessionTitle as apiSetSessionTitle,
 } from "@/api/sessions";
 import type { BackgroundTaskInfo, SessionInfo, MessageInfo } from "@/api/types";
@@ -190,6 +191,10 @@ export interface SessionContextValue {
   switchSession: (id: string) => void;
   goBack: () => Promise<boolean>;
   createSession: (title?: string) => string;
+  /** Fork `sourceId` into a fresh session (full history copied,
+   *  parent lineage recorded server-side) and switch to it. Resolves
+   *  to the new session id. */
+  branchSession: (sourceId: string) => Promise<string>;
   removeSession: (id: string) => Promise<void>;
   refreshSessions: () => Promise<void>;
   /** Mark the current session as active (has sent at least one message). */
@@ -459,6 +464,37 @@ export function rollbackOptimisticRename(
   );
 }
 
+/**
+ * Resolve which server-side bucket a sidebar session id denotes — THE
+ * single authority shared by `switchSession` (what clicking a row
+ * shows) and `branchSession` (what forking a row copies), so the two
+ * can never diverge (codex web#267 r1 P1 + r2 P1).
+ *
+ * A session opened under a topic (e.g. `/new slides …`) lives in its
+ * own `id#topic` SessionKey server-side. The SPA keys sidebar rows by
+ * BARE id and tracks the active topic in `sessionTopics`; clicking a
+ * bare row loads `(id, topics[id])` — i.e. the row denotes the TOPIC
+ * bucket whenever the map holds one, and the default bucket under that
+ * base id is not reachable from that row. Forking follows the same
+ * resolution: it copies exactly the conversation the row opens.
+ *
+ * An id that already carries a `#` scope (a server list row for a
+ * topic bucket) is authoritative as-is — the topic map never overrides
+ * it, mirroring the bridge's `requireScopedSessionId` pass-through.
+ * The server derives a fork child from `base_key` (topic dropped), so
+ * the child is always a fresh raw conversation regardless of scope.
+ */
+export function resolveSessionScope(
+  id: string,
+  topics: Record<string, string>,
+): { scopedId: string; topic: string | undefined } {
+  if (id.includes("#")) {
+    return { scopedId: id, topic: undefined };
+  }
+  const topic = topics[id] || undefined;
+  return { scopedId: topic ? `${id}#${topic}` : id, topic };
+}
+
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [sessions, setSessions] = useState<SessionWithTitle[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState(() => {
@@ -467,9 +503,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return saved || generateSessionId();
   });
   const [activeHistoryTopic, setActiveHistoryTopic] = useState<string | undefined>(() => {
+    // Through the resolver, NOT a raw map read (codex web#267 r3 P2):
+    // a restored scoped id (`web-123#slides`) is authoritative as-is,
+    // and a stale map entry under that scoped key must not expose a
+    // different topic to children's mount effects for the first render
+    // — the restore effect would only correct it AFTER mount.
     const saved = localStorage.getItem("octos_current_session");
-    const topics = loadStoredTopics();
-    return saved ? topics[saved] : undefined;
+    return saved
+      ? resolveSessionScope(saved, loadStoredTopics()).topic
+      : undefined;
   });
   const [initialMessages, setInitialMessages] = useState<MessageInfo[]>([]);
   const [serverTaskActiveBySession, setServerTaskActiveBySession] = useState<
@@ -563,7 +605,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     restoredRef.current = true;
     const saved = localStorage.getItem("octos_current_session");
     if (saved && saved.startsWith("web-")) {
-      const restoredTopic = sessionTopics[saved];
+      const { topic: restoredTopic } = resolveSessionScope(saved, sessionTopics);
       void ThreadStore.loadHistory(saved, restoredTopic);
       getSessionTasks(saved, restoredTopic)
         .then((tasks) => {
@@ -938,7 +980,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     // pages through `getMessagesPage` so >500-msg sessions render in
     // full instead of silent truncation.
     const requestId = ++switchRequestRef.current;
-    const topic = sessionTopics[id];
+    // Shared bucket resolution with branchSession — see
+    // resolveSessionScope.
+    const { topic } = resolveSessionScope(id, sessionTopics);
     setCurrentSessionId(id);
     setActiveHistoryTopic(topic);
     setInitialMessages([]);
@@ -981,6 +1025,34 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setCurrentSessionId(nextId);
     return nextId;
   }, [currentSessionId]);
+
+  const branchSession = useCallback(
+    async (sourceId: string) => {
+      // Fork the bucket the row DENOTES — the same resolution
+      // switchSession uses (see resolveSessionScope), so a fork always
+      // copies exactly the conversation clicking that row shows: the
+      // topic bucket when the map holds a topic for a bare id, the
+      // scoped id as-is for a topic-bucket row, the default bucket
+      // otherwise (codex web#267 r1 P1 + r2 P1). Server-side fork
+      // copies the parent's FULL message history and records
+      // parent_key lineage — matching the CLI `/new` fork. Workspace
+      // artifacts (uploads, generated files) intentionally stay with
+      // the parent, same as the CLI: the child inherits the
+      // conversation, not the parent's on-disk resources. The child id
+      // is minted client-side (raw `web-*` convention); the server
+      // echoes it back for raw parents.
+      const { scopedId: scopedSource } = resolveSessionScope(
+        sourceId,
+        sessionTopics,
+      );
+      const result = await forkSession(scopedSource, generateSessionId());
+      const newId = result.new_session_id;
+      await refreshSessions();
+      switchSession(newId);
+      return newId;
+    },
+    [sessionTopics, refreshSessions, switchSession],
+  );
 
   const goBack = useCallback(async () => {
     const previous = previousSessionIdRef.current;
@@ -1075,6 +1147,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         switchSession,
         goBack,
         createSession,
+        branchSession,
         removeSession,
         refreshSessions,
         markSessionActive,
