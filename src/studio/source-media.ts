@@ -28,6 +28,7 @@ export function mergeSourceMedia(
 }
 
 export const SOURCE_IMPORT_ACTION_ID = "source.import";
+export const SOURCE_LIST_ACTION_ID = "source.list";
 export const SOURCE_RENAME_ACTION_ID = "source.rename";
 export const SOURCE_REMOVE_ACTION_ID = "source.remove";
 
@@ -50,6 +51,8 @@ export interface SourceRow {
   sourcePath?: string;
   materializedPath?: string;
   previewPath?: string;
+  mediaType?: string;
+  retryInput?: Record<string, unknown>;
 }
 
 export function isSourceRowReady(row: SourceRow): boolean {

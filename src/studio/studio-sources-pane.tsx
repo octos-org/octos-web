@@ -18,13 +18,11 @@ import {
 
 import { uploadFiles } from "@/api/chat";
 import { invokeSkillAction } from "@/api/skill-actions";
-import { useAllFiles } from "@/store/file-store";
 
 import {
   SOURCE_IMPORT_ACTION_ID,
   SOURCE_REMOVE_ACTION_ID,
   SOURCE_RENAME_ACTION_ID,
-  fileNameFromPath,
   isSourceRowReady,
   sourceKind,
   sourceRowFromSkillActionJob,
@@ -47,6 +45,7 @@ interface Props {
   onUploaded: (rows: SourceRow[]) => void;
   onRenamed: (row: SourceRow, title: string) => void;
   onRemoved: (row: SourceRow) => void;
+  onCatalogChanged: () => void;
   /** True while the initial session file listing is in flight. */
   loading: boolean;
 }
@@ -59,12 +58,6 @@ const KIND_ICONS: Record<SourceKind, LucideIcon> = {
   text: FileText,
 };
 
-const DISMISSED_SOURCES_STORAGE_PREFIX = "octos-studio-dismissed-sources";
-
-function dismissedSourcesStorageKey(sessionId: string): string {
-  return `${DISMISSED_SOURCES_STORAGE_PREFIX}:${sessionId}`;
-}
-
 function sourceRowIdentityKeys(row: SourceRow): string[] {
   const keys = [
     row.jobId ? `job:${row.jobId}` : null,
@@ -75,47 +68,6 @@ function sourceRowIdentityKeys(row: SourceRow): string[] {
     row.materializedPath ? `path:${row.materializedPath}` : null,
   ].filter((key): key is string => Boolean(key));
   return Array.from(new Set(keys));
-}
-
-function sourceRowDismissKeys(row: SourceRow): string[] {
-  if (row.sourceId) return sourceRowIdentityKeys(row);
-  if (row.jobId) return [`job:${row.jobId}`];
-  return [`path:${row.path}`];
-}
-
-function isSourceRowDismissed(
-  row: SourceRow,
-  dismissedKeys: ReadonlySet<string>,
-): boolean {
-  return sourceRowIdentityKeys(row).some((key) => dismissedKeys.has(key));
-}
-
-function readDismissedSourceKeys(sessionId: string): Set<string> {
-  try {
-    const parsed = JSON.parse(
-      localStorage.getItem(dismissedSourcesStorageKey(sessionId)) ?? "[]",
-    ) as unknown;
-    if (!Array.isArray(parsed)) return new Set();
-    return new Set(
-      parsed.filter((value): value is string => typeof value === "string"),
-    );
-  } catch {
-    return new Set();
-  }
-}
-
-function persistDismissedSourceKeys(
-  sessionId: string,
-  keys: ReadonlySet<string>,
-): void {
-  try {
-    localStorage.setItem(
-      dismissedSourcesStorageKey(sessionId),
-      JSON.stringify(Array.from(keys)),
-    );
-  } catch {
-    // Dismissal is an interface convenience; storage failures are non-fatal.
-  }
 }
 
 function SourceActionsMenu({
@@ -266,8 +218,8 @@ export function StudioSourcesPane({
   loading,
   onRenamed,
   onRemoved,
+  onCatalogChanged,
 }: Props) {
-  const allFiles = useAllFiles();
   const [query, setQuery] = useState("");
   const [uploadError, setUploadError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -276,28 +228,17 @@ export function StudioSourcesPane({
   const [renameValue, setRenameValue] = useState("");
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(() =>
-    readDismissedSourceKeys(sessionId),
-  );
 
   const rows = useMemo(() => {
-    const sessionRows: SourceRow[] = allFiles
-      .filter((f) => f.sessionId === sessionId)
-      .map((f) => ({
-        filename: f.filename,
-        path: f.filePath,
-        timestamp: f.timestamp,
-      }));
     const seen = new Set<string>();
-    return [...uploaded, ...sessionRows]
+    return uploaded
       .filter((row) => {
         if (seen.has(row.path)) return false;
         seen.add(row.path);
         return true;
       })
-      .filter((row) => !isSourceRowDismissed(row, dismissedKeys))
       .sort((a, b) => b.timestamp - a.timestamp);
-  }, [allFiles, dismissedKeys, sessionId, uploaded]);
+  }, [uploaded]);
 
   const trimmedQuery = query.trim().toLowerCase();
   const visible = trimmedQuery
@@ -325,18 +266,7 @@ export function StudioSourcesPane({
         );
         return;
       }
-      const importedPaths = imported.materialized_paths?.length
-        ? imported.materialized_paths
-        : paths;
-      const now = Date.now();
-      const rows = importedPaths.map((path, index) => ({
-        path,
-        filename: fileNameFromPath(path, files[index]?.name ?? path),
-        timestamp: now,
-        status: "ready" as const,
-      }));
-      onUploaded(rows);
-      for (const row of rows) onToggle(row.path);
+      onCatalogChanged();
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : "Upload failed");
     } finally {
@@ -350,18 +280,12 @@ export function StudioSourcesPane({
   }
 
   function dismissSourceRow(row: SourceRow) {
-    const keys = sourceRowDismissKeys(row);
-    const keySet = new Set(keys);
     setActionError(null);
-    setDismissedKeys((prev) => {
-      const next = new Set(prev);
-      for (const key of keys) next.add(key);
-      persistDismissedSourceKeys(sessionId, next);
-      return next;
-    });
     if (
       previewRow &&
-      sourceRowIdentityKeys(previewRow).some((key) => keySet.has(key))
+      sourceRowIdentityKeys(previewRow).some((key) =>
+        sourceRowIdentityKeys(row).includes(key),
+      )
     ) {
       setPreviewRow(null);
     }
@@ -391,6 +315,7 @@ export function StudioSourcesPane({
         throw new Error(failed?.output || "Source rename failed");
       }
       onRenamed(row, title);
+      onCatalogChanged();
       setRenamingKey(null);
       setRenameValue("");
     } catch (err) {
@@ -415,6 +340,7 @@ export function StudioSourcesPane({
         throw new Error(failed?.output || "Source remove failed");
       }
       dismissSourceRow(row);
+      onCatalogChanged();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Source remove failed");
     } finally {

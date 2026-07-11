@@ -32,6 +32,7 @@ const invokeSkillActionMock = vi.hoisted(() =>
   })),
 );
 const listSkillActionJobsMock = vi.hoisted(() => vi.fn(async () => []));
+const loadSourceCatalogMock = vi.hoisted(() => vi.fn(async () => []));
 const listSkillActionsMock = vi.hoisted(() =>
   vi.fn(async () =>
     [
@@ -119,6 +120,10 @@ vi.mock("@/api/skill-actions", () => ({
   listSkillActions: listSkillActionsMock,
   listSkillActionJobs: listSkillActionJobsMock,
 }));
+vi.mock("./source-store", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./source-store")>();
+  return { ...actual, loadSourceCatalog: loadSourceCatalogMock };
+});
 
 import { STUDIO_SKILLS } from "./skills";
 import { StudioPage } from "./studio-page";
@@ -149,6 +154,20 @@ function mockSourceImportJobs(jobs: unknown[] = [readySourceJob()]) {
     (_sessionId: string, options?: { actionId?: string }) =>
       Promise.resolve(options?.actionId === "source.import" ? jobs : []),
   );
+  loadSourceCatalogMock.mockResolvedValue(
+    (jobs as ReturnType<typeof readySourceJob>[])
+      .filter((job) => job.status === "succeeded" && job.source_id)
+      .map((job) => ({
+        sourceId: job.source_id,
+        filename: job.filename,
+        path: job.source_path,
+        sourcePath: job.source_path,
+        inputPath: job.materialized_path,
+        previewPath: job.materialized_path,
+        timestamp: Date.parse(job.updated_at),
+        status: "ready",
+      })),
+  );
 }
 
 function renderStudio(path = "/studio/web-abc") {
@@ -178,6 +197,19 @@ beforeEach(() => {
   invokeSkillActionMock.mockClear();
   listSkillActionJobsMock.mockClear();
   listSkillActionJobsMock.mockResolvedValue([]);
+  loadSourceCatalogMock.mockReset();
+  loadSourceCatalogMock.mockResolvedValue([
+    {
+      sourceId: "notes",
+      filename: "notes.md",
+      path: "notebook-sources/notes/source.md",
+      sourcePath: "notebook-sources/notes/source.md",
+      inputPath: "research/notes.md",
+      previewPath: "research/notes.md",
+      timestamp: 2000,
+      status: "ready",
+    },
+  ]);
   invokeSkillActionMock.mockResolvedValue({
     action_id: "source.import",
     ok: true,
@@ -192,7 +224,7 @@ afterEach(() => {
 });
 
 describe("StudioPage", () => {
-  it("renders the 3-pane workspace with the pinned chat and session sources", () => {
+  it("renders the 3-pane workspace with the pinned chat and catalog sources", async () => {
     localStorage.setItem(
       "octos_session_titles",
       JSON.stringify({ "web-abc": "My Research" }),
@@ -210,13 +242,13 @@ describe("StudioPage", () => {
     expect(screen.getByTestId("studio-rail")).toBeTruthy();
     expect(screen.getByTestId("studio-title").textContent).toBe("My Research");
 
-    // Session-scoped source rows from the file-store fixtures.
-    expect(screen.getAllByText("notes.md").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("chart.png").length).toBeGreaterThan(0);
-    // Files from other sessions never leak in.
-    expect(screen.queryByText("other.md")).toBeNull();
+    // Ready rows come from the authoritative source catalog.
+    const sourcesPane = within(screen.getByTestId("studio-sources-pane"));
+    expect(await sourcesPane.findByText("notes.md")).toBeTruthy();
+    expect(sourcesPane.queryByText("chart.png")).toBeNull();
+    expect(sourcesPane.queryByText("other.md")).toBeNull();
 
-    expect(loadSessionFilesMock).toHaveBeenCalledWith("web-abc");
+    expect(loadSourceCatalogMock).toHaveBeenCalledWith("web-abc");
     expect(threadStoreMocks.loadHistory).toHaveBeenCalledWith(
       "web-abc",
       undefined,
@@ -236,47 +268,29 @@ describe("StudioPage", () => {
     expect(screen.queryByTestId("studio-page")).toBeNull();
   });
 
-  it("updates the grounding footer when a source is checked", () => {
+  it("updates the grounding footer when a catalog source is checked", async () => {
     renderStudio();
 
     expect(screen.queryByText(/source/, { selector: "p" })).toBeNull();
-    fireEvent.click(screen.getByLabelText("Use notes.md as source"));
+    fireEvent.click(await screen.findByLabelText("Use notes.md as source"));
     expect(
       screen.getByText(/1 source selected for notebook grounding/),
-    ).toBeTruthy();
-
-    fireEvent.click(screen.getByLabelText("Use chart.png as source"));
-    expect(
-      screen.getByText(/2 sources selected for notebook grounding/),
     ).toBeTruthy();
 
     // Unchecking drops it back down.
-    fireEvent.click(screen.getByLabelText("Use chart.png as source"));
-    expect(
-      screen.getByText(/1 source selected for notebook grounding/),
-    ).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Use notes.md as source"));
+    expect(screen.queryByText(/source selected for notebook grounding/)).toBeNull();
   });
 
-  it("shows source actions for ready session file rows without source ids", async () => {
+  it("does not treat unclassified session files as sources", async () => {
+    loadSourceCatalogMock.mockResolvedValue([]);
     renderStudio();
 
     const sourcesPane = within(screen.getByTestId("studio-sources-pane"));
-    fireEvent.click(sourcesPane.getByLabelText("Source actions for notes.md"));
-    expect(sourcesPane.getByRole("menuitem", { name: "Preview" })).toBeTruthy();
-    expect(
-      sourcesPane.queryByRole("menuitem", { name: "Rename source" }),
-    ).toBeNull();
-
-    fireEvent.click(sourcesPane.getByRole("menuitem", { name: "Remove from list" }));
-
     await waitFor(() => {
       expect(sourcesPane.queryByText("notes.md")).toBeNull();
     });
-    expect(invokeSkillActionMock).not.toHaveBeenCalledWith(
-      "web-abc",
-      "source.remove",
-      expect.anything(),
-    );
+    expect(sourcesPane.queryByText("chart.png")).toBeNull();
   });
 
   it("renders notebook-style studio skills from the installed notebook skill set", () => {
@@ -327,6 +341,7 @@ describe("StudioPage", () => {
 
     renderStudio();
     await screen.findByText("photo.jpg");
+    fireEvent.click(screen.getByLabelText("Use photo.jpg as source"));
 
     fireEvent.click(screen.getByRole("button", { name: "Quiz" }));
 
@@ -368,6 +383,7 @@ describe("StudioPage", () => {
 
     renderStudio();
     await screen.findByText("photo.jpg");
+    fireEvent.click(screen.getByLabelText("Use photo.jpg as source"));
     fireEvent.click(screen.getByRole("button", { name: "Quiz" }));
 
     fireEvent(
@@ -464,6 +480,7 @@ describe("StudioPage", () => {
     });
     renderStudio();
     await screen.findByText("photo.jpg");
+    fireEvent.click(screen.getByLabelText("Use photo.jpg as source"));
 
     fireEvent.click(screen.getByRole("button", { name: "Mind Map" }));
 
@@ -477,7 +494,27 @@ describe("StudioPage", () => {
     expect(sendMessageMock).not.toHaveBeenCalled();
   });
 
-  it("uploads sources, invokes the source import action, lists them, and auto-selects them", async () => {
+  it("uploads sources and shows the queued import without auto-selecting it", async () => {
+    invokeSkillActionMock.mockResolvedValueOnce({
+      action_id: "source.import",
+      ok: true,
+      queued: 1,
+      jobs: [
+        {
+          job_id: "job-up",
+          batch_id: "batch-up",
+          profile_id: "alan0x",
+          session_id: "web-abc",
+          action_id: "source.import",
+          skill_id: "mofa-notebook-source",
+          status: "queued",
+          input_path: "research/up.pdf",
+          filename: "up.pdf",
+          created_at: "2026-07-09T01:00:00Z",
+          updated_at: "2026-07-09T01:00:00Z",
+        },
+      ],
+    });
     renderStudio();
 
     const input = screen.getByTestId("studio-upload-input");
@@ -496,10 +533,9 @@ describe("StudioPage", () => {
     const checkbox = screen.getByLabelText(
       "Use up.pdf as source",
     ) as HTMLInputElement;
-    expect(checkbox.checked).toBe(true);
-    expect(
-      screen.getByText(/1 source selected for notebook grounding/),
-    ).toBeTruthy();
+    expect(checkbox.checked).toBe(false);
+    expect(checkbox.disabled).toBe(true);
+    expect(screen.queryByText(/source selected for notebook grounding/)).toBeNull();
   });
 
   it("renders a processing source row while a background import job runs", async () => {
@@ -574,6 +610,19 @@ describe("StudioPage", () => {
     });
     await screen.findByText("Processing");
 
+    loadSourceCatalogMock.mockResolvedValue([
+      {
+        sourceId: "photo",
+        filename: "photo.jpg",
+        path: "notebook-sources/photo/source.md",
+        sourcePath: "notebook-sources/photo/source.md",
+        inputPath: "uploads/photo.jpg",
+        previewPath: "uploads/photo.jpg",
+        timestamp: Date.parse("2026-07-09T01:02:00Z"),
+        status: "ready",
+      },
+    ]);
+
     fireEvent(
       window,
       new CustomEvent("crew:skill_action_job_updated", {
@@ -603,10 +652,8 @@ describe("StudioPage", () => {
       "Use photo.jpg as source",
     ) as HTMLInputElement;
     expect(checkbox.disabled).toBe(false);
-    expect(checkbox.checked).toBe(true);
-    expect(
-      screen.getByText(/1 source selected for notebook grounding/),
-    ).toBeTruthy();
+    expect(checkbox.checked).toBe(false);
+    expect(screen.queryByText(/source selected for notebook grounding/)).toBeNull();
   });
 
   it("shows a failed source import job error", async () => {
@@ -804,6 +851,18 @@ describe("StudioPage", () => {
     fireEvent.change(screen.getByLabelText("Rename source title"), {
       target: { value: "Renamed Photo" },
     });
+    loadSourceCatalogMock.mockResolvedValue([
+      {
+        sourceId: "photo",
+        filename: "Renamed Photo",
+        path: "notebook-sources/photo/source.md",
+        sourcePath: "notebook-sources/photo/source.md",
+        inputPath: "uploads/photo.jpg",
+        previewPath: "uploads/photo.jpg",
+        timestamp: Date.now(),
+        status: "ready",
+      },
+    ]);
     fireEvent.click(screen.getByLabelText("Save source rename"));
 
     await waitFor(() => {
@@ -827,9 +886,11 @@ describe("StudioPage", () => {
 
     renderStudio();
     await screen.findByText("photo.jpg");
+    fireEvent.click(screen.getByLabelText("Use photo.jpg as source"));
     expect(
       screen.getByText(/1 source selected for notebook grounding/),
     ).toBeTruthy();
+    loadSourceCatalogMock.mockResolvedValue([]);
     fireEvent.click(screen.getByLabelText("Source actions for photo.jpg"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove source" }));
 

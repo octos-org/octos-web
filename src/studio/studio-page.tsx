@@ -15,7 +15,6 @@ import {
   type SessionContextValue,
   type SessionSendRequest,
 } from "@/runtime/session-context";
-import { loadSessionFiles } from "@/store/file-store";
 import { recordProjectOpened } from "@/store/project-store";
 import * as ThreadStore from "@/store/thread-store";
 
@@ -25,6 +24,7 @@ import {
   sourceRowFromSkillActionJob,
   type SourceRow,
 } from "./source-media";
+import { loadSourceCatalog } from "./source-store";
 import { StudioRail } from "./studio-rail";
 import { StudioSourcesPane } from "./studio-sources-pane";
 
@@ -177,6 +177,18 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
     setUploadedSources((prev) => mergeSourceRows(prev, rows));
   }, []);
 
+  const refreshSourceCatalog = useCallback(async () => {
+    try {
+      const catalog = await loadSourceCatalog(projectId);
+      setUploadedSources((current) => [
+        ...catalog,
+        ...current.filter((row) => (row.status ?? "ready") !== "ready"),
+      ]);
+    } finally {
+      setSourcesLoading(false);
+    }
+  }, [projectId]);
+
   const renameUploadedSourceRow = useCallback((row: SourceRow, title: string) => {
     setUploadedSources((prev) =>
       prev.map((existing) =>
@@ -185,12 +197,14 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
           : existing,
       ),
     );
-  }, []);
+    void refreshSourceCatalog();
+  }, [refreshSourceCatalog]);
 
   const removeUploadedSourceRow = useCallback((row: SourceRow) => {
     setUploadedSources((prev) => prev.filter((existing) => !sameSourceRow(existing, row)));
     setSelectedSources((prev) => prev.filter((path) => !selectedPathMatchesRow(path, row)));
-  }, []);
+    void refreshSourceCatalog();
+  }, [refreshSourceCatalog]);
 
   const mergeSourceImportJobs = useCallback(
     (jobs: SkillActionJob[]) => {
@@ -201,43 +215,23 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
       );
       if (sourceJobs.length === 0) return;
 
+      const succeededIds = new Set(
+        sourceJobs
+          .filter((job) => job.status === "succeeded")
+          .map((job) => job.job_id),
+      );
+      const transientRows = sourceJobs
+        .filter((job) => job.status !== "succeeded")
+        .map((job) => sourceRowFromSkillActionJob(job));
       setUploadedSources((prev) =>
         mergeSourceRows(
-          prev,
-          sourceJobs.map((job) => sourceRowFromSkillActionJob(job)),
+          prev.filter((row) => !row.jobId || !succeededIds.has(row.jobId)),
+          transientRows,
         ),
       );
-
-      const completedJobs = sourceJobs.filter(
-        (job) => job.status === "succeeded" && job.source_path,
-      );
-      if (completedJobs.length === 0) return;
-
-      setSelectedSources((prev) => {
-        let next = prev;
-        let changed = false;
-
-        for (const job of completedJobs) {
-          const stalePaths = [
-            job.input_path,
-            job.materialized_path,
-            job.job_id,
-          ].filter((path): path is string => Boolean(path));
-          const filtered = next.filter((path) => !stalePaths.includes(path));
-          if (filtered.length !== next.length) {
-            next = filtered;
-            changed = true;
-          }
-          if (job.source_path && !next.includes(job.source_path)) {
-            next = [...next, job.source_path];
-            changed = true;
-          }
-        }
-
-        return changed ? next : prev;
-      });
+      if (succeededIds.size > 0) void refreshSourceCatalog();
     },
-    [projectId],
+    [projectId, refreshSourceCatalog],
   );
 
   const restoreSourceImportJobs = useCallback(async () => {
@@ -255,6 +249,7 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
   useEffect(() => {
     const restoreSoon = () => {
       void Promise.resolve().then(restoreSourceImportJobs);
+      void Promise.resolve().then(refreshSourceCatalog).catch(() => {});
     };
     restoreSoon();
     const onBridgeReady = () => {
@@ -264,7 +259,7 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
     return () => {
       window.removeEventListener("crew:bridge_connected", onBridgeReady);
     };
-  }, [restoreSourceImportJobs]);
+  }, [refreshSourceCatalog, restoreSourceImportJobs]);
 
   useEffect(() => {
     const onJobUpdated = (e: Event) => {
@@ -277,17 +272,6 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
       window.removeEventListener("crew:skill_action_job_updated", onJobUpdated);
     };
   }, [mergeSourceImportJobs]);
-
-  // Session files feed the Sources pane and the Generated Assets list.
-  useEffect(() => {
-    let cancelled = false;
-    void Promise.resolve(loadSessionFiles(projectId)).finally(() => {
-      if (!cancelled) setSourcesLoading(false);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId]);
 
   // History hydration — mirrors slides-chat (Issue #112.2 / #110.2):
   // `loadHistory` mount-races the bridge handshake and throws before
@@ -425,6 +409,9 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
                   onUploaded={mergeUploadedSourceRows}
                   onRenamed={renameUploadedSourceRow}
                   onRemoved={removeUploadedSourceRow}
+                  onCatalogChanged={() => {
+                    void refreshSourceCatalog();
+                  }}
                   loading={sourcesLoading}
                 />
               </aside>
