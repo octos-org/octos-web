@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useParams } from "react-router-dom";
 import { PanelLeft, PanelRight } from "lucide-react";
 
@@ -141,6 +141,7 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
   const [selectedSources, setSelectedSources] = useState<string[]>([]);
   const [uploadedSources, setUploadedSources] = useState<SourceRow[]>([]);
   const [sourcesLoading, setSourcesLoading] = useState(true);
+  const sourceCatalogRequest = useRef(0);
 
   // Title: seed from localStorage, then track the runtime-provider's
   // `crew:session_title_updated` window event (detail is the bridge's
@@ -178,14 +179,18 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
   }, []);
 
   const refreshSourceCatalog = useCallback(async () => {
+    const request = ++sourceCatalogRequest.current;
     try {
       const catalog = await loadSourceCatalog(projectId);
+      if (request !== sourceCatalogRequest.current) return;
       setUploadedSources((current) => [
         ...catalog,
         ...current.filter((row) => (row.status ?? "ready") !== "ready"),
       ]);
     } finally {
-      setSourcesLoading(false);
+      if (request === sourceCatalogRequest.current) {
+        setSourcesLoading(false);
+      }
     }
   }, [projectId]);
 

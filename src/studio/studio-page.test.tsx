@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -685,6 +686,50 @@ describe("StudioPage", () => {
     expect(checkbox.disabled).toBe(false);
     expect(checkbox.checked).toBe(false);
     expect(screen.queryByText(/source selected for notebook grounding/)).toBeNull();
+  });
+
+  it("keeps a newly ready source when an older catalog request resolves last", async () => {
+    let resolveInitialCatalog: ((rows: unknown[]) => void) | undefined;
+    const initialCatalog = new Promise<unknown[]>((resolve) => {
+      resolveInitialCatalog = resolve;
+    });
+    const readyCatalog = [
+      {
+        sourceId: "photo",
+        filename: "photo.jpg",
+        path: "notebook-sources/photo/source.md",
+        sourcePath: "notebook-sources/photo/source.md",
+        inputPath: "uploads/photo.jpg",
+        previewPath: "uploads/photo.jpg",
+        timestamp: Date.parse("2026-07-09T01:02:00Z"),
+        status: "ready" as const,
+      },
+    ];
+    let catalogCalls = 0;
+    loadSourceCatalogMock.mockImplementation(() => {
+      catalogCalls += 1;
+      return catalogCalls === 1 ? initialCatalog : Promise.resolve(readyCatalog);
+    });
+
+    renderStudio();
+    await waitFor(() => expect(catalogCalls).toBe(1));
+
+    fireEvent(
+      window,
+      new CustomEvent("crew:skill_action_job_updated", {
+        detail: readySourceJob(),
+      }),
+    );
+
+    await waitFor(() => expect(catalogCalls).toBe(2));
+    expect(await screen.findByText("photo.jpg")).toBeTruthy();
+
+    await act(async () => {
+      resolveInitialCatalog?.([]);
+      await initialCatalog;
+    });
+
+    expect(screen.getByText("photo.jpg")).toBeTruthy();
   });
 
   it("shows a failed source import job error", async () => {
