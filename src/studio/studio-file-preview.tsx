@@ -76,7 +76,10 @@ export function StudioFilePreviewDialog({
     })
       .then(async (response) => {
         if (!response.ok) throw new Error(`Preview failed (${response.status})`);
-        blobUrl = URL.createObjectURL(await response.blob());
+        const blob = await response.blob();
+        blobUrl = URL.createObjectURL(
+          mediaType && blob.type !== mediaType ? new Blob([blob], { type: mediaType }) : blob,
+        );
         if (!controller.signal.aborted) {
           setPreview({ key: previewKey, url: blobUrl, error: null });
         }
@@ -93,7 +96,7 @@ export function StudioFilePreviewDialog({
       controller.abort();
       if (blobUrl) URL.revokeObjectURL(blobUrl);
     };
-  }, [filePath, previewKey, sessionId]);
+  }, [filePath, mediaType, previewKey, sessionId]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">

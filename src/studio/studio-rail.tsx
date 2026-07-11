@@ -336,6 +336,7 @@ export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Pr
         <StudioFilePreviewDialog
           filename={previewArtifact.filename}
           filePath={previewArtifact.filePath}
+          mediaType={previewArtifact.mediaType}
           sessionId={sessionId}
           kind="asset"
           onClose={() => setPreviewArtifact(null)}

@@ -96,4 +96,25 @@ describe("StudioFilePreviewDialog", () => {
       (await screen.findByTitle("May statement source preview")).getAttribute("src"),
     ).toBe("blob:authenticated-preview");
   });
+
+  it("preserves the artifact media type for an inline Markdown preview", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      blob: async () => new Blob(["# Quiz"], { type: "application/octet-stream" }),
+    });
+    render(
+      <StudioFilePreviewDialog
+        filename="Quiz"
+        filePath="ws/cXVpei5tZA/quiz.md"
+        mediaType="text/markdown"
+        sessionId="web-abc"
+        kind="asset"
+        onClose={() => {}}
+      />,
+    );
+
+    await screen.findByTitle("Quiz asset preview");
+    expect((createObjectUrlMock.mock.calls[0][0] as Blob).type).toBe("text/markdown");
+  });
 });
