@@ -13,6 +13,13 @@ export interface SkillActionToolResult {
   success: boolean;
   output: string;
   file_modified?: string | null;
+  artifacts?: Array<{
+    handle: string;
+    display_name: string;
+    media_type: string;
+    size: number;
+  }>;
+  /** Legacy servers may still return raw relative paths. */
   files_to_send?: string[];
   structured_metadata?: unknown;
 }

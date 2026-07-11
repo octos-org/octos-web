@@ -415,8 +415,13 @@ describe("StudioPage", () => {
           skill_id: "mofa-notebook-study",
           status: "succeeded",
           result: {
-            files_to_send: [
-              "notebook-outputs/study/quiz/quiz.md",
+            artifacts: [
+              {
+                handle: "ws/bm90ZWJvb2stb3V0cHV0cy9xdWl6Lm1k/quiz.md",
+                display_name: "quiz.md",
+                media_type: "text/markdown",
+                size: 42,
+              },
             ],
           },
           created_at: "2026-07-09T01:00:00Z",
@@ -450,8 +455,13 @@ describe("StudioPage", () => {
                   skill_id: "mofa-notebook-study",
                   status: "succeeded",
                   result: {
-                    files_to_send: [
-                      "notebook-outputs/study/quiz/restored-quiz.md",
+                    artifacts: [
+                      {
+                        handle: "ws/cmVzdG9yZWQtcXVpei5tZA/restored-quiz.md",
+                        display_name: "restored-quiz.md",
+                        media_type: "text/markdown",
+                        size: 42,
+                      },
                     ],
                   },
                   created_at: "2026-07-09T01:00:00Z",
