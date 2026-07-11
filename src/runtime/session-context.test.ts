@@ -844,3 +844,74 @@ describe("SessionProvider branchSession fork scoping", () => {
     }
   });
 });
+
+describe("SessionProvider session stats events", () => {
+  /**
+   * `crew:cost` carries SESSION-cumulative token counts (octos#1632 made
+   * them truthful across turns and model switches); `crew:message_meta`
+   * carries PER-TURN deltas for the bubble footer. Both feed the same
+   * stats store — meta must not clobber the session totals with its
+   * turn-sized numbers, or the cost bar snaps back to the latest turn's
+   * counts after every turn.
+   */
+  it("keeps crew:cost session totals when crew:message_meta reports turn deltas", async () => {
+    const sessionId = idAt(900, "stats");
+    apiMocks.listSessions.mockResolvedValue([
+      { id: sessionId, message_count: 2 },
+    ] satisfies SessionInfo[]);
+
+    let latest: SessionContextValue | null = null;
+    const harness = mountSessionProvider((ctx) => {
+      latest = ctx;
+    });
+    try {
+      await flushReactWork();
+      act(() => {
+        latest?.switchSession(sessionId);
+      });
+      await flushReactWork();
+
+      // Session-cumulative figures from token_cost_update.
+      act(() => {
+        window.dispatchEvent(
+          new CustomEvent("crew:cost", {
+            detail: {
+              sessionId,
+              input_tokens: 120_000,
+              output_tokens: 30_000,
+              session_cost: 1.25,
+            },
+          }),
+        );
+      });
+      await flushReactWork();
+      expect(latest?.currentSessionStats?.inputTokens).toBe(120_000);
+      expect(latest?.currentSessionStats?.outputTokens).toBe(30_000);
+      expect(latest?.currentSessionStats?.cost).toBe(1.25);
+
+      // A bubble-footer meta event for ONE turn (small numbers) must not
+      // shrink the session totals; the model label and (session-scoped)
+      // cost still merge.
+      act(() => {
+        window.dispatchEvent(
+          new CustomEvent("crew:message_meta", {
+            detail: {
+              sessionId,
+              model: "glm-5",
+              tokens_in: 900,
+              tokens_out: 150,
+              session_cost: 1.31,
+            },
+          }),
+        );
+      });
+      await flushReactWork();
+      expect(latest?.currentSessionStats?.inputTokens).toBe(120_000);
+      expect(latest?.currentSessionStats?.outputTokens).toBe(30_000);
+      expect(latest?.currentSessionStats?.model).toBe("glm-5");
+      expect(latest?.currentSessionStats?.cost).toBe(1.31);
+    } finally {
+      harness.unmount();
+    }
+  });
+});

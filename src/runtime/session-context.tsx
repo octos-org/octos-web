@@ -851,11 +851,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         outputTokens: 0,
         cost: null,
       };
+      // `crew:message_meta` carries PER-TURN token deltas (the event
+      // router baselines the cumulative counters for the bubble footer),
+      // while this store is SESSION-scoped and fed session-cumulative
+      // counts by `crew:cost` (octos#1632 made those truthful across
+      // turns/model switches). Merging tokens_in/tokens_out here snapped
+      // the cost bar back to the latest turn's counts after every turn —
+      // take only the model label and the (session-scoped) cost.
       storeSessionStats(sessionId, {
         ...current,
         model: detail.model || current.model,
-        inputTokens: detail.tokens_in ?? current.inputTokens,
-        outputTokens: detail.tokens_out ?? current.outputTokens,
         cost: mergeNullableCost(detail.session_cost, current.cost),
       });
     }
