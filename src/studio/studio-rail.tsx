@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import { Download, Eye, FileText, Image, Music, Table, Video, XCircle } from "lucide-react";
 
@@ -11,11 +11,16 @@ import {
   type SkillActionJob,
   type SkillActionJobStatus,
 } from "@/api/skill-actions";
-import { useAllFiles } from "@/store/file-store";
 
 import { resolveStudioSkills } from "./action-catalog";
-import { STUDIO_SKILL_ACTION_IDS, STUDIO_SKILL_LABEL_BY_ACTION_ID } from "./skills";
-import { fileNameFromPath, relativeTime, sourceKind, type SourceKind } from "./source-media";
+import {
+  artifactsFromJob,
+  type GeneratedArtifact,
+  jobTimestamp,
+  mergeStudioJobs,
+} from "./generated-assets";
+import { STUDIO_SKILL_LABEL_BY_ACTION_ID } from "./skills";
+import { relativeTime, sourceKind, type SourceKind } from "./source-media";
 import { StudioFilePreviewDialog } from "./studio-file-preview";
 
 interface Props {
@@ -38,20 +43,7 @@ const KIND_ICONS: Record<SourceKind, LucideIcon> = {
   text: FileText,
 };
 
-const ASSET_LIST_CAP = 20;
 const ACTIVE_JOB_STATUSES = new Set<SkillActionJobStatus>(["queued", "running"]);
-
-interface GeneratedArtifact {
-  id: string;
-  filename: string;
-  filePath: string;
-  job: SkillActionJob;
-}
-
-function jobTimestamp(job: SkillActionJob): number {
-  const parsed = Date.parse(job.updated_at || job.created_at);
-  return Number.isFinite(parsed) ? parsed : Date.now();
-}
 
 /**
  * Header-authenticated blob download: keeps the bearer token out of the
@@ -78,23 +70,6 @@ async function downloadAsset(
   }
 }
 
-function mergeJobs(
-  existing: readonly SkillActionJob[],
-  incoming: readonly SkillActionJob[],
-): SkillActionJob[] {
-  const jobs = [...existing];
-  for (const next of incoming) {
-    if (!STUDIO_SKILL_ACTION_IDS.has(next.action_id)) continue;
-    const index = jobs.findIndex((job) => job.job_id === next.job_id);
-    if (index === -1) {
-      jobs.push(next);
-    } else if (jobTimestamp(next) >= jobTimestamp(jobs[index])) {
-      jobs[index] = { ...jobs[index], ...next };
-    }
-  }
-  return jobs.sort((a, b) => jobTimestamp(b) - jobTimestamp(a));
-}
-
 function jobStatusLabel(status: SkillActionJobStatus): string {
   switch (status) {
     case "queued":
@@ -110,49 +85,13 @@ function jobStatusLabel(status: SkillActionJobStatus): string {
   }
 }
 
-function artifactsFromJob(job: SkillActionJob): GeneratedArtifact[] {
-  if (!job.result || typeof job.result !== "object") return [];
-  const files = (job.result as { files_to_send?: unknown }).files_to_send;
-  if (!Array.isArray(files)) return [];
-
-  const seen = new Set<string>();
-  return files.flatMap((value, index) => {
-    if (typeof value !== "string" || !value || seen.has(value)) return [];
-    seen.add(value);
-    return [{
-      id: `${job.job_id}:${index}`,
-      filename: fileNameFromPath(
-        value,
-        STUDIO_SKILL_LABEL_BY_ACTION_ID.get(job.action_id) ?? job.action_id,
-      ),
-      filePath: value,
-      job,
-    }];
-  });
-}
-
 export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Props) {
-  const allFiles = useAllFiles();
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busySkillId, setBusySkillId] = useState<string | null>(null);
   const [jobs, setJobs] = useState<SkillActionJob[]>([]);
   const [skills, setSkills] = useState(() => resolveStudioSkills([]));
   const [previewArtifact, setPreviewArtifact] = useState<GeneratedArtifact | null>(null);
-  const actionArtifacts = useMemo(
-    () => jobs.flatMap(artifactsFromJob),
-    [jobs],
-  );
-  const assets = useMemo(
-    () =>
-      allFiles
-        .filter((f) => f.sessionId === sessionId)
-        .filter((f) => !actionArtifacts.some((artifact) => artifact.filePath === f.filePath))
-        .slice()
-        .sort((a, b) => b.timestamp - a.timestamp)
-        .slice(0, ASSET_LIST_CAP),
-    [actionArtifacts, allFiles, sessionId],
-  );
 
   useEffect(() => {
     let cancelled = false;
@@ -177,7 +116,7 @@ export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Pr
     const onJobUpdated = (event: Event) => {
       const job = (event as CustomEvent<SkillActionJob>).detail;
       if (!job || job.session_id !== sessionId) return;
-      setJobs((prev) => mergeJobs(prev, [job]));
+      setJobs((prev) => mergeStudioJobs(prev, [job]));
     };
     window.addEventListener("crew:skill_action_job_updated", onJobUpdated);
     return () => {
@@ -191,7 +130,7 @@ export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Pr
       void listSkillActionJobs(sessionId)
         .then((restored) => {
           if (!cancelled) {
-            setJobs((current) => mergeJobs(current, restored));
+            setJobs((current) => mergeStudioJobs(current, restored));
           }
         })
         // The bridge may not be connected on first render. The connection
@@ -221,7 +160,7 @@ export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Pr
         throw new Error(failed?.output || `${skill.label} failed to start`);
       }
       if (response.jobs?.length) {
-        setJobs((prev) => mergeJobs(prev, response.jobs ?? []));
+        setJobs((prev) => mergeStudioJobs(prev, response.jobs ?? []));
       }
     } catch (err) {
       setActionError(
@@ -232,7 +171,7 @@ export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Pr
     }
   }
 
-  const hasGeneratedItems = jobs.length > 0 || assets.length > 0;
+  const hasGeneratedItems = jobs.length > 0;
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto p-4">
@@ -382,55 +321,6 @@ export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Pr
                   >
                     {jobStatusLabel(job.status)}
                   </span>
-                </li>
-              );
-            })}
-            {assets.map((file) => {
-              const Icon = KIND_ICONS[sourceKind(file.filename)];
-              return (
-                <li
-                  key={file.id}
-                  className="studio-list-row studio-card !rounded-xl p-3"
-                >
-                  <Icon size={16} className="shrink-0 text-muted" />
-                  <span className="min-w-0 flex-1">
-                    <span
-                      className="block truncate text-sm leading-tight"
-                      title={file.filename}
-                    >
-                      {file.filename}
-                    </span>
-                    <span className="mt-0.5 block text-[11px] text-muted">
-                      {relativeTime(file.timestamp)}
-                    </span>
-                  </span>
-                  {file.status === "generating" ? (
-                    <span
-                      className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-accent"
-                      role="status"
-                      aria-label={`${file.filename} is generating`}
-                    />
-                  ) : (
-                    <button
-                      type="button"
-                      className="studio-ghost-button studio-asset-action shrink-0 p-1"
-                      aria-label={`Download ${file.filename}`}
-                      onClick={() => {
-                        setDownloadError(null);
-                        downloadAsset(file.filePath, file.filename, sessionId).catch(
-                          (err: unknown) => {
-                            setDownloadError(
-                              err instanceof Error
-                                ? err.message
-                                : "Download failed",
-                            );
-                          },
-                        );
-                      }}
-                    >
-                      <Download size={14} />
-                    </button>
-                  )}
                 </li>
               );
             })}

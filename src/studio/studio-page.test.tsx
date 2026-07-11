@@ -399,7 +399,7 @@ describe("StudioPage", () => {
           status: "succeeded",
           result: {
             files_to_send: [
-              "/Users/alan0x/.octos/profiles/alan0x/data/users/web-abc/workspace/notebook-outputs/study/quiz/quiz.md",
+              "notebook-outputs/study/quiz/quiz.md",
             ],
           },
           created_at: "2026-07-09T01:00:00Z",
@@ -415,7 +415,7 @@ describe("StudioPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Preview quiz.md" }));
     const preview = await screen.findByTitle("quiz.md asset preview");
     expect(preview.getAttribute("src")).toBe(
-      "/api/files?path=%2FUsers%2Falan0x%2F.octos%2Fprofiles%2Falan0x%2Fdata%2Fusers%2Fweb-abc%2Fworkspace%2Fnotebook-outputs%2Fstudy%2Fquiz%2Fquiz.md&session=web-abc",
+      "/api/files/notebook-outputs%2Fstudy%2Fquiz%2Fquiz.md",
     );
   });
 
@@ -436,7 +436,7 @@ describe("StudioPage", () => {
                   status: "succeeded",
                   result: {
                     files_to_send: [
-                      "/Users/alan0x/.octos/profiles/alan0x/data/users/web-abc/workspace/notebook-outputs/study/quiz/restored-quiz.md",
+                      "notebook-outputs/study/quiz/restored-quiz.md",
                     ],
                   },
                   created_at: "2026-07-09T01:00:00Z",
