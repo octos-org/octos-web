@@ -86,6 +86,9 @@ export function VoicePage() {
       goBack: async () => false,
       createSession: () => voiceSessionId,
       removeSession: async () => {},
+      branchSession: async () => {
+        throw new Error("session fork is not available on this surface");
+      },
       refreshSessions: async () => {},
       markSessionActive: () => {},
     }),

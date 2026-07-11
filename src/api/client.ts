@@ -52,6 +52,20 @@ export function clearToken() {
   // session) does not surface the prior profile id into the next
   // session's headers.
   localStorage.removeItem("selected_profile");
+  // codex web#268 r2 P1: an ORDINARY logout clears the token without
+  // firing `crew:auth_expired`, so identity-bound singletons (the
+  // sessionless auxiliary bridge) would survive into the next login
+  // and keep serving RPCs under the PREVIOUS account's upgrade
+  // identity. Broadcast every token clear so they tear down with the
+  // token. Event-based on purpose — importing the runtime here would
+  // cycle (runtime → bridge → client).
+  if (typeof window !== "undefined") {
+    try {
+      window.dispatchEvent(new CustomEvent("crew:token_cleared"));
+    } catch {
+      // best-effort
+    }
+  }
 }
 
 export function getSelectedProfileId(includeStoredFallback = true): string | null {

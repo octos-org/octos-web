@@ -35,6 +35,8 @@ vi.mock("./ui-protocol-bridge", async () => {
 
 import {
   __resetUiProtocolRuntimeForTest,
+  __setActiveBridgeForTest,
+  ensureAuxBridge,
   getActiveBridge,
   startBridgeForSession,
   stopActiveBridge,
@@ -54,6 +56,14 @@ interface DeferredBridge {
    *  fire `setConnected()` after `await startBridgeForSession(...)`
    *  for `getActiveBridge` to return the bridge. */
   setConnected: () => void;
+  /** Drive the connection-state subscriber to an arbitrary state (the
+   *  aux-singleton tests use `"error"` to exercise the transient-error
+   *  reuse path). */
+  setState: (state: ConnectionState) => void;
+  /** Mark the bridge terminal (stopped / reconnect abandoned) — the
+   *  aux-singleton replacement gate consults `isTerminal()`, not the
+   *  connection state (codex web#268 r2 P2). */
+  setTerminal: () => void;
   startCalls: number;
   stopCalls: number;
 }
@@ -67,6 +77,7 @@ function makeDeferredBridge(): DeferredBridge {
   });
   let startCalls = 0;
   let stopCalls = 0;
+  let terminal = false;
   // Track the current state subscriber so the test can drive the bridge
   // to `"connected"` after `start()` resolves — `getActiveBridge` only
   // surfaces a bridge that has reached `connected` (codex M10.5 round 2
@@ -83,7 +94,9 @@ function makeDeferredBridge(): DeferredBridge {
     }),
     stop: vi.fn(async () => {
       stopCalls++;
+      terminal = true;
     }),
+    isTerminal: vi.fn(() => terminal),
     sendTurn: vi.fn(async () => ({ accepted: true })),
     interruptTurn: vi.fn(async () => ({ interrupted: true })),
     respondToApproval: vi.fn(async () => ({
@@ -136,6 +149,10 @@ function makeDeferredBridge(): DeferredBridge {
     resolveStart: () => resolveStart(),
     rejectStart: (err) => rejectStart(err),
     setConnected: () => stateHandler?.("connected"),
+    setState: (state: ConnectionState) => stateHandler?.(state),
+    setTerminal: () => {
+      terminal = true;
+    },
     /** Simulate the bridge's post-reconnect `session/open` ack
      *  (reload-bug fix Yue 2026-05-15). The runtime layer subscribes via
      *  `onReopened` to re-fire `session/hydrate`. */
@@ -597,5 +614,245 @@ describe("autonomy snapshot resilience (codex #263 round 1 P2)", () => {
     expect(
       AutonomyStore.getAutonomyState("sess-snap").loops.map((l) => l.loop_id),
     ).toEqual(["l1"]);
+  });
+});
+
+describe("ensureAuxBridge — sessionless auxiliary singleton", () => {
+  it("prefers a connected chat-scoped bridge and starts nothing", async () => {
+    const chat = makeDeferredBridge();
+    __setActiveBridgeForTest("sess-1", chat.bridge);
+
+    const got = await ensureAuxBridge();
+
+    expect(got).toBe(chat.bridge);
+    expect(createBridgeSpy).not.toHaveBeenCalled();
+  });
+
+  it("starts ONE sessionless bridge and shares it across concurrent callers", async () => {
+    const aux = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux.bridge);
+
+    const p1 = ensureAuxBridge();
+    const p2 = ensureAuxBridge();
+    aux.resolveStart();
+    const [b1, b2] = await Promise.all([p1, p2]);
+
+    expect(b1).toBe(aux.bridge);
+    expect(b2).toBe(aux.bridge);
+    expect(createBridgeSpy).toHaveBeenCalledTimes(1);
+    expect(aux.startCalls).toBe(1);
+    // Sessionless: start carries NO sessionId.
+    expect(aux.bridge.start).toHaveBeenCalledWith({});
+    // Subsequent calls reuse the live singleton without a new start.
+    const b3 = await ensureAuxBridge();
+    expect(b3).toBe(aux.bridge);
+    expect(aux.startCalls).toBe(1);
+  });
+
+  it("replaces a singleton that reached a TERMINAL state", async () => {
+    const aux1 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux1.bridge);
+    const p1 = ensureAuxBridge();
+    aux1.resolveStart();
+    await p1;
+
+    // Reconnect abandoned (attempt budget spent / auth latch).
+    aux1.setTerminal();
+    aux1.setState("error");
+
+    const aux2 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux2.bridge);
+    const p2 = ensureAuxBridge();
+    aux2.resolveStart();
+    const got = await p2;
+
+    expect(got).toBe(aux2.bridge);
+    expect(aux1.stopCalls).toBe(1);
+    expect(aux2.startCalls).toBe(1);
+  });
+
+  it("does NOT replace a bridge in a transient error state (recoverable drop)", async () => {
+    // codex web#268 r2 P2: `onerror` fires state="error" BEFORE
+    // `onclose` moves to "reconnecting"; the bridge queues sends across
+    // that gap. A caller landing in the gap must reuse the recovering
+    // singleton, not stop it (stopping rejects the queued RPCs).
+    const aux = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux.bridge);
+    const p = ensureAuxBridge();
+    aux.resolveStart();
+    await p;
+
+    aux.setState("error"); // transient — isTerminal() stays false
+
+    const got = await ensureAuxBridge();
+    expect(got).toBe(aux.bridge);
+    expect(aux.stopCalls).toBe(0);
+    expect(createBridgeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("tears the singleton down on crew:token_cleared (ordinary logout)", async () => {
+    // codex web#268 r2 P1: a normal logout clears the token WITHOUT
+    // firing crew:auth_expired. The aux socket is authenticated as the
+    // logged-out user at the upgrade — reusing it after a different
+    // account logs in would serve the previous user's memory/cron.
+    const aux = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux.bridge);
+    const p = ensureAuxBridge();
+    aux.resolveStart();
+    await p;
+
+    window.dispatchEvent(new CustomEvent("crew:token_cleared"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(aux.stopCalls).toBe(1);
+    const aux2 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux2.bridge);
+    const p2 = ensureAuxBridge();
+    aux2.resolveStart();
+    expect(await p2).toBe(aux2.bridge);
+  });
+
+  it("tears the singleton down on crew:auth_expired", async () => {
+    const aux = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux.bridge);
+    const p = ensureAuxBridge();
+    aux.resolveStart();
+    await p;
+
+    window.dispatchEvent(new CustomEvent("crew:auth_expired"));
+    // stopAuxBridge is async fire-and-forget off the event; drain it.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(aux.stopCalls).toBe(1);
+    // The next caller after re-login gets a FRESH bridge.
+    const aux2 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux2.bridge);
+    const p2 = ensureAuxBridge();
+    aux2.resolveStart();
+    expect(await p2).toBe(aux2.bridge);
+  });
+
+  it("invalidates an IN-FLIGHT start when the token clears mid-handshake", async () => {
+    // codex web#268 r3 P1: logout while `bridge.start({})` is pending
+    // finds auxSlot null (nothing to stop). The stale start must NOT
+    // publish its old-token socket after the logout.
+    const aux = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux.bridge);
+    const pending = ensureAuxBridge();
+
+    window.dispatchEvent(new CustomEvent("crew:token_cleared"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    aux.resolveStart(); // handshake resolves AFTER the token clear
+    await expect(pending).rejects.toThrow("superseded by token clear");
+    expect(aux.stopCalls).toBe(1);
+
+    // Next caller (post-relogin) gets a FRESH bridge.
+    const aux2 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux2.bridge);
+    const p2 = ensureAuxBridge();
+    aux2.resolveStart();
+    expect(await p2).toBe(aux2.bridge);
+  });
+
+  it("replaces a singleton the REMOTE closed normally (code 1000)", async () => {
+    // codex web#268 r3 P2: a normal remote close parks the bridge at
+    // `closed` with no reconnect — isTerminal() reports it and the
+    // next ensure() must start fresh instead of returning the corpse.
+    const aux1 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux1.bridge);
+    const p1 = ensureAuxBridge();
+    aux1.resolveStart();
+    await p1;
+
+    aux1.setTerminal(); // mock stand-in for state === "closed"
+
+    const aux2 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux2.bridge);
+    const p2 = ensureAuxBridge();
+    aux2.resolveStart();
+    expect(await p2).toBe(aux2.bridge);
+    expect(aux1.stopCalls).toBe(1);
+  });
+
+  it("rejects a REPLACEMENT start when the token clears during the internal stop", async () => {
+    // codex web#268 r4 P1: the replacement path stops the old slot
+    // first; a token clear landing while that stop is yielding must
+    // still invalidate the replacement (the r3 guard captured its
+    // generation AFTER the stop and absorbed the clear as baseline).
+    const aux1 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux1.bridge);
+    const p1 = ensureAuxBridge();
+    aux1.resolveStart();
+    await p1;
+    aux1.setTerminal();
+
+    // Gate the old slot's stop so the clear can land mid-await.
+    let releaseStop: () => void = () => {};
+    (aux1.bridge.stop as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      async () => {
+        await new Promise<void>((resolve) => {
+          releaseStop = resolve;
+        });
+      },
+    );
+    const aux2 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux2.bridge);
+    const pending = ensureAuxBridge();
+    await Promise.resolve(); // enter the gated internal stop
+
+    window.dispatchEvent(new CustomEvent("crew:token_cleared"));
+    await Promise.resolve();
+    releaseStop();
+    aux2.resolveStart();
+
+    await expect(pending).rejects.toThrow("superseded by token clear");
+    expect(aux2.stopCalls).toBe(1); // stale replacement stopped, never published
+  });
+
+  it("a settling invalidated start does not erase a newer start's shared handle", async () => {
+    // codex web#268 r4 P2: start A is invalidated by a token clear;
+    // start B begins under the fresh generation; A settles LATE. A's
+    // cleanup must not clear B's shared in-flight handle — otherwise a
+    // third caller races bridge C against B.
+    const aux1 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux1.bridge);
+    const p1 = ensureAuxBridge(); // A pending
+
+    window.dispatchEvent(new CustomEvent("crew:token_cleared"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const aux2 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux2.bridge);
+    const p2 = ensureAuxBridge(); // B pending under the new generation
+
+    aux1.resolveStart(); // A settles AFTER B took the handle
+    await expect(p1).rejects.toThrow("superseded by token clear");
+
+    const p3 = ensureAuxBridge(); // must join B, not start C
+    aux2.resolveStart();
+    expect(await p2).toBe(aux2.bridge);
+    expect(await p3).toBe(aux2.bridge);
+    expect(createBridgeSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("surfaces a start failure and does not cache the dead bridge", async () => {
+    const aux1 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux1.bridge);
+    const p1 = ensureAuxBridge();
+    aux1.rejectStart(new Error("ws refused"));
+    await expect(p1).rejects.toThrow("ws refused");
+    expect(aux1.stopCalls).toBe(1);
+
+    // Retry path: a fresh call creates a fresh bridge.
+    const aux2 = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(aux2.bridge);
+    const p2 = ensureAuxBridge();
+    aux2.resolveStart();
+    expect(await p2).toBe(aux2.bridge);
   });
 });

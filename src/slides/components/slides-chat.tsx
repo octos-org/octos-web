@@ -222,6 +222,9 @@ export function SlidesChat({ sessionId, retryNonce = 0 }: Props) {
       goBack: async () => false,
       createSession: () => sessionId,
       removeSession: async () => {},
+      branchSession: async () => {
+        throw new Error("session fork is not available on this surface");
+      },
       refreshSessions: async () => {},
       markSessionActive: () => {},
     }),

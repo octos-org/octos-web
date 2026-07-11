@@ -3121,3 +3121,137 @@ describe("keepalive", () => {
     expect(pingsAfter).toBeGreaterThan(pingsBefore);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Sessionless (auxiliary) mode — settings memory/cron panels (web#268 r1 P1)
+// ---------------------------------------------------------------------------
+
+describe("sessionless (auxiliary) mode", () => {
+  it("goes connected on socket open WITHOUT sending session/open", async () => {
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const states: ConnectionState[] = [];
+    bridge.onConnectionStateChange((s) => states.push(s));
+
+    const startPromise = bridge.start({});
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await startPromise;
+    await Promise.resolve();
+
+    expect(states).toEqual(["connecting", "connected"]);
+    const sessionOpens = ws.sent.filter((text) => {
+      const parsed = JSON.parse(text) as { method?: string };
+      return parsed.method === METHODS.SESSION_OPEN;
+    });
+    expect(sessionOpens).toHaveLength(0);
+  });
+
+  it("still authenticates and negotiates ui_feature on the URL", async () => {
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    void bridge.start({});
+    await Promise.resolve();
+    const ws = lastInstance();
+    expect(ws.url).toContain("token=test-token");
+    expect(ws.url).toContain("ui_feature=");
+  });
+
+  it("serves auxiliary RPCs queued while connecting once the socket opens", async () => {
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    void bridge.start({});
+    await Promise.resolve();
+    const ws = lastInstance();
+
+    // Issued pre-open: parks on the send queue (nothing on the wire yet).
+    const pending = bridge.callMethod<{ jobs: unknown[] }>(
+      METHODS.CRON_LIST,
+      {},
+    );
+    expect(ws.sent).toHaveLength(0);
+
+    ws.triggerOpen();
+    await Promise.resolve();
+
+    const req = findRequest(ws, METHODS.CRON_LIST);
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: req.id,
+      result: { jobs: [], count: 0, gateway_running: false },
+    });
+    await expect(pending).resolves.toEqual({
+      jobs: [],
+      count: 0,
+      gateway_running: false,
+    });
+  });
+
+  it("round-trips memory/overview after connect", async () => {
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const startPromise = bridge.start({});
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await startPromise;
+
+    const pending = bridge.callMethod<{ overview: { ok: boolean } }>(
+      METHODS.MEMORY_OVERVIEW,
+      {},
+    );
+    await Promise.resolve();
+    const req = findRequest(ws, METHODS.MEMORY_OVERVIEW);
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: req.id,
+      result: { overview: { ok: true } },
+    });
+    await expect(pending).resolves.toEqual({ overview: { ok: true } });
+  });
+
+  it("rejects session-bound sends (sendTurn) in sessionless mode", async () => {
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const startPromise = bridge.start({});
+    await Promise.resolve();
+    lastInstance().triggerOpen();
+    await startPromise;
+
+    expect(() =>
+      bridge.sendTurn("turn-1", [{ kind: "text", text: "hi" }]),
+    ).toThrow();
+  });
+
+  it("reports terminal after a NORMAL remote close (code 1000)", async () => {
+    // codex web#268 r3 P2: the server closing an auxiliary socket with
+    // 1000 parks the bridge at `closed` (no reconnect, callMethod
+    // rejects) — isTerminal() must say so, or the settings singleton
+    // returns the corpse forever.
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const startPromise = bridge.start({});
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await startPromise;
+    expect(bridge.isTerminal()).toBe(false);
+
+    ws.triggerClose(1000, "server going away");
+    expect(bridge.isTerminal()).toBe(true);
+
+    // A RECOVERABLE drop is NOT terminal (r2 P2 contract preserved).
+    const bridge2 = createUiProtocolBridge(makeBridgeOpts());
+    const start2 = bridge2.start({});
+    await Promise.resolve();
+    const ws2 = lastInstance();
+    ws2.triggerOpen();
+    await start2;
+    ws2.triggerClose(1006, "abnormal");
+    expect(bridge2.isTerminal()).toBe(false);
+    await bridge2.stop();
+    await bridge.stop();
+  });
+
+  it("still throws on a non-string sessionId", async () => {
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    await expect(
+      bridge.start({ sessionId: 42 as unknown as string }),
+    ).rejects.toThrow("sessionId must be a string");
+  });
+});
