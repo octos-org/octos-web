@@ -12,7 +12,24 @@ function extensionOf(filename: string): string {
   return filename.slice(dot + 1).toLowerCase();
 }
 
-function previewMode(filename: string): PreviewMode {
+function previewMode(filename: string, mediaType?: string): PreviewMode {
+  switch (mediaType?.toLowerCase()) {
+    case "application/pdf":
+      return "pdf";
+    case "text/markdown":
+    case "text/plain":
+    case "text/csv":
+    case "application/json":
+      return "text";
+    case "audio/mpeg":
+    case "audio/wav":
+    case "audio/mp4":
+      return "audio";
+    case "video/mp4":
+    case "video/webm":
+      return "video";
+  }
+  if (mediaType?.toLowerCase().startsWith("image/")) return "image";
   const ext = extensionOf(filename);
   if (["png", "jpg", "jpeg", "gif", "webp"].includes(ext)) return "image";
   if (["mp3", "wav", "m4a", "aac", "ogg"].includes(ext)) return "audio";
@@ -25,6 +42,7 @@ function previewMode(filename: string): PreviewMode {
 interface Props {
   filename: string;
   filePath: string;
+  mediaType?: string;
   sessionId: string;
   kind: "source" | "asset";
   onClose: () => void;
@@ -33,6 +51,7 @@ interface Props {
 export function StudioFilePreviewDialog({
   filename,
   filePath,
+  mediaType,
   sessionId,
   kind,
   onClose,
@@ -45,7 +64,7 @@ export function StudioFilePreviewDialog({
   }>({ key: previewKey, url: null, error: null });
   const url = preview.key === previewKey ? preview.url : null;
   const error = preview.key === previewKey ? preview.error : null;
-  const mode = previewMode(filename);
+  const mode = previewMode(filename, mediaType);
   const label = `${filename} ${kind} preview`;
 
   useEffect(() => {

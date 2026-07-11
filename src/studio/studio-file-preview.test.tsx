@@ -79,4 +79,21 @@ describe("StudioFilePreviewDialog", () => {
 
     expect(revokeObjectUrlMock).toHaveBeenCalledWith("blob:authenticated-preview");
   });
+
+  it("uses the source media type when a renamed PDF has no extension", async () => {
+    render(
+      <StudioFilePreviewDialog
+        filename="May statement"
+        filePath="uploads/statement.pdf"
+        mediaType="application/pdf"
+        sessionId="web-abc"
+        kind="source"
+        onClose={() => {}}
+      />,
+    );
+
+    expect(
+      (await screen.findByTitle("May statement source preview")).getAttribute("src"),
+    ).toBe("blob:authenticated-preview");
+  });
 });

@@ -577,6 +577,7 @@ export function StudioSourcesPane({
         <StudioFilePreviewDialog
           filename={previewRow.filename}
           filePath={sourcePreviewPath(previewRow)}
+          mediaType={previewRow.mediaType}
           sessionId={sessionId}
           kind="source"
           onClose={() => setPreviewRow(null)}
