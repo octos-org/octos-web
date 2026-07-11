@@ -437,6 +437,12 @@ describe("StudioPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Preview quiz.md" }));
     const preview = await screen.findByTitle("quiz.md asset preview");
     expect(preview.getAttribute("src")).toBe("blob:studio-preview");
+
+    const appendChild = vi.spyOn(document.body, "appendChild");
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    fireEvent.click(screen.getByRole("button", { name: "Download quiz.md" }));
+    await waitFor(() => expect(appendChild).toHaveBeenCalled());
+    expect((appendChild.mock.calls[0][0] as HTMLAnchorElement).download).toBe("quiz.md");
   });
 
   it("restores persisted generated assets after a page refresh", async () => {

@@ -63,7 +63,12 @@ async function downloadAsset(
     const anchor = document.createElement("a");
     anchor.href = blobUrl;
     anchor.download = filename;
-    anchor.click();
+    document.body.appendChild(anchor);
+    try {
+      anchor.click();
+    } finally {
+      anchor.remove();
+    }
   } finally {
     // Give the browser a beat to start the download before revoking.
     setTimeout(() => URL.revokeObjectURL(blobUrl), 10_000);
