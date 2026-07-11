@@ -9,6 +9,7 @@ import {
   Pencil,
   MoreHorizontal,
   Plus,
+  RotateCcw,
   Search,
   Table,
   Trash2,
@@ -75,18 +76,22 @@ function SourceActionsMenu({
   busy,
   canRename,
   canRemoveSource,
+  canRetry,
   onPreview,
   onRename,
   onRemoveSource,
+  onRetry,
   onDismiss,
 }: {
   row: SourceRow;
   busy: boolean;
   canRename: boolean;
   canRemoveSource: boolean;
+  canRetry: boolean;
   onPreview: () => void;
   onRename: () => void;
   onRemoveSource: () => void;
+  onRetry: () => void;
   onDismiss: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -185,6 +190,20 @@ function SourceActionsMenu({
             >
               <Pencil size={14} aria-hidden="true" />
               Rename source
+            </button>
+          )}
+          {canRetry && (
+            <button
+              type="button"
+              role="menuitem"
+              className="studio-menu-item"
+              onClick={() => {
+                onRetry();
+                setOpen(false);
+              }}
+            >
+              <RotateCcw size={14} aria-hidden="true" />
+              Retry import
             </button>
           )}
           <button
@@ -348,6 +367,37 @@ export function StudioSourcesPane({
     }
   }
 
+  async function retrySource(row: SourceRow) {
+    const retryPath = row.materializedPath ?? row.inputPath;
+    if (!retryPath) {
+      setActionError("Original upload is no longer available; upload it again.");
+      return;
+    }
+    const key = rowKey(row);
+    setBusyKey(key);
+    setActionError(null);
+    try {
+      const response = await invokeSkillAction(sessionId, SOURCE_IMPORT_ACTION_ID, {
+        paths: [retryPath],
+      });
+      if (!response.ok) {
+        const failed = response.results?.find((result) => !result.success);
+        throw new Error(failed?.output || "Source retry failed");
+      }
+      if (response.jobs?.length) {
+        onUploaded(
+          response.jobs.map((job) => sourceRowFromSkillActionJob(job, row.filename)),
+        );
+      } else {
+        onCatalogChanged();
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Source retry failed");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 p-4">
       <div className="flex shrink-0 items-center justify-between gap-2">
@@ -487,10 +537,16 @@ export function StudioSourcesPane({
                       busy={isBusy}
                       canRename={canManageSource}
                       canRemoveSource={canManageSource}
+                      canRetry={
+                        row.status === "failed" || row.status === "abandoned"
+                      }
                       onPreview={() => setPreviewRow(row)}
                       onRename={() => beginRename(row)}
                       onRemoveSource={() => {
                         void removeSource(row);
+                      }}
+                      onRetry={() => {
+                        void retrySource(row);
                       }}
                       onDismiss={() => dismissSourceRow(row)}
                     />

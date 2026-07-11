@@ -216,11 +216,28 @@ beforeEach(() => {
     materialized_paths: ["uploads/up.pdf"],
     results: [{ success: true, output: "captured" }],
   });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      blob: async () => new Blob(["preview"]),
+    })),
+  );
+  Object.defineProperty(URL, "createObjectURL", {
+    configurable: true,
+    value: vi.fn(() => "blob:studio-preview"),
+  });
+  Object.defineProperty(URL, "revokeObjectURL", {
+    configurable: true,
+    value: vi.fn(),
+  });
 });
 
 afterEach(() => {
   cleanup();
   localStorage.clear();
+  vi.unstubAllGlobals();
 });
 
 describe("StudioPage", () => {
@@ -414,9 +431,7 @@ describe("StudioPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Preview quiz.md" }));
     const preview = await screen.findByTitle("quiz.md asset preview");
-    expect(preview.getAttribute("src")).toBe(
-      "/api/files/notebook-outputs%2Fstudy%2Fquiz%2Fquiz.md",
-    );
+    expect(preview.getAttribute("src")).toBe("blob:studio-preview");
   });
 
   it("restores persisted generated assets after a page refresh", async () => {
@@ -715,6 +730,43 @@ describe("StudioPage", () => {
     expect(checkbox.disabled).toBe(true);
   });
 
+  it("retries a failed source import from its retained session path", async () => {
+    mockSourceImportJobs([
+      readySourceJob({
+        status: "failed",
+        source_id: undefined,
+        source_path: undefined,
+        materialized_path: "uploads/photo.jpg",
+        error: "Temporary model failure",
+      }),
+    ]);
+    invokeSkillActionMock.mockResolvedValueOnce({
+      action_id: "source.import",
+      ok: true,
+      queued: 1,
+      jobs: [
+        readySourceJob({
+          job_id: "job-photo-retry",
+          status: "queued",
+          source_id: undefined,
+          source_path: undefined,
+        }),
+      ],
+    });
+
+    renderStudio();
+    await screen.findByText("Failed");
+    fireEvent.click(screen.getByLabelText("Source actions for photo.jpg"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Retry import" }));
+
+    await waitFor(() => {
+      expect(invokeSkillActionMock).toHaveBeenCalledWith("web-abc", "source.import", {
+        paths: ["uploads/photo.jpg"],
+      });
+    });
+    expect(await screen.findByText("Processing")).toBeTruthy();
+  });
+
   it("dismisses failed source import rows without a source id", async () => {
     uploadFilesMock.mockResolvedValue(["upload-handle-photo"]);
     invokeSkillActionMock.mockResolvedValue({
@@ -829,9 +881,7 @@ describe("StudioPage", () => {
     fireEvent.click(screen.getByLabelText("Preview photo.jpg"));
 
     const image = await screen.findByAltText("photo.jpg source preview");
-    expect(image.getAttribute("src")).toBe(
-      "/api/files?path=uploads%2Fphoto.jpg&session=web-abc",
-    );
+    expect(image.getAttribute("src")).toBe("blob:studio-preview");
     expect(image.getAttribute("src")).not.toContain("notebook-sources");
   });
 
