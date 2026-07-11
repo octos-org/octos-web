@@ -21,10 +21,37 @@ function job(overrides: Partial<SkillActionJob> = {}): SkillActionJob {
 
 describe("generated assets", () => {
   it("exposes artifacts only after the job succeeds", () => {
-    const result = { files_to_send: ["notebook-outputs/study/quiz.md"] };
+    const result = {
+      artifacts: [{
+        handle: "ws/bm90ZWJvb2stb3V0cHV0cy9xdWl6Lm1k/quiz.md",
+        display_name: "quiz.md",
+        media_type: "text/markdown",
+        size: 42,
+      }],
+    };
 
     expect(artifactsFromJob(job({ status: "running", result }))).toEqual([]);
     expect(artifactsFromJob(job({ status: "succeeded", result }))).toHaveLength(1);
+  });
+
+  it("uses the server-provided artifact display name and handle", () => {
+    const [artifact] = artifactsFromJob(job({
+      status: "succeeded",
+      result: {
+        artifacts: [{
+          handle: "ws/cXVpei5tZA/quiz.md",
+          display_name: "Quiz answer key.md",
+          media_type: "text/markdown",
+          size: 42,
+        }],
+      },
+    }));
+
+    expect(artifact).toMatchObject({
+      filename: "Quiz answer key.md",
+      filePath: "ws/cXVpei5tZA/quiz.md",
+      mediaType: "text/markdown",
+    });
   });
 
   it.each([

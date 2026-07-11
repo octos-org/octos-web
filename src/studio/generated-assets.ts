@@ -7,6 +7,7 @@ export interface GeneratedArtifact {
   id: string;
   filename: string;
   filePath: string;
+  mediaType?: string;
   job: SkillActionJob;
 }
 
@@ -71,7 +72,41 @@ export function artifactsFromJob(job: SkillActionJob): GeneratedArtifact[] {
   if (job.status !== "succeeded" || !job.result || typeof job.result !== "object") {
     return [];
   }
-  const files = (job.result as { files_to_send?: unknown }).files_to_send;
+  const result = job.result as {
+    artifacts?: unknown;
+    files_to_send?: unknown;
+  };
+  if (Array.isArray(result.artifacts)) {
+    const seen = new Set<string>();
+    return result.artifacts.flatMap((value, index) => {
+      if (!value || typeof value !== "object") return [];
+      const artifact = value as Record<string, unknown>;
+      const handle = artifact.handle;
+      if (
+        typeof handle !== "string" ||
+        !handle ||
+        seen.has(handle) ||
+        !isSafeArtifactPath(handle)
+      ) {
+        return [];
+      }
+      seen.add(handle);
+      const displayName =
+        typeof artifact.display_name === "string" && artifact.display_name.trim()
+          ? artifact.display_name
+          : fileNameFromPath(handle, job.action_id);
+      return [{
+        id: `${job.job_id}:${index}`,
+        filename: displayName,
+        filePath: handle,
+        mediaType:
+          typeof artifact.media_type === "string" ? artifact.media_type : undefined,
+        job,
+      }];
+    });
+  }
+
+  const files = result.files_to_send;
   if (!Array.isArray(files)) return [];
 
   const seen = new Set<string>();

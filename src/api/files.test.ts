@@ -26,6 +26,14 @@ describe("buildFileUrl", () => {
     ).toBe("/api/files/skill-output%2Freport.md");
   });
 
+  it("includes session context for opaque workspace handles", () => {
+    expect(
+      buildFileUrl("ws/cXVpei5tZA/quiz.md", { sessionId: "web-abc" }),
+    ).toBe(
+      "/api/files?path=ws%2FcXVpei5tZA%2Fquiz.md&session=web-abc",
+    );
+  });
+
   it("uses the query endpoint for absolute workspace artifact paths", () => {
     expect(
       buildFileUrl(

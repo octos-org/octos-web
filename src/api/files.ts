@@ -6,7 +6,10 @@ export interface BuildFileUrlOptions {
 }
 
 function shouldUseSessionScopedFileUrl(filePath: string, sessionId?: string): boolean {
-  return Boolean(sessionId && filePath.startsWith("uploads/"));
+  return Boolean(
+    sessionId &&
+      (filePath.startsWith("uploads/") || filePath.startsWith("ws/")),
+  );
 }
 
 function shouldUseQueryFileUrl(filePath: string, sessionId?: string): boolean {
