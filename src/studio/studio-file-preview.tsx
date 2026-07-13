@@ -172,10 +172,15 @@ export function StudioFilePreview({
         };
       })()
     : null;
+  const textPreviewReady = mode === "text" && text !== null && !error;
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
-      <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-surface/40 p-3">
+      <div
+        key={previewKey}
+        data-testid="studio-file-preview-viewport"
+        className={`min-h-0 flex-1 overflow-auto bg-surface/40 p-3 ${textPreviewReady ? "block" : "flex items-center justify-center"}`}
+      >
           {error ? (
             <div className="text-center">
               <p className="text-sm text-red-500" role="alert">{error}</p>

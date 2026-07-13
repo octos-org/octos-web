@@ -229,6 +229,91 @@ describe("StudioFilePreview", () => {
     expect(createObjectUrlMock).not.toHaveBeenCalled();
   });
 
+  it("top-aligns scrollable text previews so their first line remains reachable", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      text: async () => "First line\n\n" + "Long content\n".repeat(200),
+    });
+    render(
+      <StudioFilePreview
+        filename="long.md"
+        filePath="ws/long.md"
+        mediaType="text/markdown"
+        sessionId="web-abc"
+        kind="source"
+      />,
+    );
+
+    expect(await screen.findByText("First line")).toBeTruthy();
+    const viewport = screen.getByTestId("studio-file-preview-viewport");
+    expect(viewport.classList.contains("overflow-auto")).toBe(true);
+    expect(viewport.classList.contains("items-center")).toBe(false);
+    expect(viewport.classList.contains("justify-center")).toBe(false);
+  });
+
+  it("resets the preview scroll position when the selected file changes", async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        text: async () => "First document",
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        text: async () => "Second document",
+      });
+    const view = render(
+      <StudioFilePreview
+        filename="first.md"
+        filePath="ws/first.md"
+        mediaType="text/markdown"
+        sessionId="web-abc"
+        kind="source"
+      />,
+    );
+
+    await screen.findByText("First document");
+    const firstViewport = screen.getByTestId("studio-file-preview-viewport");
+    firstViewport.scrollTop = 160;
+    firstViewport.scrollLeft = 40;
+
+    view.rerender(
+      <StudioFilePreview
+        filename="second.md"
+        filePath="ws/second.md"
+        mediaType="text/markdown"
+        sessionId="web-abc"
+        kind="source"
+      />,
+    );
+
+    await screen.findByText("Second document");
+    const secondViewport = screen.getByTestId("studio-file-preview-viewport");
+    expect(secondViewport.scrollTop).toBe(0);
+    expect(secondViewport.scrollLeft).toBe(0);
+  });
+
+  it("keeps non-text preview states centered", async () => {
+    render(
+      <StudioFilePreview
+        filename="photo.jpg"
+        filePath="uploads/photo.jpg"
+        sessionId="web-abc"
+        kind="source"
+      />,
+    );
+
+    await screen.findByAltText("photo.jpg source preview");
+    const viewport = screen.getByTestId("studio-file-preview-viewport");
+    expect(viewport.classList.contains("items-center")).toBe(true);
+    expect(viewport.classList.contains("justify-center")).toBe(true);
+  });
+
   it("shows cited Markdown line context with the target range highlighted", async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
