@@ -21,6 +21,7 @@ import { useResizablePanel } from "@/hooks/use-resizable-panel";
 
 import {
   SOURCE_IMPORT_ACTION_ID,
+  isSourceRowReady,
   mergeSourceImportJobs,
   mergeSourceRows,
   sourceRowFromSkillActionJob,
@@ -175,6 +176,7 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
   const [sourcesLoading, setSourcesLoading] = useState(true);
   const sourceCatalogRequest = useRef(0);
   const sourceImportJobsRef = useRef<SkillActionJob[]>([]);
+  const dismissedSourceJobIds = useRef(new Set<string>());
 
   function openCitation(citation: CitationTarget) {
     setCitationTarget(citation);
@@ -184,7 +186,11 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
     );
     if (!row) return;
     setSourcePreviewKey(row.jobId ?? row.sourceId ?? row.path);
-    updatePanes((current) => ({ ...current, sources: true }));
+    updatePanes((current) => ({
+      ...current,
+      sources: true,
+      rail: window.innerWidth < 1024 ? false : current.rail,
+    }));
   }
 
   // Title: seed from localStorage, then track the runtime-provider's
@@ -227,10 +233,29 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
     try {
       const catalog = await loadSourceCatalog(projectId);
       if (request !== sourceCatalogRequest.current) return;
-      setUploadedSources((current) => [
-        ...catalog,
-        ...current.filter((row) => (row.status ?? "ready") !== "ready"),
-      ]);
+      setUploadedSources((current) => {
+        const catalogRows = catalog.map((row) => {
+          const jobRow = current.find((candidate) =>
+            candidate.jobId && isSourceRowReady(candidate) && (
+              (row.sourceId && candidate.sourceId === row.sourceId)
+              || (row.sourcePath && candidate.sourcePath === row.sourcePath)
+            )
+          );
+          return jobRow
+            ? { ...row, jobId: jobRow.jobId, batchId: jobRow.batchId }
+            : row;
+        });
+        const pendingReadyRows = current.filter((row) =>
+          row.jobId
+          && isSourceRowReady(row)
+          && !catalogRows.some((catalogRow) => sameSourceRow(catalogRow, row))
+        );
+        return [
+          ...catalogRows,
+          ...pendingReadyRows,
+          ...current.filter((row) => !isSourceRowReady(row)),
+        ];
+      });
     } finally {
       if (request === sourceCatalogRequest.current) {
         setSourcesLoading(false);
@@ -250,6 +275,12 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
   }, [refreshSourceCatalog]);
 
   const removeUploadedSourceRow = useCallback((row: SourceRow) => {
+    if (row.jobId) {
+      dismissedSourceJobIds.current.add(row.jobId);
+      sourceImportJobsRef.current = sourceImportJobsRef.current.filter(
+        (job) => job.job_id !== row.jobId,
+      );
+    }
     setUploadedSources((prev) => prev.filter((existing) => !sameSourceRow(existing, row)));
     setSelectedSources((prev) => prev.filter((path) => !selectedPathMatchesRow(path, row)));
     void refreshSourceCatalog();
@@ -260,31 +291,39 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
       const sourceJobs = jobs.filter(
         (job) =>
           job.session_id === projectId &&
-          job.action_id === SOURCE_IMPORT_ACTION_ID,
+          job.action_id === SOURCE_IMPORT_ACTION_ID
+          && !dismissedSourceJobIds.current.has(job.job_id),
       );
       if (sourceJobs.length === 0) return;
 
+      const previousJobs = sourceImportJobsRef.current;
       const mergedJobs = mergeSourceImportJobs(
-        sourceImportJobsRef.current,
+        previousJobs,
         sourceJobs,
       );
       sourceImportJobsRef.current = mergedJobs;
 
-      const succeededIds = new Set(
-        mergedJobs
-          .filter((job) => job.status === "succeeded")
-          .map((job) => job.job_id),
-      );
+      const acceptedSucceededJobs = sourceJobs.filter((job) => {
+        if (job.status !== "succeeded") return false;
+        const accepted = mergedJobs.find((candidate) => candidate.job_id === job.job_id);
+        if (accepted?.status !== "succeeded"
+          || (accepted.updated_at || accepted.created_at)
+            !== (job.updated_at || job.created_at)) return false;
+        const previous = previousJobs.find((candidate) => candidate.job_id === job.job_id);
+        return previous?.status !== "succeeded"
+          || (accepted.updated_at || accepted.created_at)
+            !== (previous?.updated_at || previous?.created_at);
+      });
       const transientRows = mergedJobs
         .filter((job) => job.status !== "succeeded")
         .map((job) => sourceRowFromSkillActionJob(job));
-      setUploadedSources((prev) =>
-        mergeSourceRows(
-          prev.filter((row) => !row.jobId || !succeededIds.has(row.jobId)),
-          transientRows,
-        ),
+      const newlyReadyRows = acceptedSucceededJobs.map((job) =>
+        sourceRowFromSkillActionJob(job)
       );
-      if (succeededIds.size > 0) void refreshSourceCatalog();
+      setUploadedSources((prev) =>
+        mergeSourceRows(prev, [...transientRows, ...newlyReadyRows]),
+      );
+      if (acceptedSucceededJobs.length > 0) void refreshSourceCatalog();
     },
     [projectId, refreshSourceCatalog],
   );

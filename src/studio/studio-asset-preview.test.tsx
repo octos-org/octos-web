@@ -111,6 +111,31 @@ describe("StudioAssetPreview", () => {
     );
   });
 
+  it("moves focus into a Files preview and restores it to the opened file", () => {
+    const asset = buildStudioAsset(videoJob(["overview.mp4", "script.md"]));
+
+    render(
+      <StudioAssetPreview
+        asset={asset}
+        sessionId="web-abc"
+        onBack={vi.fn()}
+        onDownload={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Files" }));
+    const openFile = screen.getByRole("button", { name: "Open file script.md" });
+    openFile.focus();
+    fireEvent.click(openFile);
+
+    const back = screen.getByRole("button", { name: "Back to files" });
+    expect(document.activeElement).toBe(back);
+    fireEvent.click(back);
+
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Open file script.md" }),
+    );
+  });
+
   it("keeps plan files useful when Video Overview has no rendered video", () => {
     const asset = buildStudioAsset(videoJob(["script.md", "scene-plan.json"]));
 

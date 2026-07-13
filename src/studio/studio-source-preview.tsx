@@ -49,7 +49,7 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
   const originalFilename = row.originalFilename ?? row.filename;
   const originalPreviewable = originalAvailable
     && isFilePreviewable(originalFilename, row.mediaType);
-  const originalDownloadPath = row.inputPath ?? row.materializedPath ?? originalPath;
+  const originalDownloadPath = row.materializedPath ?? row.inputPath ?? originalPath;
   const citationMatches = Boolean(citationTarget && (
     (citationTarget.sourceId && citationTarget.sourceId === row.sourceId)
     || (citationTarget.sourcePath && citationTarget.sourcePath === row.sourcePath)

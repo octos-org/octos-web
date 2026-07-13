@@ -214,6 +214,10 @@ function renderStudio(path = "/studio/web-abc") {
 }
 
 beforeEach(() => {
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    value: 1024,
+  });
   localStorage.clear();
   // Pane defaults follow window width (jsdom is 1024px, so the rail
   // would start closed); pin both open so every pane is testable.
@@ -617,6 +621,68 @@ describe("StudioPage", () => {
     expect(
       await within(screen.getByTestId("studio-rail")).findByRole("button", {
         name: "Back to Studio",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("closes the Studio drawer when a citation opens Sources on a narrow screen", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 500,
+    });
+    const mindMapJob = {
+      job_id: "job-map",
+      batch_id: "batch-map",
+      profile_id: "alan0x",
+      session_id: "web-abc",
+      action_id: "mindmap.generate",
+      skill_id: "mofa-notebook-map",
+      status: "succeeded" as const,
+      result: {
+        title: "Research map",
+        artifacts: [{
+          handle: "ws/map/map.json",
+          display_name: "map.json",
+          media_type: "application/json",
+          size: 42,
+        }],
+      },
+      created_at: "2026-07-09T01:00:00Z",
+      updated_at: "2026-07-09T01:01:00Z",
+    };
+    listSkillActionJobsMock.mockImplementation(
+      (_sessionId: string, options?: { actionId?: string }) =>
+        Promise.resolve(options?.actionId === "source.import" ? [] : [mindMapJob]),
+    );
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        title: "Research map",
+        root: "Root",
+        nodes: [{
+          id: "root",
+          label: "Root",
+          summary: "Summary",
+          citations: [{ chunk_id: "chunk-1", source_id: "notes" }],
+        }],
+      }),
+    } as Response);
+
+    renderStudio();
+    const rail = screen.getByTestId("studio-rail");
+    fireEvent.click(await within(rail).findByRole("button", {
+      name: "Open Research map",
+    }));
+    fireEvent.click(await within(rail).findByRole("button", {
+      name: "Open node Root",
+    }));
+    fireEvent.click(within(rail).getByRole("button", { name: "Open cited source" }));
+
+    expect(screen.queryByTestId("studio-rail")).toBeNull();
+    expect(
+      within(screen.getByTestId("studio-sources-pane")).getByRole("button", {
+        name: "Back to sources",
       }),
     ).toBeTruthy();
   });
@@ -1111,6 +1177,25 @@ describe("StudioPage", () => {
       "source.remove",
       expect.anything(),
     );
+
+    fireEvent(window, new CustomEvent("crew:skill_action_job_updated", {
+      detail: {
+        ...readySourceJob({
+          job_id: "job-other",
+          status: "running",
+          source_id: undefined,
+          source_path: undefined,
+          input_path: "uploads/other.pdf",
+          materialized_path: "uploads/other.pdf",
+          filename: "other.pdf",
+          updated_at: "2026-07-09T01:03:00Z",
+        }),
+      },
+    }));
+
+    expect(await screen.findByText("other.pdf")).toBeTruthy();
+    expect(screen.queryByText("photo.jpg")).toBeNull();
+    expect(screen.queryByText("Unsupported image payload")).toBeNull();
   });
 
   it("restores processing source jobs after the bridge reconnects", async () => {
@@ -1185,8 +1270,46 @@ describe("StudioPage", () => {
       detail: running,
     }));
 
+    fireEvent(window, new CustomEvent("crew:skill_action_job_updated", {
+      detail: readySourceJob({ updated_at: "2026-07-09T01:03:00Z" }),
+    }));
+
     await waitFor(() => expect(screen.queryByText("Processing")).toBeNull());
     expect(screen.getAllByText("photo.jpg")).toHaveLength(1);
+    expect(loadSourceCatalogMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a processing Source preview open when the ready catalog row takes over", async () => {
+    const running = readySourceJob({
+      status: "running",
+      source_id: undefined,
+      source_path: undefined,
+      updated_at: "2026-07-09T01:02:00Z",
+    });
+    mockSourceImportJobs([running]);
+    renderStudio();
+
+    await screen.findByText("Processing");
+    fireEvent.click(screen.getByRole("button", { name: "Preview photo.jpg" }));
+    expect(screen.getByRole("button", { name: "Back to sources" })).toBeTruthy();
+
+    loadSourceCatalogMock.mockResolvedValue([{
+      sourceId: "photo",
+      filename: "photo.jpg",
+      path: "notebook-sources/photo/source.md",
+      sourcePath: "notebook-sources/photo/source.md",
+      inputPath: "uploads/photo.jpg",
+      previewPath: "uploads/photo.jpg",
+      timestamp: Date.parse("2026-07-09T01:03:00Z"),
+      status: "ready",
+    }]);
+    fireEvent(window, new CustomEvent("crew:skill_action_job_updated", {
+      detail: readySourceJob({ updated_at: "2026-07-09T01:03:00Z" }),
+    }));
+
+    expect(await screen.findByRole("button", { name: "Back to sources" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Parsed" })).toBeTruthy();
+    expect(document.activeElement).not.toBe(document.body);
   });
 
   it("keeps a newer failed source import when an older succeeded event arrives", async () => {

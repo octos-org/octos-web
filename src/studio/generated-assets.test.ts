@@ -209,6 +209,19 @@ describe("generated assets", () => {
     }))).toMatchObject([{ filePath: "notebook-outputs/quiz.md" }]);
   });
 
+  it("falls back to safe files_to_send when every structured artifact is invalid", () => {
+    expect(artifactsFromJob(job({
+      status: "succeeded",
+      result: {
+        artifacts: [
+          { handle: "../private.md", display_name: "private.md" },
+          { display_name: "missing-handle.md" },
+        ],
+        files_to_send: ["notebook-outputs/quiz.md"],
+      },
+    }))).toMatchObject([{ filePath: "notebook-outputs/quiz.md" }]);
+  });
+
   it("marks incomplete canonical assets as partial", () => {
     const [mindMap, dataTable] = buildStudioAssets([
       job({

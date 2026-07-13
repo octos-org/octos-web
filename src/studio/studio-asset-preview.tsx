@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Download, FileText } from "lucide-react";
 
 import type { AssetFile, StudioAsset } from "./generated-assets";
@@ -90,7 +90,20 @@ function FilesView({
   onDownload: (file: AssetFile) => void;
   sessionId: string;
 }) {
-  const [selected, setSelected] = useState<AssetFile | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [restoreFocusId, setRestoreFocusId] = useState<string | null>(null);
+  const fileTriggerRefs = useRef(new Map<string, HTMLButtonElement>());
+  const selected = selectedId
+    ? files.find((file) => file.id === selectedId) ?? null
+    : null;
+  useEffect(() => {
+    if (selected || !restoreFocusId) return;
+    const trigger = fileTriggerRefs.current.get(restoreFocusId);
+    if (trigger) {
+      trigger.focus();
+      setRestoreFocusId(null);
+    }
+  }, [restoreFocusId, selected]);
   if (files.length === 0) {
     return <div className="studio-empty-state m-4 text-xs">No files are ready yet.</div>;
   }
@@ -98,7 +111,17 @@ function FilesView({
     return (
       <div className="flex h-full min-h-0 flex-col">
         <div className="flex shrink-0 items-center gap-2 border-b p-2">
-          <button type="button" className="studio-ghost-button px-2 py-1.5 text-xs" onClick={() => setSelected(null)}>Back to files</button>
+          <button
+            type="button"
+            autoFocus
+            className="studio-ghost-button px-2 py-1.5 text-xs"
+            onClick={() => {
+              setRestoreFocusId(selected.id);
+              setSelectedId(null);
+            }}
+          >
+            Back to files
+          </button>
           <span className="min-w-0 flex-1 truncate text-xs" title={selected.filename}>{selected.filename}</span>
           <button type="button" className="studio-ghost-button p-1.5" aria-label={`Download ${selected.filename}`} onClick={() => onDownload(selected)}><Download size={14} /></button>
         </div>
@@ -111,7 +134,16 @@ function FilesView({
       {files.map((file) => (
         <li key={file.id} className="studio-list-row studio-card !rounded-xl p-3">
           <FileText size={16} className="shrink-0 text-muted" />
-          <button type="button" className="min-w-0 flex-1 text-left" aria-label={`Open file ${file.filename}`} onClick={() => setSelected(file)}>
+          <button
+            ref={(node) => {
+              if (node) fileTriggerRefs.current.set(file.id, node);
+              else fileTriggerRefs.current.delete(file.id);
+            }}
+            type="button"
+            className="min-w-0 flex-1 text-left"
+            aria-label={`Open file ${file.filename}`}
+            onClick={() => setSelectedId(file.id)}
+          >
             <span className="block truncate text-sm" title={file.filename}>
               {file.filename}
             </span>

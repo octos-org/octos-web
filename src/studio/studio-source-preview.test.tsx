@@ -354,6 +354,33 @@ describe("StudioSourcePreview", () => {
     });
   });
 
+  it("downloads the materialized original instead of an opaque upload handle", async () => {
+    render(
+      <StudioSourcePreview
+        row={{
+          filename: "Report.pdf",
+          path: "uploads/report.pdf",
+          inputPath: "upload-handle-report",
+          materializedPath: "uploads/report.pdf",
+          previewPath: "uploads/report.pdf",
+          timestamp: 1,
+        }}
+        sessionId="web-abc"
+        onBack={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Download original Report.pdf" }));
+
+    await waitFor(() => {
+      expect(downloadStudioFile).toHaveBeenCalledWith(
+        "uploads/report.pdf",
+        "Report.pdf",
+        "web-abc",
+      );
+    });
+  });
+
   it("keeps a newer tab selection when the original download fails", async () => {
     let rejectDownload: (reason?: unknown) => void = () => undefined;
     downloadStudioFile.mockReturnValueOnce(new Promise<void>((_resolve, reject) => {

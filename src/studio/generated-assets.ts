@@ -104,7 +104,7 @@ export function artifactsFromJob(job: SkillActionJob): GeneratedArtifact[] {
   };
   if (Array.isArray(result.artifacts) && result.artifacts.length > 0) {
     const seen = new Set<string>();
-    return result.artifacts.flatMap((value, index) => {
+    const artifacts = result.artifacts.flatMap((value, index) => {
       if (!value || typeof value !== "object") return [];
       const artifact = value as Record<string, unknown>;
       const handle = artifact.handle;
@@ -135,6 +135,7 @@ export function artifactsFromJob(job: SkillActionJob): GeneratedArtifact[] {
         job,
       }];
     });
+    if (artifacts.length > 0) return artifacts;
   }
 
   const files = result.files_to_send;
