@@ -234,7 +234,6 @@ export function StudioFilePreview({
             <iframe
               title={label}
               src={url}
-              sandbox=""
               className="h-full w-full rounded-[8px] border bg-white"
             />
           ) : null

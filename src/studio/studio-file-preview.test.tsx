@@ -192,7 +192,7 @@ describe("StudioFilePreview", () => {
     expect(revokeObjectUrlMock).toHaveBeenCalledWith("blob:authenticated-preview");
   });
 
-  it("uses the source media type when a renamed PDF has no extension", async () => {
+  it("uses the source media type without sandboxing Chrome's PDF viewer", async () => {
     render(
       <StudioFilePreview
         filename="May statement"
@@ -205,7 +205,7 @@ describe("StudioFilePreview", () => {
 
     const frame = await screen.findByTitle("May statement source preview");
     expect(frame.getAttribute("src")).toBe("blob:authenticated-preview");
-    expect(frame.getAttribute("sandbox")).toBe("");
+    expect(frame.getAttribute("sandbox")).toBeNull();
   });
 
   it("renders authenticated Markdown as document content instead of an iframe", async () => {
