@@ -539,6 +539,7 @@ export function StudioSourcesPane({
               const isRenaming = renamingKey === key;
               const isBusy = busyKey === key;
               const canManageSource = ready && Boolean(row.sourceId);
+              const selectable = ready && Boolean(row.sourceId);
               return (
                 <li key={row.jobId ?? row.path} className="studio-list-row">
                   {isRenaming ? (
@@ -624,10 +625,10 @@ export function StudioSourcesPane({
                   <input
                     type="checkbox"
                     className="accent-accent h-4 w-4"
-                    checked={ready && selected.includes(row.path)}
-                    disabled={!ready}
+                    checked={selectable && selected.includes(row.path)}
+                    disabled={!selectable}
                     onChange={() => {
-                      if (ready) onToggle(row.path);
+                      if (selectable) onToggle(row.path);
                     }}
                     aria-label={`Use ${row.filename} as source`}
                   />

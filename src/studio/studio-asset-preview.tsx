@@ -169,19 +169,24 @@ function TabStrip<T extends string>({
   tabs,
   selected,
   onSelect,
+  panelId,
 }: {
   tabs: Array<{ id: T; label: string }>;
   selected: T;
   onSelect: (tab: T) => void;
+  panelId: string;
 }) {
   return (
     <div className="flex shrink-0 overflow-x-auto border-b px-2" role="tablist">
       {tabs.map((tab, index) => (
         <button
           key={tab.id}
+          id={`${panelId}-tab-${tab.id}`}
           type="button"
           role="tab"
           aria-selected={selected === tab.id}
+          aria-controls={panelId}
+          tabIndex={selected === tab.id ? 0 : -1}
           className={`shrink-0 border-b-2 px-3 py-2 text-xs ${selected === tab.id ? "border-accent text-text-strong" : "border-transparent text-muted"}`}
           onClick={() => onSelect(tab.id)}
           onKeyDown={(event) => {
@@ -213,8 +218,8 @@ function VideoOverviewBody({
 
   return (
     <>
-      <TabStrip tabs={VIDEO_TABS} selected={tab} onSelect={setTab} />
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <TabStrip tabs={VIDEO_TABS} selected={tab} onSelect={setTab} panelId="studio-video-asset-panel" />
+      <div id="studio-video-asset-panel" role="tabpanel" aria-labelledby={`studio-video-asset-panel-tab-${tab}`} className="min-h-0 flex-1 overflow-hidden">
         {tab === "overview" && (
           <FilePreview
             file={fileByRole("video")}
@@ -261,8 +266,8 @@ function GenericAssetBody({
   const [tab, setTab] = useState<GenericTab>("preview");
   return (
     <>
-      <TabStrip tabs={GENERIC_TABS} selected={tab} onSelect={setTab} />
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <TabStrip tabs={GENERIC_TABS} selected={tab} onSelect={setTab} panelId="studio-generic-asset-panel" />
+      <div id="studio-generic-asset-panel" role="tabpanel" aria-labelledby={`studio-generic-asset-panel-tab-${tab}`} className="min-h-0 flex-1 overflow-hidden">
         {tab === "preview" ? (
           <FilePreview
             file={asset.primary}
@@ -285,8 +290,8 @@ function StudyAssetBody({
   const [tab, setTab] = useState<GenericTab>("preview");
   return (
     <>
-      <TabStrip tabs={GENERIC_TABS} selected={tab} onSelect={setTab} />
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <TabStrip tabs={GENERIC_TABS} selected={tab} onSelect={setTab} panelId="studio-study-asset-panel" />
+      <div id="studio-study-asset-panel" role="tabpanel" aria-labelledby={`studio-study-asset-panel-tab-${tab}`} className="min-h-0 flex-1 overflow-hidden">
         {tab === "files" ? (
           <FilesView files={asset.files} onDownload={onDownload} sessionId={sessionId} />
         ) : (
@@ -316,8 +321,8 @@ function StructuredAssetBody({
   const [tab, setTab] = useState<GenericTab>("preview");
   return (
     <>
-      <TabStrip tabs={GENERIC_TABS} selected={tab} onSelect={setTab} />
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <TabStrip tabs={GENERIC_TABS} selected={tab} onSelect={setTab} panelId="studio-structured-asset-panel" />
+      <div id="studio-structured-asset-panel" role="tabpanel" aria-labelledby={`studio-structured-asset-panel-tab-${tab}`} className="min-h-0 flex-1 overflow-hidden">
         {tab === "files" ? (
           <FilesView files={asset.files} onDownload={onDownload} sessionId={sessionId} />
         ) : (

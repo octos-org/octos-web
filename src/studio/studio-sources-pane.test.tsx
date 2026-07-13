@@ -69,6 +69,38 @@ function pane(
 afterEach(cleanup);
 
 describe("StudioSourcesPane", () => {
+  it("does not allow a ready job row without a catalog source id to be selected", () => {
+    render(
+      <StudioSourcesPane
+        sessionId="web-abc"
+        previewKey={null}
+        onPreviewKeyChange={vi.fn()}
+        selected={[]}
+        onToggle={vi.fn()}
+        uploaded={[{
+          jobId: "job-legacy",
+          filename: "Legacy.pdf",
+          path: "uploads/legacy.pdf",
+          materializedPath: "uploads/legacy.pdf",
+          status: "ready",
+          timestamp: 1,
+        }]}
+        onUploaded={vi.fn()}
+        onRenamed={vi.fn()}
+        onRemoved={vi.fn()}
+        onCatalogChanged={vi.fn()}
+        loading={false}
+        query=""
+        onQueryChange={vi.fn()}
+        listScrollTop={0}
+        onListScrollTopChange={vi.fn()}
+      />,
+    );
+
+    expect((screen.getByLabelText("Use Legacy.pdf as source") as HTMLInputElement).disabled)
+      .toBe(true);
+  });
+
   it("restores focus to the citation source instead of a stale manual preview", async () => {
     const onPreviewKeyChange = vi.fn();
     const view = render(pane(null, onPreviewKeyChange));

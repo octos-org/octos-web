@@ -1312,6 +1312,36 @@ describe("StudioPage", () => {
     expect(document.activeElement).not.toBe(document.body);
   });
 
+  it("reconciles a legacy succeeded import with its catalog source by materialized path", async () => {
+    mockSourceImportJobs([readySourceJob({
+      source_id: undefined,
+      source_path: undefined,
+    })]);
+    loadSourceCatalogMock.mockResolvedValue([{
+      sourceId: "photo",
+      filename: "photo.jpg",
+      path: "notebook-sources/photo/source.md",
+      sourcePath: "notebook-sources/photo/source.md",
+      inputPath: "uploads/photo.jpg",
+      previewPath: "uploads/photo.jpg",
+      timestamp: Date.parse("2026-07-09T01:03:00Z"),
+      status: "ready",
+    }]);
+    renderStudio();
+
+    await waitFor(() => expect(screen.getAllByText("photo.jpg")).toHaveLength(1));
+    const checkbox = screen.getByLabelText("Use photo.jpg as source") as HTMLInputElement;
+    expect(checkbox.disabled).toBe(false);
+    fireEvent.click(checkbox);
+    fireEvent.click(screen.getByRole("button", { name: "Quiz" }));
+
+    await waitFor(() => expect(invokeSkillActionMock).toHaveBeenCalledWith(
+      "web-abc",
+      "quiz.generate",
+      { source_ids: ["photo"] },
+    ));
+  });
+
   it("keeps a newer failed source import when an older succeeded event arrives", async () => {
     const failed = readySourceJob({
       status: "failed",

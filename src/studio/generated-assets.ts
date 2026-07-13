@@ -104,7 +104,7 @@ export function artifactsFromJob(job: SkillActionJob): GeneratedArtifact[] {
   };
   if (Array.isArray(result.artifacts) && result.artifacts.length > 0) {
     const seen = new Set<string>();
-    const artifacts = result.artifacts.flatMap((value, index) => {
+    const artifacts = result.artifacts.flatMap((value) => {
       if (!value || typeof value !== "object") return [];
       const artifact = value as Record<string, unknown>;
       const handle = artifact.handle;
@@ -122,7 +122,7 @@ export function artifactsFromJob(job: SkillActionJob): GeneratedArtifact[] {
           ? artifact.display_name
           : fileNameFromPath(handle, job.action_id);
       return [{
-        id: `${job.job_id}:${index}`,
+        id: `${job.job_id}:${handle}`,
         filename: displayName,
         filePath: handle,
         mediaType:
@@ -142,7 +142,7 @@ export function artifactsFromJob(job: SkillActionJob): GeneratedArtifact[] {
   if (!Array.isArray(files)) return [];
 
   const seen = new Set<string>();
-  return files.flatMap((value, index) => {
+  return files.flatMap((value) => {
     if (
       typeof value !== "string" ||
       !value ||
@@ -153,7 +153,7 @@ export function artifactsFromJob(job: SkillActionJob): GeneratedArtifact[] {
     }
     seen.add(value);
     return [{
-      id: `${job.job_id}:${index}`,
+      id: `${job.job_id}:${value}`,
       filename: fileNameFromPath(
         value,
         STUDIO_SKILL_LABEL_BY_ACTION_ID.get(job.action_id) ?? job.action_id,

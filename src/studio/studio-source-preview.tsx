@@ -203,9 +203,12 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
         {(["original", "parsed", "guide"] as const).map((value, index, tabs) => (
           <button
             key={value}
+            id={`studio-source-preview-tab-${value}`}
             type="button"
             role="tab"
             aria-selected={tab === value}
+            aria-controls="studio-source-preview-panel"
+            tabIndex={tab === value ? 0 : -1}
             className={`border-b-2 px-3 py-2 text-xs ${tab === value ? "border-accent text-text-strong" : "border-transparent text-muted"}`}
             onClick={() => setTab(value)}
             onKeyDown={(event) => {
@@ -227,7 +230,12 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
           </button>
         ))}
       </div>
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <div
+        id="studio-source-preview-panel"
+        role="tabpanel"
+        aria-labelledby={`studio-source-preview-tab-${tab}`}
+        className="min-h-0 flex-1 overflow-hidden"
+      >
         {tab === "original" ? (
           originalPreviewable ? (
             <StudioFilePreview

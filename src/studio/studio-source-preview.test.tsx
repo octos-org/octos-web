@@ -57,6 +57,34 @@ describe("StudioSourcePreview", () => {
     );
   });
 
+  it("uses one tab stop and links the selected Source tab to its panel", () => {
+    render(
+      <StudioSourcePreview
+        row={{
+          sourceId: "report",
+          filename: "Report.pdf",
+          path: "notebook-sources/report/source.md",
+          sourcePath: "notebook-sources/report/source.md",
+          previewPath: "uploads/report.pdf",
+          timestamp: 1,
+        }}
+        sessionId="web-abc"
+        onBack={vi.fn()}
+      />,
+    );
+
+    const original = screen.getByRole("tab", { name: "Original" });
+    const parsed = screen.getByRole("tab", { name: "Parsed" });
+    expect(original.tabIndex).toBe(0);
+    expect(parsed.tabIndex).toBe(-1);
+    expect(original.getAttribute("aria-controls")).toBe(screen.getByRole("tabpanel").id);
+
+    fireEvent.click(parsed);
+    expect(original.tabIndex).toBe(-1);
+    expect(parsed.tabIndex).toBe(0);
+    expect(screen.getByRole("tabpanel").getAttribute("aria-labelledby")).toBe(parsed.id);
+  });
+
   it("loads Source Guide from metadata and preserves warnings and provenance", async () => {
     vi.mocked(fetch).mockResolvedValueOnce({
       ok: true,

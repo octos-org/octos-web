@@ -118,11 +118,21 @@ export function StudioPage() {
 function sameSourceRow(a: SourceRow, b: SourceRow): boolean {
   if (a.jobId && b.jobId && a.jobId === b.jobId) return true;
   if (a.sourceId && b.sourceId && a.sourceId === b.sourceId) return true;
-  return a.path === b.path;
+  const aPaths = [a.path, a.sourcePath, a.inputPath, a.materializedPath, a.previewPath]
+    .filter((path): path is string => Boolean(path))
+    .map((path) => path.replaceAll("\\", "/"));
+  const bPaths = new Set(
+    [b.path, b.sourcePath, b.inputPath, b.materializedPath, b.previewPath]
+      .filter((path): path is string => Boolean(path))
+      .map((path) => path.replaceAll("\\", "/")),
+  );
+  return aPaths.some((path) => bPaths.has(path));
 }
 
 function selectedPathMatchesRow(path: string, row: SourceRow): boolean {
-  return path === row.path || path === row.sourcePath;
+  const normalized = path.replaceAll("\\", "/");
+  return [row.path, row.sourcePath, row.inputPath, row.materializedPath, row.previewPath]
+    .some((candidate) => candidate?.replaceAll("\\", "/") === normalized);
 }
 
 function StudioWorkspace({ projectId }: { projectId: string }) {
@@ -236,10 +246,9 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
       setUploadedSources((current) => {
         const catalogRows = catalog.map((row) => {
           const jobRow = current.find((candidate) =>
-            candidate.jobId && isSourceRowReady(candidate) && (
-              (row.sourceId && candidate.sourceId === row.sourceId)
-              || (row.sourcePath && candidate.sourcePath === row.sourcePath)
-            )
+            candidate.jobId
+            && isSourceRowReady(candidate)
+            && sameSourceRow(row, candidate)
           );
           return jobRow
             ? { ...row, jobId: jobRow.jobId, batchId: jobRow.batchId }
@@ -592,7 +601,6 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
                   sessionId={projectId}
                   selectedAssetId={assetPreviewId}
                   onSelectedAssetIdChange={setAssetPreviewId}
-                  selectedSources={selectedSources}
                   selectedSourceIds={selectedSourceIds}
                   onCitationOpen={openCitation}
                 />

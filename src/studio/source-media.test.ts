@@ -113,6 +113,23 @@ describe("sourceRowFromSkillActionJob", () => {
       sourcePreviewPath({ filename: "notes.md", path: "research/notes.md", timestamp: 1 }),
     ).toBe("research/notes.md");
   });
+
+  it("prefers the immediate upload filename over an opaque input handle", () => {
+    const row = sourceRowFromSkillActionJob({
+      job_id: "job-legacy",
+      batch_id: "batch-legacy",
+      profile_id: "alan0x",
+      session_id: "web-abc",
+      action_id: "source.import",
+      skill_id: "mofa-notebook-source",
+      status: "running",
+      input_path: "opaque-upload-handle",
+      created_at: "2026-07-09T01:00:00Z",
+      updated_at: "2026-07-09T01:01:00Z",
+    }, "Quarterly report.pdf");
+
+    expect(row.filename).toBe("Quarterly report.pdf");
+  });
 });
 
 describe("relativeTime", () => {

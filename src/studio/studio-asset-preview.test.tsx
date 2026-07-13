@@ -136,6 +136,56 @@ describe("StudioAssetPreview", () => {
     );
   });
 
+  it("keeps an opened file selected when a job update inserts an earlier artifact", () => {
+    const view = render(
+      <StudioAssetPreview
+        asset={buildStudioAsset(videoJob(["overview.mp4", "script.md"]))}
+        sessionId="web-abc"
+        onBack={vi.fn()}
+        onDownload={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Files" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open file script.md" }));
+    expect(screen.getByTestId("file-preview").textContent).toBe("script.md");
+
+    view.rerender(
+      <StudioAssetPreview
+        asset={buildStudioAsset(videoJob(["notes.md", "overview.mp4", "script.md"]))}
+        sessionId="web-abc"
+        onBack={vi.fn()}
+        onDownload={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("file-preview").textContent).toBe("script.md");
+    expect(screen.getAllByText("script.md")).toHaveLength(2);
+  });
+
+  it("uses roving tab stops and links tabs to their active panel", () => {
+    render(
+      <StudioAssetPreview
+        asset={buildStudioAsset(videoJob(["overview.mp4", "script.md"]))}
+        sessionId="web-abc"
+        onBack={vi.fn()}
+        onDownload={vi.fn()}
+      />,
+    );
+
+    const overview = screen.getByRole("tab", { name: "Overview" });
+    const script = screen.getByRole("tab", { name: "Script" });
+    expect(overview.tabIndex).toBe(0);
+    expect(script.tabIndex).toBe(-1);
+    expect(overview.getAttribute("aria-controls")).toBe(
+      screen.getByRole("tabpanel").id,
+    );
+
+    fireEvent.click(script);
+    expect(overview.tabIndex).toBe(-1);
+    expect(script.tabIndex).toBe(0);
+    expect(screen.getByRole("tabpanel").getAttribute("aria-labelledby")).toBe(script.id);
+  });
+
   it("keeps plan files useful when Video Overview has no rendered video", () => {
     const asset = buildStudioAsset(videoJob(["script.md", "scene-plan.json"]));
 

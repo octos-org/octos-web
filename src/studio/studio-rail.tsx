@@ -33,7 +33,6 @@ interface Props {
    * count gates source-dependent skills; the sources are already imported
    * into the session workspace, so skill sends do not attach them as media.
    */
-  selectedSources: string[];
   selectedSourceIds: string[];
   onCitationOpen?: (citation: CitationTarget) => void;
 }
@@ -69,7 +68,6 @@ export function StudioRail({
   sessionId,
   selectedAssetId,
   onSelectedAssetIdChange,
-  selectedSources,
   selectedSourceIds,
   onCitationOpen,
 }: Props) {
@@ -222,11 +220,11 @@ export function StudioRail({
             const disabled =
               !skill.actionId ||
               busySkillId === skill.id ||
-              (skill.requiresSources === true && selectedSources.length === 0);
+              (skill.requiresSources === true && selectedSourceIds.length === 0);
             const Icon = skill.icon;
             const title = !skill.actionId
               ? (skill.unavailableReason ?? `${skill.label} is not available`)
-              : skill.requiresSources === true && selectedSources.length === 0
+              : skill.requiresSources === true && selectedSourceIds.length === 0
                 ? `${skill.label} needs at least one selected source`
                 : skill.label;
             return (

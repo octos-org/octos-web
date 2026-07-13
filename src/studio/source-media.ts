@@ -202,9 +202,10 @@ export function sourceRowFromSkillActionJob(
       : (job.input_path ?? job.materialized_path ?? job.source_path ?? job.job_id);
   const filename =
     job.filename ??
+    fallbackFilename ??
     fileNameFromPath(
       job.input_path ?? job.source_path ?? job.materialized_path ?? job.job_id,
-      fallbackFilename ?? job.job_id,
+      job.job_id,
     );
 
   return {
