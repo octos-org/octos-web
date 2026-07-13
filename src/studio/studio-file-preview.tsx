@@ -4,62 +4,28 @@ import { buildApiHeaders } from "@/api/client";
 import { buildFileUrl } from "@/api/files";
 import { MarkdownContent } from "@/components/markdown-renderer";
 
-type PreviewMode = "image" | "audio" | "video" | "pdf" | "text" | "unsupported";
+import { CsvTableViewer, JsonViewer } from "./structured-file-viewers";
+import {
+  extensionOf,
+  isActiveContentType,
+  normalizedMediaType,
+  previewMode,
+  type PreviewMode,
+} from "./file-preview-mode";
 
-const ACTIVE_CONTENT_TYPES = new Set([
-  "application/xhtml+xml",
-  "image/svg+xml",
-  "text/html",
-]);
+const MAX_INLINE_TEXT_BYTES = 2 * 1024 * 1024;
+const MAX_INLINE_BINARY_BYTES = 50 * 1024 * 1024;
 
-function normalizedMediaType(mediaType?: string): string {
-  return mediaType?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
-}
-
-function isActiveContentType(mediaType?: string): boolean {
-  return ACTIVE_CONTENT_TYPES.has(normalizedMediaType(mediaType));
-}
-
-function extensionOf(filename: string): string {
-  const dot = filename.lastIndexOf(".");
-  if (dot === -1 || dot === filename.length - 1) return "";
-  return filename.slice(dot + 1).toLowerCase();
-}
-
-function previewMode(filename: string, mediaType?: string): PreviewMode {
-  if (isActiveContentType(mediaType)) return "unsupported";
-  switch (normalizedMediaType(mediaType)) {
-    case "application/pdf":
-      return "pdf";
-    case "text/markdown":
-    case "text/plain":
-    case "text/csv":
-    case "application/json":
-      return "text";
-    case "audio/mpeg":
-    case "audio/wav":
-    case "audio/mp4":
-      return "audio";
-    case "video/mp4":
-    case "video/webm":
-      return "video";
-  }
-  if (normalizedMediaType(mediaType).startsWith("image/")) return "image";
-  const ext = extensionOf(filename);
-  if (["png", "jpg", "jpeg", "gif", "webp"].includes(ext)) return "image";
-  if (["mp3", "wav", "m4a", "aac", "ogg"].includes(ext)) return "audio";
-  if (["mp4", "mov", "webm", "mkv"].includes(ext)) return "video";
-  if (ext === "pdf") return "pdf";
-  if (["md", "markdown", "txt", "csv", "json"].includes(ext)) return "text";
-  return "unsupported";
-}
 
 interface Props {
   filename: string;
   filePath: string;
   mediaType?: string;
+  size?: number;
   sessionId: string;
   kind: "source" | "asset";
+  lineRange?: { start: number; end: number };
+  fallbackAction?: { label: string; onClick: () => void };
 }
 
 function isMarkdown(filename: string, mediaType?: string): boolean {
@@ -67,6 +33,14 @@ function isMarkdown(filename: string, mediaType?: string): boolean {
   return normalizedMediaType(mediaType) === "text/markdown"
     || extension === "md"
     || extension === "markdown";
+}
+
+function isJson(filename: string, mediaType?: string): boolean {
+  return normalizedMediaType(mediaType) === "application/json" || extensionOf(filename) === "json";
+}
+
+function isCsv(filename: string, mediaType?: string): boolean {
+  return normalizedMediaType(mediaType) === "text/csv" || extensionOf(filename) === "csv";
 }
 
 function safeBlobMediaType(
@@ -103,10 +77,19 @@ export function StudioFilePreview({
   filename,
   filePath,
   mediaType,
+  size,
   sessionId,
   kind,
+  lineRange,
+  fallbackAction,
 }: Props) {
   const previewKey = `${sessionId}\0${filePath}`;
+  const mode = previewMode(filename, mediaType);
+  const declaredSizeError = mode !== "text"
+    && size !== undefined
+    && size > MAX_INLINE_BINARY_BYTES
+    ? "This file is too large to preview. Download it to view the full content."
+    : null;
   const [preview, setPreview] = useState<{
     key: string;
     url: string | null;
@@ -115,28 +98,43 @@ export function StudioFilePreview({
   }>({ key: previewKey, url: null, text: null, error: null });
   const url = preview.key === previewKey ? preview.url : null;
   const text = preview.key === previewKey ? preview.text : null;
-  const error = preview.key === previewKey ? preview.error : null;
-  const mode = previewMode(filename, mediaType);
+  const error = declaredSizeError ?? (preview.key === previewKey ? preview.error : null);
   const label = `${filename} ${kind} preview`;
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (mode === "unsupported") return;
+    if (declaredSizeError) return;
     const controller = new AbortController();
     let blobUrl: string | null = null;
-    void fetch(buildFileUrl(filePath, { sessionId }), {
+    void fetch(buildFileUrl(filePath, { sessionId, workspaceScoped: true }), {
       headers: buildApiHeaders(),
       signal: controller.signal,
     })
       .then(async (response) => {
         if (!response.ok) throw new Error(`Preview failed (${response.status})`);
         if (mode === "text") {
+          const contentLength = Number(response.headers?.get("content-length"));
+          if (Number.isFinite(contentLength) && contentLength > MAX_INLINE_TEXT_BYTES) {
+            throw new Error("This file is too large to preview. Download it to view the full content.");
+          }
           const content = await response.text();
+          if (new TextEncoder().encode(content).byteLength > MAX_INLINE_TEXT_BYTES) {
+            throw new Error("This file is too large to preview. Download it to view the full content.");
+          }
           if (!controller.signal.aborted) {
             setPreview({ key: previewKey, url: null, text: content, error: null });
           }
           return;
         }
+        const contentLength = Number(response.headers?.get("content-length"));
+        if (Number.isFinite(contentLength) && contentLength > MAX_INLINE_BINARY_BYTES) {
+          throw new Error("This file is too large to preview. Download it to view the full content.");
+        }
         const blob = await response.blob();
+        if (blob.size > MAX_INLINE_BINARY_BYTES) {
+          throw new Error("This file is too large to preview. Download it to view the full content.");
+        }
         if (isActiveContentType(blob.type)) {
           throw new Error("Preview blocked because the file contains active content.");
         }
@@ -160,28 +158,70 @@ export function StudioFilePreview({
       controller.abort();
       if (blobUrl) URL.revokeObjectURL(blobUrl);
     };
-  }, [filePath, filename, mediaType, mode, previewKey, sessionId]);
+  }, [attempt, declaredSizeError, filePath, filename, mediaType, mode, previewKey, sessionId]);
+
+  const citedLineContext = text !== null && lineRange
+    ? (() => {
+        const lines = text.split("\n");
+        const first = Math.max(1, lineRange.start - 3);
+        const last = Math.min(lines.length, lineRange.end + 3);
+        return {
+          first,
+          last,
+          lines: lines.slice(first - 1, last),
+        };
+      })()
+    : null;
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-surface/40 p-3">
           {error ? (
-            <p className="text-sm text-red-500" role="alert">{error}</p>
+            <div className="text-center">
+              <p className="text-sm text-red-500" role="alert">{error}</p>
+              <div className="mt-3 flex justify-center gap-2">
+                <button type="button" className="studio-ghost-button px-3 py-2 text-xs" onClick={() => setAttempt((value) => value + 1)}>Retry</button>
+                {fallbackAction && <button type="button" className="studio-button-primary px-3 py-2 text-xs" onClick={fallbackAction.onClick}>{fallbackAction.label}</button>}
+              </div>
+            </div>
           ) : mode === "text" && text !== null ? (
-            isMarkdown(filename, mediaType) ? (
+            isMarkdown(filename, mediaType) && lineRange ? (
+              <div className="h-full w-full overflow-auto rounded-lg border bg-surface font-mono text-xs">
+                {citedLineContext && (
+                  <p className="sticky top-0 z-10 border-b bg-surface px-3 py-2 text-[11px] text-muted">
+                    Showing lines {citedLineContext.first}–{citedLineContext.last}
+                  </p>
+                )}
+                {citedLineContext?.lines.map((line, index) => {
+                  const lineNumber = citedLineContext.first + index;
+                  const cited = lineNumber >= lineRange.start && lineNumber <= lineRange.end;
+                  return (
+                    <div key={lineNumber} data-cited-line={cited || undefined} className={`grid grid-cols-[3rem_1fr] border-b ${cited ? "bg-accent/10" : ""}`}>
+                      <span className="select-none border-r px-2 py-1 text-right text-muted">{lineNumber}</span>
+                      <span className="whitespace-pre-wrap break-words px-2 py-1">{line || " "}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : isMarkdown(filename, mediaType) ? (
               <MarkdownContent
                 text={text}
                 className="min-h-full w-full overflow-wrap-anywhere text-sm"
               />
+            ) : isJson(filename, mediaType) ? (
+              <JsonViewer text={text} />
+            ) : isCsv(filename, mediaType) ? (
+              <CsvTableViewer text={text} filename={filename} />
             ) : (
               <pre className="min-h-full w-full overflow-auto whitespace-pre-wrap break-words font-mono text-xs">
                 {text}
               </pre>
             )
           ) : mode === "unsupported" ? (
-            <p className="text-center text-sm text-muted">
-              Preview unavailable for this file type.
-            </p>
+            <div className="text-center">
+              <p className="text-sm text-muted">Preview unavailable for this file type.</p>
+              {fallbackAction && <button type="button" className="studio-button-primary mt-3 px-3 py-2 text-xs" onClick={fallbackAction.onClick}>{fallbackAction.label}</button>}
+            </div>
           ) : !url ? (
             <p className="text-sm text-muted" role="status">Loading preview...</p>
           ) : mode === "image" ? (

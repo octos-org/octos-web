@@ -88,6 +88,19 @@ describe("generated assets", () => {
     expect(asset.primary?.role).toBe("script");
   });
 
+  it("surfaces the Video renderer failure without discarding plan files", () => {
+    const [asset] = buildStudioAssets([job({
+      action_id: "video_overview.generate",
+      status: "succeeded",
+      result: {
+        video_error: "Veo timed out",
+        artifacts: [{ handle: "ws/video/script.md", display_name: "script.md", media_type: "text/markdown" }],
+      },
+    })]);
+    expect(asset.status).toBe("partial");
+    expect(asset.statusReason).toContain("Veo timed out");
+  });
+
   it("recognizes a renamed Video Overview MP4 from its MIME and handle", () => {
     const [asset] = buildStudioAssets([
       job({
@@ -173,7 +186,7 @@ describe("generated assets", () => {
     expect(asset.status).toBe("ready");
   });
 
-  it("exposes artifacts only after the job succeeds", () => {
+  it("hides active-job artifacts but preserves files from a failed terminal job", () => {
     const result = {
       artifacts: [{
         handle: "ws/bm90ZWJvb2stb3V0cHV0cy9xdWl6Lm1k/quiz.md",
@@ -185,6 +198,35 @@ describe("generated assets", () => {
 
     expect(artifactsFromJob(job({ status: "running", result }))).toEqual([]);
     expect(artifactsFromJob(job({ status: "succeeded", result }))).toHaveLength(1);
+    expect(artifactsFromJob(job({ status: "failed", result }))).toHaveLength(1);
+    expect(buildStudioAssets([job({ status: "failed", result })])[0].status).toBe("partial");
+  });
+
+  it("falls back to files_to_send when artifacts is present but empty", () => {
+    expect(artifactsFromJob(job({
+      status: "succeeded",
+      result: { artifacts: [], files_to_send: ["notebook-outputs/quiz.md"] },
+    }))).toMatchObject([{ filePath: "notebook-outputs/quiz.md" }]);
+  });
+
+  it("marks incomplete canonical assets as partial", () => {
+    const [mindMap, dataTable] = buildStudioAssets([
+      job({
+        job_id: "mindmap",
+        action_id: "mindmap.generate",
+        status: "succeeded",
+        result: { artifacts: [{ handle: "ws/map.md", display_name: "map.md", media_type: "text/markdown" }] },
+      }),
+      job({
+        job_id: "table",
+        action_id: "data_table.generate",
+        status: "succeeded",
+        result: { artifacts: [{ handle: "ws/table.csv", display_name: "table.csv", media_type: "text/csv" }] },
+      }),
+    ]);
+
+    expect(mindMap.status).toBe("partial");
+    expect(dataTable.status).toBe("partial");
   });
 
   it("uses the server-provided artifact display name and handle", () => {

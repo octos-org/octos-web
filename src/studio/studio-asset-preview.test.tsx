@@ -8,6 +8,13 @@ vi.mock("./studio-file-preview", () => ({
     <div data-testid="file-preview">{filename}</div>
   ),
 }));
+vi.mock("./authenticated-text-file", () => ({
+  AuthenticatedTextFile: ({ children, file }: { children: (text: string) => React.ReactNode; file?: { filename: string } }) => children(
+    file?.filename === "scene-plan.json"
+      ? JSON.stringify({ title: "Scenes", scenes: [{ scene: 1, type: "chart", visual: "Chart", narration: "Narration", citations: [] }] })
+      : "# Quiz\n\n1. Question?\n   Answer: Answer\n   Explanation: Explanation [Source]",
+  ),
+}));
 
 import { buildStudioAsset } from "./generated-assets";
 import { StudioAssetPreview } from "./studio-asset-preview";
@@ -73,7 +80,7 @@ describe("StudioAssetPreview", () => {
     expect(screen.getByTestId("file-preview").textContent).toBe("script.md");
 
     fireEvent.click(screen.getByRole("tab", { name: "Scenes" }));
-    expect(screen.getByTestId("file-preview").textContent).toBe("scene-plan.json");
+    expect(screen.getByRole("heading", { name: "Scene 1" })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("tab", { name: "Assets" }));
     expect(screen.getByTestId("file-preview").textContent).toBe("asset-brief.md");
@@ -104,7 +111,7 @@ describe("StudioAssetPreview", () => {
     expect(screen.getByTestId("file-preview").textContent).toBe("script.md");
   });
 
-  it("shows ordinary generated assets in a compact Preview and Files viewer", () => {
+  it("routes Quiz assets to an interactive viewer while retaining Files", () => {
     const asset = buildStudioAsset({
       ...videoJob(["quiz.md"]),
       job_id: "job-quiz",
@@ -130,7 +137,7 @@ describe("StudioAssetPreview", () => {
     expect(screen.getByRole("button", { name: "Back to Studio" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Preview" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Files" })).toBeTruthy();
-    expect(screen.getByTestId("file-preview").textContent).toBe("quiz.md");
+    expect(screen.getByRole("button", { name: "Show answer" })).toBeTruthy();
   });
 
   it("keeps download failures visible while the Studio viewer is open", () => {

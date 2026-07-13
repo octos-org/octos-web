@@ -1,8 +1,16 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { ArrowLeft, Download, FileText } from "lucide-react";
 
 import type { AssetFile, StudioAsset } from "./generated-assets";
+import { AuthenticatedTextFile } from "./authenticated-text-file";
 import { StudioFilePreview } from "./studio-file-preview";
+import { FlashcardsViewer, QuizViewer, ReportViewer } from "./study-asset-viewers";
+import {
+  DataTableViewer,
+  MindMapViewer,
+  VideoScenesViewer,
+  type CitationTarget,
+} from "./structured-asset-viewers";
 
 interface Props {
   asset: StudioAsset;
@@ -10,6 +18,7 @@ interface Props {
   downloadError?: string | null;
   onBack: () => void;
   onDownload: (file: AssetFile) => void;
+  onCitationOpen?: (citation: CitationTarget) => void;
 }
 
 type VideoTab = "overview" | "script" | "scenes" | "assets" | "files";
@@ -64,6 +73,7 @@ function FilePreview({
       filename={file.filename}
       filePath={file.filePath}
       mediaType={file.mediaType}
+      size={file.size}
       sessionId={sessionId}
       kind="asset"
     />
@@ -73,26 +83,41 @@ function FilePreview({
 function FilesView({
   files,
   onDownload,
+  sessionId,
 }: {
   files: AssetFile[];
   onDownload: (file: AssetFile) => void;
+  sessionId: string;
 }) {
+  const [selected, setSelected] = useState<AssetFile | null>(null);
   if (files.length === 0) {
     return <div className="studio-empty-state m-4 text-xs">No files are ready yet.</div>;
+  }
+  if (selected) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="flex shrink-0 items-center gap-2 border-b p-2">
+          <button type="button" className="studio-ghost-button px-2 py-1.5 text-xs" onClick={() => setSelected(null)}>Back to files</button>
+          <span className="min-w-0 flex-1 truncate text-xs" title={selected.filename}>{selected.filename}</span>
+          <button type="button" className="studio-ghost-button p-1.5" aria-label={`Download ${selected.filename}`} onClick={() => onDownload(selected)}><Download size={14} /></button>
+        </div>
+        <StudioFilePreview filename={selected.filename} filePath={selected.filePath} mediaType={selected.mediaType} size={selected.size} sessionId={sessionId} kind="asset" />
+      </div>
+    );
   }
   return (
     <ul className="flex flex-col gap-2 overflow-y-auto p-4">
       {files.map((file) => (
         <li key={file.id} className="studio-list-row studio-card !rounded-xl p-3">
           <FileText size={16} className="shrink-0 text-muted" />
-          <span className="min-w-0 flex-1">
+          <button type="button" className="min-w-0 flex-1 text-left" aria-label={`Open file ${file.filename}`} onClick={() => setSelected(file)}>
             <span className="block truncate text-sm" title={file.filename}>
               {file.filename}
             </span>
             <span className="mt-0.5 block text-[11px] capitalize text-muted">
               {file.role.replaceAll("-", " ")}
             </span>
-          </span>
+          </button>
           <button
             type="button"
             className="studio-ghost-button studio-asset-action shrink-0 p-1"
@@ -118,7 +143,7 @@ function TabStrip<T extends string>({
 }) {
   return (
     <div className="flex shrink-0 overflow-x-auto border-b px-2" role="tablist">
-      {tabs.map((tab) => (
+      {tabs.map((tab, index) => (
         <button
           key={tab.id}
           type="button"
@@ -126,6 +151,16 @@ function TabStrip<T extends string>({
           aria-selected={selected === tab.id}
           className={`shrink-0 border-b-2 px-3 py-2 text-xs ${selected === tab.id ? "border-accent text-text-strong" : "border-transparent text-muted"}`}
           onClick={() => onSelect(tab.id)}
+          onKeyDown={(event) => {
+            if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+            event.preventDefault();
+            const direction = event.key === "ArrowRight" ? 1 : -1;
+            const nextIndex = (index + direction + tabs.length) % tabs.length;
+            onSelect(tabs[nextIndex].id);
+            event.currentTarget.parentElement
+              ?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[nextIndex]
+              ?.focus();
+          }}
         >
           {tab.label}
         </button>
@@ -138,6 +173,7 @@ function VideoOverviewBody({
   asset,
   sessionId,
   onDownload,
+  onCitationOpen,
 }: Omit<Props, "onBack">) {
   const [tab, setTab] = useState<VideoTab>("overview");
   const fileByRole = (role: string) => asset.files.find((file) => file.role === role);
@@ -161,11 +197,13 @@ function VideoOverviewBody({
           />
         )}
         {tab === "scenes" && (
-          <FilePreview
+          <AuthenticatedTextFile
             file={fileByRole("scene-plan")}
             sessionId={sessionId}
             empty="No scene plan is available."
-          />
+          >
+            {(text) => <VideoScenesViewer text={text} onCitationOpen={onCitationOpen} />}
+          </AuthenticatedTextFile>
         )}
         {tab === "assets" && (
           <FilePreview
@@ -175,7 +213,7 @@ function VideoOverviewBody({
           />
         )}
         {tab === "files" && (
-          <FilesView files={asset.files} onDownload={onDownload} />
+          <FilesView files={asset.files} onDownload={onDownload} sessionId={sessionId} />
         )}
       </div>
     </>
@@ -199,7 +237,66 @@ function GenericAssetBody({
             empty="This asset does not have a previewable file yet."
           />
         ) : (
-          <FilesView files={asset.files} onDownload={onDownload} />
+          <FilesView files={asset.files} onDownload={onDownload} sessionId={sessionId} />
+        )}
+      </div>
+    </>
+  );
+}
+
+function StudyAssetBody({
+  asset,
+  sessionId,
+  onDownload,
+}: Omit<Props, "onBack">) {
+  const [tab, setTab] = useState<GenericTab>("preview");
+  return (
+    <>
+      <TabStrip tabs={GENERIC_TABS} selected={tab} onSelect={setTab} />
+      <div className="min-h-0 flex-1 overflow-hidden">
+        {tab === "files" ? (
+          <FilesView files={asset.files} onDownload={onDownload} sessionId={sessionId} />
+        ) : (
+          <AuthenticatedTextFile
+            file={asset.primary}
+            sessionId={sessionId}
+            empty="This asset does not have an interactive document yet."
+          >
+            {(text) => asset.kind === "quiz"
+              ? <QuizViewer text={text} />
+              : asset.kind === "flashcards"
+                ? <FlashcardsViewer text={text} />
+                : <ReportViewer text={text} />}
+          </AuthenticatedTextFile>
+        )}
+      </div>
+    </>
+  );
+}
+
+function StructuredAssetBody({
+  asset,
+  sessionId,
+  onDownload,
+  onCitationOpen,
+}: Omit<Props, "onBack">) {
+  const [tab, setTab] = useState<GenericTab>("preview");
+  return (
+    <>
+      <TabStrip tabs={GENERIC_TABS} selected={tab} onSelect={setTab} />
+      <div className="min-h-0 flex-1 overflow-hidden">
+        {tab === "files" ? (
+          <FilesView files={asset.files} onDownload={onDownload} sessionId={sessionId} />
+        ) : (
+          <AuthenticatedTextFile
+            file={asset.primary}
+            sessionId={sessionId}
+            empty="The canonical structured file is unavailable."
+          >
+            {(text) => asset.kind === "mind-map"
+              ? <MindMapViewer text={text} onCitationOpen={onCitationOpen} />
+              : <DataTableViewer text={text} onCitationOpen={onCitationOpen} />}
+          </AuthenticatedTextFile>
         )}
       </div>
     </>
@@ -212,7 +309,16 @@ export function StudioAssetPreview({
   downloadError,
   onBack,
   onDownload,
+  onCitationOpen,
 }: Props) {
+  useEffect(() => {
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") onBack();
+    }
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [onBack]);
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b px-3 py-3">
@@ -236,11 +342,30 @@ export function StudioAssetPreview({
           {downloadError}
         </p>
       )}
+      {asset.statusReason && (
+        <p className="shrink-0 border-b px-3 py-2 text-xs text-muted">
+          {asset.statusReason}
+        </p>
+      )}
       {asset.kind === "video-overview" ? (
         <VideoOverviewBody
           asset={asset}
           sessionId={sessionId}
           onDownload={onDownload}
+          onCitationOpen={onCitationOpen}
+        />
+      ) : ["report", "quiz", "flashcards"].includes(asset.kind) ? (
+        <StudyAssetBody
+          asset={asset}
+          sessionId={sessionId}
+          onDownload={onDownload}
+        />
+      ) : ["mind-map", "data-table"].includes(asset.kind) ? (
+        <StructuredAssetBody
+          asset={asset}
+          sessionId={sessionId}
+          onDownload={onDownload}
+          onCitationOpen={onCitationOpen}
         />
       ) : (
         <GenericAssetBody

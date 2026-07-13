@@ -5,6 +5,7 @@ import {
   relativeTime,
   sourcePreviewPath,
   sourceKind,
+  SOURCE_UPLOAD_ACCEPT,
   sourceRowFromSkillActionJob,
 } from "./source-media";
 
@@ -59,6 +60,12 @@ describe("mergeSourceMedia", () => {
 });
 
 describe("sourceKind", () => {
+  it("keeps the upload contract aligned with the importer's 26 extensions", () => {
+    expect(SOURCE_UPLOAD_ACCEPT.split(",")).toHaveLength(26);
+    expect(SOURCE_UPLOAD_ACCEPT).toContain(".docx");
+    expect(SOURCE_UPLOAD_ACCEPT).not.toContain(".doc,");
+    expect(SOURCE_UPLOAD_ACCEPT).not.toContain(".xls,");
+  });
   it("classifies known extensions", () => {
     expect(sourceKind("photo.PNG")).toBe("image");
     expect(sourceKind("clip.webp")).toBe("image");

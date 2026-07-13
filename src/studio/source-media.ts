@@ -32,6 +32,15 @@ export const SOURCE_LIST_ACTION_ID = "source.list";
 export const SOURCE_RENAME_ACTION_ID = "source.rename";
 export const SOURCE_REMOVE_ACTION_ID = "source.remove";
 
+export const SOURCE_UPLOAD_EXTENSIONS = [
+  ".txt", ".md", ".markdown", ".csv", ".json", ".html", ".htm",
+  ".docx", ".pptx", ".xlsx", ".xlsm", ".pdf",
+  ".jpg", ".jpeg", ".png", ".webp", ".gif",
+  ".mp3", ".wav", ".m4a", ".aac", ".ogg",
+  ".mp4", ".mov", ".webm", ".mkv",
+] as const;
+export const SOURCE_UPLOAD_ACCEPT = SOURCE_UPLOAD_EXTENSIONS.join(",");
+
 export type SourceRowStatus = "processing" | "ready" | "failed" | "abandoned";
 
 /**
@@ -40,6 +49,7 @@ export type SourceRowStatus = "processing" | "ready" | "failed" | "abandoned";
  */
 export interface SourceRow {
   filename: string;
+  originalFilename?: string;
   path: string;
   timestamp: number;
   status?: SourceRowStatus;
@@ -52,6 +62,12 @@ export interface SourceRow {
   materializedPath?: string;
   previewPath?: string;
   mediaType?: string;
+  sourceType?: string;
+  metadataPath?: string;
+  chunksPath?: string;
+  summaryPath?: string;
+  warnings?: string[];
+  provenance?: Record<string, unknown>;
   retryInput?: Record<string, unknown>;
 }
 
@@ -76,10 +92,8 @@ const KIND_BY_EXTENSION: Record<string, SourceKind> = {
   webm: "video",
   csv: "table",
   xlsx: "table",
-  xls: "table",
   xlsm: "table",
   pdf: "text",
-  doc: "text",
   docx: "text",
   pptx: "text",
 };

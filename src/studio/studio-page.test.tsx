@@ -467,14 +467,20 @@ describe("StudioPage", () => {
     expect(await within(rail).findByRole("button", { name: "Open Quiz" })).toBeTruthy();
     expect(within(rail).getByRole("button", { name: "Download Quiz" })).toBeTruthy();
 
-    fireEvent.click(within(rail).getByRole("button", { name: "Open Quiz" }));
+    const openQuiz = within(rail).getByRole("button", { name: "Open Quiz" });
+    fireEvent.click(openQuiz);
     expect(await within(rail).findByRole("button", { name: "Back to Studio" }))
       .toBeTruthy();
     expect(await within(rail).findByRole("heading", { name: "Quiz" })).toBeTruthy();
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.getByTestId("chat-thread-stub")).toBeTruthy();
 
-    fireEvent.click(within(rail).getByRole("button", { name: "Back to Studio" }));
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => {
+      expect(document.activeElement).toBe(
+        within(rail).getByRole("button", { name: "Open Quiz" }),
+      );
+    });
 
     const appendChild = vi.spyOn(document.body, "appendChild");
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
@@ -1023,6 +1029,9 @@ describe("StudioPage", () => {
     renderStudio();
 
     await screen.findByText("photo.jpg");
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search sources" }), {
+      target: { value: "photo" },
+    });
     fireEvent.click(screen.getByLabelText("Preview photo.jpg"));
 
     const pane = screen.getByTestId("studio-sources-pane");
@@ -1051,8 +1060,14 @@ describe("StudioPage", () => {
     ).toBeTruthy();
 
     const reopenedPane = screen.getByTestId("studio-sources-pane");
-    fireEvent.click(within(reopenedPane).getByRole("button", { name: "Back to sources" }));
+    fireEvent.keyDown(window, { key: "Escape" });
     expect(await within(reopenedPane).findByText("photo.jpg")).toBeTruthy();
+    expect((within(reopenedPane).getByRole("searchbox", { name: "Search sources" }) as HTMLInputElement).value).toBe("photo");
+    await waitFor(() => {
+      expect(document.activeElement).toBe(
+        within(reopenedPane).getByRole("button", { name: "Preview photo.jpg" }),
+      );
+    });
   });
 
   it("renames an imported source through the source rename action", async () => {

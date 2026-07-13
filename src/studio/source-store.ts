@@ -10,6 +10,7 @@ interface SourceCatalogItem {
   id: string;
   display_name?: string;
   title?: string;
+  original_filename?: string;
   kind?: string;
   media_type?: string;
   original_path: string;
@@ -17,6 +18,9 @@ interface SourceCatalogItem {
   source_path: string;
   metadata_path?: string;
   chunks_path?: string;
+  summary_path?: string;
+  warnings?: unknown;
+  provenance?: unknown;
   created_at: string;
   updated_at: string;
   retry_input?: Record<string, unknown> | null;
@@ -44,6 +48,7 @@ export function parseSourceCatalog(response: SkillActionInvokeResponse): SourceR
   return sources.filter(isCatalogItem).map((source) => ({
     sourceId: source.id,
     filename: source.display_name || source.title || source.id,
+    originalFilename: source.original_filename,
     path: source.source_path,
     sourcePath: source.source_path,
     inputPath: source.original_path,
@@ -51,6 +56,17 @@ export function parseSourceCatalog(response: SkillActionInvokeResponse): SourceR
     timestamp: Date.parse(source.updated_at) || Date.parse(source.created_at) || 0,
     status: "ready" as const,
     mediaType: source.media_type,
+    sourceType: source.kind,
+    metadataPath: source.metadata_path,
+    chunksPath: source.chunks_path,
+    summaryPath: source.summary_path,
+    warnings: Array.isArray(source.warnings)
+      ? source.warnings.filter((value): value is string => typeof value === "string")
+      : [],
+    provenance:
+      source.provenance && typeof source.provenance === "object"
+        ? source.provenance as Record<string, unknown>
+        : {},
     retryInput: source.retry_input ?? undefined,
   }));
 }

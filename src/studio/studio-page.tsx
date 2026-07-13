@@ -27,6 +27,7 @@ import {
 import { loadSourceCatalog } from "./source-store";
 import { StudioRail } from "./studio-rail";
 import { StudioSourcesPane } from "./studio-sources-pane";
+import type { CitationTarget } from "./structured-asset-viewers";
 
 const TITLE_STORAGE_KEY = "octos_session_titles";
 const PANES_STORAGE_KEY = "octos-studio-panes";
@@ -126,6 +127,9 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
   const [panes, setPanes] = useState<PaneState>(loadPaneState);
   const [sourcePreviewKey, setSourcePreviewKey] = useState<string | null>(null);
   const [assetPreviewId, setAssetPreviewId] = useState<string | null>(null);
+  const [sourceQuery, setSourceQuery] = useState("");
+  const [sourceListScrollTop, setSourceListScrollTop] = useState(0);
+  const [citationTarget, setCitationTarget] = useState<CitationTarget | null>(null);
 
   // Persist only explicit user toggles — a mount must not freeze the
   // viewport-derived defaults into storage as if the user chose them.
@@ -144,6 +148,17 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
   const [uploadedSources, setUploadedSources] = useState<SourceRow[]>([]);
   const [sourcesLoading, setSourcesLoading] = useState(true);
   const sourceCatalogRequest = useRef(0);
+
+  function openCitation(citation: CitationTarget) {
+    setCitationTarget(citation);
+    const row = uploadedSources.find((candidate) =>
+      (citation.sourceId && candidate.sourceId === citation.sourceId)
+      || (citation.sourcePath && candidate.sourcePath === citation.sourcePath)
+    );
+    if (!row) return;
+    setSourcePreviewKey(row.jobId ?? row.sourceId ?? row.path);
+    updatePanes((current) => ({ ...current, sources: true }));
+  }
 
   // Title: seed from localStorage, then track the runtime-provider's
   // `crew:session_title_updated` window event (detail is the bridge's
@@ -425,6 +440,12 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
                     void refreshSourceCatalog();
                   }}
                   loading={sourcesLoading}
+                  query={sourceQuery}
+                  onQueryChange={setSourceQuery}
+                  listScrollTop={sourceListScrollTop}
+                  onListScrollTopChange={setSourceListScrollTop}
+                  citationTarget={citationTarget}
+                  onCitationTargetClear={() => setCitationTarget(null)}
                 />
               </aside>
             )}
@@ -467,6 +488,7 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
                   onSelectedAssetIdChange={setAssetPreviewId}
                   selectedSources={selectedSources}
                   selectedSourceIds={selectedSourceIds}
+                  onCitationOpen={openCitation}
                 />
               </aside>
             )}

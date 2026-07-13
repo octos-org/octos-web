@@ -3,6 +3,8 @@ import { API_BASE } from "@/lib/constants";
 
 export interface BuildFileUrlOptions {
   sessionId?: string;
+  /** Resolve a relative path inside the current session workspace. */
+  workspaceScoped?: boolean;
 }
 
 function shouldUseSessionScopedFileUrl(filePath: string, sessionId?: string): boolean {
@@ -12,16 +14,21 @@ function shouldUseSessionScopedFileUrl(filePath: string, sessionId?: string): bo
   );
 }
 
-function shouldUseQueryFileUrl(filePath: string, sessionId?: string): boolean {
+function shouldUseQueryFileUrl(
+  filePath: string,
+  options: BuildFileUrlOptions,
+): boolean {
   const isAbsolute = /^(?:[A-Za-z]:[\\/]|\/)/.test(filePath);
-  return shouldUseSessionScopedFileUrl(filePath, sessionId) || isAbsolute;
+  return Boolean(options.workspaceScoped && options.sessionId)
+    || shouldUseSessionScopedFileUrl(filePath, options.sessionId)
+    || isAbsolute;
 }
 
 export function buildFileUrl(
   filePath: string,
   options: BuildFileUrlOptions = {},
 ): string {
-  if (shouldUseQueryFileUrl(filePath, options.sessionId)) {
+  if (shouldUseQueryFileUrl(filePath, options)) {
     const params = new URLSearchParams();
     params.set("path", filePath);
     if (options.sessionId) {

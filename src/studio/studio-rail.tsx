@@ -1,9 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import { Download, FileText, Image, Music, Table, Video, XCircle } from "lucide-react";
 
-import { buildApiHeaders } from "@/api/client";
-import { buildFileUrl } from "@/api/files";
 import {
   invokeSkillAction,
   listSkillActions,
@@ -22,6 +20,8 @@ import {
 import { STUDIO_SKILL_LABEL_BY_ACTION_ID } from "./skills";
 import { relativeTime, sourceKind, type SourceKind } from "./source-media";
 import { StudioAssetPreview } from "./studio-asset-preview";
+import { downloadStudioFile } from "./studio-file-download";
+import type { CitationTarget } from "./structured-asset-viewers";
 
 interface Props {
   sessionId: string;
@@ -35,6 +35,7 @@ interface Props {
    */
   selectedSources: string[];
   selectedSourceIds: string[];
+  onCitationOpen?: (citation: CitationTarget) => void;
 }
 
 const KIND_ICONS: Record<SourceKind, LucideIcon> = {
@@ -49,32 +50,6 @@ const KIND_ICONS: Record<SourceKind, LucideIcon> = {
  * Header-authenticated blob download: keeps the bearer token out of the
  * DOM (an <a href> with ?token= is copyable/leakable via "Copy Link").
  */
-async function downloadAsset(
-  filePath: string,
-  filename: string,
-  sessionId: string,
-): Promise<void> {
-  const response = await fetch(buildFileUrl(filePath, { sessionId }), {
-    headers: buildApiHeaders(),
-  });
-  if (!response.ok) throw new Error(`Download failed (${response.status})`);
-  const blobUrl = URL.createObjectURL(await response.blob());
-  try {
-    const anchor = document.createElement("a");
-    anchor.href = blobUrl;
-    anchor.download = filename;
-    document.body.appendChild(anchor);
-    try {
-      anchor.click();
-    } finally {
-      anchor.remove();
-    }
-  } finally {
-    // Give the browser a beat to start the download before revoking.
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 10_000);
-  }
-}
-
 function assetStatusLabel(status: StudioAssetStatus): string {
   switch (status) {
     case "generating":
@@ -96,12 +71,16 @@ export function StudioRail({
   onSelectedAssetIdChange,
   selectedSources,
   selectedSourceIds,
+  onCitationOpen,
 }: Props) {
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busySkillId, setBusySkillId] = useState<string | null>(null);
   const [jobs, setJobs] = useState<SkillActionJob[]>([]);
   const [skills, setSkills] = useState(() => resolveStudioSkills([]));
+  const assetTriggerRefs = useRef(new Map<string, HTMLButtonElement>());
+  const lastAssetTriggerId = useRef<string | null>(null);
+  const [restoreFocusId, setRestoreFocusId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -183,7 +162,7 @@ export function StudioRail({
 
   function startDownload(file: AssetFile): void {
     setDownloadError(null);
-    downloadAsset(file.filePath, file.filename, sessionId).catch((err: unknown) => {
+    downloadStudioFile(file.filePath, file.filename, sessionId).catch((err: unknown) => {
       setDownloadError(err instanceof Error ? err.message : "Download failed");
     });
   }
@@ -193,14 +172,27 @@ export function StudioRail({
     ? assets.find((asset) => asset.id === selectedAssetId) ?? null
     : null;
 
+  useEffect(() => {
+    if (selectedAsset || !restoreFocusId) return;
+    const trigger = assetTriggerRefs.current.get(restoreFocusId);
+    if (trigger) {
+      trigger.focus();
+      setRestoreFocusId(null);
+    }
+  }, [restoreFocusId, selectedAsset]);
+
   if (selectedAsset) {
     return (
       <StudioAssetPreview
         asset={selectedAsset}
         sessionId={sessionId}
         downloadError={downloadError}
-        onBack={() => onSelectedAssetIdChange(null)}
+        onBack={() => {
+          setRestoreFocusId(lastAssetTriggerId.current ?? selectedAsset.id);
+          onSelectedAssetIdChange(null);
+        }}
         onDownload={startDownload}
+        onCitationOpen={onCitationOpen}
       />
     );
   }
@@ -291,10 +283,17 @@ export function StudioRail({
                   />
                   {canOpen ? (
                     <button
+                      ref={(node) => {
+                        if (node) assetTriggerRefs.current.set(asset.id, node);
+                        else assetTriggerRefs.current.delete(asset.id);
+                      }}
                       type="button"
                       className="min-w-0 flex-1 text-left"
                       aria-label={`Open ${asset.title}`}
-                      onClick={() => onSelectedAssetIdChange(asset.id)}
+                      onClick={() => {
+                        lastAssetTriggerId.current = asset.id;
+                        onSelectedAssetIdChange(asset.id);
+                      }}
                     >
                       <span className="block truncate text-sm leading-tight" title={asset.title}>
                         {asset.title}
