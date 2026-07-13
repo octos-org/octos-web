@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { ArrowLeft, Download, FileText } from "lucide-react";
 
 import type { AssetFile, StudioAsset } from "./generated-assets";
@@ -11,6 +11,7 @@ import {
   VideoScenesViewer,
   type CitationTarget,
 } from "./structured-asset-viewers";
+import { usePreviewEscape } from "./use-preview-escape";
 
 interface Props {
   asset: StudioAsset;
@@ -311,16 +312,14 @@ export function StudioAssetPreview({
   onDownload,
   onCitationOpen,
 }: Props) {
-  useEffect(() => {
-    function handleEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") onBack();
-    }
-    window.addEventListener("keydown", handleEscape);
-    return () => window.removeEventListener("keydown", handleEscape);
-  }, [onBack]);
+  const { activate } = usePreviewEscape(onBack);
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div
+      className="flex h-full min-h-0 flex-col"
+      onFocusCapture={activate}
+      onPointerDownCapture={activate}
+    >
       <div className="flex shrink-0 items-center gap-2 border-b px-3 py-3">
         <button
           type="button"

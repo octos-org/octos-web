@@ -116,4 +116,18 @@ describe("study asset viewers", () => {
     expect(reportScroll).toHaveBeenCalledWith({ block: "start", behavior: "smooth" });
     expect(outsideScroll).not.toHaveBeenCalled();
   });
+
+  it("scrolls duplicate contents entries to their matching heading occurrence", () => {
+    render(<ReportViewer text={"# Report\n\n## Findings\nFirst\n\n## Findings\nSecond"} />);
+    const [firstHeading, secondHeading] = screen.getAllByRole("heading", { name: "Findings" });
+    const firstScroll = vi.fn();
+    const secondScroll = vi.fn();
+    firstHeading.scrollIntoView = firstScroll;
+    secondHeading.scrollIntoView = secondScroll;
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Findings" })[1]);
+
+    expect(secondScroll).toHaveBeenCalledWith({ block: "start", behavior: "smooth" });
+    expect(firstScroll).not.toHaveBeenCalled();
+  });
 });

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { downloadStudioFile } = vi.hoisted(() => ({
@@ -250,5 +250,37 @@ describe("StudioSourcePreview", () => {
         "web-abc",
       );
     });
+  });
+
+  it("keeps a newer tab selection when the original download fails", async () => {
+    let rejectDownload: (reason?: unknown) => void = () => undefined;
+    downloadStudioFile.mockReturnValueOnce(new Promise<void>((_resolve, reject) => {
+      rejectDownload = reject;
+    }));
+    render(
+      <StudioSourcePreview
+        row={{
+          sourceId: "report",
+          filename: "Report.pdf",
+          path: "notebook-sources/report/source.md",
+          sourcePath: "notebook-sources/report/source.md",
+          previewPath: "uploads/report.pdf",
+          timestamp: 1,
+        }}
+        sessionId="web-abc"
+        onBack={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Download original Report.pdf" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Parsed" }));
+
+    await act(async () => {
+      rejectDownload(new Error("Download failed"));
+    });
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Download failed");
+    expect(screen.getByRole("tab", { name: "Parsed" }).getAttribute("aria-selected"))
+      .toBe("true");
   });
 });

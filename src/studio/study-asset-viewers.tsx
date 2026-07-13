@@ -121,10 +121,12 @@ export function FlashcardsViewer({ text }: { text: string }) {
 
 export function ReportViewer({ text }: { text: string }) {
   const reportRef = useRef<HTMLDivElement>(null);
-  const headings = useMemo(() => text.split("\n").flatMap((line) => {
-    const match = line.match(/^#{2,3}\s+(.+)$/);
-    return match ? [match[1].trim()] : [];
-  }), [text]);
+  const headings = useMemo(() => text.split("\n")
+    .flatMap((line) => {
+      const match = line.match(/^#{2,3}\s+(.+)$/);
+      return match ? [match[1].trim()] : [];
+    })
+    .map((label, index) => ({ label, index })), [text]);
   return (
     <div ref={reportRef} className="flex h-full min-h-0 flex-col overflow-y-auto">
       {headings.length > 0 && (
@@ -133,15 +135,16 @@ export function ReportViewer({ text }: { text: string }) {
           <div className="flex flex-wrap gap-2">
             {headings.map((heading) => (
               <button
-                key={heading}
+                key={`${heading.index}:${heading.label}`}
                 type="button"
                 className="rounded-full border px-2.5 py-1 text-[11px]"
                 onClick={() => {
-                  const target = Array.from(reportRef.current?.querySelectorAll("h2, h3") ?? [])
-                    .find((node) => node.textContent?.trim() === heading);
+                  const target = reportRef.current
+                    ?.querySelectorAll("h2, h3")
+                    .item(heading.index);
                   target?.scrollIntoView({ block: "start", behavior: "smooth" });
                 }}
-              >{heading}</button>
+              >{heading.label}</button>
             ))}
           </div>
         </nav>

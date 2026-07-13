@@ -71,6 +71,55 @@ export function useResizablePanel({
     [width, minWidth, maxWidth, side],
   );
 
+  const onPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      e.preventDefault();
+      isDragging.current = true;
+      startX.current = e.clientX;
+      startWidth.current = width;
+
+      const finishDragging = () => {
+        isDragging.current = false;
+        document.removeEventListener("pointermove", onPointerMove);
+        document.removeEventListener("pointerup", finishDragging);
+        document.removeEventListener("pointercancel", finishDragging);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      };
+      const onPointerMove = (ev: PointerEvent) => {
+        if (!isDragging.current) return;
+        const delta = side === "right"
+          ? startX.current - ev.clientX
+          : ev.clientX - startX.current;
+        setWidth(Math.min(maxWidth, Math.max(minWidth, startWidth.current + delta)));
+      };
+
+      document.addEventListener("pointermove", onPointerMove);
+      document.addEventListener("pointerup", finishDragging);
+      document.addEventListener("pointercancel", finishDragging);
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+    },
+    [width, minWidth, maxWidth, side],
+  );
+
+  const onKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      let next: number | null = null;
+      if (e.key === "Home") next = minWidth;
+      else if (e.key === "End") next = maxWidth;
+      else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        const physicalDelta = e.key === "ArrowRight" ? 16 : -16;
+        const widthDelta = side === "left" ? physicalDelta : -physicalDelta;
+        next = Math.min(maxWidth, Math.max(minWidth, width + widthDelta));
+      }
+      if (next === null) return;
+      e.preventDefault();
+      setWidth(next);
+    },
+    [maxWidth, minWidth, side, width],
+  );
+
   const toggleMaximize = useCallback(() => {
     setIsMaximized((v) => !v);
   }, []);
@@ -87,5 +136,13 @@ export function useResizablePanel({
 
   const effectiveWidth = isMaximized ? "100%" : `${width}px`;
 
-  return { width, effectiveWidth, isMaximized, onMouseDown, toggleMaximize };
+  return {
+    width,
+    effectiveWidth,
+    isMaximized,
+    onMouseDown,
+    onPointerDown,
+    onKeyDown,
+    toggleMaximize,
+  };
 }

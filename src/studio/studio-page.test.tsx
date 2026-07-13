@@ -314,9 +314,15 @@ describe("StudioPage", () => {
     expect(pane.style.width).toBe("360px");
     expect(handle.className).toContain("max-lg:hidden");
 
-    fireEvent.mouseDown(handle, { clientX: 360 });
-    fireEvent.mouseMove(document, { clientX: 440 });
-    fireEvent.mouseUp(document);
+    fireEvent(
+      handle,
+      new MouseEvent("pointerdown", { bubbles: true, clientX: 360 }),
+    );
+    fireEvent(
+      document,
+      new MouseEvent("pointermove", { bubbles: true, clientX: 440 }),
+    );
+    fireEvent(document, new MouseEvent("pointerup", { bubbles: true }));
 
     expect(pane.style.width).toBe("440px");
     await waitFor(() => {
@@ -333,14 +339,66 @@ describe("StudioPage", () => {
     expect(rail.style.width).toBe("400px");
     expect(handle.className).toContain("max-xl:hidden");
 
-    fireEvent.mouseDown(handle, { clientX: 900 });
-    fireEvent.mouseMove(document, { clientX: 0 });
-    fireEvent.mouseUp(document);
+    fireEvent(
+      handle,
+      new MouseEvent("pointerdown", { bubbles: true, clientX: 900 }),
+    );
+    fireEvent(
+      document,
+      new MouseEvent("pointermove", { bubbles: true, clientX: 0 }),
+    );
+    fireEvent(document, new MouseEvent("pointerup", { bubbles: true }));
 
     expect(rail.style.width).toBe("520px");
     await waitFor(() => {
       expect(localStorage.getItem("octos_studio_rail_width")).toBe("520");
     });
+  });
+
+  it("resizes the Sources pane with Pointer Events and exposes separator metadata", async () => {
+    localStorage.setItem("octos_studio_sources_width", "360");
+    renderStudio();
+
+    const pane = screen.getByTestId("studio-sources-pane");
+    const handle = screen.getByRole("separator", { name: "Resize Sources pane" });
+    expect(handle.getAttribute("aria-orientation")).toBe("vertical");
+    expect(handle.getAttribute("aria-valuemin")).toBe("240");
+    expect(handle.getAttribute("aria-valuemax")).toBe("480");
+    expect(handle.getAttribute("aria-valuenow")).toBe("360");
+
+    // jsdom does not implement PointerEvent, so dispatch pointer-named mouse
+    // events to preserve the real client coordinates used by the handler.
+    fireEvent(
+      handle,
+      new MouseEvent("pointerdown", { bubbles: true, clientX: 360 }),
+    );
+    fireEvent(
+      document,
+      new MouseEvent("pointermove", { bubbles: true, clientX: 420 }),
+    );
+    fireEvent(document, new MouseEvent("pointerup", { bubbles: true }));
+
+    expect(pane.style.width).toBe("420px");
+    await waitFor(() => {
+      expect(localStorage.getItem("octos_studio_sources_width")).toBe("420");
+    });
+  });
+
+  it("resizes the Studio rail from the keyboard using physical separator direction", () => {
+    localStorage.setItem("octos_studio_rail_width", "400");
+    renderStudio();
+
+    const rail = screen.getByTestId("studio-rail");
+    const handle = screen.getByRole("separator", { name: "Resize Studio pane" });
+
+    fireEvent.keyDown(handle, { key: "ArrowLeft" });
+    expect(rail.style.width).toBe("416px");
+    expect(handle.getAttribute("aria-valuenow")).toBe("416");
+
+    fireEvent.keyDown(handle, { key: "End" });
+    expect(rail.style.width).toBe("520px");
+    fireEvent.keyDown(handle, { key: "Home" });
+    expect(rail.style.width).toBe("280px");
   });
 
   it("falls back to the default title when none is stored", () => {

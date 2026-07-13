@@ -85,9 +85,11 @@ export function StudioFilePreview({
 }: Props) {
   const previewKey = `${sessionId}\0${filePath}`;
   const mode = previewMode(filename, mediaType);
-  const declaredSizeError = mode !== "text"
-    && size !== undefined
-    && size > MAX_INLINE_BINARY_BYTES
+  const declaredSizeLimit = mode === "text"
+    ? MAX_INLINE_TEXT_BYTES
+    : MAX_INLINE_BINARY_BYTES;
+  const declaredSizeError = size !== undefined
+    && size > declaredSizeLimit
     ? "This file is too large to preview. Download it to view the full content."
     : null;
   const [preview, setPreview] = useState<{

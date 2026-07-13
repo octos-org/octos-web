@@ -113,6 +113,22 @@ describe("StudioFilePreview", () => {
     expect(text).not.toHaveBeenCalled();
   });
 
+  it("refuses a declared oversized text preview without fetching it", async () => {
+    render(
+      <StudioFilePreview
+        filename="large.csv"
+        filePath="notebook-outputs/table/large.csv"
+        mediaType="text/csv"
+        size={3 * 1024 * 1024}
+        sessionId="web-abc"
+        kind="asset"
+      />,
+    );
+
+    expect(await screen.findByText(/too large to preview/i)).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("refuses a declared oversized binary preview without fetching it", async () => {
     render(
       <StudioFilePreview

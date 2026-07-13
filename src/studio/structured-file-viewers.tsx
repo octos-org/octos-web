@@ -3,6 +3,9 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 
 import { parseCsv } from "./csv-parser";
 
+const MAX_CSV_RENDER_ROWS = 5_000;
+const MAX_CSV_RENDER_CELLS = 50_000;
+
 function JsonValue({ name, value, depth = 0 }: {
   name?: string;
   value: unknown;
@@ -70,10 +73,15 @@ export function JsonViewer({ text }: { text: string }) {
 
 export function CsvTableViewer({ text, filename }: { text: string; filename: string }) {
   const rows = useMemo(() => parseCsv(text), [text]);
+  const exceedsRenderLimit = useMemo(() => (
+    Math.max(0, rows.length - 1) > MAX_CSV_RENDER_ROWS
+    || rows.reduce((total, row) => total + row.length, 0) > MAX_CSV_RENDER_CELLS
+  ), [rows]);
   const [sortColumn, setSortColumn] = useState<number | null>(null);
   const [descending, setDescending] = useState(false);
   const header = rows[0] ?? [];
   const body = useMemo(() => {
+    if (exceedsRenderLimit) return [];
     const values = rows.slice(1);
     if (sortColumn === null) return values;
     return [...values].sort((left, right) => {
@@ -82,9 +90,16 @@ export function CsvTableViewer({ text, filename }: { text: string; filename: str
       });
       return descending ? -result : result;
     });
-  }, [descending, rows, sortColumn]);
+  }, [descending, exceedsRenderLimit, rows, sortColumn]);
 
   if (rows.length === 0) return <p className="text-sm text-muted">This CSV file is empty.</p>;
+  if (exceedsRenderLimit) {
+    return (
+      <p className="studio-empty-state m-4 text-xs" role="alert">
+        This CSV is too large for the interactive table. Download it to view the full content.
+      </p>
+    );
+  }
   return (
     <div className="h-full w-full overflow-auto rounded-lg border bg-surface">
       <table className="min-w-full border-collapse text-left text-xs" aria-label={filename}>

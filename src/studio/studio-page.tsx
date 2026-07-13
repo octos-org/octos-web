@@ -127,8 +127,10 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
   const [title, setTitle] = useState(() => readStoredTitle(projectId));
   const [panes, setPanes] = useState<PaneState>(loadPaneState);
   const {
+    width: sourcesPaneWidthValue,
     effectiveWidth: sourcesPaneWidth,
-    onMouseDown: onSourcesResizeStart,
+    onPointerDown: onSourcesResizeStart,
+    onKeyDown: onSourcesResizeKeyDown,
   } = useResizablePanel({
     minWidth: 240,
     maxWidth: 480,
@@ -137,8 +139,10 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
     side: "left",
   });
   const {
+    width: studioRailWidthValue,
     effectiveWidth: studioRailWidth,
-    onMouseDown: onStudioRailResizeStart,
+    onPointerDown: onStudioRailResizeStart,
+    onKeyDown: onStudioRailResizeKeyDown,
   } = useResizablePanel({
     minWidth: 280,
     maxWidth: 520,
@@ -476,7 +480,15 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
                 className="panel-resize-handle max-lg:hidden"
                 data-testid="studio-sources-resize-handle"
                 title="Resize Sources pane"
-                onMouseDown={onSourcesResizeStart}
+                role="separator"
+                tabIndex={0}
+                aria-label="Resize Sources pane"
+                aria-orientation="vertical"
+                aria-valuemin={240}
+                aria-valuemax={480}
+                aria-valuenow={sourcesPaneWidthValue}
+                onPointerDown={onSourcesResizeStart}
+                onKeyDown={onSourcesResizeKeyDown}
               />
             )}
             <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -512,7 +524,15 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
                 className="panel-resize-handle max-xl:hidden"
                 data-testid="studio-rail-resize-handle"
                 title="Resize Studio pane"
-                onMouseDown={onStudioRailResizeStart}
+                role="separator"
+                tabIndex={0}
+                aria-label="Resize Studio pane"
+                aria-orientation="vertical"
+                aria-valuemin={280}
+                aria-valuemax={520}
+                aria-valuenow={studioRailWidthValue}
+                onPointerDown={onStudioRailResizeStart}
+                onKeyDown={onStudioRailResizeKeyDown}
               />
             )}
             {panes.rail && (

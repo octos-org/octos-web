@@ -18,6 +18,7 @@ vi.mock("./authenticated-text-file", () => ({
 
 import { buildStudioAsset } from "./generated-assets";
 import { StudioAssetPreview } from "./studio-asset-preview";
+import { StudioSourcePreview } from "./studio-source-preview";
 
 function videoJob(filenames: string[]): SkillActionJob {
   return {
@@ -154,5 +155,39 @@ describe("StudioAssetPreview", () => {
     );
 
     expect(screen.getByRole("alert").textContent).toBe("Download failed (404)");
+  });
+
+  it("closes only the most recently opened preview when both panels handle Escape", () => {
+    const onAssetBack = vi.fn();
+    const onSourceBack = vi.fn();
+    const asset = buildStudioAsset(videoJob(["overview.mp4"]));
+
+    render(
+      <>
+        <StudioAssetPreview
+          asset={asset}
+          sessionId="web-abc"
+          onBack={onAssetBack}
+          onDownload={vi.fn()}
+        />
+        <StudioSourcePreview
+          row={{
+            sourceId: "report",
+            filename: "Report.pdf",
+            path: "notebook-sources/report/source.md",
+            sourcePath: "notebook-sources/report/source.md",
+            previewPath: "uploads/report.pdf",
+            timestamp: 1,
+          }}
+          sessionId="web-abc"
+          onBack={onSourceBack}
+        />
+      </>,
+    );
+
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(onSourceBack).toHaveBeenCalledTimes(1);
+    expect(onAssetBack).not.toHaveBeenCalled();
   });
 });

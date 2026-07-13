@@ -9,6 +9,7 @@ import { isFilePreviewable } from "./file-preview-mode";
 import { StudioFilePreview } from "./studio-file-preview";
 import { downloadStudioFile } from "./studio-file-download";
 import type { CitationTarget } from "./structured-asset-viewers";
+import { usePreviewEscape } from "./use-preview-escape";
 
 interface Props {
   row: SourceRow;
@@ -35,6 +36,7 @@ function provenanceLabel(provenance?: Record<string, unknown>): string | null {
 }
 
 export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: Props) {
+  const { activate } = usePreviewEscape(onBack);
   const parsedPath = row.sourcePath ?? row.path;
   const originalPath = sourcePreviewPath(row);
   const originalAvailable = originalPath.replaceAll("\\", "/")
@@ -81,17 +83,12 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
       };
   const { tab, summaryPath, guideResolved, guideError, downloadError } = current;
   const setTab = (nextTab: SourcePreviewTab) => {
-    setViewState({ ...current, tab: nextTab });
+    setViewState((previous) => ({
+      ...(previous.key === viewKey ? previous : current),
+      tab: nextTab,
+    }));
   };
   const provenance = provenanceLabel(row.provenance);
-
-  useEffect(() => {
-    function handleEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") onBack();
-    }
-    window.addEventListener("keydown", handleEscape);
-    return () => window.removeEventListener("keydown", handleEscape);
-  }, [onBack]);
 
   useEffect(() => {
     if (tab !== "guide" || guideResolved || summaryPath || !row.metadataPath) return;
@@ -136,7 +133,11 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
   }, [guideResolved, row.metadataPath, sessionId, summaryPath, tab, viewKey]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div
+      className="flex h-full min-h-0 flex-col"
+      onFocusCapture={activate}
+      onPointerDownCapture={activate}
+    >
       <div className="flex shrink-0 items-center gap-2 border-b px-3 py-3">
         <button
           type="button"
@@ -158,12 +159,21 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
             className="studio-ghost-button shrink-0 p-1.5"
             aria-label={`Download original ${row.filename}`}
             onClick={() => {
-              setViewState({ ...current, downloadError: null });
+              setViewState((previous) => ({
+                ...(previous.key === viewKey ? previous : current),
+                downloadError: null,
+              }));
               void downloadStudioFile(originalDownloadPath, originalFilename, sessionId)
-                .catch((reason: unknown) => setViewState({
-                  ...current,
-                  downloadError: reason instanceof Error ? reason.message : "Download failed",
-                }));
+                .catch((reason: unknown) => setViewState((previous) => (
+                  previous.key === viewKey
+                    ? {
+                        ...previous,
+                        downloadError: reason instanceof Error
+                          ? reason.message
+                          : "Download failed",
+                      }
+                    : previous
+                )));
             }}
           >
             <Download size={15} />
