@@ -1342,6 +1342,62 @@ describe("StudioPage", () => {
     ));
   });
 
+  it("keeps catalog sources independent when one legacy job path matches both", async () => {
+    mockSourceImportJobs([readySourceJob({
+      source_id: undefined,
+      source_path: undefined,
+    })]);
+    const sources = [
+      {
+        sourceId: "photo-a",
+        filename: "photo A.jpg",
+        path: "notebook-sources/photo-a/source.md",
+        sourcePath: "notebook-sources/photo-a/source.md",
+        inputPath: "uploads/photo.jpg",
+        previewPath: "uploads/photo.jpg",
+        timestamp: 2,
+        status: "ready" as const,
+      },
+      {
+        sourceId: "photo-b",
+        filename: "photo B.jpg",
+        path: "notebook-sources/photo-b/source.md",
+        sourcePath: "notebook-sources/photo-b/source.md",
+        inputPath: "uploads/photo.jpg",
+        previewPath: "uploads/photo.jpg",
+        timestamp: 1,
+        status: "ready" as const,
+      },
+    ];
+    loadSourceCatalogMock.mockResolvedValue(sources);
+    renderStudio();
+
+    await screen.findByRole("button", { name: "Preview photo B.jpg" });
+    fireEvent.click(screen.getByRole("button", { name: "Preview photo B.jpg" }));
+    expect(screen.getByText("photo B.jpg")).toBeTruthy();
+    expect(screen.queryByText("photo A.jpg")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Back to sources" }));
+
+    invokeSkillActionMock.mockResolvedValueOnce({
+      action_id: "source.remove",
+      ok: true,
+      results: [{ success: true, output: "removed" }],
+    });
+    loadSourceCatalogMock.mockResolvedValue([sources[0]]);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    fireEvent.click(screen.getByLabelText("Source actions for photo B.jpg"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove source" }));
+
+    await waitFor(() => expect(invokeSkillActionMock).toHaveBeenCalledWith(
+      "web-abc",
+      "source.remove",
+      { source_id: "photo-b" },
+    ));
+    expect(screen.getByText("photo A.jpg")).toBeTruthy();
+    expect(screen.queryByText("photo B.jpg")).toBeNull();
+    confirm.mockRestore();
+  });
+
   it("keeps a newer failed source import when an older succeeded event arrives", async () => {
     const failed = readySourceJob({
       status: "failed",

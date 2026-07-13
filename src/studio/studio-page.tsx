@@ -116,8 +116,12 @@ export function StudioPage() {
 }
 
 function sameSourceRow(a: SourceRow, b: SourceRow): boolean {
-  if (a.jobId && b.jobId && a.jobId === b.jobId) return true;
-  if (a.sourceId && b.sourceId && a.sourceId === b.sourceId) return true;
+  if (a.sourceId && b.sourceId) return a.sourceId === b.sourceId;
+  if (a.jobId && b.jobId) return a.jobId === b.jobId;
+  if (a.sourcePath && b.sourcePath) {
+    return a.sourcePath.replaceAll("\\", "/")
+      === b.sourcePath.replaceAll("\\", "/");
+  }
   const aPaths = [a.path, a.sourcePath, a.inputPath, a.materializedPath, a.previewPath]
     .filter((path): path is string => Boolean(path))
     .map((path) => path.replaceAll("\\", "/"));
@@ -127,6 +131,16 @@ function sameSourceRow(a: SourceRow, b: SourceRow): boolean {
       .map((path) => path.replaceAll("\\", "/")),
   );
   return aPaths.some((path) => bPaths.has(path));
+}
+
+function hasStrongSourceIdentityMatch(a: SourceRow, b: SourceRow): boolean {
+  return Boolean(
+    (a.sourceId && b.sourceId && a.sourceId === b.sourceId)
+    || (a.jobId && b.jobId && a.jobId === b.jobId)
+    || (a.sourcePath && b.sourcePath
+      && a.sourcePath.replaceAll("\\", "/")
+        === b.sourcePath.replaceAll("\\", "/")),
+  );
 }
 
 function selectedPathMatchesRow(path: string, row: SourceRow): boolean {
@@ -244,12 +258,17 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
       const catalog = await loadSourceCatalog(projectId);
       if (request !== sourceCatalogRequest.current) return;
       setUploadedSources((current) => {
+        const readyJobRows = current.filter((row) => row.jobId && isSourceRowReady(row));
+        const claimedJobIds = new Set<string>();
         const catalogRows = catalog.map((row) => {
-          const jobRow = current.find((candidate) =>
-            candidate.jobId
-            && isSourceRowReady(candidate)
-            && sameSourceRow(row, candidate)
-          );
+          const jobRow = readyJobRows.find((candidate) => {
+            if (!candidate.jobId || claimedJobIds.has(candidate.jobId)) return false;
+            if (!sameSourceRow(row, candidate)) return false;
+            if (hasStrongSourceIdentityMatch(row, candidate)) return true;
+            return catalog.filter((catalogRow) => sameSourceRow(catalogRow, candidate))
+              .length === 1;
+          });
+          if (jobRow?.jobId) claimedJobIds.add(jobRow.jobId);
           return jobRow
             ? { ...row, jobId: jobRow.jobId, batchId: jobRow.batchId }
             : row;
