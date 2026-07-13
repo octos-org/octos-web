@@ -75,6 +75,12 @@ export function isSourceRowReady(row: SourceRow): boolean {
   return (row.status ?? "ready") === "ready";
 }
 
+export function sourceRowMatchesPath(row: SourceRow, path: string): boolean {
+  const normalized = path.replaceAll("\\", "/");
+  return [row.path, row.sourcePath, row.inputPath, row.materializedPath, row.previewPath]
+    .some((candidate) => candidate?.replaceAll("\\", "/") === normalized);
+}
+
 /** Coarse file-type buckets used to pick a list-row icon. */
 export type SourceKind = "image" | "audio" | "video" | "table" | "text";
 
@@ -221,6 +227,7 @@ export function sourceRowFromSkillActionJob(
     sourcePath: job.source_path,
     materializedPath: job.materialized_path,
     previewPath: job.materialized_path ?? job.input_path,
+    metadataPath: job.metadata_path,
   };
 }
 

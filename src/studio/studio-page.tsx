@@ -24,6 +24,7 @@ import {
   isSourceRowReady,
   mergeSourceImportJobs,
   mergeSourceRows,
+  sourceRowMatchesPath,
   sourceRowFromSkillActionJob,
   type SourceRow,
 } from "./source-media";
@@ -143,12 +144,6 @@ function hasStrongSourceIdentityMatch(a: SourceRow, b: SourceRow): boolean {
   );
 }
 
-function selectedPathMatchesRow(path: string, row: SourceRow): boolean {
-  const normalized = path.replaceAll("\\", "/");
-  return [row.path, row.sourcePath, row.inputPath, row.materializedPath, row.previewPath]
-    .some((candidate) => candidate?.replaceAll("\\", "/") === normalized);
-}
-
 function StudioWorkspace({ projectId }: { projectId: string }) {
   const [title, setTitle] = useState(() => readStoredTitle(projectId));
   const [panes, setPanes] = useState<PaneState>(loadPaneState);
@@ -257,6 +252,26 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
     try {
       const catalog = await loadSourceCatalog(projectId);
       if (request !== sourceCatalogRequest.current) return;
+      const importRows = sourceImportJobsRef.current.map((job) =>
+        sourceRowFromSkillActionJob(job)
+      );
+      setSelectedSources((current) => Array.from(new Set(
+        current.map((path) => {
+          const importRow = importRows.find((row) => sourceRowMatchesPath(row, path));
+          const strongCatalogRow = importRow?.sourceId
+            ? catalog.find((row) => row.sourceId === importRow.sourceId)
+            : importRow?.sourcePath
+              ? catalog.find((row) => row.sourcePath === importRow.sourcePath)
+              : undefined;
+          if (strongCatalogRow) return strongCatalogRow.path;
+          const matchingCatalogRows = catalog.filter((row) =>
+            sourceRowMatchesPath(row, path)
+          );
+          return matchingCatalogRows.length === 1
+            ? matchingCatalogRows[0].path
+            : path;
+        }),
+      )));
       setUploadedSources((current) => {
         const readyJobRows = current.filter((row) => row.jobId && isSourceRowReady(row));
         const claimedJobIds = new Set<string>();
@@ -310,7 +325,7 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
       );
     }
     setUploadedSources((prev) => prev.filter((existing) => !sameSourceRow(existing, row)));
-    setSelectedSources((prev) => prev.filter((path) => !selectedPathMatchesRow(path, row)));
+    setSelectedSources((prev) => prev.filter((path) => !sourceRowMatchesPath(row, path)));
     void refreshSourceCatalog();
   }, [refreshSourceCatalog]);
 
@@ -413,21 +428,24 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
     };
   }, [projectId]);
 
-  const toggleSource = useCallback((path: string) => {
-    setSelectedSources((prev) =>
-      prev.includes(path) ? prev.filter((p) => p !== path) : [...prev, path],
-    );
+  const toggleSource = useCallback((row: SourceRow) => {
+    setSelectedSources((prev) => {
+      const selected = prev.some((path) => sourceRowMatchesPath(row, path));
+      return selected
+        ? prev.filter((path) => !sourceRowMatchesPath(row, path))
+        : [...prev, row.path];
+    });
   }, []);
 
   const selectedSourceIds = useMemo(
     () =>
-      selectedSources
+      Array.from(new Set(selectedSources
         .map((path) =>
           uploadedSources.find(
-            (row) => row.sourceId && selectedPathMatchesRow(path, row),
+            (row) => row.sourceId && sourceRowMatchesPath(row, path),
           )?.sourceId,
         )
-        .filter((sourceId): sourceId is string => Boolean(sourceId)),
+        .filter((sourceId): sourceId is string => Boolean(sourceId)))),
     [selectedSources, uploadedSources],
   );
 

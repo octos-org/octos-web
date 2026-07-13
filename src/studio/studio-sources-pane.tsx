@@ -26,6 +26,7 @@ import {
   SOURCE_REMOVE_ACTION_ID,
   SOURCE_RENAME_ACTION_ID,
   isSourceRowReady,
+  sourceRowMatchesPath,
   sourceKind,
   sourceRowFromSkillActionJob,
   type SourceKind,
@@ -40,7 +41,7 @@ interface Props {
   onPreviewKeyChange: (key: string | null) => void;
   /** Server file paths currently selected as grounding sources. */
   selected: string[];
-  onToggle: (path: string) => void;
+  onToggle: (row: SourceRow) => void;
   /**
    * Uploaded-source rows live in the workspace (not here) so toggling
    * the pane closed cannot orphan still-selected uploads.
@@ -540,6 +541,8 @@ export function StudioSourcesPane({
               const isBusy = busyKey === key;
               const canManageSource = ready && Boolean(row.sourceId);
               const selectable = ready && Boolean(row.sourceId);
+              const isSelected = selectable
+                && selected.some((path) => sourceRowMatchesPath(row, path));
               return (
                 <li key={row.jobId ?? row.path} className="studio-list-row">
                   {isRenaming ? (
@@ -625,10 +628,10 @@ export function StudioSourcesPane({
                   <input
                     type="checkbox"
                     className="accent-accent h-4 w-4"
-                    checked={selectable && selected.includes(row.path)}
+                    checked={isSelected}
                     disabled={!selectable}
                     onChange={() => {
-                      if (selectable) onToggle(row.path);
+                      if (selectable) onToggle(row);
                     }}
                     aria-label={`Use ${row.filename} as source`}
                   />

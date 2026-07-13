@@ -1342,6 +1342,60 @@ describe("StudioPage", () => {
     ));
   });
 
+  it("keeps a selected source canonical across catalog takeover without duplicate ids", async () => {
+    mockSourceImportJobs([readySourceJob({ source_path: undefined })]);
+    let resolveCatalog: ((rows: unknown[]) => void) | undefined;
+    const catalogPromise = new Promise<unknown[]>((resolve) => {
+      resolveCatalog = resolve;
+    });
+    loadSourceCatalogMock.mockReturnValue(catalogPromise);
+    renderStudio();
+
+    const beforeTakeover = await screen.findByLabelText(
+      "Use photo.jpg as source",
+    ) as HTMLInputElement;
+    fireEvent.click(beforeTakeover);
+    expect(beforeTakeover.checked).toBe(true);
+
+    await act(async () => {
+      resolveCatalog?.([{
+        sourceId: "other-photo",
+        filename: "other photo.jpg",
+        path: "notebook-sources/other-photo/source.md",
+        sourcePath: "notebook-sources/other-photo/source.md",
+        inputPath: "uploads/photo.jpg",
+        previewPath: "uploads/photo.jpg",
+        timestamp: 3,
+        status: "ready",
+      }, {
+        sourceId: "photo",
+        filename: "photo.jpg",
+        path: "notebook-sources/photo/source.md",
+        sourcePath: "notebook-sources/photo/source.md",
+        inputPath: "uploads/photo.jpg",
+        previewPath: "uploads/photo.jpg",
+        timestamp: 2,
+        status: "ready",
+      }]);
+      await catalogPromise;
+    });
+
+    const afterTakeover = screen.getByLabelText(
+      "Use photo.jpg as source",
+    ) as HTMLInputElement;
+    expect(afterTakeover.checked).toBe(true);
+    fireEvent.click(afterTakeover);
+    expect(afterTakeover.checked).toBe(false);
+    fireEvent.click(afterTakeover);
+    fireEvent.click(screen.getByRole("button", { name: "Quiz" }));
+
+    await waitFor(() => expect(invokeSkillActionMock).toHaveBeenCalledWith(
+      "web-abc",
+      "quiz.generate",
+      { source_ids: ["photo"] },
+    ));
+  });
+
   it("keeps catalog sources independent when one legacy job path matches both", async () => {
     mockSourceImportJobs([readySourceJob({
       source_id: undefined,
