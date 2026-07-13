@@ -127,6 +127,7 @@ describe("StudioFilePreview", () => {
 
     expect(await screen.findByText(/too large to preview/i)).toBeTruthy();
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 
   it("refuses a declared oversized binary preview without fetching it", async () => {

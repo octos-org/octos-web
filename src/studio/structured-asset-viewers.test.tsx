@@ -79,6 +79,20 @@ describe("DataTableViewer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open cited source" }));
     expect(onCitationOpen).toHaveBeenCalledWith(expect.objectContaining({ chunkId: "chunk-1" }));
   });
+
+  it("rejects a canonical table with too many columns before expanding rows", () => {
+    render(<DataTableViewer text={JSON.stringify({
+      title: "Too wide",
+      columns: Array.from({ length: 101 }, (_, index) => ({
+        id: `column-${index}`,
+        label: `Column ${index}`,
+      })),
+      rows: [{ cells: [] }],
+    })} />);
+
+    expect(screen.getByText(/table is too large for the interactive viewer/i)).toBeTruthy();
+    expect(screen.queryByRole("table")).toBeNull();
+  });
 });
 
 describe("VideoScenesViewer", () => {

@@ -107,6 +107,35 @@ describe("StudioSourcePreview", () => {
     expect(onBack).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a processing source on Original until parsed content exists", () => {
+    render(
+      <StudioSourcePreview
+        row={{
+          filename: "Processing.pdf",
+          path: "uploads/processing.pdf",
+          inputPath: "uploads/processing.pdf",
+          previewPath: "uploads/processing.pdf",
+          mediaType: "application/pdf",
+          status: "processing",
+          timestamp: 1,
+        }}
+        sessionId="web-abc"
+        onBack={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("tab", { name: "Original" }).getAttribute("aria-selected"))
+      .toBe("true");
+    expect(screen.getByTestId("file-preview").getAttribute("data-path"))
+      .toBe("uploads/processing.pdf");
+    expect(screen.getByRole("button", { name: "Download original Processing.pdf" }))
+      .toBeTruthy();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Parsed" }));
+    expect(screen.getByText("Parsed content is not available yet.")).toBeTruthy();
+    expect(screen.queryByTestId("file-preview")).toBeNull();
+  });
+
   it("resets the selected tab and Source Guide when the source changes", () => {
     const view = render(
       <StudioSourcePreview

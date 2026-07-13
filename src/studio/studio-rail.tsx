@@ -73,7 +73,11 @@ export function StudioRail({
   selectedSourceIds,
   onCitationOpen,
 }: Props) {
-  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<{
+    assetId: string;
+    message: string;
+  } | null>(null);
+  const downloadRequestId = useRef(0);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busySkillId, setBusySkillId] = useState<string | null>(null);
   const [jobs, setJobs] = useState<SkillActionJob[]>([]);
@@ -161,9 +165,15 @@ export function StudioRail({
   }
 
   function startDownload(file: AssetFile): void {
+    const requestId = ++downloadRequestId.current;
+    const assetId = file.job.job_id;
     setDownloadError(null);
     downloadStudioFile(file.filePath, file.filename, sessionId).catch((err: unknown) => {
-      setDownloadError(err instanceof Error ? err.message : "Download failed");
+      if (requestId !== downloadRequestId.current) return;
+      setDownloadError({
+        assetId,
+        message: err instanceof Error ? err.message : "Download failed",
+      });
     });
   }
 
@@ -186,7 +196,9 @@ export function StudioRail({
       <StudioAssetPreview
         asset={selectedAsset}
         sessionId={sessionId}
-        downloadError={downloadError}
+        downloadError={downloadError?.assetId === selectedAsset.id
+          ? downloadError.message
+          : null}
         onBack={() => {
           setRestoreFocusId(lastAssetTriggerId.current ?? selectedAsset.id);
           onSelectedAssetIdChange(null);
@@ -254,7 +266,7 @@ export function StudioRail({
         )}
         {downloadError && (
           <p className="text-xs text-red-500" role="alert">
-            {downloadError}
+            {downloadError.message}
           </p>
         )}
         {!hasGeneratedItems ? (

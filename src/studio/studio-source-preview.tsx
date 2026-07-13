@@ -37,10 +37,14 @@ function provenanceLabel(provenance?: Record<string, unknown>): string | null {
 
 export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: Props) {
   const { activate } = usePreviewEscape(onBack);
-  const parsedPath = row.sourcePath ?? row.path;
   const originalPath = sourcePreviewPath(row);
-  const originalAvailable = originalPath.replaceAll("\\", "/")
-    !== parsedPath.replaceAll("\\", "/");
+  const parsedPath = row.sourcePath ?? row.path;
+  const parsedAvailable = Boolean(row.sourcePath)
+    || originalPath.replaceAll("\\", "/") !== row.path.replaceAll("\\", "/");
+  const originalAvailable = Boolean(originalPath) && (
+    !parsedAvailable
+    || originalPath.replaceAll("\\", "/") !== parsedPath.replaceAll("\\", "/")
+  );
   const originalFilename = row.originalFilename ?? row.filename;
   const originalPreviewable = originalAvailable
     && isFilePreviewable(originalFilename, row.mediaType);
@@ -53,9 +57,11 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
   const viewKey = citationMatches && citationTarget
     ? `${rowIdentity}::citation:${citationTarget.chunkId}:${citationTarget.startLine ?? ""}:${citationTarget.endLine ?? ""}`
     : rowIdentity;
-  const initialTab: SourcePreviewTab = citationMatches || !originalPreviewable
+  const initialTab: SourcePreviewTab = citationMatches && parsedAvailable
     ? "parsed"
-    : "original";
+    : originalPreviewable || !parsedAvailable
+      ? "original"
+      : "parsed";
   const [viewState, setViewState] = useState<{
     key: string;
     tab: SourcePreviewTab;
@@ -238,7 +244,7 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
               </button>
             </div>
           )
-        ) : tab === "parsed" ? (
+        ) : tab === "parsed" && parsedAvailable ? (
           <StudioFilePreview
             filename={`${row.filename} parsed.md`}
             filePath={parsedPath}
@@ -249,6 +255,10 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
               ? { start: citationTarget.startLine, end: citationTarget.endLine ?? citationTarget.startLine }
               : undefined}
           />
+        ) : tab === "parsed" ? (
+          <div className="studio-empty-state m-4 text-xs">
+            Parsed content is not available yet.
+          </div>
         ) : (
           <div className="flex h-full min-h-0 flex-col overflow-y-auto p-4">
             {row.warnings && row.warnings.length > 0 && (

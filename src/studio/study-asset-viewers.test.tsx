@@ -130,4 +130,20 @@ describe("study asset viewers", () => {
     expect(secondScroll).toHaveBeenCalledWith({ block: "start", behavior: "smooth" });
     expect(firstScroll).not.toHaveBeenCalled();
   });
+
+  it("ignores heading-like text inside fenced code blocks", () => {
+    render(<ReportViewer text={[
+      "# Report",
+      "",
+      "```markdown",
+      "## Example only",
+      "```",
+      "",
+      "## Real findings",
+      "Body",
+    ].join("\n")} />);
+
+    expect(screen.queryByRole("button", { name: "Example only" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Real findings" })).toBeTruthy();
+  });
 });

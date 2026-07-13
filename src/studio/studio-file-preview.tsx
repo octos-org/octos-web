@@ -187,7 +187,9 @@ export function StudioFilePreview({
             <div className="text-center">
               <p className="text-sm text-red-500" role="alert">{error}</p>
               <div className="mt-3 flex justify-center gap-2">
-                <button type="button" className="studio-ghost-button px-3 py-2 text-xs" onClick={() => setAttempt((value) => value + 1)}>Retry</button>
+                {!declaredSizeError && (
+                  <button type="button" className="studio-ghost-button px-3 py-2 text-xs" onClick={() => setAttempt((value) => value + 1)}>Retry</button>
+                )}
                 {fallbackAction && <button type="button" className="studio-button-primary px-3 py-2 text-xs" onClick={fallbackAction.onClick}>{fallbackAction.label}</button>}
               </div>
             </div>

@@ -5,6 +5,35 @@ import { parseCsv } from "./csv-parser";
 
 const MAX_CSV_RENDER_ROWS = 5_000;
 const MAX_CSV_RENDER_CELLS = 50_000;
+const MAX_JSON_RENDER_NODES = 5_000;
+const MAX_JSON_RENDER_DEPTH = 100;
+
+function jsonExceedsRenderLimits(value: unknown): boolean {
+  let remainingNodes = MAX_JSON_RENDER_NODES;
+  const stack: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) break;
+    remainingNodes -= 1;
+    if (remainingNodes < 0 || current.depth > MAX_JSON_RENDER_DEPTH) return true;
+    if (!current.value || typeof current.value !== "object") continue;
+
+    if (Array.isArray(current.value)) {
+      if (current.value.length > remainingNodes - stack.length) return true;
+      for (const child of current.value) {
+        stack.push({ value: child, depth: current.depth + 1 });
+      }
+    } else {
+      const object = current.value as Record<string, unknown>;
+      const keys = Object.keys(object);
+      if (keys.length > remainingNodes - stack.length) return true;
+      for (const key of keys) {
+        stack.push({ value: object[key], depth: current.depth + 1 });
+      }
+    }
+  }
+  return false;
+}
 
 function JsonValue({ name, value, depth = 0 }: {
   name?: string;
@@ -54,9 +83,14 @@ function JsonValue({ name, value, depth = 0 }: {
 export function JsonViewer({ text }: { text: string }) {
   const parsed = useMemo(() => {
     try {
-      return { value: JSON.parse(text) as unknown, error: null };
+      const value = JSON.parse(text) as unknown;
+      return { value, error: null, tooLarge: jsonExceedsRenderLimits(value) };
     } catch (reason) {
-      return { value: null, error: reason instanceof Error ? reason.message : "Invalid JSON" };
+      return {
+        value: null,
+        error: reason instanceof Error ? reason.message : "Invalid JSON",
+        tooLarge: false,
+      };
     }
   }, [text]);
 
@@ -68,15 +102,23 @@ export function JsonViewer({ text }: { text: string }) {
       </div>
     );
   }
+  if (parsed.tooLarge) {
+    return (
+      <p className="studio-empty-state m-4 text-xs" role="alert">
+        This JSON is too large for the interactive JSON viewer. Download it to view the full content.
+      </p>
+    );
+  }
   return <div className="h-full w-full overflow-auto"><JsonValue value={parsed.value} /></div>;
 }
 
 export function CsvTableViewer({ text, filename }: { text: string; filename: string }) {
-  const rows = useMemo(() => parseCsv(text), [text]);
-  const exceedsRenderLimit = useMemo(() => (
-    Math.max(0, rows.length - 1) > MAX_CSV_RENDER_ROWS
-    || rows.reduce((total, row) => total + row.length, 0) > MAX_CSV_RENDER_CELLS
-  ), [rows]);
+  const parsed = useMemo(() => parseCsv(text, {
+    maxRows: MAX_CSV_RENDER_ROWS + 1,
+    maxCells: MAX_CSV_RENDER_CELLS,
+  }), [text]);
+  const rows = parsed.rows;
+  const exceedsRenderLimit = parsed.overflow;
   const [sortColumn, setSortColumn] = useState<number | null>(null);
   const [descending, setDescending] = useState(false);
   const header = rows[0] ?? [];

@@ -194,11 +194,30 @@ export function MindMapViewer({ text, onCitationOpen }: {
 interface TableColumn { id: string; label: string }
 interface TableCell { columnId: string; value: string; citations: CitationTarget[] }
 interface TableData { title: string; columns: TableColumn[]; rows: TableCell[][] }
+const MAX_DATA_TABLE_ROWS = 1_000;
+const MAX_DATA_TABLE_COLUMNS = 100;
+const MAX_DATA_TABLE_CELLS = 50_000;
+const DATA_TABLE_TOO_LARGE = "too-large" as const;
 
-function parseDataTable(text: string): TableData | null {
+function parseDataTable(text: string): TableData | typeof DATA_TABLE_TOO_LARGE | null {
   try {
     const value = JSON.parse(text) as Record<string, unknown>;
-    if (!Array.isArray(value.columns) || !Array.isArray(value.rows) || value.rows.length > 1000) return null;
+    if (!Array.isArray(value.columns) || !Array.isArray(value.rows)) return null;
+    if (
+      value.rows.length > MAX_DATA_TABLE_ROWS
+      || value.columns.length > MAX_DATA_TABLE_COLUMNS
+      || value.rows.length * value.columns.length > MAX_DATA_TABLE_CELLS
+    ) {
+      return DATA_TABLE_TOO_LARGE;
+    }
+    let inputCellCount = 0;
+    for (const raw of value.rows) {
+      if (!raw || typeof raw !== "object") continue;
+      const cells = (raw as Record<string, unknown>).cells;
+      if (!Array.isArray(cells)) continue;
+      inputCellCount += cells.length;
+      if (inputCellCount > MAX_DATA_TABLE_CELLS) return DATA_TABLE_TOO_LARGE;
+    }
     const columns = value.columns.flatMap((raw): TableColumn[] => raw && typeof raw === "object" && typeof (raw as Record<string, unknown>).id === "string" && typeof (raw as Record<string, unknown>).label === "string"
       ? [{ id: String((raw as Record<string, unknown>).id), label: String((raw as Record<string, unknown>).label) }]
       : []);
@@ -233,6 +252,13 @@ export function DataTableViewer({ text, onCitationOpen }: {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<{ index: number; descending: boolean } | null>(null);
   const [citations, setCitations] = useState<CitationTarget[]>([]);
+  if (data === DATA_TABLE_TOO_LARGE) {
+    return (
+      <div className="studio-empty-state m-4 text-xs" role="alert">
+        This table is too large for the interactive viewer. Download it to view the full content.
+      </div>
+    );
+  }
   if (!data) return <div className="studio-empty-state m-4 text-xs">The canonical table JSON is invalid. Open CSV or Markdown from Files.</div>;
   const filtered = data.rows.filter((row) => row.some((cell) => cell.value.toLowerCase().includes(query.trim().toLowerCase())));
   const rows = sort ? [...filtered].sort((left, right) => {

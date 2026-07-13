@@ -621,6 +621,52 @@ describe("StudioPage", () => {
     ).toBeTruthy();
   });
 
+  it("does not show a stale download failure in a different asset preview", async () => {
+    const secondAsset = {
+      job_id: "job-second-quiz",
+      batch_id: "batch-second-quiz",
+      profile_id: "alan0x",
+      session_id: "web-abc",
+      action_id: "quiz.generate",
+      skill_id: "mofa-notebook-study",
+      status: "succeeded" as const,
+      result: {
+        title: "Second quiz",
+        artifacts: [{
+          handle: "ws/second-quiz.md",
+          display_name: "second-quiz.md",
+          media_type: "text/markdown",
+          size: 42,
+        }],
+      },
+      created_at: "2026-07-09T01:00:00Z",
+      updated_at: "2026-07-09T01:01:00Z",
+    };
+    listSkillActionJobsMock.mockImplementation(
+      (_sessionId: string, options?: { actionId?: string }) =>
+        Promise.resolve(options?.actionId === "source.import"
+          ? []
+          : [readyVideoOverviewJob(), secondAsset]),
+    );
+    let resolveDownload: (response: Response) => void = () => undefined;
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise<Response>((resolve) => {
+      resolveDownload = resolve;
+    }));
+
+    renderStudio();
+    const rail = screen.getByTestId("studio-rail");
+    fireEvent.click(await within(rail).findByRole("button", {
+      name: "Download Market overview",
+    }));
+    fireEvent.click(within(rail).getByRole("button", { name: "Open Second quiz" }));
+
+    await act(async () => {
+      resolveDownload({ ok: false, status: 500 } as Response);
+    });
+
+    expect(within(rail).queryByRole("alert")).toBeNull();
+  });
+
   it("restores persisted generated assets after a page refresh", async () => {
     listSkillActionJobsMock.mockImplementation(
       (_sessionId: string, options?: { actionId?: string }) =>

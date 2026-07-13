@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronLeft, ChevronRight, RotateCcw, Shuffle, X } from "lucide-react";
 
 import { MarkdownContent } from "@/components/markdown-renderer";
@@ -121,12 +121,14 @@ export function FlashcardsViewer({ text }: { text: string }) {
 
 export function ReportViewer({ text }: { text: string }) {
   const reportRef = useRef<HTMLDivElement>(null);
-  const headings = useMemo(() => text.split("\n")
-    .flatMap((line) => {
-      const match = line.match(/^#{2,3}\s+(.+)$/);
-      return match ? [match[1].trim()] : [];
-    })
-    .map((label, index) => ({ label, index })), [text]);
+  const [headings, setHeadings] = useState<Array<{ label: string; index: number }>>([]);
+  useEffect(() => {
+    const rendered = reportRef.current?.querySelectorAll("h2, h3") ?? [];
+    setHeadings(Array.from(rendered, (heading, index) => ({
+      label: heading.textContent?.trim() || `Section ${index + 1}`,
+      index,
+    })));
+  }, [text]);
   return (
     <div ref={reportRef} className="flex h-full min-h-0 flex-col overflow-y-auto">
       {headings.length > 0 && (
