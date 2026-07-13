@@ -1396,6 +1396,77 @@ describe("StudioPage", () => {
     ));
   });
 
+  it("keeps explicit source selections separate when import jobs share a path", async () => {
+    const jobs = [
+      readySourceJob({
+        job_id: "job-photo-a",
+        source_id: "photo-a",
+        source_path: undefined,
+        filename: "photo A.jpg",
+      }),
+      readySourceJob({
+        job_id: "job-photo-b",
+        source_id: "photo-b",
+        source_path: undefined,
+        filename: "photo B.jpg",
+      }),
+    ];
+    mockSourceImportJobs(jobs);
+    let resolveCatalog: ((rows: unknown[]) => void) | undefined;
+    const catalogPromise = new Promise<unknown[]>((resolve) => {
+      resolveCatalog = resolve;
+    });
+    loadSourceCatalogMock.mockReturnValue(catalogPromise);
+    renderStudio();
+
+    const sourceA = await screen.findByLabelText(
+      "Use photo A.jpg as source",
+    ) as HTMLInputElement;
+    const sourceB = screen.getByLabelText(
+      "Use photo B.jpg as source",
+    ) as HTMLInputElement;
+    fireEvent.click(sourceB);
+    expect(sourceA.checked).toBe(false);
+    expect(sourceB.checked).toBe(true);
+
+    await act(async () => {
+      resolveCatalog?.([
+        {
+          sourceId: "photo-a",
+          filename: "photo A.jpg",
+          path: "notebook-sources/photo-a/source.md",
+          sourcePath: "notebook-sources/photo-a/source.md",
+          inputPath: "uploads/photo.jpg",
+          previewPath: "uploads/photo.jpg",
+          timestamp: 2,
+          status: "ready",
+        },
+        {
+          sourceId: "photo-b",
+          filename: "photo B.jpg",
+          path: "notebook-sources/photo-b/source.md",
+          sourcePath: "notebook-sources/photo-b/source.md",
+          inputPath: "uploads/photo.jpg",
+          previewPath: "uploads/photo.jpg",
+          timestamp: 1,
+          status: "ready",
+        },
+      ]);
+      await catalogPromise;
+    });
+
+    expect((screen.getByLabelText("Use photo A.jpg as source") as HTMLInputElement).checked)
+      .toBe(false);
+    expect((screen.getByLabelText("Use photo B.jpg as source") as HTMLInputElement).checked)
+      .toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Quiz" }));
+    await waitFor(() => expect(invokeSkillActionMock).toHaveBeenCalledWith(
+      "web-abc",
+      "quiz.generate",
+      { source_ids: ["photo-b"] },
+    ));
+  });
+
   it("keeps catalog sources independent when one legacy job path matches both", async () => {
     mockSourceImportJobs([readySourceJob({
       source_id: undefined,

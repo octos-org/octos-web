@@ -75,12 +75,6 @@ export function isSourceRowReady(row: SourceRow): boolean {
   return (row.status ?? "ready") === "ready";
 }
 
-export function sourceRowMatchesPath(row: SourceRow, path: string): boolean {
-  const normalized = path.replaceAll("\\", "/");
-  return [row.path, row.sourcePath, row.inputPath, row.materializedPath, row.previewPath]
-    .some((candidate) => candidate?.replaceAll("\\", "/") === normalized);
-}
-
 /** Coarse file-type buckets used to pick a list-row icon. */
 export type SourceKind = "image" | "audio" | "video" | "table" | "text";
 
@@ -241,10 +235,12 @@ export function mergeSourceRows(
 ): SourceRow[] {
   const rows = [...existing];
   for (const next of incoming) {
-    const index = rows.findIndex(
-      (row) =>
-        (next.jobId && row.jobId === next.jobId) || row.path === next.path,
-    );
+    const index = rows.findIndex((row) => {
+      if (next.sourceId && row.sourceId) return next.sourceId === row.sourceId;
+      if (next.jobId && row.jobId) return next.jobId === row.jobId;
+      if (next.sourcePath && row.sourcePath) return next.sourcePath === row.sourcePath;
+      return row.path === next.path;
+    });
     if (index === -1) {
       rows.push(next);
     } else if (next.timestamp >= rows[index].timestamp) {

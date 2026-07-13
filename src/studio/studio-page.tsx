@@ -24,7 +24,6 @@ import {
   isSourceRowReady,
   mergeSourceImportJobs,
   mergeSourceRows,
-  sourceRowMatchesPath,
   sourceRowFromSkillActionJob,
   type SourceRow,
 } from "./source-media";
@@ -190,7 +189,7 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
       return next;
     });
   }, []);
-  const [selectedSources, setSelectedSources] = useState<string[]>([]);
+  const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
   const [uploadedSources, setUploadedSources] = useState<SourceRow[]>([]);
   const [sourcesLoading, setSourcesLoading] = useState(true);
   const sourceCatalogRequest = useRef(0);
@@ -252,26 +251,6 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
     try {
       const catalog = await loadSourceCatalog(projectId);
       if (request !== sourceCatalogRequest.current) return;
-      const importRows = sourceImportJobsRef.current.map((job) =>
-        sourceRowFromSkillActionJob(job)
-      );
-      setSelectedSources((current) => Array.from(new Set(
-        current.map((path) => {
-          const importRow = importRows.find((row) => sourceRowMatchesPath(row, path));
-          const strongCatalogRow = importRow?.sourceId
-            ? catalog.find((row) => row.sourceId === importRow.sourceId)
-            : importRow?.sourcePath
-              ? catalog.find((row) => row.sourcePath === importRow.sourcePath)
-              : undefined;
-          if (strongCatalogRow) return strongCatalogRow.path;
-          const matchingCatalogRows = catalog.filter((row) =>
-            sourceRowMatchesPath(row, path)
-          );
-          return matchingCatalogRows.length === 1
-            ? matchingCatalogRows[0].path
-            : path;
-        }),
-      )));
       setUploadedSources((current) => {
         const readyJobRows = current.filter((row) => row.jobId && isSourceRowReady(row));
         const claimedJobIds = new Set<string>();
@@ -325,7 +304,9 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
       );
     }
     setUploadedSources((prev) => prev.filter((existing) => !sameSourceRow(existing, row)));
-    setSelectedSources((prev) => prev.filter((path) => !sourceRowMatchesPath(row, path)));
+    if (row.sourceId) {
+      setSelectedSourceIds((prev) => prev.filter((sourceId) => sourceId !== row.sourceId));
+    }
     void refreshSourceCatalog();
   }, [refreshSourceCatalog]);
 
@@ -428,26 +409,13 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
     };
   }, [projectId]);
 
-  const toggleSource = useCallback((row: SourceRow) => {
-    setSelectedSources((prev) => {
-      const selected = prev.some((path) => sourceRowMatchesPath(row, path));
-      return selected
-        ? prev.filter((path) => !sourceRowMatchesPath(row, path))
-        : [...prev, row.path];
-    });
+  const toggleSource = useCallback((sourceId: string) => {
+    setSelectedSourceIds((prev) =>
+      prev.includes(sourceId)
+        ? prev.filter((selectedId) => selectedId !== sourceId)
+        : [...prev, sourceId]
+    );
   }, []);
-
-  const selectedSourceIds = useMemo(
-    () =>
-      Array.from(new Set(selectedSources
-        .map((path) =>
-          uploadedSources.find(
-            (row) => row.sourceId && sourceRowMatchesPath(row, path),
-          )?.sourceId,
-        )
-        .filter((sourceId): sourceId is string => Boolean(sourceId)))),
-    [selectedSources, uploadedSources],
-  );
 
   // Notebook sources are imported into the session workspace up front.
   // The center composer does not upload or attach files in Studio mode.
@@ -549,7 +517,7 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
                   sessionId={projectId}
                   previewKey={sourcePreviewKey}
                   onPreviewKeyChange={setSourcePreviewKey}
-                  selected={selectedSources}
+                  selected={selectedSourceIds}
                   onToggle={toggleSource}
                   uploaded={uploadedSources}
                   onUploaded={mergeUploadedSourceRows}

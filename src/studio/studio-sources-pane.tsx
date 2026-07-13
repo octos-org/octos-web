@@ -26,7 +26,6 @@ import {
   SOURCE_REMOVE_ACTION_ID,
   SOURCE_RENAME_ACTION_ID,
   isSourceRowReady,
-  sourceRowMatchesPath,
   sourceKind,
   sourceRowFromSkillActionJob,
   type SourceKind,
@@ -39,9 +38,9 @@ interface Props {
   sessionId: string;
   previewKey: string | null;
   onPreviewKeyChange: (key: string | null) => void;
-  /** Server file paths currently selected as grounding sources. */
+  /** Stable catalog source IDs currently selected for grounding. */
   selected: string[];
-  onToggle: (row: SourceRow) => void;
+  onToggle: (sourceId: string) => void;
   /**
    * Uploaded-source rows live in the workspace (not here) so toggling
    * the pane closed cannot orphan still-selected uploads.
@@ -272,8 +271,9 @@ export function StudioSourcesPane({
     const seen = new Set<string>();
     return uploaded
       .filter((row) => {
-        if (seen.has(row.path)) return false;
-        seen.add(row.path);
+        const identity = row.sourceId ?? row.jobId ?? row.sourcePath ?? row.path;
+        if (seen.has(identity)) return false;
+        seen.add(identity);
         return true;
       })
       .sort((a, b) => b.timestamp - a.timestamp);
@@ -542,7 +542,7 @@ export function StudioSourcesPane({
               const canManageSource = ready && Boolean(row.sourceId);
               const selectable = ready && Boolean(row.sourceId);
               const isSelected = selectable
-                && selected.some((path) => sourceRowMatchesPath(row, path));
+                && selected.includes(row.sourceId as string);
               return (
                 <li key={row.jobId ?? row.path} className="studio-list-row">
                   {isRenaming ? (
@@ -631,7 +631,7 @@ export function StudioSourcesPane({
                     checked={isSelected}
                     disabled={!selectable}
                     onChange={() => {
-                      if (selectable) onToggle(row);
+                      if (selectable && row.sourceId) onToggle(row.sourceId);
                     }}
                     aria-label={`Use ${row.filename} as source`}
                   />
