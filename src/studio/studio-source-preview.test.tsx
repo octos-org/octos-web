@@ -136,6 +136,58 @@ describe("StudioSourcePreview", () => {
     expect(screen.queryByTestId("file-preview")).toBeNull();
   });
 
+  it("does not infer parsed content from different transient input and preview paths", () => {
+    render(
+      <StudioSourcePreview
+        row={{
+          filename: "Processing.pdf",
+          path: "uploads/processing.pdf",
+          inputPath: "uploads/processing.pdf",
+          materializedPath: "materialized/processing.pdf",
+          previewPath: "materialized/processing.pdf",
+          mediaType: "application/pdf",
+          status: "processing",
+          timestamp: 1,
+        }}
+        sessionId="web-abc"
+        onBack={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("tab", { name: "Original" }).getAttribute("aria-selected"))
+      .toBe("true");
+    expect(screen.getByTestId("file-preview").getAttribute("data-path"))
+      .toBe("materialized/processing.pdf");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Parsed" }));
+    expect(screen.getByText("Parsed content is not available yet.")).toBeTruthy();
+    expect(screen.queryByTestId("file-preview")).toBeNull();
+  });
+
+  it("does not offer a Parsed fallback for a failed Office source without parsed content", () => {
+    render(
+      <StudioSourcePreview
+        row={{
+          filename: "Failed.docx",
+          path: "uploads/failed.docx",
+          inputPath: "uploads/failed.docx",
+          materializedPath: "materialized/failed.docx",
+          previewPath: "materialized/failed.docx",
+          status: "failed",
+          timestamp: 1,
+        }}
+        sessionId="web-abc"
+        onBack={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("tab", { name: "Original" }).getAttribute("aria-selected"))
+      .toBe("true");
+    expect(screen.getByText("The original file cannot be shown safely in the browser."))
+      .toBeTruthy();
+    expect(screen.queryByRole("button", { name: "View parsed content" })).toBeNull();
+  });
+
   it("resets the selected tab and Source Guide when the source changes", () => {
     const view = render(
       <StudioSourcePreview
@@ -311,5 +363,39 @@ describe("StudioSourcePreview", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("Download failed");
     expect(screen.getByRole("tab", { name: "Parsed" }).getAttribute("aria-selected"))
       .toBe("true");
+  });
+
+  it("ignores an older download failure after a newer download succeeds", async () => {
+    let rejectOlderDownload: (reason?: unknown) => void = () => undefined;
+    downloadStudioFile
+      .mockReturnValueOnce(new Promise<void>((_resolve, reject) => {
+        rejectOlderDownload = reject;
+      }))
+      .mockResolvedValueOnce(undefined);
+    render(
+      <StudioSourcePreview
+        row={{
+          sourceId: "report",
+          filename: "Report.pdf",
+          path: "notebook-sources/report/source.md",
+          sourcePath: "notebook-sources/report/source.md",
+          previewPath: "uploads/report.pdf",
+          timestamp: 1,
+        }}
+        sessionId="web-abc"
+        onBack={vi.fn()}
+      />,
+    );
+
+    const downloadButton = screen.getByRole("button", { name: "Download original Report.pdf" });
+    fireEvent.click(downloadButton);
+    fireEvent.click(downloadButton);
+    await act(async () => undefined);
+
+    await act(async () => {
+      rejectOlderDownload(new Error("Old download failed"));
+    });
+
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

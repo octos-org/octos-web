@@ -212,9 +212,9 @@ function parseDataTable(text: string): TableData | typeof DATA_TABLE_TOO_LARGE |
     }
     let inputCellCount = 0;
     for (const raw of value.rows) {
-      if (!raw || typeof raw !== "object") continue;
+      if (!raw || typeof raw !== "object") return null;
       const cells = (raw as Record<string, unknown>).cells;
-      if (!Array.isArray(cells)) continue;
+      if (!Array.isArray(cells)) return null;
       inputCellCount += cells.length;
       if (inputCellCount > MAX_DATA_TABLE_CELLS) return DATA_TABLE_TOO_LARGE;
     }
@@ -222,22 +222,28 @@ function parseDataTable(text: string): TableData | typeof DATA_TABLE_TOO_LARGE |
       ? [{ id: String((raw as Record<string, unknown>).id), label: String((raw as Record<string, unknown>).label) }]
       : []);
     if (columns.length === 0 || columns.length !== value.columns.length) return null;
-    const rows = value.rows.flatMap((raw): TableCell[][] => {
-      if (!raw || typeof raw !== "object" || !Array.isArray((raw as Record<string, unknown>).cells)) return [];
+    const columnIds = new Set(columns.map((column) => column.id));
+    if (columnIds.size !== columns.length) return null;
+    const rows: TableCell[][] = [];
+    for (const raw of value.rows) {
       const byColumn = new Map<string, TableCell>();
       for (const cellValue of (raw as { cells: unknown[] }).cells) {
-        if (!cellValue || typeof cellValue !== "object") continue;
+        if (!cellValue || typeof cellValue !== "object") return null;
         const cell = cellValue as Record<string, unknown>;
         const columnId = cell.column_id ?? cell.columnId;
-        if (typeof columnId !== "string") continue;
+        if (
+          typeof columnId !== "string"
+          || !columnIds.has(columnId)
+          || byColumn.has(columnId)
+        ) return null;
         byColumn.set(columnId, {
           columnId,
           value: String(cell.value ?? ""),
           citations: Array.isArray(cell.citations) ? cell.citations.map(citationFromUnknown).filter((item): item is CitationTarget => Boolean(item)) : [],
         });
       }
-      return [[...columns.map((column) => byColumn.get(column.id) ?? { columnId: column.id, value: "", citations: [] })]];
-    });
+      rows.push(columns.map((column) => byColumn.get(column.id) ?? { columnId: column.id, value: "", citations: [] }));
+    }
     return { title: typeof value.title === "string" ? value.title : "Data table", columns, rows };
   } catch {
     return null;

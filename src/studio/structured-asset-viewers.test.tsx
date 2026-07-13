@@ -93,6 +93,41 @@ describe("DataTableViewer", () => {
     expect(screen.getByText(/table is too large for the interactive viewer/i)).toBeTruthy();
     expect(screen.queryByRole("table")).toBeNull();
   });
+
+  it.each([
+    [
+      "a malformed row",
+      {
+        columns: [{ id: "name", label: "Name" }],
+        rows: [
+          { cells: [{ column_id: "name", value: "Visible" }] },
+          { invalid: true },
+        ],
+      },
+    ],
+    [
+      "duplicate column ids",
+      {
+        columns: [
+          { id: "name", label: "Name" },
+          { id: "name", label: "Duplicate" },
+        ],
+        rows: [],
+      },
+    ],
+    [
+      "a cell for an unknown column",
+      {
+        columns: [{ id: "name", label: "Name" }],
+        rows: [{ cells: [{ column_id: "missing", value: "Hidden" }] }],
+      },
+    ],
+  ])("rejects canonical table data containing %s", (_label, value) => {
+    render(<DataTableViewer text={JSON.stringify(value)} />);
+
+    expect(screen.getByText(/canonical table JSON is invalid/i)).toBeTruthy();
+    expect(screen.queryByRole("table")).toBeNull();
+  });
 });
 
 describe("VideoScenesViewer", () => {

@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, ArrowLeft, Download, Info } from "lucide-react";
 
 import { buildApiHeaders } from "@/api/client";
 import { buildFileUrl } from "@/api/files";
 
-import { sourcePreviewPath, type SourceRow } from "./source-media";
+import { isSourceRowReady, sourcePreviewPath, type SourceRow } from "./source-media";
 import { isFilePreviewable } from "./file-preview-mode";
 import { StudioFilePreview } from "./studio-file-preview";
 import { downloadStudioFile } from "./studio-file-download";
@@ -40,7 +40,8 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
   const originalPath = sourcePreviewPath(row);
   const parsedPath = row.sourcePath ?? row.path;
   const parsedAvailable = Boolean(row.sourcePath)
-    || originalPath.replaceAll("\\", "/") !== row.path.replaceAll("\\", "/");
+    || (isSourceRowReady(row)
+      && originalPath.replaceAll("\\", "/") !== row.path.replaceAll("\\", "/"));
   const originalAvailable = Boolean(originalPath) && (
     !parsedAvailable
     || originalPath.replaceAll("\\", "/") !== parsedPath.replaceAll("\\", "/")
@@ -95,6 +96,11 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
     }));
   };
   const provenance = provenanceLabel(row.provenance);
+  const downloadRequestId = useRef(0);
+
+  useEffect(() => {
+    downloadRequestId.current += 1;
+  }, [viewKey]);
 
   useEffect(() => {
     if (tab !== "guide" || guideResolved || summaryPath || !row.metadataPath) return;
@@ -165,13 +171,14 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
             className="studio-ghost-button shrink-0 p-1.5"
             aria-label={`Download original ${row.filename}`}
             onClick={() => {
+              const requestId = ++downloadRequestId.current;
               setViewState((previous) => ({
                 ...(previous.key === viewKey ? previous : current),
                 downloadError: null,
               }));
               void downloadStudioFile(originalDownloadPath, originalFilename, sessionId)
                 .catch((reason: unknown) => setViewState((previous) => (
-                  previous.key === viewKey
+                  previous.key === viewKey && downloadRequestId.current === requestId
                     ? {
                         ...previous,
                         downloadError: reason instanceof Error
@@ -228,20 +235,24 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
               mediaType={row.mediaType}
               sessionId={sessionId}
               kind="source"
-              fallbackAction={{ label: "View parsed content", onClick: () => setTab("parsed") }}
+              fallbackAction={parsedAvailable
+                ? { label: "View parsed content", onClick: () => setTab("parsed") }
+                : undefined}
             />
           ) : (
             <div className="studio-empty-state m-4 text-xs">
               <p>{originalAvailable
                 ? "The original file cannot be shown safely in the browser."
                 : "The original file is unavailable."}</p>
-              <button
-                type="button"
-                className="studio-button-primary mt-3 h-8 px-3 text-xs"
-                onClick={() => setTab("parsed")}
-              >
-                View parsed content
-              </button>
+              {parsedAvailable && (
+                <button
+                  type="button"
+                  className="studio-button-primary mt-3 h-8 px-3 text-xs"
+                  onClick={() => setTab("parsed")}
+                >
+                  View parsed content
+                </button>
+              )}
             </div>
           )
         ) : tab === "parsed" && parsedAvailable ? (

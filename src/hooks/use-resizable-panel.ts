@@ -30,6 +30,7 @@ export function useResizablePanel({
   const isDragging = useRef(false);
   const startX = useRef(0);
   const startWidth = useRef(0);
+  const activeDragCleanup = useRef<(() => void) | null>(null);
 
   // Persist width
   useEffect(() => {
@@ -40,10 +41,14 @@ export function useResizablePanel({
 
   const onMouseDown = useCallback(
     (e: React.MouseEvent) => {
+      if (e.button !== 0) return;
       e.preventDefault();
+      activeDragCleanup.current?.();
       isDragging.current = true;
       startX.current = e.clientX;
       startWidth.current = width;
+      const previousCursor = document.body.style.cursor;
+      const previousUserSelect = document.body.style.userSelect;
 
       const onMouseMove = (ev: MouseEvent) => {
         if (!isDragging.current) return;
@@ -55,36 +60,58 @@ export function useResizablePanel({
         setWidth(newWidth);
       };
 
-      const onMouseUp = () => {
+      let finished = false;
+      const finishDragging = () => {
+        if (finished) return;
+        finished = true;
         isDragging.current = false;
         document.removeEventListener("mousemove", onMouseMove);
-        document.removeEventListener("mouseup", onMouseUp);
-        document.body.style.cursor = "";
-        document.body.style.userSelect = "";
+        document.removeEventListener("mouseup", finishDragging);
+        window.removeEventListener("blur", finishDragging);
+        document.body.style.cursor = previousCursor;
+        document.body.style.userSelect = previousUserSelect;
+        if (activeDragCleanup.current === finishDragging) {
+          activeDragCleanup.current = null;
+        }
       };
 
       document.addEventListener("mousemove", onMouseMove);
-      document.addEventListener("mouseup", onMouseUp);
+      document.addEventListener("mouseup", finishDragging);
+      window.addEventListener("blur", finishDragging);
       document.body.style.cursor = "col-resize";
       document.body.style.userSelect = "none";
+      activeDragCleanup.current = finishDragging;
     },
     [width, minWidth, maxWidth, side],
   );
 
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
+      // Some older PointerEvent shims omit isPrimary; only an explicit false
+      // identifies an auxiliary pointer.
+      if (e.isPrimary === false || e.button !== 0) return;
       e.preventDefault();
+      activeDragCleanup.current?.();
       isDragging.current = true;
       startX.current = e.clientX;
       startWidth.current = width;
+      const previousCursor = document.body.style.cursor;
+      const previousUserSelect = document.body.style.userSelect;
 
+      let finished = false;
       const finishDragging = () => {
+        if (finished) return;
+        finished = true;
         isDragging.current = false;
         document.removeEventListener("pointermove", onPointerMove);
         document.removeEventListener("pointerup", finishDragging);
         document.removeEventListener("pointercancel", finishDragging);
-        document.body.style.cursor = "";
-        document.body.style.userSelect = "";
+        window.removeEventListener("blur", finishDragging);
+        document.body.style.cursor = previousCursor;
+        document.body.style.userSelect = previousUserSelect;
+        if (activeDragCleanup.current === finishDragging) {
+          activeDragCleanup.current = null;
+        }
       };
       const onPointerMove = (ev: PointerEvent) => {
         if (!isDragging.current) return;
@@ -97,11 +124,17 @@ export function useResizablePanel({
       document.addEventListener("pointermove", onPointerMove);
       document.addEventListener("pointerup", finishDragging);
       document.addEventListener("pointercancel", finishDragging);
+      window.addEventListener("blur", finishDragging);
       document.body.style.cursor = "col-resize";
       document.body.style.userSelect = "none";
+      activeDragCleanup.current = finishDragging;
     },
     [width, minWidth, maxWidth, side],
   );
+
+  useEffect(() => () => {
+    activeDragCleanup.current?.();
+  }, []);
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
