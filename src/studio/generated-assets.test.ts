@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import type { SkillActionJob } from "@/api/skill-actions";
 
-import { artifactsFromJob, mergeStudioJobs } from "./generated-assets";
+import {
+  artifactsFromJob,
+  buildStudioAssets,
+  mergeStudioJobs,
+} from "./generated-assets";
 
 function job(overrides: Partial<SkillActionJob> = {}): SkillActionJob {
   return {
@@ -20,6 +24,113 @@ function job(overrides: Partial<SkillActionJob> = {}): SkillActionJob {
 }
 
 describe("generated assets", () => {
+  it("groups every Video Overview file into one ready logical asset", () => {
+    const [asset] = buildStudioAssets([
+      job({
+        job_id: "job-video",
+        action_id: "video_overview.generate",
+        status: "succeeded",
+        result: {
+          title: "Market overview",
+          artifacts: [
+            ["overview.mp4", "video/mp4", 1000],
+            ["script.md", "text/markdown", 100],
+            ["scene-plan.json", "application/json", 200],
+            ["asset-brief.md", "text/markdown", 100],
+            ["handoff.md", "text/markdown", 100],
+            ["veo-prompt.txt", "text/plain", 100],
+            ["veo-operation.json", "application/json", 200],
+          ].map(([display_name, media_type, size]) => ({
+            handle: `ws/video/${display_name}`,
+            display_name,
+            media_type,
+            size,
+          })),
+        },
+      }),
+    ]);
+
+    expect(asset).toMatchObject({
+      id: "job-video",
+      actionId: "video_overview.generate",
+      kind: "video-overview",
+      title: "Market overview",
+      status: "ready",
+    });
+    expect(asset.files).toHaveLength(7);
+    expect(asset.primary?.role).toBe("video");
+    expect(asset.defaultDownload?.role).toBe("video");
+    expect(asset.files.find((file) => file.role === "scene-plan")).toMatchObject({
+      mediaType: "application/json",
+      size: 200,
+    });
+  });
+
+  it("marks a Video Overview with plan files but no video as partial", () => {
+    const [asset] = buildStudioAssets([
+      job({
+        action_id: "video_overview.generate",
+        status: "succeeded",
+        result: {
+          artifacts: [
+            {
+              handle: "ws/video/script.md",
+              display_name: "script.md",
+              media_type: "text/markdown",
+              size: 100,
+            },
+          ],
+        },
+      }),
+    ]);
+
+    expect(asset.status).toBe("partial");
+    expect(asset.primary?.role).toBe("script");
+  });
+
+  it("keeps active jobs as one generating asset", () => {
+    const [asset] = buildStudioAssets([
+      job({ action_id: "reports.generate", status: "running" }),
+    ]);
+
+    expect(asset).toMatchObject({
+      id: "job-1",
+      kind: "report",
+      title: "Reports",
+      status: "generating",
+      files: [],
+    });
+  });
+
+  it("groups unknown action files into one generic asset", () => {
+    const [asset] = buildStudioAssets([
+      job({
+        action_id: "custom.generate",
+        status: "succeeded",
+        result: {
+          artifacts: [
+            {
+              handle: "ws/custom/a.txt",
+              display_name: "a.txt",
+              media_type: "text/plain",
+              size: 10,
+            },
+            {
+              handle: "ws/custom/b.json",
+              display_name: "b.json",
+              media_type: "application/json",
+              size: 20,
+            },
+          ],
+        },
+      }),
+    ]);
+
+    expect(asset.kind).toBe("generic");
+    expect(asset.files).toHaveLength(2);
+    expect(asset.status).toBe("ready");
+  });
+
   it("exposes artifacts only after the job succeeds", () => {
     const result = {
       artifacts: [{

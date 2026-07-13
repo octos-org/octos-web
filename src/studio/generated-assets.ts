@@ -8,6 +8,30 @@ export interface GeneratedArtifact {
   filename: string;
   filePath: string;
   mediaType?: string;
+  size?: number;
+  job: SkillActionJob;
+}
+
+export type StudioAssetStatus =
+  | "generating"
+  | "ready"
+  | "partial"
+  | "failed"
+  | "unavailable";
+
+export interface AssetFile extends GeneratedArtifact {
+  role: string;
+}
+
+export interface StudioAsset {
+  id: string;
+  actionId: string;
+  kind: string;
+  title: string;
+  status: StudioAssetStatus;
+  primary?: AssetFile;
+  defaultDownload?: AssetFile;
+  files: AssetFile[];
   job: SkillActionJob;
 }
 
@@ -101,6 +125,7 @@ export function artifactsFromJob(job: SkillActionJob): GeneratedArtifact[] {
         filePath: handle,
         mediaType:
           typeof artifact.media_type === "string" ? artifact.media_type : undefined,
+        size: typeof artifact.size === "number" ? artifact.size : undefined,
         job,
       }];
     });
@@ -130,4 +155,124 @@ export function artifactsFromJob(job: SkillActionJob): GeneratedArtifact[] {
       job,
     }];
   });
+}
+
+const ASSET_KIND_BY_ACTION_ID: Record<string, string> = {
+  "reports.generate": "report",
+  "quiz.generate": "quiz",
+  "flashcards.generate": "flashcards",
+  "mindmap.generate": "mind-map",
+  "data_table.generate": "data-table",
+  "video_overview.generate": "video-overview",
+};
+
+function structuredTitle(job: SkillActionJob): string | undefined {
+  if (!job.result || typeof job.result !== "object") return undefined;
+  const result = job.result as Record<string, unknown>;
+  const candidates = [
+    result.title,
+    result.data && typeof result.data === "object"
+      ? (result.data as Record<string, unknown>).title
+      : undefined,
+    result.structured_metadata && typeof result.structured_metadata === "object"
+      ? (result.structured_metadata as Record<string, unknown>).title
+      : undefined,
+  ];
+  return candidates.find(
+    (value): value is string => typeof value === "string" && Boolean(value.trim()),
+  )?.trim();
+}
+
+function fileExtension(filename: string): string {
+  const dot = filename.lastIndexOf(".");
+  return dot === -1 ? "" : filename.slice(dot + 1).toLowerCase();
+}
+
+function artifactRole(kind: string, filename: string): string {
+  const name = filename.toLowerCase();
+  const extension = fileExtension(name);
+  if (kind === "video-overview") {
+    if (name.endsWith("overview.mp4") || extension === "mp4") return "video";
+    if (name.endsWith("script.md")) return "script";
+    if (name.endsWith("scene-plan.json")) return "scene-plan";
+    if (name.endsWith("asset-brief.md")) return "asset-brief";
+    if (name.endsWith("handoff.md")) return "handoff";
+    if (name.endsWith("veo-prompt.txt")) return "prompt";
+    if (name.endsWith("veo-operation.json")) return "metadata";
+  }
+  if (kind === "data-table") {
+    if (name.endsWith("-citations.csv")) return "citations";
+    if (extension === "csv") return "table";
+    if (extension === "json") return "data";
+    if (extension === "md" || extension === "markdown") return "document";
+  }
+  if (kind === "mind-map") {
+    if (extension === "json") return "data";
+    if (extension === "md" || extension === "markdown") return "document";
+  }
+  if (extension === "md" || extension === "markdown") return "document";
+  if (extension === "json") return "data";
+  if (extension === "csv") return "table";
+  if (["mp4", "mov", "webm", "mkv"].includes(extension)) return "video";
+  if (["mp3", "wav", "m4a", "aac", "ogg"].includes(extension)) return "audio";
+  if (["png", "jpg", "jpeg", "gif", "webp"].includes(extension)) return "image";
+  return "file";
+}
+
+function assetStatus(
+  job: SkillActionJob,
+  kind: string,
+  files: readonly AssetFile[],
+): StudioAssetStatus {
+  if (ACTIVE_JOB_STATUSES.has(job.status)) return "generating";
+  if (job.status === "failed" || job.status === "abandoned") return "failed";
+  if (files.length === 0) return "unavailable";
+  if (kind === "video-overview" && !files.some((file) => file.role === "video")) {
+    return "partial";
+  }
+  return "ready";
+}
+
+function primaryFile(kind: string, files: readonly AssetFile[]): AssetFile | undefined {
+  if (kind === "video-overview") {
+    return files.find((file) => file.role === "video")
+      ?? files.find((file) => file.role === "script")
+      ?? files[0];
+  }
+  if (kind === "data-table" || kind === "mind-map") {
+    return files.find((file) => file.role === "data") ?? files[0];
+  }
+  return files.find((file) => file.role === "document") ?? files[0];
+}
+
+export function buildStudioAsset(job: SkillActionJob): StudioAsset {
+  const kind = ASSET_KIND_BY_ACTION_ID[job.action_id] ?? "generic";
+  const files = artifactsFromJob(job).map<AssetFile>((artifact) => ({
+    ...artifact,
+    role: artifactRole(kind, artifact.filename),
+  }));
+  const primary = primaryFile(kind, files);
+  const defaultDownload = kind === "data-table"
+    ? files.find((file) => file.role === "table") ?? primary
+    : primary;
+  return {
+    id: job.job_id,
+    actionId: job.action_id,
+    kind,
+    title:
+      structuredTitle(job)
+      ?? STUDIO_SKILL_LABEL_BY_ACTION_ID.get(job.action_id)
+      ?? job.action_id,
+    status: assetStatus(job, kind, files),
+    primary,
+    defaultDownload,
+    files,
+    job,
+  };
+}
+
+export function buildStudioAssets(
+  jobs: readonly SkillActionJob[],
+): StudioAsset[] {
+  return jobs.map(buildStudioAsset);
 }
