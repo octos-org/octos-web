@@ -305,6 +305,44 @@ describe("StudioPage", () => {
     );
   });
 
+  it("resizes the Sources pane and persists its width", async () => {
+    localStorage.setItem("octos_studio_sources_width", "360");
+    renderStudio();
+
+    const pane = screen.getByTestId("studio-sources-pane");
+    const handle = screen.getByTestId("studio-sources-resize-handle");
+    expect(pane.style.width).toBe("360px");
+    expect(handle.className).toContain("max-lg:hidden");
+
+    fireEvent.mouseDown(handle, { clientX: 360 });
+    fireEvent.mouseMove(document, { clientX: 440 });
+    fireEvent.mouseUp(document);
+
+    expect(pane.style.width).toBe("440px");
+    await waitFor(() => {
+      expect(localStorage.getItem("octos_studio_sources_width")).toBe("440");
+    });
+  });
+
+  it("resizes the Studio rail, clamps its width, and persists it", async () => {
+    localStorage.setItem("octos_studio_rail_width", "400");
+    renderStudio();
+
+    const rail = screen.getByTestId("studio-rail");
+    const handle = screen.getByTestId("studio-rail-resize-handle");
+    expect(rail.style.width).toBe("400px");
+    expect(handle.className).toContain("max-xl:hidden");
+
+    fireEvent.mouseDown(handle, { clientX: 900 });
+    fireEvent.mouseMove(document, { clientX: 0 });
+    fireEvent.mouseUp(document);
+
+    expect(rail.style.width).toBe("520px");
+    await waitFor(() => {
+      expect(localStorage.getItem("octos_studio_rail_width")).toBe("520");
+    });
+  });
+
   it("falls back to the default title when none is stored", () => {
     renderStudio();
     expect(screen.getByTestId("studio-title").textContent).toBe(

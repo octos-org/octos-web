@@ -17,6 +17,7 @@ import {
 } from "@/runtime/session-context";
 import { recordProjectOpened } from "@/store/project-store";
 import * as ThreadStore from "@/store/thread-store";
+import { useResizablePanel } from "@/hooks/use-resizable-panel";
 
 import {
   SOURCE_IMPORT_ACTION_ID,
@@ -125,6 +126,26 @@ function selectedPathMatchesRow(path: string, row: SourceRow): boolean {
 function StudioWorkspace({ projectId }: { projectId: string }) {
   const [title, setTitle] = useState(() => readStoredTitle(projectId));
   const [panes, setPanes] = useState<PaneState>(loadPaneState);
+  const {
+    effectiveWidth: sourcesPaneWidth,
+    onMouseDown: onSourcesResizeStart,
+  } = useResizablePanel({
+    minWidth: 240,
+    maxWidth: 480,
+    defaultWidth: 280,
+    storageKey: "octos_studio_sources_width",
+    side: "left",
+  });
+  const {
+    effectiveWidth: studioRailWidth,
+    onMouseDown: onStudioRailResizeStart,
+  } = useResizablePanel({
+    minWidth: 280,
+    maxWidth: 520,
+    defaultWidth: 320,
+    storageKey: "octos_studio_rail_width",
+    side: "right",
+  });
   const [sourcePreviewKey, setSourcePreviewKey] = useState<string | null>(null);
   const [assetPreviewId, setAssetPreviewId] = useState<string | null>(null);
   const [sourceQuery, setSourceQuery] = useState("");
@@ -423,7 +444,8 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
             )}
             {panes.sources && (
               <aside
-                className="studio-pane w-[280px] shrink-0 border-r max-lg:fixed max-lg:bottom-0 max-lg:left-0 max-lg:top-16 max-lg:z-[35] max-lg:shadow-2xl"
+                style={{ width: sourcesPaneWidth }}
+                className="studio-pane shrink-0 border-r max-lg:fixed max-lg:bottom-0 max-lg:left-0 max-lg:top-16 max-lg:z-[35] max-lg:!w-[280px] max-lg:shadow-2xl"
                 data-testid="studio-sources-pane"
               >
                 <StudioSourcesPane
@@ -448,6 +470,14 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
                   onCitationTargetClear={() => setCitationTarget(null)}
                 />
               </aside>
+            )}
+            {panes.sources && (
+              <div
+                className="panel-resize-handle max-lg:hidden"
+                data-testid="studio-sources-resize-handle"
+                title="Resize Sources pane"
+                onMouseDown={onSourcesResizeStart}
+              />
             )}
             <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
               <div className="shrink-0 pb-4 pt-8 text-center">
@@ -478,8 +508,17 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
               />
             )}
             {panes.rail && (
+              <div
+                className="panel-resize-handle max-xl:hidden"
+                data-testid="studio-rail-resize-handle"
+                title="Resize Studio pane"
+                onMouseDown={onStudioRailResizeStart}
+              />
+            )}
+            {panes.rail && (
               <aside
-                className="studio-pane w-[320px] shrink-0 border-l max-xl:fixed max-xl:bottom-0 max-xl:right-0 max-xl:top-16 max-xl:z-[35] max-xl:shadow-2xl"
+                style={{ width: studioRailWidth }}
+                className="studio-pane shrink-0 border-l max-xl:fixed max-xl:bottom-0 max-xl:right-0 max-xl:top-16 max-xl:z-[35] max-xl:!w-[320px] max-xl:shadow-2xl"
                 data-testid="studio-rail"
               >
                 <StudioRail
