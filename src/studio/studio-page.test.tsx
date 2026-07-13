@@ -1153,6 +1153,62 @@ describe("StudioPage", () => {
     });
   });
 
+  it("does not regress a succeeded source import when an older running event arrives", async () => {
+    const running = readySourceJob({
+      status: "running",
+      source_id: undefined,
+      source_path: undefined,
+      updated_at: "2026-07-09T01:02:00Z",
+    });
+    mockSourceImportJobs([running]);
+    renderStudio();
+
+    expect(await screen.findByText("Processing")).toBeTruthy();
+    await waitFor(() => expect(loadSourceCatalogMock).toHaveBeenCalled());
+    loadSourceCatalogMock.mockResolvedValue([{
+      sourceId: "photo",
+      filename: "photo.jpg",
+      path: "notebook-sources/photo/source.md",
+      sourcePath: "notebook-sources/photo/source.md",
+      inputPath: "uploads/photo.jpg",
+      previewPath: "uploads/photo.jpg",
+      timestamp: Date.parse("2026-07-09T01:03:00Z"),
+      status: "ready",
+    }]);
+
+    fireEvent(window, new CustomEvent("crew:skill_action_job_updated", {
+      detail: readySourceJob({ updated_at: "2026-07-09T01:03:00Z" }),
+    }));
+    await waitFor(() => expect(screen.queryByText("Processing")).toBeNull());
+
+    fireEvent(window, new CustomEvent("crew:skill_action_job_updated", {
+      detail: running,
+    }));
+
+    await waitFor(() => expect(screen.queryByText("Processing")).toBeNull());
+    expect(screen.getAllByText("photo.jpg")).toHaveLength(1);
+  });
+
+  it("keeps a newer failed source import when an older succeeded event arrives", async () => {
+    const failed = readySourceJob({
+      status: "failed",
+      source_id: undefined,
+      source_path: undefined,
+      error: "Import failed",
+      updated_at: "2026-07-09T01:05:00Z",
+    });
+    mockSourceImportJobs([failed]);
+    renderStudio();
+
+    expect(await screen.findByText("Failed")).toBeTruthy();
+    fireEvent(window, new CustomEvent("crew:skill_action_job_updated", {
+      detail: readySourceJob({ updated_at: "2026-07-09T01:04:00Z" }),
+    }));
+
+    await waitFor(() => expect(screen.getByText("Failed")).toBeTruthy());
+    expect(screen.getByText("Import failed")).toBeTruthy();
+  });
+
   it("previews original and parsed source content inside the Sources pane", async () => {
     mockSourceImportJobs();
     vi.mocked(fetch).mockImplementation(async (input) => {

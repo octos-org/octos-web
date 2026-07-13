@@ -329,7 +329,7 @@ export function StudioSourcesPane({
   function closePreview() {
     onCitationTargetClear?.();
     setRestoreFocusKey(
-      lastPreviewTriggerKey.current ?? (previewRow ? rowKey(previewRow) : null),
+      previewRow ? rowKey(previewRow) : lastPreviewTriggerKey.current,
     );
     onPreviewKeyChange(null);
   }

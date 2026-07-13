@@ -49,6 +49,23 @@ function videoJob(filenames: string[]): SkillActionJob {
 afterEach(cleanup);
 
 describe("StudioAssetPreview", () => {
+  it("moves focus into the preview when it replaces the Studio list", () => {
+    const asset = buildStudioAsset(videoJob(["overview.mp4"]));
+
+    render(
+      <StudioAssetPreview
+        asset={asset}
+        sessionId="web-abc"
+        onBack={vi.fn()}
+        onDownload={vi.fn()}
+      />,
+    );
+
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Back to Studio" }),
+    );
+  });
+
   it("organizes every Video Overview output behind one five-tab viewer", () => {
     const asset = buildStudioAsset(
       videoJob([

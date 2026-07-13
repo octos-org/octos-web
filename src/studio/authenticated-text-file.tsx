@@ -4,6 +4,7 @@ import { buildApiHeaders } from "@/api/client";
 import { buildFileUrl } from "@/api/files";
 
 import type { AssetFile } from "./generated-assets";
+import { readResponseTextWithLimit } from "./limited-response";
 
 const MAX_STRUCTURED_ASSET_BYTES = 2 * 1024 * 1024;
 
@@ -45,14 +46,11 @@ export function AuthenticatedTextFile({
     })
       .then(async (response) => {
         if (!response.ok) throw new Error(`Preview failed (${response.status})`);
-        const contentLength = Number(response.headers?.get("content-length"));
-        if (Number.isFinite(contentLength) && contentLength > MAX_STRUCTURED_ASSET_BYTES) {
-          throw new Error("This asset is too large for the interactive viewer.");
-        }
-        const text = await response.text();
-        if (new TextEncoder().encode(text).byteLength > MAX_STRUCTURED_ASSET_BYTES) {
-          throw new Error("This asset is too large for the interactive viewer.");
-        }
+        const text = await readResponseTextWithLimit(
+          response,
+          MAX_STRUCTURED_ASSET_BYTES,
+          "This asset is too large for the interactive viewer.",
+        );
         if (!controller.signal.aborted) setState({ key, text, error: null });
       })
       .catch((reason: unknown) => {

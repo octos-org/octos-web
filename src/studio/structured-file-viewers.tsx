@@ -121,7 +121,14 @@ export function CsvTableViewer({ text, filename }: { text: string; filename: str
   const exceedsRenderLimit = parsed.overflow;
   const [sortColumn, setSortColumn] = useState<number | null>(null);
   const [descending, setDescending] = useState(false);
-  const header = rows[0] ?? [];
+  const columnCount = rows.reduce(
+    (maximum, row) => Math.max(maximum, row.length),
+    0,
+  );
+  const header = Array.from(
+    { length: columnCount },
+    (_, index) => rows[0]?.[index] ?? "",
+  );
   const body = useMemo(() => {
     if (exceedsRenderLimit) return [];
     const values = rows.slice(1);

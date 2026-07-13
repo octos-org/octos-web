@@ -43,6 +43,13 @@ describe("parseCsv", () => {
     );
     expect(screen.queryByRole("table")).toBeNull();
   });
+
+  it("renders cells from rows that are wider than the CSV header", () => {
+    render(<CsvTableViewer text={"name,value\nalpha,1,extra"} filename="ragged.csv" />);
+
+    expect(screen.getByRole("columnheader", { name: "Column 3" })).toBeTruthy();
+    expect(screen.getByText("extra")).toBeTruthy();
+  });
 });
 
 describe("JsonViewer", () => {

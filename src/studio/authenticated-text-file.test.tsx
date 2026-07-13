@@ -68,4 +68,33 @@ describe("AuthenticatedTextFile", () => {
 
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
   });
+
+  it("cancels a streamed structured preview as soon as it exceeds the limit", async () => {
+    const read = vi.fn()
+      .mockResolvedValueOnce({
+        done: false,
+        value: new Uint8Array(2 * 1024 * 1024),
+      })
+      .mockResolvedValueOnce({ done: false, value: new Uint8Array([1]) });
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    const releaseLock = vi.fn();
+    const text = vi.fn(async () => "would buffer the full response");
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      body: { getReader: () => ({ read, cancel, releaseLock }) },
+      text,
+    } as unknown as Response);
+
+    render(
+      <AuthenticatedTextFile file={reportFile()} sessionId="web-abc" empty="Missing">
+        {(content) => <p>{content}</p>}
+      </AuthenticatedTextFile>,
+    );
+
+    expect((await screen.findByRole("alert")).textContent).toMatch(/too large/i);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(text).not.toHaveBeenCalled();
+  });
 });

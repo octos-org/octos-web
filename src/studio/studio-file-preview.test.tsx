@@ -169,6 +169,39 @@ describe("StudioFilePreview", () => {
     expect(createObjectUrlMock).not.toHaveBeenCalled();
   });
 
+  it("cancels a streamed binary preview as soon as it exceeds the limit", async () => {
+    const read = vi.fn()
+      .mockResolvedValueOnce({
+        done: false,
+        value: { byteLength: 50 * 1024 * 1024 } as Uint8Array,
+      })
+      .mockResolvedValueOnce({ done: false, value: new Uint8Array([1]) });
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    const releaseLock = vi.fn();
+    const blob = vi.fn(async () => new Blob(["would buffer"], { type: "video/mp4" }));
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      body: { getReader: () => ({ read, cancel, releaseLock }) },
+      blob,
+    });
+    render(
+      <StudioFilePreview
+        filename="feature.mp4"
+        filePath="notebook-outputs/video/feature.mp4"
+        mediaType="video/mp4"
+        sessionId="web-abc"
+        kind="asset"
+      />,
+    );
+
+    expect((await screen.findByRole("alert")).textContent).toMatch(/too large/i);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(blob).not.toHaveBeenCalled();
+    expect(createObjectUrlMock).not.toHaveBeenCalled();
+  });
+
   it("loads protected previews with auth headers and renders a blob URL", async () => {
     render(
       <StudioFilePreview

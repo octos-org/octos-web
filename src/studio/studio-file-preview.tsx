@@ -12,9 +12,14 @@ import {
   previewMode,
   type PreviewMode,
 } from "./file-preview-mode";
+import {
+  readResponseBlobWithLimit,
+  readResponseTextWithLimit,
+} from "./limited-response";
 
 const MAX_INLINE_TEXT_BYTES = 2 * 1024 * 1024;
 const MAX_INLINE_BINARY_BYTES = 50 * 1024 * 1024;
+const PREVIEW_TOO_LARGE = "This file is too large to preview. Download it to view the full content.";
 
 
 interface Props {
@@ -90,7 +95,7 @@ export function StudioFilePreview({
     : MAX_INLINE_BINARY_BYTES;
   const declaredSizeError = size !== undefined
     && size > declaredSizeLimit
-    ? "This file is too large to preview. Download it to view the full content."
+    ? PREVIEW_TOO_LARGE
     : null;
   const [preview, setPreview] = useState<{
     key: string;
@@ -116,27 +121,21 @@ export function StudioFilePreview({
       .then(async (response) => {
         if (!response.ok) throw new Error(`Preview failed (${response.status})`);
         if (mode === "text") {
-          const contentLength = Number(response.headers?.get("content-length"));
-          if (Number.isFinite(contentLength) && contentLength > MAX_INLINE_TEXT_BYTES) {
-            throw new Error("This file is too large to preview. Download it to view the full content.");
-          }
-          const content = await response.text();
-          if (new TextEncoder().encode(content).byteLength > MAX_INLINE_TEXT_BYTES) {
-            throw new Error("This file is too large to preview. Download it to view the full content.");
-          }
+          const content = await readResponseTextWithLimit(
+            response,
+            MAX_INLINE_TEXT_BYTES,
+            PREVIEW_TOO_LARGE,
+          );
           if (!controller.signal.aborted) {
             setPreview({ key: previewKey, url: null, text: content, error: null });
           }
           return;
         }
-        const contentLength = Number(response.headers?.get("content-length"));
-        if (Number.isFinite(contentLength) && contentLength > MAX_INLINE_BINARY_BYTES) {
-          throw new Error("This file is too large to preview. Download it to view the full content.");
-        }
-        const blob = await response.blob();
-        if (blob.size > MAX_INLINE_BINARY_BYTES) {
-          throw new Error("This file is too large to preview. Download it to view the full content.");
-        }
+        const blob = await readResponseBlobWithLimit(
+          response,
+          MAX_INLINE_BINARY_BYTES,
+          PREVIEW_TOO_LARGE,
+        );
         if (isActiveContentType(blob.type)) {
           throw new Error("Preview blocked because the file contains active content.");
         }

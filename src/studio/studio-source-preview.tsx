@@ -153,6 +153,7 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
       <div className="flex shrink-0 items-center gap-2 border-b px-3 py-3">
         <button
           type="button"
+          autoFocus
           className="studio-ghost-button shrink-0 p-1.5"
           aria-label="Back to sources"
           onClick={onBack}

@@ -21,6 +21,7 @@ import { useResizablePanel } from "@/hooks/use-resizable-panel";
 
 import {
   SOURCE_IMPORT_ACTION_ID,
+  mergeSourceImportJobs,
   mergeSourceRows,
   sourceRowFromSkillActionJob,
   type SourceRow,
@@ -173,6 +174,7 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
   const [uploadedSources, setUploadedSources] = useState<SourceRow[]>([]);
   const [sourcesLoading, setSourcesLoading] = useState(true);
   const sourceCatalogRequest = useRef(0);
+  const sourceImportJobsRef = useRef<SkillActionJob[]>([]);
 
   function openCitation(citation: CitationTarget) {
     setCitationTarget(citation);
@@ -253,7 +255,7 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
     void refreshSourceCatalog();
   }, [refreshSourceCatalog]);
 
-  const mergeSourceImportJobs = useCallback(
+  const applySourceImportJobs = useCallback(
     (jobs: SkillActionJob[]) => {
       const sourceJobs = jobs.filter(
         (job) =>
@@ -262,12 +264,18 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
       );
       if (sourceJobs.length === 0) return;
 
+      const mergedJobs = mergeSourceImportJobs(
+        sourceImportJobsRef.current,
+        sourceJobs,
+      );
+      sourceImportJobsRef.current = mergedJobs;
+
       const succeededIds = new Set(
-        sourceJobs
+        mergedJobs
           .filter((job) => job.status === "succeeded")
           .map((job) => job.job_id),
       );
-      const transientRows = sourceJobs
+      const transientRows = mergedJobs
         .filter((job) => job.status !== "succeeded")
         .map((job) => sourceRowFromSkillActionJob(job));
       setUploadedSources((prev) =>
@@ -286,12 +294,12 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
       const jobs = await listSkillActionJobs(projectId, {
         actionId: SOURCE_IMPORT_ACTION_ID,
       });
-      mergeSourceImportJobs(jobs);
+      applySourceImportJobs(jobs);
     } catch {
       // The bridge may not be connected yet; the next bridge_connected
       // event will retry the snapshot fetch.
     }
-  }, [mergeSourceImportJobs, projectId]);
+  }, [applySourceImportJobs, projectId]);
 
   useEffect(() => {
     const restoreSoon = () => {
@@ -312,13 +320,13 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
     const onJobUpdated = (e: Event) => {
       const job = (e as CustomEvent<SkillActionJob>).detail;
       if (!job) return;
-      mergeSourceImportJobs([job]);
+      applySourceImportJobs([job]);
     };
     window.addEventListener("crew:skill_action_job_updated", onJobUpdated);
     return () => {
       window.removeEventListener("crew:skill_action_job_updated", onJobUpdated);
     };
-  }, [mergeSourceImportJobs]);
+  }, [applySourceImportJobs]);
 
   // History hydration — mirrors slides-chat (Issue #112.2 / #110.2):
   // `loadHistory` mount-races the bridge handshake and throws before

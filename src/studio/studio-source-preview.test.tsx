@@ -36,6 +36,27 @@ describe("StudioSourcePreview", () => {
     vi.unstubAllGlobals();
   });
 
+  it("moves focus into the preview when it replaces the Sources list", () => {
+    render(
+      <StudioSourcePreview
+        row={{
+          filename: "Report.pdf",
+          path: "uploads/report.pdf",
+          inputPath: "uploads/report.pdf",
+          mediaType: "application/pdf",
+          status: "processing",
+          timestamp: 1,
+        }}
+        sessionId="web-abc"
+        onBack={vi.fn()}
+      />,
+    );
+
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Back to sources" }),
+    );
+  });
+
   it("loads Source Guide from metadata and preserves warnings and provenance", async () => {
     vi.mocked(fetch).mockResolvedValueOnce({
       ok: true,

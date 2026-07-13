@@ -98,6 +98,16 @@ const KIND_BY_EXTENSION: Record<string, SourceKind> = {
   pptx: "text",
 };
 
+const TERMINAL_SOURCE_JOB_STATUSES = new Set<SkillActionJobStatus>([
+  "succeeded",
+  "failed",
+  "abandoned",
+]);
+const ACTIVE_SOURCE_JOB_STATUSES = new Set<SkillActionJobStatus>([
+  "queued",
+  "running",
+]);
+
 /** Classify a filename by extension; anything unknown is "text". */
 export function sourceKind(filename: string): SourceKind {
   const dot = filename.lastIndexOf(".");
@@ -128,6 +138,57 @@ function sourceStatusFromJob(status: SkillActionJobStatus): SourceRowStatus {
 function timestampFromJob(job: SkillActionJob): number {
   const parsed = Date.parse(job.updated_at || job.created_at);
   return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function sourceJobVersion(job: SkillActionJob): string {
+  return job.updated_at || job.created_at;
+}
+
+function sourceJobTimestamp(job: SkillActionJob): number {
+  const parsed = Date.parse(sourceJobVersion(job));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isNewerOrEqualSourceJob(
+  next: SkillActionJob,
+  current: SkillActionJob,
+): boolean {
+  const nextTimestamp = sourceJobTimestamp(next);
+  const currentTimestamp = sourceJobTimestamp(current);
+  if (nextTimestamp !== currentTimestamp) {
+    return nextTimestamp > currentTimestamp;
+  }
+  return sourceJobVersion(next) >= sourceJobVersion(current);
+}
+
+export function mergeSourceImportJobs(
+  existing: readonly SkillActionJob[],
+  incoming: readonly SkillActionJob[],
+): SkillActionJob[] {
+  const jobs = [...existing];
+  for (const next of incoming) {
+    if (next.action_id !== SOURCE_IMPORT_ACTION_ID) continue;
+    const index = jobs.findIndex((job) => job.job_id === next.job_id);
+    if (index === -1) {
+      jobs.push(next);
+      continue;
+    }
+
+    const current = jobs[index];
+    if (
+      TERMINAL_SOURCE_JOB_STATUSES.has(current.status)
+      && ACTIVE_SOURCE_JOB_STATUSES.has(next.status)
+    ) {
+      continue;
+    }
+    if (isNewerOrEqualSourceJob(next, current)) {
+      jobs[index] = { ...current, ...next };
+    }
+  }
+  return jobs.sort((a, b) => {
+    const byTimestamp = sourceJobTimestamp(b) - sourceJobTimestamp(a);
+    return byTimestamp || sourceJobVersion(b).localeCompare(sourceJobVersion(a));
+  });
 }
 
 export function sourceRowFromSkillActionJob(
