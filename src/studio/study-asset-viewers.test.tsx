@@ -1,12 +1,16 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   FlashcardsViewer,
   QuizViewer,
   ReportViewer,
 } from "./study-asset-viewers";
-import { parseFlashcardsMarkdown, parseQuizMarkdown } from "./study-asset-parsers";
+import {
+  parseFlashcardsMarkdown,
+  parseQuizMarkdown,
+  shuffleFlashcards,
+} from "./study-asset-parsers";
 
 afterEach(cleanup);
 
@@ -51,6 +55,16 @@ describe("study asset parsers", () => {
       ],
     });
   });
+
+  it("shuffles flashcards with Fisher-Yates instead of rotating the array", () => {
+    const cards = ["A", "B", "C", "D"].map((front) => ({ front, back: `${front} back` }));
+    const randomValues = [0, 0.5, 0.9];
+
+    const shuffled = shuffleFlashcards(cards, () => randomValues.shift() ?? 0);
+
+    expect(shuffled.map((card) => card.front)).toEqual(["D", "C", "B", "A"]);
+    expect(cards.map((card) => card.front)).toEqual(["A", "B", "C", "D"]);
+  });
 });
 
 describe("study asset viewers", () => {
@@ -82,5 +96,24 @@ describe("study asset viewers", () => {
     expect(screen.getByRole("navigation", { name: "Report contents" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Findings" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Risks" })).toBeTruthy();
+  });
+
+  it("scrolls to the matching heading inside the current report only", () => {
+    render(
+      <>
+        <section><h2>Findings</h2></section>
+        <ReportViewer text={"# Report\n\n## Findings\nBody"} />
+      </>,
+    );
+    const [outsideHeading, reportHeading] = screen.getAllByRole("heading", { name: "Findings" });
+    const outsideScroll = vi.fn();
+    const reportScroll = vi.fn();
+    outsideHeading.scrollIntoView = outsideScroll;
+    reportHeading.scrollIntoView = reportScroll;
+
+    fireEvent.click(screen.getByRole("button", { name: "Findings" }));
+
+    expect(reportScroll).toHaveBeenCalledWith({ block: "start", behavior: "smooth" });
+    expect(outsideScroll).not.toHaveBeenCalled();
   });
 });

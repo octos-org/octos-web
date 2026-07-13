@@ -23,7 +23,8 @@ export function AuthenticatedTextFile({
     text: string | null;
     error: string | null;
   }>({ key: file?.filePath ?? "", text: null, error: null });
-  const key = file?.filePath ?? "";
+  const filePath = file?.filePath ?? "";
+  const key = filePath;
   const declaredSizeError = file?.size !== undefined
     && file.size > MAX_STRUCTURED_ASSET_BYTES
     ? "This asset is too large for the interactive viewer."
@@ -35,10 +36,10 @@ export function AuthenticatedTextFile({
       : { key, text: null, error: null };
 
   useEffect(() => {
-    if (!file) return;
+    if (!filePath) return;
     if (declaredSizeError) return;
     const controller = new AbortController();
-    void fetch(buildFileUrl(file.filePath, { sessionId, workspaceScoped: true }), {
+    void fetch(buildFileUrl(filePath, { sessionId, workspaceScoped: true }), {
       headers: buildApiHeaders(),
       signal: controller.signal,
     })
@@ -60,7 +61,7 @@ export function AuthenticatedTextFile({
         }
       });
     return () => controller.abort();
-  }, [declaredSizeError, file, key, sessionId]);
+  }, [declaredSizeError, filePath, key, sessionId]);
 
   if (!file) return <div className="studio-empty-state m-4 text-xs">{empty}</div>;
   if (current.error) return <div className="studio-empty-state m-4 text-xs text-red-500" role="alert">{current.error}</div>;

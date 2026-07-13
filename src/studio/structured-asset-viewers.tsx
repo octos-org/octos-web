@@ -70,6 +70,20 @@ function parseMindMap(text: string): MindMapData | null {
       }];
     });
     if (nodes.length !== value.nodes.length) return null;
+    const nodesById = new Map<string, MindNode>();
+    for (const node of nodes) {
+      if (nodesById.has(node.id)) return null;
+      nodesById.set(node.id, node);
+    }
+    for (const node of nodes) {
+      const visited = new Set<string>();
+      let current: MindNode | undefined = node;
+      while (current?.parentId && nodesById.has(current.parentId)) {
+        if (visited.has(current.id)) return null;
+        visited.add(current.id);
+        current = nodesById.get(current.parentId);
+      }
+    }
     return {
       title: typeof value.title === "string" ? value.title : "Mind Map",
       root: typeof value.root === "string" ? value.root : "Mind Map",

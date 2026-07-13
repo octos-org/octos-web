@@ -1,10 +1,11 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Check, ChevronLeft, ChevronRight, RotateCcw, Shuffle, X } from "lucide-react";
 
 import { MarkdownContent } from "@/components/markdown-renderer";
 import {
   parseFlashcardsMarkdown,
   parseQuizMarkdown,
+  shuffleFlashcards,
   type Flashcard,
 } from "./study-asset-parsers";
 
@@ -94,7 +95,7 @@ export function FlashcardsViewer({ text }: { text: string }) {
           className="studio-ghost-button p-2"
           aria-label="Shuffle cards"
           onClick={() => {
-            setCards((values) => values.length < 2 ? values : [values.at(-1)!, ...values.slice(0, -1)]);
+            setCards((values) => shuffleFlashcards(values));
             setIndex(0);
             setFlipped(false);
           }}
@@ -119,12 +120,13 @@ export function FlashcardsViewer({ text }: { text: string }) {
 }
 
 export function ReportViewer({ text }: { text: string }) {
+  const reportRef = useRef<HTMLDivElement>(null);
   const headings = useMemo(() => text.split("\n").flatMap((line) => {
     const match = line.match(/^#{2,3}\s+(.+)$/);
     return match ? [match[1].trim()] : [];
   }), [text]);
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-y-auto">
+    <div ref={reportRef} className="flex h-full min-h-0 flex-col overflow-y-auto">
       {headings.length > 0 && (
         <nav className="shrink-0 border-b p-3" aria-label="Report contents">
           <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted">Contents</p>
@@ -135,7 +137,7 @@ export function ReportViewer({ text }: { text: string }) {
                 type="button"
                 className="rounded-full border px-2.5 py-1 text-[11px]"
                 onClick={() => {
-                  const target = Array.from(document.querySelectorAll("h2, h3"))
+                  const target = Array.from(reportRef.current?.querySelectorAll("h2, h3") ?? [])
                     .find((node) => node.textContent?.trim() === heading);
                   target?.scrollIntoView({ block: "start", behavior: "smooth" });
                 }}

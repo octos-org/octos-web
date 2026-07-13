@@ -1,6 +1,10 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const { downloadStudioFile } = vi.hoisted(() => ({
+  downloadStudioFile: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@/api/client", () => ({
   buildApiHeaders: () => ({ Authorization: "Bearer test-token" }),
 }));
@@ -15,12 +19,15 @@ vi.mock("./studio-file-preview", () => ({
 vi.mock("./file-preview-mode", () => ({
   isFilePreviewable: (filename: string) => !filename.endsWith(".docx"),
 }));
+vi.mock("./studio-file-download", () => ({ downloadStudioFile }));
 
 import { StudioSourcePreview } from "./studio-source-preview";
 
 describe("StudioSourcePreview", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn());
+    downloadStudioFile.mockClear();
+    downloadStudioFile.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -107,6 +114,7 @@ describe("StudioSourcePreview", () => {
           sourceId: "source-a",
           filename: "Source A.pdf",
           path: "notebook-sources/source-a/source.md",
+          previewPath: "uploads/source-a.pdf",
           summaryPath: "notebook-sources/source-a/summary.md",
           timestamp: 1,
         }}
@@ -125,6 +133,7 @@ describe("StudioSourcePreview", () => {
           sourceId: "source-b",
           filename: "Source B.pdf",
           path: "notebook-sources/source-b/source.md",
+          previewPath: "uploads/source-b.pdf",
           timestamp: 2,
         }}
         sessionId="web-abc"
@@ -135,7 +144,111 @@ describe("StudioSourcePreview", () => {
     expect(screen.getByRole("tab", { name: "Original" }).getAttribute("aria-selected"))
       .toBe("true");
     expect(screen.getByTestId("file-preview").getAttribute("data-path")).toBe(
-      "notebook-sources/source-b/source.md",
+      "uploads/source-b.pdf",
     );
+  });
+
+  it("uses a citation to choose Parsed initially but still lets the user switch tabs", () => {
+    const view = render(
+      <StudioSourcePreview
+        row={{
+          sourceId: "report",
+          filename: "Report.pdf",
+          path: "notebook-sources/report/source.md",
+          sourcePath: "notebook-sources/report/source.md",
+          previewPath: "uploads/report.pdf",
+          timestamp: 1,
+        }}
+        sessionId="web-abc"
+        onBack={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("tab", { name: "Original" }).getAttribute("aria-selected"))
+      .toBe("true");
+
+    view.rerender(
+      <StudioSourcePreview
+        row={{
+          sourceId: "report",
+          filename: "Report.pdf",
+          path: "notebook-sources/report/source.md",
+          sourcePath: "notebook-sources/report/source.md",
+          previewPath: "uploads/report.pdf",
+          timestamp: 1,
+        }}
+        sessionId="web-abc"
+        onBack={vi.fn()}
+        citationTarget={{ chunkId: "chunk-12", sourceId: "report", startLine: 12, endLine: 14 }}
+      />,
+    );
+
+    expect(screen.getByRole("tab", { name: "Parsed" }).getAttribute("aria-selected"))
+      .toBe("true");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Original" }));
+
+    expect(screen.getByRole("tab", { name: "Original" }).getAttribute("aria-selected"))
+      .toBe("true");
+    expect(screen.getByTestId("file-preview").getAttribute("data-path")).toBe(
+      "uploads/report.pdf",
+    );
+  });
+
+  it("does not treat parsed fallback content as the original file", () => {
+    render(
+      <StudioSourcePreview
+        row={{
+          sourceId: "missing-original",
+          filename: "Statement.pdf",
+          originalFilename: "Statement.pdf",
+          path: "notebook-sources/missing-original/source.md",
+          sourcePath: "notebook-sources/missing-original/source.md",
+          previewPath: "notebook-sources/missing-original/source.md",
+          inputPath: "uploads/missing-statement.pdf",
+          mediaType: "application/pdf",
+          timestamp: 1,
+        }}
+        sessionId="web-abc"
+        onBack={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("tab", { name: "Parsed" }).getAttribute("aria-selected"))
+      .toBe("true");
+    expect(screen.queryByRole("button", { name: /Download original/ })).toBeNull();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Original" }));
+    expect(screen.getByText("The original file is unavailable.")).toBeTruthy();
+    expect(screen.queryByTestId("file-preview")).toBeNull();
+  });
+
+  it("downloads the original input path instead of the preview path", async () => {
+    render(
+      <StudioSourcePreview
+        row={{
+          sourceId: "report",
+          filename: "Report.pdf",
+          originalFilename: "Original report.pdf",
+          path: "notebook-sources/report/source.md",
+          sourcePath: "notebook-sources/report/source.md",
+          previewPath: "previews/report.pdf",
+          inputPath: "uploads/original-report.pdf",
+          timestamp: 1,
+        }}
+        sessionId="web-abc"
+        onBack={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Download original Report.pdf" }));
+
+    await waitFor(() => {
+      expect(downloadStudioFile).toHaveBeenCalledWith(
+        "uploads/original-report.pdf",
+        "Original report.pdf",
+        "web-abc",
+      );
+    });
   });
 });

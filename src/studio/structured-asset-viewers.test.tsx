@@ -34,6 +34,22 @@ describe("MindMapViewer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Collapse Causes" }));
     expect(screen.queryByRole("button", { name: "Open node Energy" })).toBeNull();
   });
+
+  it.each([
+    ["duplicate node ids", [
+      { id: "root", label: "Root", summary: "Root summary" },
+      { id: "root", label: "Child", summary: "Child summary", parent_id: "root" },
+    ]],
+    ["cyclic parent links", [
+      { id: "a", label: "A", summary: "A summary", parent_id: "b" },
+      { id: "b", label: "B", summary: "B summary", parent_id: "a" },
+    ]],
+  ])("rejects %s instead of rendering an unsafe tree", (_label, nodes) => {
+    render(<MindMapViewer text={JSON.stringify({ title: "Unsafe", root: "Unsafe", nodes })} />);
+
+    expect(screen.getByText(/mind-map JSON is invalid/)).toBeTruthy();
+    expect(screen.queryByRole("tree")).toBeNull();
+  });
 });
 
 describe("DataTableViewer", () => {

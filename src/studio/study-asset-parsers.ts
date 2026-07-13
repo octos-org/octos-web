@@ -9,6 +9,18 @@ export interface ParsedQuiz { title: string; questions: QuizQuestion[] }
 export interface Flashcard { front: string; back: string }
 export interface ParsedFlashcards { title: string; cards: Flashcard[] }
 
+export function shuffleFlashcards(
+  cards: readonly Flashcard[],
+  random: () => number = Math.random,
+): Flashcard[] {
+  const shuffled = [...cards];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(random() * (index + 1));
+    [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+  }
+  return shuffled;
+}
+
 export function parseQuizMarkdown(text: string): ParsedQuiz | null {
   const lines = text.replaceAll("\r\n", "\n").split("\n");
   const title = lines.find((line) => line.startsWith("# "))?.slice(2).trim() || "Quiz";

@@ -35,13 +35,22 @@ function provenanceLabel(provenance?: Record<string, unknown>): string | null {
 }
 
 export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: Props) {
+  const parsedPath = row.sourcePath ?? row.path;
+  const originalPath = sourcePreviewPath(row);
+  const originalAvailable = originalPath.replaceAll("\\", "/")
+    !== parsedPath.replaceAll("\\", "/");
   const originalFilename = row.originalFilename ?? row.filename;
-  const originalPreviewable = isFilePreviewable(originalFilename, row.mediaType);
+  const originalPreviewable = originalAvailable
+    && isFilePreviewable(originalFilename, row.mediaType);
+  const originalDownloadPath = row.inputPath ?? row.materializedPath ?? originalPath;
   const citationMatches = Boolean(citationTarget && (
     (citationTarget.sourceId && citationTarget.sourceId === row.sourceId)
     || (citationTarget.sourcePath && citationTarget.sourcePath === row.sourcePath)
   ));
   const rowIdentity = row.sourceId ?? row.sourcePath ?? row.path;
+  const viewKey = citationMatches && citationTarget
+    ? `${rowIdentity}::citation:${citationTarget.chunkId}:${citationTarget.startLine ?? ""}:${citationTarget.endLine ?? ""}`
+    : rowIdentity;
   const initialTab: SourcePreviewTab = citationMatches || !originalPreviewable
     ? "parsed"
     : "original";
@@ -53,17 +62,17 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
     guideError: string | null;
     downloadError: string | null;
   }>({
-    key: rowIdentity,
+    key: viewKey,
     tab: initialTab,
     summaryPath: row.summaryPath ?? null,
     guideResolved: Boolean(row.summaryPath),
     guideError: null,
     downloadError: null,
   });
-  const current = viewState.key === rowIdentity
+  const current = viewState.key === viewKey
     ? viewState
     : {
-        key: rowIdentity,
+        key: viewKey,
         tab: initialTab,
         summaryPath: row.summaryPath ?? null,
         guideResolved: Boolean(row.summaryPath),
@@ -74,9 +83,7 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
   const setTab = (nextTab: SourcePreviewTab) => {
     setViewState({ ...current, tab: nextTab });
   };
-  const parsedPath = row.sourcePath ?? row.path;
   const provenance = provenanceLabel(row.provenance);
-  const visibleTab: SourcePreviewTab = citationMatches ? "parsed" : tab;
 
   useEffect(() => {
     function handleEscape(event: KeyboardEvent) {
@@ -104,7 +111,7 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
           ? metadata.summary_path
           : null;
         if (!controller.signal.aborted) {
-          setViewState((previous) => previous.key === rowIdentity
+          setViewState((previous) => previous.key === viewKey
             ? {
                 ...previous,
                 summaryPath: path,
@@ -116,7 +123,7 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
       })
       .catch((reason: unknown) => {
         if (!controller.signal.aborted) {
-          setViewState((previous) => previous.key === rowIdentity
+          setViewState((previous) => previous.key === viewKey
             ? {
                 ...previous,
                 guideResolved: true,
@@ -126,7 +133,7 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
         }
       });
     return () => controller.abort();
-  }, [guideResolved, row.metadataPath, rowIdentity, sessionId, summaryPath, tab]);
+  }, [guideResolved, row.metadataPath, sessionId, summaryPath, tab, viewKey]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -145,21 +152,23 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
           </p>
           <p className="text-[11px] text-muted">Source preview</p>
         </div>
-        <button
-          type="button"
-          className="studio-ghost-button shrink-0 p-1.5"
-          aria-label={`Download original ${row.filename}`}
-          onClick={() => {
-            setViewState({ ...current, downloadError: null });
-            void downloadStudioFile(sourcePreviewPath(row), originalFilename, sessionId)
-              .catch((reason: unknown) => setViewState({
-                ...current,
-                downloadError: reason instanceof Error ? reason.message : "Download failed",
-              }));
-          }}
-        >
-          <Download size={15} />
-        </button>
+        {originalAvailable && (
+          <button
+            type="button"
+            className="studio-ghost-button shrink-0 p-1.5"
+            aria-label={`Download original ${row.filename}`}
+            onClick={() => {
+              setViewState({ ...current, downloadError: null });
+              void downloadStudioFile(originalDownloadPath, originalFilename, sessionId)
+                .catch((reason: unknown) => setViewState({
+                  ...current,
+                  downloadError: reason instanceof Error ? reason.message : "Download failed",
+                }));
+            }}
+          >
+            <Download size={15} />
+          </button>
+        )}
       </div>
       {downloadError && <p className="shrink-0 px-3 py-2 text-xs text-red-500" role="alert">{downloadError}</p>}
       <div
@@ -172,8 +181,8 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
             key={value}
             type="button"
             role="tab"
-            aria-selected={visibleTab === value}
-            className={`border-b-2 px-3 py-2 text-xs ${visibleTab === value ? "border-accent text-text-strong" : "border-transparent text-muted"}`}
+            aria-selected={tab === value}
+            className={`border-b-2 px-3 py-2 text-xs ${tab === value ? "border-accent text-text-strong" : "border-transparent text-muted"}`}
             onClick={() => setTab(value)}
             onKeyDown={(event) => {
               if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
@@ -195,11 +204,11 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
         ))}
       </div>
       <div className="min-h-0 flex-1 overflow-hidden">
-        {visibleTab === "original" ? (
+        {tab === "original" ? (
           originalPreviewable ? (
             <StudioFilePreview
               filename={originalFilename}
-              filePath={sourcePreviewPath(row)}
+              filePath={originalPath}
               mediaType={row.mediaType}
               sessionId={sessionId}
               kind="source"
@@ -207,7 +216,9 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
             />
           ) : (
             <div className="studio-empty-state m-4 text-xs">
-              <p>The original file cannot be shown safely in the browser.</p>
+              <p>{originalAvailable
+                ? "The original file cannot be shown safely in the browser."
+                : "The original file is unavailable."}</p>
               <button
                 type="button"
                 className="studio-button-primary mt-3 h-8 px-3 text-xs"
@@ -217,7 +228,7 @@ export function StudioSourcePreview({ row, sessionId, onBack, citationTarget }: 
               </button>
             </div>
           )
-        ) : visibleTab === "parsed" ? (
+        ) : tab === "parsed" ? (
           <StudioFilePreview
             filename={`${row.filename} parsed.md`}
             filePath={parsedPath}
