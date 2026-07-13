@@ -88,6 +88,48 @@ describe("generated assets", () => {
     expect(asset.primary?.role).toBe("script");
   });
 
+  it("recognizes a renamed Video Overview MP4 from its MIME and handle", () => {
+    const [asset] = buildStudioAssets([
+      job({
+        action_id: "video_overview.generate",
+        status: "succeeded",
+        result: {
+          artifacts: [{
+            handle: "ws/video/overview.mp4",
+            display_name: "Rendered video",
+            media_type: "video/mp4",
+          }],
+        },
+      }),
+    ]);
+
+    expect(asset.status).toBe("ready");
+    expect(asset.primary).toMatchObject({
+      filename: "Rendered video",
+      role: "video",
+    });
+  });
+
+  it("prefers an explicit artifact role over filename inference", () => {
+    const [asset] = buildStudioAssets([
+      job({
+        action_id: "video_overview.generate",
+        status: "succeeded",
+        result: {
+          artifacts: [{
+            handle: "ws/video/output.bin",
+            display_name: "Narration notes",
+            media_type: "application/octet-stream",
+            role: "script",
+          }],
+        },
+      }),
+    ]);
+
+    expect(asset.files[0].role).toBe("script");
+    expect(asset.primary?.role).toBe("script");
+  });
+
   it("keeps active jobs as one generating asset", () => {
     const [asset] = buildStudioAssets([
       job({ action_id: "reports.generate", status: "running" }),

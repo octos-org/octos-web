@@ -150,6 +150,37 @@ function readySourceJob(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function readyVideoOverviewJob() {
+  return {
+    job_id: "job-video",
+    batch_id: "batch-video",
+    profile_id: "alan0x",
+    session_id: "web-abc",
+    action_id: "video_overview.generate",
+    skill_id: "mofa-notebook-video",
+    status: "succeeded",
+    result: {
+      title: "Market overview",
+      artifacts: [
+        ["overview.mp4", "video/mp4"],
+        ["script.md", "text/markdown"],
+        ["scene-plan.json", "application/json"],
+        ["asset-brief.md", "text/markdown"],
+        ["handoff.md", "text/markdown"],
+        ["veo-prompt.txt", "text/plain"],
+        ["veo-operation.json", "application/json"],
+      ].map(([display_name, media_type]) => ({
+        handle: `ws/video/${display_name}`,
+        display_name,
+        media_type,
+        size: 42,
+      })),
+    },
+    created_at: "2026-07-09T01:00:00Z",
+    updated_at: "2026-07-09T01:01:00Z",
+  };
+}
+
 function mockSourceImportJobs(jobs: unknown[] = [readySourceJob()]) {
   listSkillActionJobsMock.mockImplementation(
     (_sessionId: string, options?: { actionId?: string }) =>
@@ -223,6 +254,7 @@ beforeEach(() => {
       ok: true,
       status: 200,
       blob: async () => new Blob(["preview"]),
+      text: async () => "# Quiz",
     })),
   );
   Object.defineProperty(URL, "createObjectURL", {
@@ -372,11 +404,11 @@ describe("StudioPage", () => {
     });
     expect(sendMessageMock).not.toHaveBeenCalled();
     expect(
-      within(screen.getByTestId("studio-rail")).getByText("Running"),
+      within(screen.getByTestId("studio-rail")).getByText("Generating"),
     ).toBeTruthy();
   });
 
-  it("previews and downloads artifacts from completed studio action jobs", async () => {
+  it("previews and downloads a completed studio action as one logical asset", async () => {
     mockSourceImportJobs();
     invokeSkillActionMock.mockResolvedValueOnce({
       action_id: "quiz.generate",
@@ -431,19 +463,60 @@ describe("StudioPage", () => {
       }),
     );
 
-    expect(await screen.findByText("quiz.md")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Preview quiz.md" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Download quiz.md" })).toBeTruthy();
+    const rail = screen.getByTestId("studio-rail");
+    expect(await within(rail).findByRole("button", { name: "Open Quiz" })).toBeTruthy();
+    expect(within(rail).getByRole("button", { name: "Download Quiz" })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Preview quiz.md" }));
-    const preview = await screen.findByTitle("quiz.md asset preview");
-    expect(preview.getAttribute("src")).toBe("blob:studio-preview");
+    fireEvent.click(within(rail).getByRole("button", { name: "Open Quiz" }));
+    expect(await within(rail).findByRole("button", { name: "Back to Studio" }))
+      .toBeTruthy();
+    expect(await within(rail).findByRole("heading", { name: "Quiz" })).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByTestId("chat-thread-stub")).toBeTruthy();
+
+    fireEvent.click(within(rail).getByRole("button", { name: "Back to Studio" }));
 
     const appendChild = vi.spyOn(document.body, "appendChild");
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
-    fireEvent.click(screen.getByRole("button", { name: "Download quiz.md" }));
+    fireEvent.click(within(rail).getByRole("button", { name: "Download Quiz" }));
     await waitFor(() => expect(appendChild).toHaveBeenCalled());
     expect((appendChild.mock.calls[0][0] as HTMLAnchorElement).download).toBe("quiz.md");
+  });
+
+  it("groups a multi-file Video Overview into one Studio asset viewer", async () => {
+    listSkillActionJobsMock.mockImplementation(
+      (_sessionId: string, options?: { actionId?: string }) =>
+        Promise.resolve(options?.actionId === "source.import" ? [] : [readyVideoOverviewJob()]),
+    );
+
+    renderStudio();
+
+    const rail = screen.getByTestId("studio-rail");
+    const open = await within(rail).findByRole("button", {
+      name: "Open Market overview",
+    });
+    expect(within(rail).queryByText("script.md")).toBeNull();
+    expect(within(rail).queryByText("scene-plan.json")).toBeNull();
+
+    fireEvent.click(open);
+    expect(within(rail).getByRole("button", { name: "Back to Studio" })).toBeTruthy();
+    for (const tab of ["Overview", "Script", "Scenes", "Assets", "Files"]) {
+      expect(within(rail).getByRole("tab", { name: tab })).toBeTruthy();
+    }
+    expect(screen.getByTestId("chat-thread-stub")).toBeTruthy();
+
+    fireEvent.click(within(rail).getByRole("tab", { name: "Files" }));
+    expect(within(rail).getAllByRole("button", { name: /^Download / }))
+      .toHaveLength(7);
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle studio rail" }));
+    expect(screen.queryByTestId("studio-rail")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Toggle studio rail" }));
+    expect(
+      await within(screen.getByTestId("studio-rail")).findByRole("button", {
+        name: "Back to Studio",
+      }),
+    ).toBeTruthy();
   });
 
   it("restores persisted generated assets after a page refresh", async () => {
@@ -462,6 +535,7 @@ describe("StudioPage", () => {
                   skill_id: "mofa-notebook-study",
                   status: "succeeded",
                   result: {
+                    title: "Restored quiz",
                     artifacts: [
                       {
                         handle: "ws/cmVzdG9yZWQtcXVpei5tZA/restored-quiz.md",
@@ -480,13 +554,11 @@ describe("StudioPage", () => {
 
     renderStudio();
 
-    expect(await screen.findByText("restored-quiz.md")).toBeTruthy();
-    expect(
-      screen.getByRole("button", { name: "Preview restored-quiz.md" }),
-    ).toBeTruthy();
-    expect(
-      screen.getByRole("button", { name: "Download restored-quiz.md" }),
-    ).toBeTruthy();
+    const rail = screen.getByTestId("studio-rail");
+    expect(await within(rail).findByRole("button", { name: "Open Restored quiz" }))
+      .toBeTruthy();
+    expect(within(rail).getByRole("button", { name: "Download Restored quiz" }))
+      .toBeTruthy();
   });
 
   it("disables source-required action skills until a source is selected", () => {
@@ -933,17 +1005,54 @@ describe("StudioPage", () => {
     });
   });
 
-  it("previews the original uploaded file for an imported source", async () => {
+  it("previews original and parsed source content inside the Sources pane", async () => {
     mockSourceImportJobs();
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      return {
+        ok: true,
+        status: 200,
+        blob: async () => new Blob(["preview"], { type: "image/jpeg" }),
+        text: async () =>
+          url.includes("notebook-sources%2Fphoto%2Fsource.md")
+            ? "# Parsed source"
+            : "",
+      } as Response;
+    });
 
     renderStudio();
 
     await screen.findByText("photo.jpg");
     fireEvent.click(screen.getByLabelText("Preview photo.jpg"));
 
+    const pane = screen.getByTestId("studio-sources-pane");
+    expect(within(pane).getByRole("button", { name: "Back to sources" })).toBeTruthy();
+    expect(within(pane).getByRole("tab", { name: "Original" })).toBeTruthy();
+    expect(within(pane).getByRole("tab", { name: "Parsed" })).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByTestId("chat-thread-stub")).toBeTruthy();
+
     const image = await screen.findByAltText("photo.jpg source preview");
     expect(image.getAttribute("src")).toBe("blob:studio-preview");
     expect(image.getAttribute("src")).not.toContain("notebook-sources");
+
+    fireEvent.click(within(pane).getByRole("tab", { name: "Parsed" }));
+    expect(
+      await within(pane).findByRole("heading", { name: "Parsed source" }),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle sources" }));
+    expect(screen.queryByTestId("studio-sources-pane")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Toggle sources" }));
+    expect(
+      within(screen.getByTestId("studio-sources-pane")).getByRole("button", {
+        name: "Back to sources",
+      }),
+    ).toBeTruthy();
+
+    const reopenedPane = screen.getByTestId("studio-sources-pane");
+    fireEvent.click(within(reopenedPane).getByRole("button", { name: "Back to sources" }));
+    expect(await within(reopenedPane).findByText("photo.jpg")).toBeTruthy();
   });
 
   it("renames an imported source through the source rename action", async () => {

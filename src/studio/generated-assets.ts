@@ -9,6 +9,7 @@ export interface GeneratedArtifact {
   filePath: string;
   mediaType?: string;
   size?: number;
+  role?: string;
   job: SkillActionJob;
 }
 
@@ -126,6 +127,10 @@ export function artifactsFromJob(job: SkillActionJob): GeneratedArtifact[] {
         mediaType:
           typeof artifact.media_type === "string" ? artifact.media_type : undefined,
         size: typeof artifact.size === "number" ? artifact.size : undefined,
+        role:
+          typeof artifact.role === "string" && artifact.role.trim()
+            ? artifact.role.trim()
+            : undefined,
         job,
       }];
     });
@@ -188,7 +193,7 @@ function fileExtension(filename: string): string {
   return dot === -1 ? "" : filename.slice(dot + 1).toLowerCase();
 }
 
-function artifactRole(kind: string, filename: string): string {
+function artifactRoleFromFilename(kind: string, filename: string): string {
   const name = filename.toLowerCase();
   const extension = fileExtension(name);
   if (kind === "video-overview") {
@@ -217,6 +222,32 @@ function artifactRole(kind: string, filename: string): string {
   if (["mp3", "wav", "m4a", "aac", "ogg"].includes(extension)) return "audio";
   if (["png", "jpg", "jpeg", "gif", "webp"].includes(extension)) return "image";
   return "file";
+}
+
+function roleFromMediaType(mediaType?: string): string {
+  const normalized = mediaType?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  if (normalized.startsWith("video/")) return "video";
+  if (normalized.startsWith("audio/")) return "audio";
+  if (normalized.startsWith("image/")) return "image";
+  if (normalized === "application/json") return "data";
+  if (normalized === "text/csv") return "table";
+  if (normalized === "text/markdown") return "document";
+  return "file";
+}
+
+function artifactRole(kind: string, artifact: GeneratedArtifact): string {
+  if (artifact.role) return artifact.role;
+  const mediaRole = roleFromMediaType(artifact.mediaType);
+  if (kind === "video-overview" && mediaRole === "video") return "video";
+
+  const handleRole = artifactRoleFromFilename(
+    kind,
+    fileNameFromPath(artifact.filePath, artifact.filename),
+  );
+  if (handleRole !== "file") return handleRole;
+
+  const displayRole = artifactRoleFromFilename(kind, artifact.filename);
+  return displayRole !== "file" ? displayRole : mediaRole;
 }
 
 function assetStatus(
@@ -249,7 +280,7 @@ export function buildStudioAsset(job: SkillActionJob): StudioAsset {
   const kind = ASSET_KIND_BY_ACTION_ID[job.action_id] ?? "generic";
   const files = artifactsFromJob(job).map<AssetFile>((artifact) => ({
     ...artifact,
-    role: artifactRole(kind, artifact.filename),
+    role: artifactRole(kind, artifact),
   }));
   const primary = primaryFile(kind, files);
   const defaultDownload = kind === "data-table"

@@ -27,14 +27,15 @@ import {
   isSourceRowReady,
   sourceKind,
   sourceRowFromSkillActionJob,
-  sourcePreviewPath,
   type SourceKind,
   type SourceRow,
 } from "./source-media";
-import { StudioFilePreviewDialog } from "./studio-file-preview";
+import { StudioSourcePreview } from "./studio-source-preview";
 
 interface Props {
   sessionId: string;
+  previewKey: string | null;
+  onPreviewKeyChange: (key: string | null) => void;
   /** Server file paths currently selected as grounding sources. */
   selected: string[];
   onToggle: (path: string) => void;
@@ -230,6 +231,8 @@ function SourceActionsMenu({
 
 export function StudioSourcesPane({
   sessionId,
+  previewKey,
+  onPreviewKeyChange,
   selected,
   onToggle,
   uploaded,
@@ -242,7 +245,6 @@ export function StudioSourcesPane({
   const [query, setQuery] = useState("");
   const [uploadError, setUploadError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const [previewRow, setPreviewRow] = useState<SourceRow | null>(null);
   const [renamingKey, setRenamingKey] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -298,6 +300,10 @@ export function StudioSourcesPane({
     return row.jobId ?? row.sourceId ?? row.path;
   }
 
+  const previewRow = previewKey
+    ? rows.find((row) => rowKey(row) === previewKey) ?? null
+    : null;
+
   function dismissSourceRow(row: SourceRow) {
     setActionError(null);
     if (
@@ -306,7 +312,7 @@ export function StudioSourcesPane({
         sourceRowIdentityKeys(row).includes(key),
       )
     ) {
-      setPreviewRow(null);
+      onPreviewKeyChange(null);
     }
     onRemoved(row);
   }
@@ -396,6 +402,16 @@ export function StudioSourcesPane({
     } finally {
       setBusyKey(null);
     }
+  }
+
+  if (previewRow) {
+    return (
+      <StudioSourcePreview
+        row={previewRow}
+        sessionId={sessionId}
+        onBack={() => onPreviewKeyChange(null)}
+      />
+    );
   }
 
   return (
@@ -504,7 +520,7 @@ export function StudioSourcesPane({
                       type="button"
                       className="flex min-w-0 flex-1 items-center gap-2 text-left"
                       aria-label={`Preview ${row.filename}`}
-                      onClick={() => setPreviewRow(row)}
+                      onClick={() => onPreviewKeyChange(rowKey(row))}
                     >
                       <Icon size={16} className="shrink-0 text-muted" />
                       <div className="min-w-0 flex-1">
@@ -540,7 +556,7 @@ export function StudioSourcesPane({
                       canRetry={
                         row.status === "failed" || row.status === "abandoned"
                       }
-                      onPreview={() => setPreviewRow(row)}
+                      onPreview={() => onPreviewKeyChange(rowKey(row))}
                       onRename={() => beginRename(row)}
                       onRemoveSource={() => {
                         void removeSource(row);
@@ -572,16 +588,6 @@ export function StudioSourcesPane({
           {selected.length} source{selected.length === 1 ? "" : "s"} selected for
           notebook grounding
         </p>
-      )}
-      {previewRow && (
-        <StudioFilePreviewDialog
-          filename={previewRow.filename}
-          filePath={sourcePreviewPath(previewRow)}
-          mediaType={previewRow.mediaType}
-          sessionId={sessionId}
-          kind="source"
-          onClose={() => setPreviewRow(null)}
-        />
       )}
     </div>
   );

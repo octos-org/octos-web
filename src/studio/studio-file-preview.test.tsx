@@ -10,9 +10,9 @@ vi.mock("@/api/files", () => ({
   buildFileUrl: (path: string) => `/api/files/${encodeURIComponent(path)}`,
 }));
 
-import { StudioFilePreviewDialog } from "./studio-file-preview";
+import { StudioFilePreview } from "./studio-file-preview";
 
-describe("StudioFilePreviewDialog", () => {
+describe("StudioFilePreview", () => {
   const fetchMock = vi.fn();
   const createObjectUrlMock = vi.fn(() => "blob:authenticated-preview");
   const revokeObjectUrlMock = vi.fn();
@@ -42,12 +42,11 @@ describe("StudioFilePreviewDialog", () => {
 
   it("loads protected previews with auth headers and renders a blob URL", async () => {
     render(
-      <StudioFilePreviewDialog
+      <StudioFilePreview
         filename="photo.jpg"
         filePath="uploads/photo.jpg"
         sessionId="web-abc"
         kind="source"
-        onClose={() => {}}
       />,
     );
 
@@ -61,16 +60,17 @@ describe("StudioFilePreviewDialog", () => {
         signal: expect.any(AbortSignal),
       }),
     );
+    expect(screen.queryByLabelText("Close source preview")).toBeNull();
+    expect(document.querySelector(".fixed.inset-0")).toBeNull();
   });
 
   it("revokes the preview blob URL when unmounted", async () => {
     const view = render(
-      <StudioFilePreviewDialog
+      <StudioFilePreview
         filename="photo.jpg"
         filePath="uploads/photo.jpg"
         sessionId="web-abc"
         kind="source"
-        onClose={() => {}}
       />,
     );
     await waitFor(() => expect(createObjectUrlMock).toHaveBeenCalled());
@@ -82,39 +82,79 @@ describe("StudioFilePreviewDialog", () => {
 
   it("uses the source media type when a renamed PDF has no extension", async () => {
     render(
-      <StudioFilePreviewDialog
+      <StudioFilePreview
         filename="May statement"
         filePath="uploads/statement.pdf"
         mediaType="application/pdf"
         sessionId="web-abc"
         kind="source"
-        onClose={() => {}}
       />,
     );
 
-    expect(
-      (await screen.findByTitle("May statement source preview")).getAttribute("src"),
-    ).toBe("blob:authenticated-preview");
+    const frame = await screen.findByTitle("May statement source preview");
+    expect(frame.getAttribute("src")).toBe("blob:authenticated-preview");
+    expect(frame.getAttribute("sandbox")).toBe("");
   });
 
-  it("preserves the artifact media type for an inline Markdown preview", async () => {
+  it("renders authenticated Markdown as document content instead of an iframe", async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
       status: 200,
-      blob: async () => new Blob(["# Quiz"], { type: "application/octet-stream" }),
+      text: async () => "# Quiz",
     });
     render(
-      <StudioFilePreviewDialog
+      <StudioFilePreview
         filename="Quiz"
         filePath="ws/cXVpei5tZA/quiz.md"
         mediaType="text/markdown"
         sessionId="web-abc"
         kind="asset"
-        onClose={() => {}}
       />,
     );
 
-    await screen.findByTitle("Quiz asset preview");
-    expect((createObjectUrlMock.mock.calls[0][0] as Blob).type).toBe("text/markdown");
+    expect(await screen.findByRole("heading", { name: "Quiz" })).toBeTruthy();
+    expect(screen.queryByTitle("Quiz asset preview")).toBeNull();
+    expect(createObjectUrlMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks active content even when its filename looks like a PDF", async () => {
+    render(
+      <StudioFilePreview
+        filename="statement.pdf"
+        filePath="uploads/statement.pdf"
+        mediaType="text/html"
+        sessionId="web-abc"
+        kind="source"
+      />,
+    );
+
+    expect(await screen.findByText("Preview unavailable for this file type."))
+      .toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.queryByTitle("statement.pdf source preview")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Open file" })).toBeNull();
+  });
+
+  it("rejects an active response MIME instead of creating a same-origin blob", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      blob: async () => new Blob(["<script>alert(1)</script>"], { type: "text/html" }),
+    });
+
+    render(
+      <StudioFilePreview
+        filename="statement.pdf"
+        filePath="uploads/statement.pdf"
+        sessionId="web-abc"
+        kind="source"
+      />,
+    );
+
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Preview blocked because the file contains active content.",
+    );
+    expect(createObjectUrlMock).not.toHaveBeenCalled();
+    expect(screen.queryByTitle("statement.pdf source preview")).toBeNull();
   });
 });

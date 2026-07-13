@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { LucideIcon } from "lucide-react";
-import { Download, Eye, FileText, Image, Music, Table, Video, XCircle } from "lucide-react";
+import { Download, FileText, Image, Music, Table, Video, XCircle } from "lucide-react";
 
 import { buildApiHeaders } from "@/api/client";
 import { buildFileUrl } from "@/api/files";
@@ -9,22 +9,24 @@ import {
   listSkillActions,
   listSkillActionJobs,
   type SkillActionJob,
-  type SkillActionJobStatus,
 } from "@/api/skill-actions";
 
 import { resolveStudioSkills } from "./action-catalog";
 import {
-  artifactsFromJob,
-  type GeneratedArtifact,
+  buildStudioAssets,
+  type AssetFile,
+  type StudioAssetStatus,
   jobTimestamp,
   mergeStudioJobs,
 } from "./generated-assets";
 import { STUDIO_SKILL_LABEL_BY_ACTION_ID } from "./skills";
 import { relativeTime, sourceKind, type SourceKind } from "./source-media";
-import { StudioFilePreviewDialog } from "./studio-file-preview";
+import { StudioAssetPreview } from "./studio-asset-preview";
 
 interface Props {
   sessionId: string;
+  selectedAssetId: string | null;
+  onSelectedAssetIdChange: (assetId: string | null) => void;
   historyTopic?: string;
   /**
    * Notebook source ids currently selected in the Sources pane. Their
@@ -42,8 +44,6 @@ const KIND_ICONS: Record<SourceKind, LucideIcon> = {
   table: Table,
   text: FileText,
 };
-
-const ACTIVE_JOB_STATUSES = new Set<SkillActionJobStatus>(["queued", "running"]);
 
 /**
  * Header-authenticated blob download: keeps the bearer token out of the
@@ -75,28 +75,33 @@ async function downloadAsset(
   }
 }
 
-function jobStatusLabel(status: SkillActionJobStatus): string {
+function assetStatusLabel(status: StudioAssetStatus): string {
   switch (status) {
-    case "queued":
-      return "Queued";
-    case "running":
-      return "Running";
-    case "succeeded":
+    case "generating":
+      return "Generating";
+    case "ready":
       return "Ready";
+    case "partial":
+      return "Partial";
     case "failed":
       return "Failed";
-    case "abandoned":
-      return "Abandoned";
+    case "unavailable":
+      return "Unavailable";
   }
 }
 
-export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Props) {
+export function StudioRail({
+  sessionId,
+  selectedAssetId,
+  onSelectedAssetIdChange,
+  selectedSources,
+  selectedSourceIds,
+}: Props) {
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busySkillId, setBusySkillId] = useState<string | null>(null);
   const [jobs, setJobs] = useState<SkillActionJob[]>([]);
   const [skills, setSkills] = useState(() => resolveStudioSkills([]));
-  const [previewArtifact, setPreviewArtifact] = useState<GeneratedArtifact | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -176,7 +181,31 @@ export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Pr
     }
   }
 
-  const hasGeneratedItems = jobs.length > 0;
+  function startDownload(file: AssetFile): void {
+    setDownloadError(null);
+    downloadAsset(file.filePath, file.filename, sessionId).catch((err: unknown) => {
+      setDownloadError(err instanceof Error ? err.message : "Download failed");
+    });
+  }
+
+  const assets = buildStudioAssets(jobs);
+  const selectedAsset = selectedAssetId
+    ? assets.find((asset) => asset.id === selectedAssetId) ?? null
+    : null;
+
+  if (selectedAsset) {
+    return (
+      <StudioAssetPreview
+        asset={selectedAsset}
+        sessionId={sessionId}
+        downloadError={downloadError}
+        onBack={() => onSelectedAssetIdChange(null)}
+        onDownload={startDownload}
+      />
+    );
+  }
+
+  const hasGeneratedItems = assets.length > 0;
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto p-4">
@@ -242,106 +271,82 @@ export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Pr
           </div>
         ) : (
           <ul className="flex flex-col gap-2">
-            {jobs.map((job) => {
-              const artifacts = artifactsFromJob(job);
-              if (artifacts.length > 0) {
-                return artifacts.map((artifact) => {
-                  const Icon = KIND_ICONS[sourceKind(artifact.filename)];
-                  const actionLabel =
-                    STUDIO_SKILL_LABEL_BY_ACTION_ID.get(job.action_id) ??
-                    job.action_id;
-                  return (
-                    <li
-                      key={artifact.id}
-                      className="studio-list-row studio-card !rounded-xl p-3"
-                    >
-                      <Icon size={16} className="shrink-0 text-muted" />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm leading-tight" title={artifact.filename}>
-                          {artifact.filename}
-                        </span>
-                        <span className="mt-0.5 block text-[11px] text-muted">
-                          {actionLabel} - {relativeTime(jobTimestamp(job))}
-                        </span>
-                      </span>
-                      <button
-                        type="button"
-                        className="studio-ghost-button studio-asset-action shrink-0 p-1"
-                        aria-label={`Preview ${artifact.filename}`}
-                        onClick={() => setPreviewArtifact(artifact)}
-                      >
-                        <Eye size={14} />
-                      </button>
-                      <button
-                        type="button"
-                        className="studio-ghost-button studio-asset-action shrink-0 p-1"
-                        aria-label={`Download ${artifact.filename}`}
-                        onClick={() => {
-                          setDownloadError(null);
-                          downloadAsset(artifact.filePath, artifact.filename, sessionId).catch(
-                            (err: unknown) => {
-                              setDownloadError(
-                                err instanceof Error ? err.message : "Download failed",
-                              );
-                            },
-                          );
-                        }}
-                      >
-                        <Download size={14} />
-                      </button>
-                    </li>
-                  );
-                });
-              }
-              const label =
-                STUDIO_SKILL_LABEL_BY_ACTION_ID.get(job.action_id) ??
-                job.action_id;
-              const active = ACTIVE_JOB_STATUSES.has(job.status);
+            {assets.map((asset) => {
+              const job = asset.job;
+              const Icon = asset.status === "failed"
+                ? XCircle
+                : KIND_ICONS[sourceKind(asset.primary?.filename ?? "asset.md")];
+              const actionLabel =
+                STUDIO_SKILL_LABEL_BY_ACTION_ID.get(asset.actionId) ?? asset.actionId;
+              const canOpen = asset.files.length > 0;
+              const defaultDownload = asset.defaultDownload;
               return (
                 <li
-                  key={job.job_id}
+                  key={asset.id}
                   className="studio-list-row studio-card !rounded-xl p-3"
                 >
-                  {job.status === "failed" || job.status === "abandoned" ? (
-                    <XCircle size={16} className="shrink-0 text-red-500" />
-                  ) : (
-                    <FileText size={16} className="shrink-0 text-muted" />
-                  )}
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm leading-tight" title={label}>
-                      {label}
-                    </span>
-                    <span className="mt-0.5 block text-[11px] text-muted">
-                      {relativeTime(jobTimestamp(job))}
-                    </span>
-                    {job.error && (
-                      <span className="mt-0.5 block truncate text-[11px] text-red-500">
-                        {job.error}
+                  <Icon
+                    size={16}
+                    className={`shrink-0 ${asset.status === "failed" ? "text-red-500" : "text-muted"}`}
+                  />
+                  {canOpen ? (
+                    <button
+                      type="button"
+                      className="min-w-0 flex-1 text-left"
+                      aria-label={`Open ${asset.title}`}
+                      onClick={() => onSelectedAssetIdChange(asset.id)}
+                    >
+                      <span className="block truncate text-sm leading-tight" title={asset.title}>
+                        {asset.title}
                       </span>
-                    )}
-                  </span>
-                  <span
-                    className={`shrink-0 rounded border px-1.5 py-0.5 font-label text-[10px] uppercase tracking-[0.04em] ${job.status === "failed" ? "text-red-500" : "text-muted"}`}
-                    role={active ? "status" : undefined}
-                  >
-                    {jobStatusLabel(job.status)}
-                  </span>
+                      <span className="mt-0.5 block text-[11px] text-muted">
+                        {actionLabel} - {relativeTime(jobTimestamp(job))}
+                      </span>
+                      {job.error && (
+                        <span className="mt-0.5 block truncate text-[11px] text-red-500">
+                          {job.error}
+                        </span>
+                      )}
+                    </button>
+                  ) : (
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm leading-tight" title={asset.title}>
+                        {asset.title}
+                      </span>
+                      <span className="mt-0.5 block text-[11px] text-muted">
+                        {relativeTime(jobTimestamp(job))}
+                      </span>
+                      {job.error && (
+                        <span className="mt-0.5 block truncate text-[11px] text-red-500">
+                          {job.error}
+                        </span>
+                      )}
+                    </span>
+                  )}
+                  {defaultDownload && (
+                    <button
+                      type="button"
+                      className="studio-ghost-button studio-asset-action shrink-0 p-1"
+                      aria-label={`Download ${asset.title}`}
+                      onClick={() => startDownload(defaultDownload)}
+                    >
+                      <Download size={14} />
+                    </button>
+                  )}
+                  {asset.status !== "ready" && (
+                    <span
+                      className={`shrink-0 rounded border px-1.5 py-0.5 font-label text-[10px] uppercase tracking-[0.04em] ${asset.status === "failed" ? "text-red-500" : "text-muted"}`}
+                      role={asset.status === "generating" ? "status" : undefined}
+                    >
+                      {assetStatusLabel(asset.status)}
+                    </span>
+                  )}
                 </li>
               );
             })}
           </ul>
         )}
       </section>
-      {previewArtifact && (
-        <StudioFilePreviewDialog
-          filename={previewArtifact.filename}
-          filePath={previewArtifact.filePath}
-          mediaType={previewArtifact.mediaType}
-          sessionId={sessionId}
-          kind="asset"
-          onClose={() => setPreviewArtifact(null)}
-        />
-      )}
     </div>
   );
 }

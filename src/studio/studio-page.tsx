@@ -124,6 +124,8 @@ function selectedPathMatchesRow(path: string, row: SourceRow): boolean {
 function StudioWorkspace({ projectId }: { projectId: string }) {
   const [title, setTitle] = useState(() => readStoredTitle(projectId));
   const [panes, setPanes] = useState<PaneState>(loadPaneState);
+  const [sourcePreviewKey, setSourcePreviewKey] = useState<string | null>(null);
+  const [assetPreviewId, setAssetPreviewId] = useState<string | null>(null);
 
   // Persist only explicit user toggles — a mount must not freeze the
   // viewport-derived defaults into storage as if the user chose them.
@@ -411,6 +413,8 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
               >
                 <StudioSourcesPane
                   sessionId={projectId}
+                  previewKey={sourcePreviewKey}
+                  onPreviewKeyChange={setSourcePreviewKey}
                   selected={selectedSources}
                   onToggle={toggleSource}
                   uploaded={uploadedSources}
@@ -459,6 +463,8 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
               >
                 <StudioRail
                   sessionId={projectId}
+                  selectedAssetId={assetPreviewId}
+                  onSelectedAssetIdChange={setAssetPreviewId}
                   selectedSources={selectedSources}
                   selectedSourceIds={selectedSourceIds}
                 />
