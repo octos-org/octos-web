@@ -128,6 +128,7 @@ vi.mock("./source-store", async (importOriginal) => {
 
 import { STUDIO_SKILLS } from "./skills";
 import { StudioPage } from "./studio-page";
+import { withNotebookToolContext } from "./tool-context";
 
 function readySourceJob(overrides: Record<string, unknown> = {}) {
   return {
@@ -212,6 +213,17 @@ function renderStudio(path = "/studio/web-abc") {
     </MemoryRouter>,
   );
 }
+
+it("marks Studio conversation sends with the Notebook tool context", () => {
+  expect(
+    withNotebookToolContext({
+      sessionId: "web-abc",
+      text: "Ground this answer in my sources",
+      requestText: "Ground this answer in my sources",
+      media: [],
+    }),
+  ).toMatchObject({ toolContext: "notebook" });
+});
 
 beforeEach(() => {
   Object.defineProperty(window, "innerWidth", {

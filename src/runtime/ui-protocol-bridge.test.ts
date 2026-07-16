@@ -2049,6 +2049,22 @@ describe("notification dispatch", () => {
     expect(req.params?.reasoning_effort).toBe("high");
   });
 
+  it("sendTurn forwards tool_context onto the wire", async () => {
+    const { bridge, ws } = await freshConnected();
+    void bridge.sendTurn("turn-notebook", [{ kind: "text", text: "hi" }], {
+      tool_context: "notebook",
+    });
+    const req = findRequest(ws, METHODS.TURN_START);
+    expect(req.params?.tool_context).toBe("notebook");
+  });
+
+  it("sendTurn omits tool_context for ordinary turns", async () => {
+    const { bridge, ws } = await freshConnected();
+    void bridge.sendTurn("turn-chat", [{ kind: "text", text: "hi" }]);
+    const req = findRequest(ws, METHODS.TURN_START);
+    expect("tool_context" in (req.params ?? {})).toBe(false);
+  });
+
   it("sendTurn omits reasoning_effort when unset (omission = default, clears server override)", async () => {
     const { bridge, ws } = await freshConnected();
     void bridge.sendTurn("turn-re-d", [{ kind: "text", text: "hi" }], {

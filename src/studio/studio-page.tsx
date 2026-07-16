@@ -31,6 +31,7 @@ import { loadSourceCatalog } from "./source-store";
 import { StudioRail } from "./studio-rail";
 import { StudioSourcesPane } from "./studio-sources-pane";
 import type { CitationTarget } from "./structured-asset-viewers";
+import { withNotebookToolContext } from "./tool-context";
 
 const TITLE_STORAGE_KEY = "octos_session_titles";
 const PANES_STORAGE_KEY = "octos-studio-panes";
@@ -421,7 +422,7 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
   // The center composer does not upload or attach files in Studio mode.
   const beforeSend = useCallback(
     async (request: SessionSendRequest): Promise<SessionBeforeSendResult> => {
-      return request;
+      return withNotebookToolContext(request);
     },
     [],
   );

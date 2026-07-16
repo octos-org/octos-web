@@ -123,6 +123,7 @@ export interface SessionSendRequest {
   requestText: string;
   media: string[];
   audioUploadMode?: "recording" | "upload";
+  toolContext?: string;
 }
 
 export interface SessionBeforeSendResult extends Partial<SessionSendRequest> {
