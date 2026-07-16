@@ -18,6 +18,7 @@ export interface SkillActionToolResult {
     display_name: string;
     media_type: string;
     size: number;
+    role?: string;
   }>;
   /** Legacy servers may still return raw relative paths. */
   files_to_send?: string[];

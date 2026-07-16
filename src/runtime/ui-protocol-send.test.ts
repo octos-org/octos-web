@@ -177,6 +177,43 @@ describe("buildTurnStartExtras live_video (#1478)", () => {
   });
 });
 
+describe("buildTurnStartExtras tool context", () => {
+  const base = { sessionId: SESSION, text: "", media: [] as string[] };
+
+  it("maps a Notebook send to the tool_context wire field", () => {
+    expect(
+      buildTurnStartExtras({ ...base, toolContext: "notebook" })?.tool_context,
+    ).toBe("notebook");
+  });
+
+  it("keeps ordinary sends free of a tool context", () => {
+    expect(buildTurnStartExtras({ ...base })).toBeUndefined();
+    expect(
+      buildTurnStartExtras({ ...base, liveVideo: true })?.tool_context,
+    ).toBeUndefined();
+  });
+
+  it("preserves the context for attachment and retry/rewrite sends", () => {
+    const attachment = buildTurnStartExtras({
+      ...base,
+      media: ["uploads/source.pdf"],
+      toolContext: "notebook",
+    });
+    expect(attachment?.media).toHaveLength(1);
+    expect(attachment?.tool_context).toBe("notebook");
+
+    const rewrite = buildTurnStartExtras({
+      ...base,
+      text: "original",
+      requestText: "edited",
+      clientMessageId: "cmid-original",
+      toolContext: "notebook",
+    });
+    expect(rewrite?.rewrite_for).toBe("cmid-original");
+    expect(rewrite?.tool_context).toBe("notebook");
+  });
+});
+
 describe("sendMessage", () => {
   // Codex NIT H rewrite: this test now exercises the actual #109.1
   // contract — when `startBridgeForSession`'s underlying bridge start

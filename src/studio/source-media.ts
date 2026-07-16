@@ -32,6 +32,15 @@ export const SOURCE_LIST_ACTION_ID = "source.list";
 export const SOURCE_RENAME_ACTION_ID = "source.rename";
 export const SOURCE_REMOVE_ACTION_ID = "source.remove";
 
+export const SOURCE_UPLOAD_EXTENSIONS = [
+  ".txt", ".md", ".markdown", ".csv", ".json", ".html", ".htm",
+  ".docx", ".pptx", ".xlsx", ".xlsm", ".pdf",
+  ".jpg", ".jpeg", ".png", ".webp", ".gif",
+  ".mp3", ".wav", ".m4a", ".aac", ".ogg",
+  ".mp4", ".mov", ".webm", ".mkv",
+] as const;
+export const SOURCE_UPLOAD_ACCEPT = SOURCE_UPLOAD_EXTENSIONS.join(",");
+
 export type SourceRowStatus = "processing" | "ready" | "failed" | "abandoned";
 
 /**
@@ -40,6 +49,7 @@ export type SourceRowStatus = "processing" | "ready" | "failed" | "abandoned";
  */
 export interface SourceRow {
   filename: string;
+  originalFilename?: string;
   path: string;
   timestamp: number;
   status?: SourceRowStatus;
@@ -52,6 +62,12 @@ export interface SourceRow {
   materializedPath?: string;
   previewPath?: string;
   mediaType?: string;
+  sourceType?: string;
+  metadataPath?: string;
+  chunksPath?: string;
+  summaryPath?: string;
+  warnings?: string[];
+  provenance?: Record<string, unknown>;
   retryInput?: Record<string, unknown>;
 }
 
@@ -76,13 +92,21 @@ const KIND_BY_EXTENSION: Record<string, SourceKind> = {
   webm: "video",
   csv: "table",
   xlsx: "table",
-  xls: "table",
   xlsm: "table",
   pdf: "text",
-  doc: "text",
   docx: "text",
   pptx: "text",
 };
+
+const TERMINAL_SOURCE_JOB_STATUSES = new Set<SkillActionJobStatus>([
+  "succeeded",
+  "failed",
+  "abandoned",
+]);
+const ACTIVE_SOURCE_JOB_STATUSES = new Set<SkillActionJobStatus>([
+  "queued",
+  "running",
+]);
 
 /** Classify a filename by extension; anything unknown is "text". */
 export function sourceKind(filename: string): SourceKind {
@@ -116,6 +140,57 @@ function timestampFromJob(job: SkillActionJob): number {
   return Number.isFinite(parsed) ? parsed : Date.now();
 }
 
+function sourceJobVersion(job: SkillActionJob): string {
+  return job.updated_at || job.created_at;
+}
+
+function sourceJobTimestamp(job: SkillActionJob): number {
+  const parsed = Date.parse(sourceJobVersion(job));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isNewerOrEqualSourceJob(
+  next: SkillActionJob,
+  current: SkillActionJob,
+): boolean {
+  const nextTimestamp = sourceJobTimestamp(next);
+  const currentTimestamp = sourceJobTimestamp(current);
+  if (nextTimestamp !== currentTimestamp) {
+    return nextTimestamp > currentTimestamp;
+  }
+  return sourceJobVersion(next) >= sourceJobVersion(current);
+}
+
+export function mergeSourceImportJobs(
+  existing: readonly SkillActionJob[],
+  incoming: readonly SkillActionJob[],
+): SkillActionJob[] {
+  const jobs = [...existing];
+  for (const next of incoming) {
+    if (next.action_id !== SOURCE_IMPORT_ACTION_ID) continue;
+    const index = jobs.findIndex((job) => job.job_id === next.job_id);
+    if (index === -1) {
+      jobs.push(next);
+      continue;
+    }
+
+    const current = jobs[index];
+    if (
+      TERMINAL_SOURCE_JOB_STATUSES.has(current.status)
+      && ACTIVE_SOURCE_JOB_STATUSES.has(next.status)
+    ) {
+      continue;
+    }
+    if (isNewerOrEqualSourceJob(next, current)) {
+      jobs[index] = { ...current, ...next };
+    }
+  }
+  return jobs.sort((a, b) => {
+    const byTimestamp = sourceJobTimestamp(b) - sourceJobTimestamp(a);
+    return byTimestamp || sourceJobVersion(b).localeCompare(sourceJobVersion(a));
+  });
+}
+
 export function sourceRowFromSkillActionJob(
   job: SkillActionJob,
   fallbackFilename?: string,
@@ -127,9 +202,10 @@ export function sourceRowFromSkillActionJob(
       : (job.input_path ?? job.materialized_path ?? job.source_path ?? job.job_id);
   const filename =
     job.filename ??
+    fallbackFilename ??
     fileNameFromPath(
       job.input_path ?? job.source_path ?? job.materialized_path ?? job.job_id,
-      fallbackFilename ?? job.job_id,
+      job.job_id,
     );
 
   return {
@@ -145,6 +221,7 @@ export function sourceRowFromSkillActionJob(
     sourcePath: job.source_path,
     materializedPath: job.materialized_path,
     previewPath: job.materialized_path ?? job.input_path,
+    metadataPath: job.metadata_path,
   };
 }
 
@@ -158,10 +235,12 @@ export function mergeSourceRows(
 ): SourceRow[] {
   const rows = [...existing];
   for (const next of incoming) {
-    const index = rows.findIndex(
-      (row) =>
-        (next.jobId && row.jobId === next.jobId) || row.path === next.path,
-    );
+    const index = rows.findIndex((row) => {
+      if (next.sourceId && row.sourceId) return next.sourceId === row.sourceId;
+      if (next.jobId && row.jobId) return next.jobId === row.jobId;
+      if (next.sourcePath && row.sourcePath) return next.sourcePath === row.sourcePath;
+      return row.path === next.path;
+    });
     if (index === -1) {
       rows.push(next);
     } else if (next.timestamp >= rows[index].timestamp) {

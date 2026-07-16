@@ -22,22 +22,25 @@ import { invokeSkillAction } from "@/api/skill-actions";
 
 import {
   SOURCE_IMPORT_ACTION_ID,
+  SOURCE_UPLOAD_ACCEPT,
   SOURCE_REMOVE_ACTION_ID,
   SOURCE_RENAME_ACTION_ID,
   isSourceRowReady,
   sourceKind,
   sourceRowFromSkillActionJob,
-  sourcePreviewPath,
   type SourceKind,
   type SourceRow,
 } from "./source-media";
-import { StudioFilePreviewDialog } from "./studio-file-preview";
+import { StudioSourcePreview } from "./studio-source-preview";
+import type { CitationTarget } from "./structured-asset-viewers";
 
 interface Props {
   sessionId: string;
-  /** Server file paths currently selected as grounding sources. */
+  previewKey: string | null;
+  onPreviewKeyChange: (key: string | null) => void;
+  /** Stable catalog source IDs currently selected for grounding. */
   selected: string[];
-  onToggle: (path: string) => void;
+  onToggle: (sourceId: string) => void;
   /**
    * Uploaded-source rows live in the workspace (not here) so toggling
    * the pane closed cannot orphan still-selected uploads.
@@ -49,6 +52,12 @@ interface Props {
   onCatalogChanged: () => void;
   /** True while the initial session file listing is in flight. */
   loading: boolean;
+  query: string;
+  onQueryChange: (query: string) => void;
+  listScrollTop: number;
+  onListScrollTopChange: (scrollTop: number) => void;
+  citationTarget?: CitationTarget | null;
+  onCitationTargetClear?: () => void;
 }
 
 const KIND_ICONS: Record<SourceKind, LucideIcon> = {
@@ -230,6 +239,8 @@ function SourceActionsMenu({
 
 export function StudioSourcesPane({
   sessionId,
+  previewKey,
+  onPreviewKeyChange,
   selected,
   onToggle,
   uploaded,
@@ -238,22 +249,31 @@ export function StudioSourcesPane({
   onRenamed,
   onRemoved,
   onCatalogChanged,
+  query,
+  onQueryChange,
+  listScrollTop,
+  onListScrollTopChange,
+  citationTarget,
+  onCitationTargetClear,
 }: Props) {
-  const [query, setQuery] = useState("");
   const [uploadError, setUploadError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const [previewRow, setPreviewRow] = useState<SourceRow | null>(null);
   const [renamingKey, setRenamingKey] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const previewTriggerRefs = useRef(new Map<string, HTMLButtonElement>());
+  const lastPreviewTriggerKey = useRef<string | null>(null);
+  const [restoreFocusKey, setRestoreFocusKey] = useState<string | null>(null);
 
   const rows = useMemo(() => {
     const seen = new Set<string>();
     return uploaded
       .filter((row) => {
-        if (seen.has(row.path)) return false;
-        seen.add(row.path);
+        const identity = row.sourceId ?? row.jobId ?? row.sourcePath ?? row.path;
+        if (seen.has(identity)) return false;
+        seen.add(identity);
         return true;
       })
       .sort((a, b) => b.timestamp - a.timestamp);
@@ -298,6 +318,36 @@ export function StudioSourcesPane({
     return row.jobId ?? row.sourceId ?? row.path;
   }
 
+  const previewRow = previewKey
+    ? rows.find((row) => rowKey(row) === previewKey) ?? null
+    : null;
+
+  function openPreview(key: string) {
+    lastPreviewTriggerKey.current = key;
+    onPreviewKeyChange(key);
+  }
+
+  function closePreview() {
+    onCitationTargetClear?.();
+    setRestoreFocusKey(
+      previewRow ? rowKey(previewRow) : lastPreviewTriggerKey.current,
+    );
+    onPreviewKeyChange(null);
+  }
+
+  useEffect(() => {
+    if (previewRow || !restoreFocusKey) return;
+    const trigger = previewTriggerRefs.current.get(restoreFocusKey);
+    if (trigger) {
+      trigger.focus();
+      setRestoreFocusKey(null);
+    }
+  }, [previewRow, restoreFocusKey]);
+
+  useEffect(() => {
+    if (!previewRow && listRef.current) listRef.current.scrollTop = listScrollTop;
+  }, [listScrollTop, previewRow]);
+
   function dismissSourceRow(row: SourceRow) {
     setActionError(null);
     if (
@@ -306,7 +356,7 @@ export function StudioSourcesPane({
         sourceRowIdentityKeys(row).includes(key),
       )
     ) {
-      setPreviewRow(null);
+      onPreviewKeyChange(null);
     }
     onRemoved(row);
   }
@@ -398,6 +448,18 @@ export function StudioSourcesPane({
     }
   }
 
+  if (previewRow) {
+    return (
+      <StudioSourcePreview
+        key={rowKey(previewRow)}
+        row={previewRow}
+        sessionId={sessionId}
+        onBack={closePreview}
+        citationTarget={citationTarget}
+      />
+    );
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 p-4">
       <div className="flex shrink-0 items-center justify-between gap-2">
@@ -414,6 +476,7 @@ export function StudioSourcesPane({
           ref={inputRef}
           type="file"
           multiple
+          accept={SOURCE_UPLOAD_ACCEPT}
           className="hidden"
           data-testid="studio-upload-input"
           onChange={(e) => {
@@ -443,11 +506,15 @@ export function StudioSourcesPane({
           className="studio-input h-9"
           placeholder="Search project…"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => onQueryChange(e.target.value)}
           aria-label="Search sources"
         />
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div
+        ref={listRef}
+        className="min-h-0 flex-1 overflow-y-auto"
+        onScroll={(event) => onListScrollTopChange(event.currentTarget.scrollTop)}
+      >
         {visible.length === 0 ? (
           <div className="studio-empty-state text-xs">
             {rows.length === 0
@@ -459,7 +526,7 @@ export function StudioSourcesPane({
         ) : (
           <ul className="flex flex-col">
             {visible.map((row) => {
-              const Icon = KIND_ICONS[sourceKind(row.filename)];
+              const Icon = KIND_ICONS[sourceKind(row.originalFilename ?? row.filename)];
               const ready = isSourceRowReady(row);
               const statusLabel =
                 row.status === "processing"
@@ -473,6 +540,9 @@ export function StudioSourcesPane({
               const isRenaming = renamingKey === key;
               const isBusy = busyKey === key;
               const canManageSource = ready && Boolean(row.sourceId);
+              const selectable = ready && Boolean(row.sourceId);
+              const isSelected = selectable
+                && selected.includes(row.sourceId as string);
               return (
                 <li key={row.jobId ?? row.path} className="studio-list-row">
                   {isRenaming ? (
@@ -501,10 +571,14 @@ export function StudioSourcesPane({
                     </div>
                   ) : (
                     <button
+                      ref={(node) => {
+                        if (node) previewTriggerRefs.current.set(key, node);
+                        else previewTriggerRefs.current.delete(key);
+                      }}
                       type="button"
                       className="flex min-w-0 flex-1 items-center gap-2 text-left"
                       aria-label={`Preview ${row.filename}`}
-                      onClick={() => setPreviewRow(row)}
+                      onClick={() => openPreview(key)}
                     >
                       <Icon size={16} className="shrink-0 text-muted" />
                       <div className="min-w-0 flex-1">
@@ -540,7 +614,7 @@ export function StudioSourcesPane({
                       canRetry={
                         row.status === "failed" || row.status === "abandoned"
                       }
-                      onPreview={() => setPreviewRow(row)}
+                      onPreview={() => openPreview(key)}
                       onRename={() => beginRename(row)}
                       onRemoveSource={() => {
                         void removeSource(row);
@@ -554,10 +628,10 @@ export function StudioSourcesPane({
                   <input
                     type="checkbox"
                     className="accent-accent h-4 w-4"
-                    checked={ready && selected.includes(row.path)}
-                    disabled={!ready}
+                    checked={isSelected}
+                    disabled={!selectable}
                     onChange={() => {
-                      if (ready) onToggle(row.path);
+                      if (selectable && row.sourceId) onToggle(row.sourceId);
                     }}
                     aria-label={`Use ${row.filename} as source`}
                   />
@@ -572,16 +646,6 @@ export function StudioSourcesPane({
           {selected.length} source{selected.length === 1 ? "" : "s"} selected for
           notebook grounding
         </p>
-      )}
-      {previewRow && (
-        <StudioFilePreviewDialog
-          filename={previewRow.filename}
-          filePath={sourcePreviewPath(previewRow)}
-          mediaType={previewRow.mediaType}
-          sessionId={sessionId}
-          kind="source"
-          onClose={() => setPreviewRow(null)}
-        />
       )}
     </div>
   );

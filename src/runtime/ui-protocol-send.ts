@@ -57,6 +57,8 @@ export interface SendOptions {
    *  treats the attached frame as the user's current camera view. Omitted /
    *  false for ordinary sends. */
   liveVideo?: boolean;
+  /** Model tool context for this turn. Set by Notebook Studio only. */
+  toolContext?: string;
   /** Recording vs upload (audio surface). Unused on the WS path today. */
   audioUploadMode?: "recording" | "upload";
   /** M9-γ-4: Composer renders a `<GhostBubble>` overlay; skip the
@@ -155,12 +157,18 @@ export function buildTurnStartExtras(
     extras.reasoning_effort = effort;
   }
 
+  const toolContext = opts.toolContext?.trim();
+  if (toolContext) {
+    extras.tool_context = toolContext;
+  }
+
   if (
     (extras.media === undefined || extras.media.length === 0) &&
     (extras.topic === undefined || extras.topic.length === 0) &&
     extras.rewrite_for === undefined &&
     extras.live_video === undefined &&
-    extras.reasoning_effort === undefined
+    extras.reasoning_effort === undefined &&
+    extras.tool_context === undefined
   ) {
     return undefined;
   }

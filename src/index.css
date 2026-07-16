@@ -1594,11 +1594,17 @@ button, a, input, textarea {
 }
 
 .panel-resize-handle:hover::after,
+.panel-resize-handle:focus-visible::after,
 .panel-resize-handle:active::after {
   background: color-mix(in srgb, var(--color-accent) 50%, var(--color-text) 20%);
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--color-accent) 18%, transparent),
     0 6px 18px color-mix(in srgb, var(--color-accent) 20%, transparent);
+}
+
+.panel-resize-handle:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
 }
 
 .panel-resize-handle:active::after {

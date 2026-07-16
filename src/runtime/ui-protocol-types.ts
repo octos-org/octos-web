@@ -86,6 +86,9 @@ export interface TurnStartExtras {
    *  persisted a tier this client does not know, and it must
    *  round-trip verbatim rather than be destroyed by omission. */
   reasoning_effort?: ReasoningEffortLevel | (string & {});
+  /** Per-turn model tool context. Notebook Studio sends `notebook`;
+   *  ordinary chat and voice sends omit the field. */
+  tool_context?: string;
 }
 
 /** Wire values of `octos_core::ui_protocol::ReasoningEffortLevel`

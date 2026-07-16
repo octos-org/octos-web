@@ -1,38 +1,40 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
-import { Download, Eye, FileText, Image, Music, Table, Video, XCircle } from "lucide-react";
+import { Download, FileText, Image, Music, Table, Video, XCircle } from "lucide-react";
 
-import { buildApiHeaders } from "@/api/client";
-import { buildFileUrl } from "@/api/files";
 import {
   invokeSkillAction,
   listSkillActions,
   listSkillActionJobs,
   type SkillActionJob,
-  type SkillActionJobStatus,
 } from "@/api/skill-actions";
 
 import { resolveStudioSkills } from "./action-catalog";
 import {
-  artifactsFromJob,
-  type GeneratedArtifact,
+  buildStudioAssets,
+  type AssetFile,
+  type StudioAssetStatus,
   jobTimestamp,
   mergeStudioJobs,
 } from "./generated-assets";
 import { STUDIO_SKILL_LABEL_BY_ACTION_ID } from "./skills";
 import { relativeTime, sourceKind, type SourceKind } from "./source-media";
-import { StudioFilePreviewDialog } from "./studio-file-preview";
+import { StudioAssetPreview } from "./studio-asset-preview";
+import { downloadStudioFile } from "./studio-file-download";
+import type { CitationTarget } from "./structured-asset-viewers";
 
 interface Props {
   sessionId: string;
+  selectedAssetId: string | null;
+  onSelectedAssetIdChange: (assetId: string | null) => void;
   historyTopic?: string;
   /**
    * Notebook source ids currently selected in the Sources pane. Their
    * count gates source-dependent skills; the sources are already imported
    * into the session workspace, so skill sends do not attach them as media.
    */
-  selectedSources: string[];
   selectedSourceIds: string[];
+  onCitationOpen?: (citation: CitationTarget) => void;
 }
 
 const KIND_ICONS: Record<SourceKind, LucideIcon> = {
@@ -43,60 +45,48 @@ const KIND_ICONS: Record<SourceKind, LucideIcon> = {
   text: FileText,
 };
 
-const ACTIVE_JOB_STATUSES = new Set<SkillActionJobStatus>(["queued", "running"]);
+const ACTIVE_JOB_POLL_INTERVAL_MS = 3_000;
 
 /**
  * Header-authenticated blob download: keeps the bearer token out of the
  * DOM (an <a href> with ?token= is copyable/leakable via "Copy Link").
  */
-async function downloadAsset(
-  filePath: string,
-  filename: string,
-  sessionId: string,
-): Promise<void> {
-  const response = await fetch(buildFileUrl(filePath, { sessionId }), {
-    headers: buildApiHeaders(),
-  });
-  if (!response.ok) throw new Error(`Download failed (${response.status})`);
-  const blobUrl = URL.createObjectURL(await response.blob());
-  try {
-    const anchor = document.createElement("a");
-    anchor.href = blobUrl;
-    anchor.download = filename;
-    document.body.appendChild(anchor);
-    try {
-      anchor.click();
-    } finally {
-      anchor.remove();
-    }
-  } finally {
-    // Give the browser a beat to start the download before revoking.
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 10_000);
-  }
-}
-
-function jobStatusLabel(status: SkillActionJobStatus): string {
+function assetStatusLabel(status: StudioAssetStatus): string {
   switch (status) {
-    case "queued":
-      return "Queued";
-    case "running":
-      return "Running";
-    case "succeeded":
+    case "generating":
+      return "Generating";
+    case "ready":
       return "Ready";
+    case "partial":
+      return "Partial";
     case "failed":
       return "Failed";
-    case "abandoned":
-      return "Abandoned";
+    case "unavailable":
+      return "Unavailable";
   }
 }
 
-export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Props) {
-  const [downloadError, setDownloadError] = useState<string | null>(null);
+export function StudioRail({
+  sessionId,
+  selectedAssetId,
+  onSelectedAssetIdChange,
+  selectedSourceIds,
+  onCitationOpen,
+}: Props) {
+  const [downloadError, setDownloadError] = useState<{
+    assetId: string;
+    message: string;
+  } | null>(null);
+  const downloadRequestId = useRef(0);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busySkillId, setBusySkillId] = useState<string | null>(null);
   const [jobs, setJobs] = useState<SkillActionJob[]>([]);
   const [skills, setSkills] = useState(() => resolveStudioSkills([]));
-  const [previewArtifact, setPreviewArtifact] = useState<GeneratedArtifact | null>(null);
+  const assetTriggerRefs = useRef(new Map<string, HTMLButtonElement>());
+  const lastAssetTriggerId = useRef<string | null>(null);
+  const [restoreFocusId, setRestoreFocusId] = useState<string | null>(null);
+  const assets = buildStudioAssets(jobs);
+  const hasActiveJobs = assets.some((asset) => asset.status === "generating");
 
   useEffect(() => {
     let cancelled = false;
@@ -116,6 +106,24 @@ export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Pr
       window.removeEventListener("crew:bridge_connected", refreshActions);
     };
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!hasActiveJobs) return;
+    let cancelled = false;
+    const poll = window.setInterval(() => {
+      void listSkillActionJobs(sessionId)
+        .then((restored) => {
+          if (!cancelled) {
+            setJobs((current) => mergeStudioJobs(current, restored));
+          }
+        })
+        .catch(() => {});
+    }, ACTIVE_JOB_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(poll);
+    };
+  }, [hasActiveJobs, sessionId]);
 
   useEffect(() => {
     const onJobUpdated = (event: Event) => {
@@ -176,7 +184,51 @@ export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Pr
     }
   }
 
-  const hasGeneratedItems = jobs.length > 0;
+  function startDownload(file: AssetFile): void {
+    const requestId = ++downloadRequestId.current;
+    const assetId = file.job.job_id;
+    setDownloadError(null);
+    downloadStudioFile(file.filePath, file.filename, sessionId).catch((err: unknown) => {
+      if (requestId !== downloadRequestId.current) return;
+      setDownloadError({
+        assetId,
+        message: err instanceof Error ? err.message : "Download failed",
+      });
+    });
+  }
+
+  const selectedAsset = selectedAssetId
+    ? assets.find((asset) => asset.id === selectedAssetId) ?? null
+    : null;
+
+  useEffect(() => {
+    if (selectedAsset || !restoreFocusId) return;
+    const trigger = assetTriggerRefs.current.get(restoreFocusId);
+    if (trigger) {
+      trigger.focus();
+      setRestoreFocusId(null);
+    }
+  }, [restoreFocusId, selectedAsset]);
+
+  if (selectedAsset) {
+    return (
+      <StudioAssetPreview
+        asset={selectedAsset}
+        sessionId={sessionId}
+        downloadError={downloadError?.assetId === selectedAsset.id
+          ? downloadError.message
+          : null}
+        onBack={() => {
+          setRestoreFocusId(lastAssetTriggerId.current ?? selectedAsset.id);
+          onSelectedAssetIdChange(null);
+        }}
+        onDownload={startDownload}
+        onCitationOpen={onCitationOpen}
+      />
+    );
+  }
+
+  const hasGeneratedItems = assets.length > 0;
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto p-4">
@@ -189,11 +241,11 @@ export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Pr
             const disabled =
               !skill.actionId ||
               busySkillId === skill.id ||
-              (skill.requiresSources === true && selectedSources.length === 0);
+              (skill.requiresSources === true && selectedSourceIds.length === 0);
             const Icon = skill.icon;
             const title = !skill.actionId
               ? (skill.unavailableReason ?? `${skill.label} is not available`)
-              : skill.requiresSources === true && selectedSources.length === 0
+              : skill.requiresSources === true && selectedSourceIds.length === 0
                 ? `${skill.label} needs at least one selected source`
                 : skill.label;
             return (
@@ -233,7 +285,7 @@ export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Pr
         )}
         {downloadError && (
           <p className="text-xs text-red-500" role="alert">
-            {downloadError}
+            {downloadError.message}
           </p>
         )}
         {!hasGeneratedItems ? (
@@ -242,106 +294,89 @@ export function StudioRail({ sessionId, selectedSources, selectedSourceIds }: Pr
           </div>
         ) : (
           <ul className="flex flex-col gap-2">
-            {jobs.map((job) => {
-              const artifacts = artifactsFromJob(job);
-              if (artifacts.length > 0) {
-                return artifacts.map((artifact) => {
-                  const Icon = KIND_ICONS[sourceKind(artifact.filename)];
-                  const actionLabel =
-                    STUDIO_SKILL_LABEL_BY_ACTION_ID.get(job.action_id) ??
-                    job.action_id;
-                  return (
-                    <li
-                      key={artifact.id}
-                      className="studio-list-row studio-card !rounded-xl p-3"
-                    >
-                      <Icon size={16} className="shrink-0 text-muted" />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm leading-tight" title={artifact.filename}>
-                          {artifact.filename}
-                        </span>
-                        <span className="mt-0.5 block text-[11px] text-muted">
-                          {actionLabel} - {relativeTime(jobTimestamp(job))}
-                        </span>
-                      </span>
-                      <button
-                        type="button"
-                        className="studio-ghost-button studio-asset-action shrink-0 p-1"
-                        aria-label={`Preview ${artifact.filename}`}
-                        onClick={() => setPreviewArtifact(artifact)}
-                      >
-                        <Eye size={14} />
-                      </button>
-                      <button
-                        type="button"
-                        className="studio-ghost-button studio-asset-action shrink-0 p-1"
-                        aria-label={`Download ${artifact.filename}`}
-                        onClick={() => {
-                          setDownloadError(null);
-                          downloadAsset(artifact.filePath, artifact.filename, sessionId).catch(
-                            (err: unknown) => {
-                              setDownloadError(
-                                err instanceof Error ? err.message : "Download failed",
-                              );
-                            },
-                          );
-                        }}
-                      >
-                        <Download size={14} />
-                      </button>
-                    </li>
-                  );
-                });
-              }
-              const label =
-                STUDIO_SKILL_LABEL_BY_ACTION_ID.get(job.action_id) ??
-                job.action_id;
-              const active = ACTIVE_JOB_STATUSES.has(job.status);
+            {assets.map((asset) => {
+              const job = asset.job;
+              const Icon = asset.status === "failed"
+                ? XCircle
+                : KIND_ICONS[sourceKind(asset.primary?.filename ?? "asset.md")];
+              const actionLabel =
+                STUDIO_SKILL_LABEL_BY_ACTION_ID.get(asset.actionId) ?? asset.actionId;
+              const canOpen = asset.files.length > 0;
+              const defaultDownload = asset.defaultDownload;
               return (
                 <li
-                  key={job.job_id}
+                  key={asset.id}
                   className="studio-list-row studio-card !rounded-xl p-3"
                 >
-                  {job.status === "failed" || job.status === "abandoned" ? (
-                    <XCircle size={16} className="shrink-0 text-red-500" />
-                  ) : (
-                    <FileText size={16} className="shrink-0 text-muted" />
-                  )}
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm leading-tight" title={label}>
-                      {label}
-                    </span>
-                    <span className="mt-0.5 block text-[11px] text-muted">
-                      {relativeTime(jobTimestamp(job))}
-                    </span>
-                    {job.error && (
-                      <span className="mt-0.5 block truncate text-[11px] text-red-500">
-                        {job.error}
+                  <Icon
+                    size={16}
+                    className={`shrink-0 ${asset.status === "failed" ? "text-red-500" : "text-muted"}`}
+                  />
+                  {canOpen ? (
+                    <button
+                      ref={(node) => {
+                        if (node) assetTriggerRefs.current.set(asset.id, node);
+                        else assetTriggerRefs.current.delete(asset.id);
+                      }}
+                      type="button"
+                      className="min-w-0 flex-1 text-left"
+                      aria-label={`Open ${asset.title}`}
+                      onClick={() => {
+                        lastAssetTriggerId.current = asset.id;
+                        onSelectedAssetIdChange(asset.id);
+                      }}
+                    >
+                      <span className="block truncate text-sm leading-tight" title={asset.title}>
+                        {asset.title}
                       </span>
-                    )}
-                  </span>
-                  <span
-                    className={`shrink-0 rounded border px-1.5 py-0.5 font-label text-[10px] uppercase tracking-[0.04em] ${job.status === "failed" ? "text-red-500" : "text-muted"}`}
-                    role={active ? "status" : undefined}
-                  >
-                    {jobStatusLabel(job.status)}
-                  </span>
+                      <span className="mt-0.5 block text-[11px] text-muted">
+                        {actionLabel} - {relativeTime(jobTimestamp(job))}
+                      </span>
+                      {job.error && (
+                        <span className="mt-0.5 block truncate text-[11px] text-red-500">
+                          {job.error}
+                        </span>
+                      )}
+                    </button>
+                  ) : (
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm leading-tight" title={asset.title}>
+                        {asset.title}
+                      </span>
+                      <span className="mt-0.5 block text-[11px] text-muted">
+                        {relativeTime(jobTimestamp(job))}
+                      </span>
+                      {job.error && (
+                        <span className="mt-0.5 block truncate text-[11px] text-red-500">
+                          {job.error}
+                        </span>
+                      )}
+                    </span>
+                  )}
+                  {defaultDownload && (
+                    <button
+                      type="button"
+                      className="studio-ghost-button studio-asset-action shrink-0 p-1"
+                      aria-label={`Download ${asset.title}`}
+                      onClick={() => startDownload(defaultDownload)}
+                    >
+                      <Download size={14} />
+                    </button>
+                  )}
+                  {asset.status !== "ready" && (
+                    <span
+                      className={`shrink-0 rounded border px-1.5 py-0.5 font-label text-[10px] uppercase tracking-[0.04em] ${asset.status === "failed" ? "text-red-500" : "text-muted"}`}
+                      role={asset.status === "generating" ? "status" : undefined}
+                    >
+                      {assetStatusLabel(asset.status)}
+                    </span>
+                  )}
                 </li>
               );
             })}
           </ul>
         )}
       </section>
-      {previewArtifact && (
-        <StudioFilePreviewDialog
-          filename={previewArtifact.filename}
-          filePath={previewArtifact.filePath}
-          mediaType={previewArtifact.mediaType}
-          sessionId={sessionId}
-          kind="asset"
-          onClose={() => setPreviewArtifact(null)}
-        />
-      )}
     </div>
   );
 }

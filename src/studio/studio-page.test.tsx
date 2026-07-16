@@ -128,6 +128,7 @@ vi.mock("./source-store", async (importOriginal) => {
 
 import { STUDIO_SKILLS } from "./skills";
 import { StudioPage } from "./studio-page";
+import { withNotebookToolContext } from "./tool-context";
 
 function readySourceJob(overrides: Record<string, unknown> = {}) {
   return {
@@ -147,6 +148,37 @@ function readySourceJob(overrides: Record<string, unknown> = {}) {
     created_at: "2026-07-09T01:00:00Z",
     updated_at: "2026-07-09T01:02:00Z",
     ...overrides,
+  };
+}
+
+function readyVideoOverviewJob() {
+  return {
+    job_id: "job-video",
+    batch_id: "batch-video",
+    profile_id: "alan0x",
+    session_id: "web-abc",
+    action_id: "video_overview.generate",
+    skill_id: "mofa-notebook-video",
+    status: "succeeded",
+    result: {
+      title: "Market overview",
+      artifacts: [
+        ["overview.mp4", "video/mp4"],
+        ["script.md", "text/markdown"],
+        ["scene-plan.json", "application/json"],
+        ["asset-brief.md", "text/markdown"],
+        ["handoff.md", "text/markdown"],
+        ["veo-prompt.txt", "text/plain"],
+        ["veo-operation.json", "application/json"],
+      ].map(([display_name, media_type]) => ({
+        handle: `ws/video/${display_name}`,
+        display_name,
+        media_type,
+        size: 42,
+      })),
+    },
+    created_at: "2026-07-09T01:00:00Z",
+    updated_at: "2026-07-09T01:01:00Z",
   };
 }
 
@@ -182,7 +214,22 @@ function renderStudio(path = "/studio/web-abc") {
   );
 }
 
+it("marks Studio conversation sends with the Notebook tool context", () => {
+  expect(
+    withNotebookToolContext({
+      sessionId: "web-abc",
+      text: "Ground this answer in my sources",
+      requestText: "Ground this answer in my sources",
+      media: [],
+    }),
+  ).toMatchObject({ toolContext: "notebook" });
+});
+
 beforeEach(() => {
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    value: 1024,
+  });
   localStorage.clear();
   // Pane defaults follow window width (jsdom is 1024px, so the rail
   // would start closed); pin both open so every pane is testable.
@@ -223,6 +270,7 @@ beforeEach(() => {
       ok: true,
       status: 200,
       blob: async () => new Blob(["preview"]),
+      text: async () => "# Quiz",
     })),
   );
   Object.defineProperty(URL, "createObjectURL", {
@@ -239,6 +287,7 @@ afterEach(() => {
   cleanup();
   localStorage.clear();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("StudioPage", () => {
@@ -271,6 +320,102 @@ describe("StudioPage", () => {
       "web-abc",
       undefined,
     );
+  });
+
+  it("resizes the Sources pane and persists its width", async () => {
+    localStorage.setItem("octos_studio_sources_width", "360");
+    renderStudio();
+
+    const pane = screen.getByTestId("studio-sources-pane");
+    const handle = screen.getByTestId("studio-sources-resize-handle");
+    expect(pane.style.width).toBe("360px");
+    expect(handle.className).toContain("max-lg:hidden");
+
+    fireEvent(
+      handle,
+      new MouseEvent("pointerdown", { bubbles: true, clientX: 360 }),
+    );
+    fireEvent(
+      document,
+      new MouseEvent("pointermove", { bubbles: true, clientX: 440 }),
+    );
+    fireEvent(document, new MouseEvent("pointerup", { bubbles: true }));
+
+    expect(pane.style.width).toBe("440px");
+    await waitFor(() => {
+      expect(localStorage.getItem("octos_studio_sources_width")).toBe("440");
+    });
+  });
+
+  it("resizes the Studio rail, clamps its width, and persists it", async () => {
+    localStorage.setItem("octos_studio_rail_width", "400");
+    renderStudio();
+
+    const rail = screen.getByTestId("studio-rail");
+    const handle = screen.getByTestId("studio-rail-resize-handle");
+    expect(rail.style.width).toBe("400px");
+    expect(handle.className).toContain("max-xl:hidden");
+
+    fireEvent(
+      handle,
+      new MouseEvent("pointerdown", { bubbles: true, clientX: 900 }),
+    );
+    fireEvent(
+      document,
+      new MouseEvent("pointermove", { bubbles: true, clientX: 0 }),
+    );
+    fireEvent(document, new MouseEvent("pointerup", { bubbles: true }));
+
+    expect(rail.style.width).toBe("520px");
+    await waitFor(() => {
+      expect(localStorage.getItem("octos_studio_rail_width")).toBe("520");
+    });
+  });
+
+  it("resizes the Sources pane with Pointer Events and exposes separator metadata", async () => {
+    localStorage.setItem("octos_studio_sources_width", "360");
+    renderStudio();
+
+    const pane = screen.getByTestId("studio-sources-pane");
+    const handle = screen.getByRole("separator", { name: "Resize Sources pane" });
+    expect(handle.getAttribute("aria-orientation")).toBe("vertical");
+    expect(handle.getAttribute("aria-valuemin")).toBe("240");
+    expect(handle.getAttribute("aria-valuemax")).toBe("480");
+    expect(handle.getAttribute("aria-valuenow")).toBe("360");
+
+    // jsdom does not implement PointerEvent, so dispatch pointer-named mouse
+    // events to preserve the real client coordinates used by the handler.
+    fireEvent(
+      handle,
+      new MouseEvent("pointerdown", { bubbles: true, clientX: 360 }),
+    );
+    fireEvent(
+      document,
+      new MouseEvent("pointermove", { bubbles: true, clientX: 420 }),
+    );
+    fireEvent(document, new MouseEvent("pointerup", { bubbles: true }));
+
+    expect(pane.style.width).toBe("420px");
+    await waitFor(() => {
+      expect(localStorage.getItem("octos_studio_sources_width")).toBe("420");
+    });
+  });
+
+  it("resizes the Studio rail from the keyboard using physical separator direction", () => {
+    localStorage.setItem("octos_studio_rail_width", "400");
+    renderStudio();
+
+    const rail = screen.getByTestId("studio-rail");
+    const handle = screen.getByRole("separator", { name: "Resize Studio pane" });
+
+    fireEvent.keyDown(handle, { key: "ArrowLeft" });
+    expect(rail.style.width).toBe("416px");
+    expect(handle.getAttribute("aria-valuenow")).toBe("416");
+
+    fireEvent.keyDown(handle, { key: "End" });
+    expect(rail.style.width).toBe("520px");
+    fireEvent.keyDown(handle, { key: "Home" });
+    expect(rail.style.width).toBe("280px");
   });
 
   it("falls back to the default title when none is stored", () => {
@@ -372,11 +517,11 @@ describe("StudioPage", () => {
     });
     expect(sendMessageMock).not.toHaveBeenCalled();
     expect(
-      within(screen.getByTestId("studio-rail")).getByText("Running"),
+      within(screen.getByTestId("studio-rail")).getByText("Generating"),
     ).toBeTruthy();
   });
 
-  it("previews and downloads artifacts from completed studio action jobs", async () => {
+  it("previews and downloads a completed studio action as one logical asset", async () => {
     mockSourceImportJobs();
     invokeSkillActionMock.mockResolvedValueOnce({
       action_id: "quiz.generate",
@@ -431,19 +576,174 @@ describe("StudioPage", () => {
       }),
     );
 
-    expect(await screen.findByText("quiz.md")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Preview quiz.md" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Download quiz.md" })).toBeTruthy();
+    const rail = screen.getByTestId("studio-rail");
+    expect(await within(rail).findByRole("button", { name: "Open Quiz" })).toBeTruthy();
+    expect(within(rail).getByRole("button", { name: "Download Quiz" })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Preview quiz.md" }));
-    const preview = await screen.findByTitle("quiz.md asset preview");
-    expect(preview.getAttribute("src")).toBe("blob:studio-preview");
+    const openQuiz = within(rail).getByRole("button", { name: "Open Quiz" });
+    fireEvent.click(openQuiz);
+    expect(await within(rail).findByRole("button", { name: "Back to Studio" }))
+      .toBeTruthy();
+    expect(await within(rail).findByRole("heading", { name: "Quiz" })).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByTestId("chat-thread-stub")).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => {
+      expect(document.activeElement).toBe(
+        within(rail).getByRole("button", { name: "Open Quiz" }),
+      );
+    });
 
     const appendChild = vi.spyOn(document.body, "appendChild");
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
-    fireEvent.click(screen.getByRole("button", { name: "Download quiz.md" }));
+    fireEvent.click(within(rail).getByRole("button", { name: "Download Quiz" }));
     await waitFor(() => expect(appendChild).toHaveBeenCalled());
     expect((appendChild.mock.calls[0][0] as HTMLAnchorElement).download).toBe("quiz.md");
+  });
+
+  it("groups a multi-file Video Overview into one Studio asset viewer", async () => {
+    listSkillActionJobsMock.mockImplementation(
+      (_sessionId: string, options?: { actionId?: string }) =>
+        Promise.resolve(options?.actionId === "source.import" ? [] : [readyVideoOverviewJob()]),
+    );
+
+    renderStudio();
+
+    const rail = screen.getByTestId("studio-rail");
+    const open = await within(rail).findByRole("button", {
+      name: "Open Market overview",
+    });
+    expect(within(rail).queryByText("script.md")).toBeNull();
+    expect(within(rail).queryByText("scene-plan.json")).toBeNull();
+
+    fireEvent.click(open);
+    expect(within(rail).getByRole("button", { name: "Back to Studio" })).toBeTruthy();
+    for (const tab of ["Overview", "Script", "Scenes", "Assets", "Files"]) {
+      expect(within(rail).getByRole("tab", { name: tab })).toBeTruthy();
+    }
+    expect(screen.getByTestId("chat-thread-stub")).toBeTruthy();
+
+    fireEvent.click(within(rail).getByRole("tab", { name: "Files" }));
+    expect(within(rail).getAllByRole("button", { name: /^Download / }))
+      .toHaveLength(7);
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle studio rail" }));
+    expect(screen.queryByTestId("studio-rail")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Toggle studio rail" }));
+    expect(
+      await within(screen.getByTestId("studio-rail")).findByRole("button", {
+        name: "Back to Studio",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("closes the Studio drawer when a citation opens Sources on a narrow screen", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 500,
+    });
+    const mindMapJob = {
+      job_id: "job-map",
+      batch_id: "batch-map",
+      profile_id: "alan0x",
+      session_id: "web-abc",
+      action_id: "mindmap.generate",
+      skill_id: "mofa-notebook-map",
+      status: "succeeded" as const,
+      result: {
+        title: "Research map",
+        artifacts: [{
+          handle: "ws/map/map.json",
+          display_name: "map.json",
+          media_type: "application/json",
+          size: 42,
+        }],
+      },
+      created_at: "2026-07-09T01:00:00Z",
+      updated_at: "2026-07-09T01:01:00Z",
+    };
+    listSkillActionJobsMock.mockImplementation(
+      (_sessionId: string, options?: { actionId?: string }) =>
+        Promise.resolve(options?.actionId === "source.import" ? [] : [mindMapJob]),
+    );
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        title: "Research map",
+        root: "Root",
+        nodes: [{
+          id: "root",
+          label: "Root",
+          summary: "Summary",
+          citations: [{ chunk_id: "chunk-1", source_id: "notes" }],
+        }],
+      }),
+    } as Response);
+
+    renderStudio();
+    const rail = screen.getByTestId("studio-rail");
+    fireEvent.click(await within(rail).findByRole("button", {
+      name: "Open Research map",
+    }));
+    fireEvent.click(await within(rail).findByRole("button", {
+      name: "Open node Root",
+    }));
+    fireEvent.click(within(rail).getByRole("button", { name: "Open cited source" }));
+
+    expect(screen.queryByTestId("studio-rail")).toBeNull();
+    expect(
+      within(screen.getByTestId("studio-sources-pane")).getByRole("button", {
+        name: "Back to sources",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("does not show a stale download failure in a different asset preview", async () => {
+    const secondAsset = {
+      job_id: "job-second-quiz",
+      batch_id: "batch-second-quiz",
+      profile_id: "alan0x",
+      session_id: "web-abc",
+      action_id: "quiz.generate",
+      skill_id: "mofa-notebook-study",
+      status: "succeeded" as const,
+      result: {
+        title: "Second quiz",
+        artifacts: [{
+          handle: "ws/second-quiz.md",
+          display_name: "second-quiz.md",
+          media_type: "text/markdown",
+          size: 42,
+        }],
+      },
+      created_at: "2026-07-09T01:00:00Z",
+      updated_at: "2026-07-09T01:01:00Z",
+    };
+    listSkillActionJobsMock.mockImplementation(
+      (_sessionId: string, options?: { actionId?: string }) =>
+        Promise.resolve(options?.actionId === "source.import"
+          ? []
+          : [readyVideoOverviewJob(), secondAsset]),
+    );
+    let resolveDownload: (response: Response) => void = () => undefined;
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise<Response>((resolve) => {
+      resolveDownload = resolve;
+    }));
+
+    renderStudio();
+    const rail = screen.getByTestId("studio-rail");
+    fireEvent.click(await within(rail).findByRole("button", {
+      name: "Download Market overview",
+    }));
+    fireEvent.click(within(rail).getByRole("button", { name: "Open Second quiz" }));
+
+    await act(async () => {
+      resolveDownload({ ok: false, status: 500 } as Response);
+    });
+
+    expect(within(rail).queryByRole("alert")).toBeNull();
   });
 
   it("restores persisted generated assets after a page refresh", async () => {
@@ -462,6 +762,7 @@ describe("StudioPage", () => {
                   skill_id: "mofa-notebook-study",
                   status: "succeeded",
                   result: {
+                    title: "Restored quiz",
                     artifacts: [
                       {
                         handle: "ws/cmVzdG9yZWQtcXVpei5tZA/restored-quiz.md",
@@ -480,13 +781,11 @@ describe("StudioPage", () => {
 
     renderStudio();
 
-    expect(await screen.findByText("restored-quiz.md")).toBeTruthy();
-    expect(
-      screen.getByRole("button", { name: "Preview restored-quiz.md" }),
-    ).toBeTruthy();
-    expect(
-      screen.getByRole("button", { name: "Download restored-quiz.md" }),
-    ).toBeTruthy();
+    const rail = screen.getByTestId("studio-rail");
+    expect(await within(rail).findByRole("button", { name: "Open Restored quiz" }))
+      .toBeTruthy();
+    expect(within(rail).getByRole("button", { name: "Download Restored quiz" }))
+      .toBeTruthy();
   });
 
   it("disables source-required action skills until a source is selected", () => {
@@ -891,6 +1190,25 @@ describe("StudioPage", () => {
       "source.remove",
       expect.anything(),
     );
+
+    fireEvent(window, new CustomEvent("crew:skill_action_job_updated", {
+      detail: {
+        ...readySourceJob({
+          job_id: "job-other",
+          status: "running",
+          source_id: undefined,
+          source_path: undefined,
+          input_path: "uploads/other.pdf",
+          materialized_path: "uploads/other.pdf",
+          filename: "other.pdf",
+          updated_at: "2026-07-09T01:03:00Z",
+        }),
+      },
+    }));
+
+    expect(await screen.findByText("other.pdf")).toBeTruthy();
+    expect(screen.queryByText("photo.jpg")).toBeNull();
+    expect(screen.queryByText("Unsupported image payload")).toBeNull();
   });
 
   it("restores processing source jobs after the bridge reconnects", async () => {
@@ -933,17 +1251,443 @@ describe("StudioPage", () => {
     });
   });
 
-  it("previews the original uploaded file for an imported source", async () => {
+  it("polls a processing source import until its persisted job is terminal", async () => {
+    vi.useFakeTimers();
+    const running = readySourceJob({
+      status: "running",
+      source_id: undefined,
+      source_path: undefined,
+    });
+    const succeeded = readySourceJob({
+      updated_at: "2026-07-09T01:03:00Z",
+    });
+    let sourceRestoreCount = 0;
+    listSkillActionJobsMock.mockImplementation(
+      (_sessionId: string, options?: { actionId?: string }) => {
+        if (options?.actionId !== "source.import") return Promise.resolve([]);
+        sourceRestoreCount += 1;
+        return Promise.resolve(sourceRestoreCount === 1 ? [running] : [succeeded]);
+      },
+    );
+
+    renderStudio();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Processing")).toBeTruthy();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+
+    expect(sourceRestoreCount).toBeGreaterThanOrEqual(2);
+    expect(screen.queryByText("Processing")).toBeNull();
+    expect(screen.getByText("photo.jpg")).toBeTruthy();
+  });
+
+  it("polls an active studio job until its persisted snapshot is terminal", async () => {
+    vi.useFakeTimers();
     mockSourceImportJobs();
+    const succeeded = readyVideoOverviewJob();
+    const running = {
+      ...succeeded,
+      status: "running",
+      result: undefined,
+      updated_at: "2026-07-09T01:00:30Z",
+    };
+    let studioRestoreCount = 0;
+    listSkillActionJobsMock.mockImplementation(
+      (_sessionId: string, options?: { actionId?: string }) => {
+        if (options?.actionId === "source.import") {
+          return Promise.resolve([readySourceJob()]);
+        }
+        studioRestoreCount += 1;
+        return Promise.resolve(studioRestoreCount === 1 ? [running] : [succeeded]);
+      },
+    );
+
+    renderStudio();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(within(screen.getByTestId("studio-rail")).getByText("Generating")).toBeTruthy();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+
+    expect(studioRestoreCount).toBeGreaterThanOrEqual(2);
+    expect(
+      within(screen.getByTestId("studio-rail")).getByRole("button", {
+        name: "Open Market overview",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("does not regress a succeeded source import when an older running event arrives", async () => {
+    const running = readySourceJob({
+      status: "running",
+      source_id: undefined,
+      source_path: undefined,
+      updated_at: "2026-07-09T01:02:00Z",
+    });
+    mockSourceImportJobs([running]);
+    renderStudio();
+
+    expect(await screen.findByText("Processing")).toBeTruthy();
+    await waitFor(() => expect(loadSourceCatalogMock).toHaveBeenCalled());
+    loadSourceCatalogMock.mockResolvedValue([{
+      sourceId: "photo",
+      filename: "photo.jpg",
+      path: "notebook-sources/photo/source.md",
+      sourcePath: "notebook-sources/photo/source.md",
+      inputPath: "uploads/photo.jpg",
+      previewPath: "uploads/photo.jpg",
+      timestamp: Date.parse("2026-07-09T01:03:00Z"),
+      status: "ready",
+    }]);
+
+    fireEvent(window, new CustomEvent("crew:skill_action_job_updated", {
+      detail: readySourceJob({ updated_at: "2026-07-09T01:03:00Z" }),
+    }));
+    await waitFor(() => expect(screen.queryByText("Processing")).toBeNull());
+
+    fireEvent(window, new CustomEvent("crew:skill_action_job_updated", {
+      detail: running,
+    }));
+
+    fireEvent(window, new CustomEvent("crew:skill_action_job_updated", {
+      detail: readySourceJob({ updated_at: "2026-07-09T01:03:00Z" }),
+    }));
+
+    await waitFor(() => expect(screen.queryByText("Processing")).toBeNull());
+    expect(screen.getAllByText("photo.jpg")).toHaveLength(1);
+    expect(loadSourceCatalogMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a processing Source preview open when the ready catalog row takes over", async () => {
+    const running = readySourceJob({
+      status: "running",
+      source_id: undefined,
+      source_path: undefined,
+      updated_at: "2026-07-09T01:02:00Z",
+    });
+    mockSourceImportJobs([running]);
+    renderStudio();
+
+    await screen.findByText("Processing");
+    fireEvent.click(screen.getByRole("button", { name: "Preview photo.jpg" }));
+    expect(screen.getByRole("button", { name: "Back to sources" })).toBeTruthy();
+
+    loadSourceCatalogMock.mockResolvedValue([{
+      sourceId: "photo",
+      filename: "photo.jpg",
+      path: "notebook-sources/photo/source.md",
+      sourcePath: "notebook-sources/photo/source.md",
+      inputPath: "uploads/photo.jpg",
+      previewPath: "uploads/photo.jpg",
+      timestamp: Date.parse("2026-07-09T01:03:00Z"),
+      status: "ready",
+    }]);
+    fireEvent(window, new CustomEvent("crew:skill_action_job_updated", {
+      detail: readySourceJob({ updated_at: "2026-07-09T01:03:00Z" }),
+    }));
+
+    expect(await screen.findByRole("button", { name: "Back to sources" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Parsed" })).toBeTruthy();
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it("reconciles a legacy succeeded import with its catalog source by materialized path", async () => {
+    mockSourceImportJobs([readySourceJob({
+      source_id: undefined,
+      source_path: undefined,
+    })]);
+    loadSourceCatalogMock.mockResolvedValue([{
+      sourceId: "photo",
+      filename: "photo.jpg",
+      path: "notebook-sources/photo/source.md",
+      sourcePath: "notebook-sources/photo/source.md",
+      inputPath: "uploads/photo.jpg",
+      previewPath: "uploads/photo.jpg",
+      timestamp: Date.parse("2026-07-09T01:03:00Z"),
+      status: "ready",
+    }]);
+    renderStudio();
+
+    await waitFor(() => expect(screen.getAllByText("photo.jpg")).toHaveLength(1));
+    const checkbox = screen.getByLabelText("Use photo.jpg as source") as HTMLInputElement;
+    expect(checkbox.disabled).toBe(false);
+    fireEvent.click(checkbox);
+    fireEvent.click(screen.getByRole("button", { name: "Quiz" }));
+
+    await waitFor(() => expect(invokeSkillActionMock).toHaveBeenCalledWith(
+      "web-abc",
+      "quiz.generate",
+      { source_ids: ["photo"] },
+    ));
+  });
+
+  it("keeps a selected source canonical across catalog takeover without duplicate ids", async () => {
+    mockSourceImportJobs([readySourceJob({ source_path: undefined })]);
+    let resolveCatalog: ((rows: unknown[]) => void) | undefined;
+    const catalogPromise = new Promise<unknown[]>((resolve) => {
+      resolveCatalog = resolve;
+    });
+    loadSourceCatalogMock.mockReturnValue(catalogPromise);
+    renderStudio();
+
+    const beforeTakeover = await screen.findByLabelText(
+      "Use photo.jpg as source",
+    ) as HTMLInputElement;
+    fireEvent.click(beforeTakeover);
+    expect(beforeTakeover.checked).toBe(true);
+
+    await act(async () => {
+      resolveCatalog?.([{
+        sourceId: "other-photo",
+        filename: "other photo.jpg",
+        path: "notebook-sources/other-photo/source.md",
+        sourcePath: "notebook-sources/other-photo/source.md",
+        inputPath: "uploads/photo.jpg",
+        previewPath: "uploads/photo.jpg",
+        timestamp: 3,
+        status: "ready",
+      }, {
+        sourceId: "photo",
+        filename: "photo.jpg",
+        path: "notebook-sources/photo/source.md",
+        sourcePath: "notebook-sources/photo/source.md",
+        inputPath: "uploads/photo.jpg",
+        previewPath: "uploads/photo.jpg",
+        timestamp: 2,
+        status: "ready",
+      }]);
+      await catalogPromise;
+    });
+
+    const afterTakeover = screen.getByLabelText(
+      "Use photo.jpg as source",
+    ) as HTMLInputElement;
+    expect(afterTakeover.checked).toBe(true);
+    fireEvent.click(afterTakeover);
+    expect(afterTakeover.checked).toBe(false);
+    fireEvent.click(afterTakeover);
+    fireEvent.click(screen.getByRole("button", { name: "Quiz" }));
+
+    await waitFor(() => expect(invokeSkillActionMock).toHaveBeenCalledWith(
+      "web-abc",
+      "quiz.generate",
+      { source_ids: ["photo"] },
+    ));
+  });
+
+  it("keeps explicit source selections separate when import jobs share a path", async () => {
+    const jobs = [
+      readySourceJob({
+        job_id: "job-photo-a",
+        source_id: "photo-a",
+        source_path: undefined,
+        filename: "photo A.jpg",
+      }),
+      readySourceJob({
+        job_id: "job-photo-b",
+        source_id: "photo-b",
+        source_path: undefined,
+        filename: "photo B.jpg",
+      }),
+    ];
+    mockSourceImportJobs(jobs);
+    let resolveCatalog: ((rows: unknown[]) => void) | undefined;
+    const catalogPromise = new Promise<unknown[]>((resolve) => {
+      resolveCatalog = resolve;
+    });
+    loadSourceCatalogMock.mockReturnValue(catalogPromise);
+    renderStudio();
+
+    const sourceA = await screen.findByLabelText(
+      "Use photo A.jpg as source",
+    ) as HTMLInputElement;
+    const sourceB = screen.getByLabelText(
+      "Use photo B.jpg as source",
+    ) as HTMLInputElement;
+    fireEvent.click(sourceB);
+    expect(sourceA.checked).toBe(false);
+    expect(sourceB.checked).toBe(true);
+
+    await act(async () => {
+      resolveCatalog?.([
+        {
+          sourceId: "photo-a",
+          filename: "photo A.jpg",
+          path: "notebook-sources/photo-a/source.md",
+          sourcePath: "notebook-sources/photo-a/source.md",
+          inputPath: "uploads/photo.jpg",
+          previewPath: "uploads/photo.jpg",
+          timestamp: 2,
+          status: "ready",
+        },
+        {
+          sourceId: "photo-b",
+          filename: "photo B.jpg",
+          path: "notebook-sources/photo-b/source.md",
+          sourcePath: "notebook-sources/photo-b/source.md",
+          inputPath: "uploads/photo.jpg",
+          previewPath: "uploads/photo.jpg",
+          timestamp: 1,
+          status: "ready",
+        },
+      ]);
+      await catalogPromise;
+    });
+
+    expect((screen.getByLabelText("Use photo A.jpg as source") as HTMLInputElement).checked)
+      .toBe(false);
+    expect((screen.getByLabelText("Use photo B.jpg as source") as HTMLInputElement).checked)
+      .toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Quiz" }));
+    await waitFor(() => expect(invokeSkillActionMock).toHaveBeenCalledWith(
+      "web-abc",
+      "quiz.generate",
+      { source_ids: ["photo-b"] },
+    ));
+  });
+
+  it("keeps catalog sources independent when one legacy job path matches both", async () => {
+    mockSourceImportJobs([readySourceJob({
+      source_id: undefined,
+      source_path: undefined,
+    })]);
+    const sources = [
+      {
+        sourceId: "photo-a",
+        filename: "photo A.jpg",
+        path: "notebook-sources/photo-a/source.md",
+        sourcePath: "notebook-sources/photo-a/source.md",
+        inputPath: "uploads/photo.jpg",
+        previewPath: "uploads/photo.jpg",
+        timestamp: 2,
+        status: "ready" as const,
+      },
+      {
+        sourceId: "photo-b",
+        filename: "photo B.jpg",
+        path: "notebook-sources/photo-b/source.md",
+        sourcePath: "notebook-sources/photo-b/source.md",
+        inputPath: "uploads/photo.jpg",
+        previewPath: "uploads/photo.jpg",
+        timestamp: 1,
+        status: "ready" as const,
+      },
+    ];
+    loadSourceCatalogMock.mockResolvedValue(sources);
+    renderStudio();
+
+    await screen.findByRole("button", { name: "Preview photo B.jpg" });
+    fireEvent.click(screen.getByRole("button", { name: "Preview photo B.jpg" }));
+    expect(screen.getByText("photo B.jpg")).toBeTruthy();
+    expect(screen.queryByText("photo A.jpg")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Back to sources" }));
+
+    invokeSkillActionMock.mockResolvedValueOnce({
+      action_id: "source.remove",
+      ok: true,
+      results: [{ success: true, output: "removed" }],
+    });
+    loadSourceCatalogMock.mockResolvedValue([sources[0]]);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    fireEvent.click(screen.getByLabelText("Source actions for photo B.jpg"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove source" }));
+
+    await waitFor(() => expect(invokeSkillActionMock).toHaveBeenCalledWith(
+      "web-abc",
+      "source.remove",
+      { source_id: "photo-b" },
+    ));
+    expect(screen.getByText("photo A.jpg")).toBeTruthy();
+    expect(screen.queryByText("photo B.jpg")).toBeNull();
+    confirm.mockRestore();
+  });
+
+  it("keeps a newer failed source import when an older succeeded event arrives", async () => {
+    const failed = readySourceJob({
+      status: "failed",
+      source_id: undefined,
+      source_path: undefined,
+      error: "Import failed",
+      updated_at: "2026-07-09T01:05:00Z",
+    });
+    mockSourceImportJobs([failed]);
+    renderStudio();
+
+    expect(await screen.findByText("Failed")).toBeTruthy();
+    fireEvent(window, new CustomEvent("crew:skill_action_job_updated", {
+      detail: readySourceJob({ updated_at: "2026-07-09T01:04:00Z" }),
+    }));
+
+    await waitFor(() => expect(screen.getByText("Failed")).toBeTruthy());
+    expect(screen.getByText("Import failed")).toBeTruthy();
+  });
+
+  it("previews original and parsed source content inside the Sources pane", async () => {
+    mockSourceImportJobs();
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      return {
+        ok: true,
+        status: 200,
+        blob: async () => new Blob(["preview"], { type: "image/jpeg" }),
+        text: async () =>
+          url.includes("notebook-sources%2Fphoto%2Fsource.md")
+            ? "# Parsed source"
+            : "",
+      } as Response;
+    });
 
     renderStudio();
 
     await screen.findByText("photo.jpg");
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search sources" }), {
+      target: { value: "photo" },
+    });
     fireEvent.click(screen.getByLabelText("Preview photo.jpg"));
+
+    const pane = screen.getByTestId("studio-sources-pane");
+    expect(within(pane).getByRole("button", { name: "Back to sources" })).toBeTruthy();
+    expect(within(pane).getByRole("tab", { name: "Original" })).toBeTruthy();
+    expect(within(pane).getByRole("tab", { name: "Parsed" })).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByTestId("chat-thread-stub")).toBeTruthy();
 
     const image = await screen.findByAltText("photo.jpg source preview");
     expect(image.getAttribute("src")).toBe("blob:studio-preview");
     expect(image.getAttribute("src")).not.toContain("notebook-sources");
+
+    fireEvent.click(within(pane).getByRole("tab", { name: "Parsed" }));
+    expect(
+      await within(pane).findByRole("heading", { name: "Parsed source" }),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle sources" }));
+    expect(screen.queryByTestId("studio-sources-pane")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Toggle sources" }));
+    expect(
+      within(screen.getByTestId("studio-sources-pane")).getByRole("button", {
+        name: "Back to sources",
+      }),
+    ).toBeTruthy();
+
+    const reopenedPane = screen.getByTestId("studio-sources-pane");
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(await within(reopenedPane).findByText("photo.jpg")).toBeTruthy();
+    expect((within(reopenedPane).getByRole("searchbox", { name: "Search sources" }) as HTMLInputElement).value).toBe("photo");
+    await waitFor(() => {
+      expect(document.activeElement).toBe(
+        within(reopenedPane).getByRole("button", { name: "Preview photo.jpg" }),
+      );
+    });
   });
 
   it("renames an imported source through the source rename action", async () => {

@@ -17,9 +17,12 @@ import {
 } from "@/runtime/session-context";
 import { recordProjectOpened } from "@/store/project-store";
 import * as ThreadStore from "@/store/thread-store";
+import { useResizablePanel } from "@/hooks/use-resizable-panel";
 
 import {
   SOURCE_IMPORT_ACTION_ID,
+  isSourceRowReady,
+  mergeSourceImportJobs,
   mergeSourceRows,
   sourceRowFromSkillActionJob,
   type SourceRow,
@@ -27,6 +30,8 @@ import {
 import { loadSourceCatalog } from "./source-store";
 import { StudioRail } from "./studio-rail";
 import { StudioSourcesPane } from "./studio-sources-pane";
+import type { CitationTarget } from "./structured-asset-viewers";
+import { withNotebookToolContext } from "./tool-context";
 
 const TITLE_STORAGE_KEY = "octos_session_titles";
 const PANES_STORAGE_KEY = "octos-studio-panes";
@@ -112,18 +117,65 @@ export function StudioPage() {
 }
 
 function sameSourceRow(a: SourceRow, b: SourceRow): boolean {
-  if (a.jobId && b.jobId && a.jobId === b.jobId) return true;
-  if (a.sourceId && b.sourceId && a.sourceId === b.sourceId) return true;
-  return a.path === b.path;
+  if (a.sourceId && b.sourceId) return a.sourceId === b.sourceId;
+  if (a.jobId && b.jobId) return a.jobId === b.jobId;
+  if (a.sourcePath && b.sourcePath) {
+    return a.sourcePath.replaceAll("\\", "/")
+      === b.sourcePath.replaceAll("\\", "/");
+  }
+  const aPaths = [a.path, a.sourcePath, a.inputPath, a.materializedPath, a.previewPath]
+    .filter((path): path is string => Boolean(path))
+    .map((path) => path.replaceAll("\\", "/"));
+  const bPaths = new Set(
+    [b.path, b.sourcePath, b.inputPath, b.materializedPath, b.previewPath]
+      .filter((path): path is string => Boolean(path))
+      .map((path) => path.replaceAll("\\", "/")),
+  );
+  return aPaths.some((path) => bPaths.has(path));
 }
 
-function selectedPathMatchesRow(path: string, row: SourceRow): boolean {
-  return path === row.path || path === row.sourcePath;
+function hasStrongSourceIdentityMatch(a: SourceRow, b: SourceRow): boolean {
+  return Boolean(
+    (a.sourceId && b.sourceId && a.sourceId === b.sourceId)
+    || (a.jobId && b.jobId && a.jobId === b.jobId)
+    || (a.sourcePath && b.sourcePath
+      && a.sourcePath.replaceAll("\\", "/")
+        === b.sourcePath.replaceAll("\\", "/")),
+  );
 }
 
 function StudioWorkspace({ projectId }: { projectId: string }) {
   const [title, setTitle] = useState(() => readStoredTitle(projectId));
   const [panes, setPanes] = useState<PaneState>(loadPaneState);
+  const {
+    width: sourcesPaneWidthValue,
+    effectiveWidth: sourcesPaneWidth,
+    onPointerDown: onSourcesResizeStart,
+    onKeyDown: onSourcesResizeKeyDown,
+  } = useResizablePanel({
+    minWidth: 240,
+    maxWidth: 480,
+    defaultWidth: 280,
+    storageKey: "octos_studio_sources_width",
+    side: "left",
+  });
+  const {
+    width: studioRailWidthValue,
+    effectiveWidth: studioRailWidth,
+    onPointerDown: onStudioRailResizeStart,
+    onKeyDown: onStudioRailResizeKeyDown,
+  } = useResizablePanel({
+    minWidth: 280,
+    maxWidth: 520,
+    defaultWidth: 320,
+    storageKey: "octos_studio_rail_width",
+    side: "right",
+  });
+  const [sourcePreviewKey, setSourcePreviewKey] = useState<string | null>(null);
+  const [assetPreviewId, setAssetPreviewId] = useState<string | null>(null);
+  const [sourceQuery, setSourceQuery] = useState("");
+  const [sourceListScrollTop, setSourceListScrollTop] = useState(0);
+  const [citationTarget, setCitationTarget] = useState<CitationTarget | null>(null);
 
   // Persist only explicit user toggles — a mount must not freeze the
   // viewport-derived defaults into storage as if the user chose them.
@@ -138,10 +190,28 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
       return next;
     });
   }, []);
-  const [selectedSources, setSelectedSources] = useState<string[]>([]);
+  const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
   const [uploadedSources, setUploadedSources] = useState<SourceRow[]>([]);
   const [sourcesLoading, setSourcesLoading] = useState(true);
+  const [hasActiveSourceImportJobs, setHasActiveSourceImportJobs] = useState(false);
   const sourceCatalogRequest = useRef(0);
+  const sourceImportJobsRef = useRef<SkillActionJob[]>([]);
+  const dismissedSourceJobIds = useRef(new Set<string>());
+
+  function openCitation(citation: CitationTarget) {
+    setCitationTarget(citation);
+    const row = uploadedSources.find((candidate) =>
+      (citation.sourceId && candidate.sourceId === citation.sourceId)
+      || (citation.sourcePath && candidate.sourcePath === citation.sourcePath)
+    );
+    if (!row) return;
+    setSourcePreviewKey(row.jobId ?? row.sourceId ?? row.path);
+    updatePanes((current) => ({
+      ...current,
+      sources: true,
+      rail: window.innerWidth < 1024 ? false : current.rail,
+    }));
+  }
 
   // Title: seed from localStorage, then track the runtime-provider's
   // `crew:session_title_updated` window event (detail is the bridge's
@@ -183,10 +253,33 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
     try {
       const catalog = await loadSourceCatalog(projectId);
       if (request !== sourceCatalogRequest.current) return;
-      setUploadedSources((current) => [
-        ...catalog,
-        ...current.filter((row) => (row.status ?? "ready") !== "ready"),
-      ]);
+      setUploadedSources((current) => {
+        const readyJobRows = current.filter((row) => row.jobId && isSourceRowReady(row));
+        const claimedJobIds = new Set<string>();
+        const catalogRows = catalog.map((row) => {
+          const jobRow = readyJobRows.find((candidate) => {
+            if (!candidate.jobId || claimedJobIds.has(candidate.jobId)) return false;
+            if (!sameSourceRow(row, candidate)) return false;
+            if (hasStrongSourceIdentityMatch(row, candidate)) return true;
+            return catalog.filter((catalogRow) => sameSourceRow(catalogRow, candidate))
+              .length === 1;
+          });
+          if (jobRow?.jobId) claimedJobIds.add(jobRow.jobId);
+          return jobRow
+            ? { ...row, jobId: jobRow.jobId, batchId: jobRow.batchId }
+            : row;
+        });
+        const pendingReadyRows = current.filter((row) =>
+          row.jobId
+          && isSourceRowReady(row)
+          && !catalogRows.some((catalogRow) => sameSourceRow(catalogRow, row))
+        );
+        return [
+          ...catalogRows,
+          ...pendingReadyRows,
+          ...current.filter((row) => !isSourceRowReady(row)),
+        ];
+      });
     } finally {
       if (request === sourceCatalogRequest.current) {
         setSourcesLoading(false);
@@ -206,35 +299,65 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
   }, [refreshSourceCatalog]);
 
   const removeUploadedSourceRow = useCallback((row: SourceRow) => {
+    if (row.jobId) {
+      dismissedSourceJobIds.current.add(row.jobId);
+      sourceImportJobsRef.current = sourceImportJobsRef.current.filter(
+        (job) => job.job_id !== row.jobId,
+      );
+      setHasActiveSourceImportJobs(
+        sourceImportJobsRef.current.some(
+          (job) => job.status === "queued" || job.status === "running",
+        ),
+      );
+    }
     setUploadedSources((prev) => prev.filter((existing) => !sameSourceRow(existing, row)));
-    setSelectedSources((prev) => prev.filter((path) => !selectedPathMatchesRow(path, row)));
+    if (row.sourceId) {
+      setSelectedSourceIds((prev) => prev.filter((sourceId) => sourceId !== row.sourceId));
+    }
     void refreshSourceCatalog();
   }, [refreshSourceCatalog]);
 
-  const mergeSourceImportJobs = useCallback(
+  const applySourceImportJobs = useCallback(
     (jobs: SkillActionJob[]) => {
       const sourceJobs = jobs.filter(
         (job) =>
           job.session_id === projectId &&
-          job.action_id === SOURCE_IMPORT_ACTION_ID,
+          job.action_id === SOURCE_IMPORT_ACTION_ID
+          && !dismissedSourceJobIds.current.has(job.job_id),
       );
       if (sourceJobs.length === 0) return;
 
-      const succeededIds = new Set(
-        sourceJobs
-          .filter((job) => job.status === "succeeded")
-          .map((job) => job.job_id),
+      const previousJobs = sourceImportJobsRef.current;
+      const mergedJobs = mergeSourceImportJobs(
+        previousJobs,
+        sourceJobs,
       );
-      const transientRows = sourceJobs
+      sourceImportJobsRef.current = mergedJobs;
+      setHasActiveSourceImportJobs(
+        mergedJobs.some((job) => job.status === "queued" || job.status === "running"),
+      );
+
+      const acceptedSucceededJobs = sourceJobs.filter((job) => {
+        if (job.status !== "succeeded") return false;
+        const accepted = mergedJobs.find((candidate) => candidate.job_id === job.job_id);
+        if (accepted?.status !== "succeeded"
+          || (accepted.updated_at || accepted.created_at)
+            !== (job.updated_at || job.created_at)) return false;
+        const previous = previousJobs.find((candidate) => candidate.job_id === job.job_id);
+        return previous?.status !== "succeeded"
+          || (accepted.updated_at || accepted.created_at)
+            !== (previous?.updated_at || previous?.created_at);
+      });
+      const transientRows = mergedJobs
         .filter((job) => job.status !== "succeeded")
         .map((job) => sourceRowFromSkillActionJob(job));
-      setUploadedSources((prev) =>
-        mergeSourceRows(
-          prev.filter((row) => !row.jobId || !succeededIds.has(row.jobId)),
-          transientRows,
-        ),
+      const newlyReadyRows = acceptedSucceededJobs.map((job) =>
+        sourceRowFromSkillActionJob(job)
       );
-      if (succeededIds.size > 0) void refreshSourceCatalog();
+      setUploadedSources((prev) =>
+        mergeSourceRows(prev, [...transientRows, ...newlyReadyRows]),
+      );
+      if (acceptedSucceededJobs.length > 0) void refreshSourceCatalog();
     },
     [projectId, refreshSourceCatalog],
   );
@@ -244,12 +367,12 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
       const jobs = await listSkillActionJobs(projectId, {
         actionId: SOURCE_IMPORT_ACTION_ID,
       });
-      mergeSourceImportJobs(jobs);
+      applySourceImportJobs(jobs);
     } catch {
       // The bridge may not be connected yet; the next bridge_connected
       // event will retry the snapshot fetch.
     }
-  }, [mergeSourceImportJobs, projectId]);
+  }, [applySourceImportJobs, projectId]);
 
   useEffect(() => {
     const restoreSoon = () => {
@@ -267,16 +390,24 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
   }, [refreshSourceCatalog, restoreSourceImportJobs]);
 
   useEffect(() => {
+    if (!hasActiveSourceImportJobs) return;
+    const poll = window.setInterval(() => {
+      void restoreSourceImportJobs();
+    }, 3_000);
+    return () => window.clearInterval(poll);
+  }, [hasActiveSourceImportJobs, restoreSourceImportJobs]);
+
+  useEffect(() => {
     const onJobUpdated = (e: Event) => {
       const job = (e as CustomEvent<SkillActionJob>).detail;
       if (!job) return;
-      mergeSourceImportJobs([job]);
+      applySourceImportJobs([job]);
     };
     window.addEventListener("crew:skill_action_job_updated", onJobUpdated);
     return () => {
       window.removeEventListener("crew:skill_action_job_updated", onJobUpdated);
     };
-  }, [mergeSourceImportJobs]);
+  }, [applySourceImportJobs]);
 
   // History hydration — mirrors slides-chat (Issue #112.2 / #110.2):
   // `loadHistory` mount-races the bridge handshake and throws before
@@ -296,29 +427,19 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
     };
   }, [projectId]);
 
-  const toggleSource = useCallback((path: string) => {
-    setSelectedSources((prev) =>
-      prev.includes(path) ? prev.filter((p) => p !== path) : [...prev, path],
+  const toggleSource = useCallback((sourceId: string) => {
+    setSelectedSourceIds((prev) =>
+      prev.includes(sourceId)
+        ? prev.filter((selectedId) => selectedId !== sourceId)
+        : [...prev, sourceId]
     );
   }, []);
-
-  const selectedSourceIds = useMemo(
-    () =>
-      selectedSources
-        .map((path) =>
-          uploadedSources.find(
-            (row) => row.sourceId && selectedPathMatchesRow(path, row),
-          )?.sourceId,
-        )
-        .filter((sourceId): sourceId is string => Boolean(sourceId)),
-    [selectedSources, uploadedSources],
-  );
 
   // Notebook sources are imported into the session workspace up front.
   // The center composer does not upload or attach files in Studio mode.
   const beforeSend = useCallback(
     async (request: SessionSendRequest): Promise<SessionBeforeSendResult> => {
-      return request;
+      return withNotebookToolContext(request);
     },
     [],
   );
@@ -406,12 +527,15 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
             )}
             {panes.sources && (
               <aside
-                className="studio-pane w-[280px] shrink-0 border-r max-lg:fixed max-lg:bottom-0 max-lg:left-0 max-lg:top-16 max-lg:z-[35] max-lg:shadow-2xl"
+                style={{ width: sourcesPaneWidth }}
+                className="studio-pane shrink-0 border-r max-lg:fixed max-lg:bottom-0 max-lg:left-0 max-lg:top-16 max-lg:z-[35] max-lg:!w-[280px] max-lg:shadow-2xl"
                 data-testid="studio-sources-pane"
               >
                 <StudioSourcesPane
                   sessionId={projectId}
-                  selected={selectedSources}
+                  previewKey={sourcePreviewKey}
+                  onPreviewKeyChange={setSourcePreviewKey}
+                  selected={selectedSourceIds}
                   onToggle={toggleSource}
                   uploaded={uploadedSources}
                   onUploaded={mergeUploadedSourceRows}
@@ -421,8 +545,30 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
                     void refreshSourceCatalog();
                   }}
                   loading={sourcesLoading}
+                  query={sourceQuery}
+                  onQueryChange={setSourceQuery}
+                  listScrollTop={sourceListScrollTop}
+                  onListScrollTopChange={setSourceListScrollTop}
+                  citationTarget={citationTarget}
+                  onCitationTargetClear={() => setCitationTarget(null)}
                 />
               </aside>
+            )}
+            {panes.sources && (
+              <div
+                className="panel-resize-handle max-lg:hidden"
+                data-testid="studio-sources-resize-handle"
+                title="Resize Sources pane"
+                role="separator"
+                tabIndex={0}
+                aria-label="Resize Sources pane"
+                aria-orientation="vertical"
+                aria-valuemin={240}
+                aria-valuemax={480}
+                aria-valuenow={sourcesPaneWidthValue}
+                onPointerDown={onSourcesResizeStart}
+                onKeyDown={onSourcesResizeKeyDown}
+              />
             )}
             <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
               <div className="shrink-0 pb-4 pt-8 text-center">
@@ -453,14 +599,33 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
               />
             )}
             {panes.rail && (
+              <div
+                className="panel-resize-handle max-xl:hidden"
+                data-testid="studio-rail-resize-handle"
+                title="Resize Studio pane"
+                role="separator"
+                tabIndex={0}
+                aria-label="Resize Studio pane"
+                aria-orientation="vertical"
+                aria-valuemin={280}
+                aria-valuemax={520}
+                aria-valuenow={studioRailWidthValue}
+                onPointerDown={onStudioRailResizeStart}
+                onKeyDown={onStudioRailResizeKeyDown}
+              />
+            )}
+            {panes.rail && (
               <aside
-                className="studio-pane w-[320px] shrink-0 border-l max-xl:fixed max-xl:bottom-0 max-xl:right-0 max-xl:top-16 max-xl:z-[35] max-xl:shadow-2xl"
+                style={{ width: studioRailWidth }}
+                className="studio-pane shrink-0 border-l max-xl:fixed max-xl:bottom-0 max-xl:right-0 max-xl:top-16 max-xl:z-[35] max-xl:!w-[320px] max-xl:shadow-2xl"
                 data-testid="studio-rail"
               >
                 <StudioRail
                   sessionId={projectId}
-                  selectedSources={selectedSources}
+                  selectedAssetId={assetPreviewId}
+                  onSelectedAssetIdChange={setAssetPreviewId}
                   selectedSourceIds={selectedSourceIds}
+                  onCitationOpen={openCitation}
                 />
               </aside>
             )}
