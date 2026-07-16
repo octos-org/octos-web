@@ -193,6 +193,7 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
   const [uploadedSources, setUploadedSources] = useState<SourceRow[]>([]);
   const [sourcesLoading, setSourcesLoading] = useState(true);
+  const [hasActiveSourceImportJobs, setHasActiveSourceImportJobs] = useState(false);
   const sourceCatalogRequest = useRef(0);
   const sourceImportJobsRef = useRef<SkillActionJob[]>([]);
   const dismissedSourceJobIds = useRef(new Set<string>());
@@ -303,6 +304,11 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
       sourceImportJobsRef.current = sourceImportJobsRef.current.filter(
         (job) => job.job_id !== row.jobId,
       );
+      setHasActiveSourceImportJobs(
+        sourceImportJobsRef.current.some(
+          (job) => job.status === "queued" || job.status === "running",
+        ),
+      );
     }
     setUploadedSources((prev) => prev.filter((existing) => !sameSourceRow(existing, row)));
     if (row.sourceId) {
@@ -327,6 +333,9 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
         sourceJobs,
       );
       sourceImportJobsRef.current = mergedJobs;
+      setHasActiveSourceImportJobs(
+        mergedJobs.some((job) => job.status === "queued" || job.status === "running"),
+      );
 
       const acceptedSucceededJobs = sourceJobs.filter((job) => {
         if (job.status !== "succeeded") return false;
@@ -379,6 +388,14 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
       window.removeEventListener("crew:bridge_connected", onBridgeReady);
     };
   }, [refreshSourceCatalog, restoreSourceImportJobs]);
+
+  useEffect(() => {
+    if (!hasActiveSourceImportJobs) return;
+    const poll = window.setInterval(() => {
+      void restoreSourceImportJobs();
+    }, 3_000);
+    return () => window.clearInterval(poll);
+  }, [hasActiveSourceImportJobs, restoreSourceImportJobs]);
 
   useEffect(() => {
     const onJobUpdated = (e: Event) => {

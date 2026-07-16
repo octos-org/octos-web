@@ -308,7 +308,11 @@ function statusReason(
     const data = result.data && typeof result.data === "object"
       ? result.data as Record<string, unknown>
       : {};
-    const renderError = [result.video_error, data.video_error]
+    const outputRenderError = typeof job.output === "string"
+      ? /(?:video rendering failed|failed to render video)\s*:?\s*(.+)$/is
+        .exec(job.output.trim())?.[1]?.trim()
+      : undefined;
+    const renderError = [result.video_error, data.video_error, outputRenderError]
       .find((value): value is string => typeof value === "string" && Boolean(value.trim()));
     return renderError
       ? `The plan is ready, but video rendering failed: ${renderError}`

@@ -45,6 +45,8 @@ const KIND_ICONS: Record<SourceKind, LucideIcon> = {
   text: FileText,
 };
 
+const ACTIVE_JOB_POLL_INTERVAL_MS = 3_000;
+
 /**
  * Header-authenticated blob download: keeps the bearer token out of the
  * DOM (an <a href> with ?token= is copyable/leakable via "Copy Link").
@@ -83,6 +85,8 @@ export function StudioRail({
   const assetTriggerRefs = useRef(new Map<string, HTMLButtonElement>());
   const lastAssetTriggerId = useRef<string | null>(null);
   const [restoreFocusId, setRestoreFocusId] = useState<string | null>(null);
+  const assets = buildStudioAssets(jobs);
+  const hasActiveJobs = assets.some((asset) => asset.status === "generating");
 
   useEffect(() => {
     let cancelled = false;
@@ -102,6 +106,24 @@ export function StudioRail({
       window.removeEventListener("crew:bridge_connected", refreshActions);
     };
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!hasActiveJobs) return;
+    let cancelled = false;
+    const poll = window.setInterval(() => {
+      void listSkillActionJobs(sessionId)
+        .then((restored) => {
+          if (!cancelled) {
+            setJobs((current) => mergeStudioJobs(current, restored));
+          }
+        })
+        .catch(() => {});
+    }, ACTIVE_JOB_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(poll);
+    };
+  }, [hasActiveJobs, sessionId]);
 
   useEffect(() => {
     const onJobUpdated = (event: Event) => {
@@ -175,7 +197,6 @@ export function StudioRail({
     });
   }
 
-  const assets = buildStudioAssets(jobs);
   const selectedAsset = selectedAssetId
     ? assets.find((asset) => asset.id === selectedAssetId) ?? null
     : null;

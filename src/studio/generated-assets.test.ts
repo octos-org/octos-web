@@ -101,6 +101,24 @@ describe("generated assets", () => {
     expect(asset.statusReason).toContain("Veo timed out");
   });
 
+  it("falls back to the generic job output for a Video renderer failure", () => {
+    const [asset] = buildStudioAssets([job({
+      action_id: "video_overview.generate",
+      status: "succeeded",
+      output: "Video plan generated. Video rendering failed: Timed out waiting for Vertex Veo operation",
+      result: {
+        artifacts: [{
+          handle: "ws/video/script.md",
+          display_name: "script.md",
+          media_type: "text/markdown",
+        }],
+      },
+    })]);
+
+    expect(asset.status).toBe("partial");
+    expect(asset.statusReason).toContain("Timed out waiting for Vertex Veo operation");
+  });
+
   it("recognizes a renamed Video Overview MP4 from its MIME and handle", () => {
     const [asset] = buildStudioAssets([
       job({

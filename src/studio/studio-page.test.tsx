@@ -287,6 +287,7 @@ afterEach(() => {
   cleanup();
   localStorage.clear();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("StudioPage", () => {
@@ -1248,6 +1249,81 @@ describe("StudioPage", () => {
     expect(listSkillActionJobsMock).toHaveBeenLastCalledWith("web-abc", {
       actionId: "source.import",
     });
+  });
+
+  it("polls a processing source import until its persisted job is terminal", async () => {
+    vi.useFakeTimers();
+    const running = readySourceJob({
+      status: "running",
+      source_id: undefined,
+      source_path: undefined,
+    });
+    const succeeded = readySourceJob({
+      updated_at: "2026-07-09T01:03:00Z",
+    });
+    let sourceRestoreCount = 0;
+    listSkillActionJobsMock.mockImplementation(
+      (_sessionId: string, options?: { actionId?: string }) => {
+        if (options?.actionId !== "source.import") return Promise.resolve([]);
+        sourceRestoreCount += 1;
+        return Promise.resolve(sourceRestoreCount === 1 ? [running] : [succeeded]);
+      },
+    );
+
+    renderStudio();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Processing")).toBeTruthy();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+
+    expect(sourceRestoreCount).toBeGreaterThanOrEqual(2);
+    expect(screen.queryByText("Processing")).toBeNull();
+    expect(screen.getByText("photo.jpg")).toBeTruthy();
+  });
+
+  it("polls an active studio job until its persisted snapshot is terminal", async () => {
+    vi.useFakeTimers();
+    mockSourceImportJobs();
+    const succeeded = readyVideoOverviewJob();
+    const running = {
+      ...succeeded,
+      status: "running",
+      result: undefined,
+      updated_at: "2026-07-09T01:00:30Z",
+    };
+    let studioRestoreCount = 0;
+    listSkillActionJobsMock.mockImplementation(
+      (_sessionId: string, options?: { actionId?: string }) => {
+        if (options?.actionId === "source.import") {
+          return Promise.resolve([readySourceJob()]);
+        }
+        studioRestoreCount += 1;
+        return Promise.resolve(studioRestoreCount === 1 ? [running] : [succeeded]);
+      },
+    );
+
+    renderStudio();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(within(screen.getByTestId("studio-rail")).getByText("Generating")).toBeTruthy();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+
+    expect(studioRestoreCount).toBeGreaterThanOrEqual(2);
+    expect(
+      within(screen.getByTestId("studio-rail")).getByRole("button", {
+        name: "Open Market overview",
+      }),
+    ).toBeTruthy();
   });
 
   it("does not regress a succeeded source import when an older running event arrives", async () => {
