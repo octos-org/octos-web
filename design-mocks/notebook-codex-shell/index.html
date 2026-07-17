@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Octos Workspace Mock</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell" data-mobile-panel="agent">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark">✶</span>
+          <span class="brand-name">Octos</span>
+        </div>
+        <nav class="main-nav" aria-label="Primary">
+          <button class="nav-item active" type="button">Notebook</button>
+          <button class="nav-item" type="button">Tasks</button>
+          <button class="nav-item" type="button">Artifacts</button>
+          <button class="nav-item" type="button">Settings</button>
+        </nav>
+        <div class="top-actions">
+          <button class="status-pill" id="voiceToggle" type="button">
+            <span class="pulse"></span>
+            Voice ready
+          </button>
+          <button class="primary-action" id="newTaskBtn" type="button">New task</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <aside class="pane left-pane" data-panel="sources" aria-label="Workspace sources">
+          <section class="workspace-card active">
+            <div>
+              <p class="eyebrow">Current workspace</p>
+              <h1>Octos Redesign</h1>
+            </div>
+            <button class="icon-button" id="workspaceMenu" type="button" aria-label="Workspace menu">⌘</button>
+          </section>
+
+          <section class="source-tools">
+            <button class="add-source" id="addSourceBtn" type="button">+ Add source</button>
+            <button class="quiet-button" id="syncBtn" type="button">Sync</button>
+          </section>
+
+          <section class="source-list" aria-label="Sources">
+            <button class="source-row active" type="button" data-source="Product plan">
+              <span class="source-icon document">D</span>
+              <span>
+                <strong>Product plan</strong>
+                <small>NotebookLM direction and UX notes</small>
+              </span>
+              <em>12</em>
+            </button>
+            <button class="source-row" type="button" data-source="GitHub branch">
+              <span class="source-icon branch">G</span>
+              <span>
+                <strong>GitHub branch</strong>
+                <small>octos-web main, latest commits</small>
+              </span>
+              <em>8</em>
+            </button>
+            <button class="source-row" type="button" data-source="Voice notes">
+              <span class="source-icon voice">V</span>
+              <span>
+                <strong>Voice notes</strong>
+                <small>Wake word, ASR, TTS feedback</small>
+              </span>
+              <em>5</em>
+            </button>
+            <button class="source-row" type="button" data-source="Home stack">
+              <span class="source-icon home">H</span>
+              <span>
+                <strong>Home stack</strong>
+                <small>Separated kiosk route and devices</small>
+              </span>
+              <em>3</em>
+            </button>
+          </section>
+
+          <section class="memory-strip">
+            <p class="eyebrow">Pinned context</p>
+            <button class="memory-row" type="button">
+              <span>Home screen lives outside main workspace.</span>
+              <small>Observed</small>
+            </button>
+            <button class="memory-row" type="button">
+              <span>Completion requires browser evidence.</span>
+              <small>Rule</small>
+            </button>
+          </section>
+        </aside>
+
+        <section class="pane center-pane" data-panel="agent" aria-label="Agent workspace">
+          <div class="agent-header">
+            <div>
+              <p class="eyebrow" id="selectedSourceLabel">Using Product plan</p>
+              <h2>Design Octos as a living notebook for agent work</h2>
+            </div>
+            <div class="mode-switch" aria-label="Autonomy mode">
+              <button class="mode active" type="button">Explore</button>
+              <button class="mode" type="button">Build</button>
+              <button class="mode" type="button">Deploy</button>
+            </div>
+          </div>
+
+          <div class="answer-card">
+            <div class="assistant-avatar">O</div>
+            <div>
+              <p class="response-lead">
+                The old app shell is a launcher. This mock turns Octos into a continuous workspace:
+                sources on the left, agent reasoning in the center, outputs on the right.
+              </p>
+              <div class="evidence-tags">
+                <span>Observed from screenshots</span>
+                <span>Mock only</span>
+                <span>Touch first</span>
+              </div>
+            </div>
+          </div>
+
+          <section class="plan-card" aria-label="Current plan">
+            <div class="section-title">
+              <div>
+                <p class="eyebrow">Live plan</p>
+                <h3>Redesign user journey</h3>
+              </div>
+              <span id="planProgress">3/6</span>
+            </div>
+            <label class="check-row done">
+              <input type="checkbox" checked />
+              <span>Audit current Octos visual system</span>
+            </label>
+            <label class="check-row done">
+              <input type="checkbox" checked />
+              <span>Separate home kiosk from main workspace</span>
+            </label>
+            <label class="check-row done">
+              <input type="checkbox" checked />
+              <span>Map Slides, Sites, Voice into artifacts</span>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" />
+              <span>Turn mock into React route</span>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" />
+              <span>Connect real sources and run history</span>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" />
+              <span>Run browser and Playwright verification</span>
+            </label>
+          </section>
+
+          <section class="thread" id="thread" aria-label="Conversation">
+            <article class="message user">
+              <span>Yao</span>
+              <p>Make it closer to NotebookLM or Codex, but keep the current Octos taste.</p>
+            </article>
+            <article class="message assistant">
+              <span>Octos</span>
+              <p>Agreed. The primary object becomes a workspace with sources, tasks, and generated artifacts.</p>
+            </article>
+          </section>
+
+          <form class="composer" id="composer">
+            <button class="composer-tool" type="button" id="attachBtn">＋</button>
+            <input id="promptInput" autocomplete="off" placeholder="Ask Octos to inspect, design, build, or verify..." />
+            <button class="send-button" type="submit">Send</button>
+          </form>
+        </section>
+
+        <aside class="pane right-pane" data-panel="artifacts" aria-label="Artifacts and runs">
+          <div class="artifact-tabs" role="tablist">
+            <button class="artifact-tab active" type="button" data-tab="artifacts">Artifacts</button>
+            <button class="artifact-tab" type="button" data-tab="runs">Runs</button>
+            <button class="artifact-tab" type="button" data-tab="studio">Studio</button>
+          </div>
+
+          <section class="tab-panel active" id="artifacts">
+            <div class="artifact-preview deck">
+              <p class="eyebrow">Generated deck</p>
+              <h3>Octos redesign brief</h3>
+              <div class="mini-slides">
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+              <button class="wide-button" type="button">Open deck</button>
+            </div>
+            <div class="artifact-preview site">
+              <p class="eyebrow">Site preview</p>
+              <h3>Notebook shell mock</h3>
+              <div class="site-frame">
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+              <button class="wide-button" type="button">Preview site</button>
+            </div>
+          </section>
+
+          <section class="tab-panel" id="runs">
+            <div class="run-row success">
+              <span></span>
+              <div>
+                <strong>Screenshot audit</strong>
+                <small>11 captures, desktop and mobile</small>
+              </div>
+              <em>done</em>
+            </div>
+            <div class="run-row running">
+              <span></span>
+              <div>
+                <strong>HTML mock</strong>
+                <small>Interactive local prototype</small>
+              </div>
+              <em>live</em>
+            </div>
+            <div class="run-row idle">
+              <span></span>
+              <div>
+                <strong>React integration</strong>
+                <small>Pending approval</small>
+              </div>
+              <em>next</em>
+            </div>
+          </section>
+
+          <section class="tab-panel" id="studio">
+            <div class="studio-grid">
+              <button class="studio-tool active" type="button">
+                <strong>Deck</strong>
+                <small>Outline and slides</small>
+              </button>
+              <button class="studio-tool" type="button">
+                <strong>Site</strong>
+                <small>HTML and preview</small>
+              </button>
+              <button class="studio-tool" type="button">
+                <strong>Voice</strong>
+                <small>Wake, ASR, TTS</small>
+              </button>
+              <button class="studio-tool" type="button">
+                <strong>Code</strong>
+                <small>Diffs and tests</small>
+              </button>
+            </div>
+            <div class="voice-console">
+              <span class="orb"></span>
+              <div>
+                <strong>Listening for: Hey Octos</strong>
+                <small>Voice pipeline is represented as a capability, not a separate app.</small>
+              </div>
+            </div>
+          </section>
+        </aside>
+      </main>
+
+      <nav class="mobile-switcher" aria-label="Mobile panels">
+        <button type="button" data-mobile-target="sources">Sources</button>
+        <button class="active" type="button" data-mobile-target="agent">Agent</button>
+        <button type="button" data-mobile-target="artifacts">Artifacts</button>
+      </nav>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="./app.js"></script>
+  </body>
+</html>
