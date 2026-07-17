@@ -9,13 +9,17 @@ const apiMocks = vi.hoisted(() => ({
   getMyProfile: vi.fn(),
 }));
 
+const authMocks = vi.hoisted(() => ({
+  portal: {
+    accessible_profiles: [] as never[],
+    can_access_admin_portal: true,
+    home_profile_id: "",
+  },
+}));
+
 vi.mock("@/auth/auth-context", () => ({
   useAuth: () => ({
-    portal: {
-      accessible_profiles: [],
-      can_access_admin_portal: true,
-      home_profile_id: "",
-    },
+    portal: authMocks.portal,
   }),
 }));
 
@@ -36,6 +40,7 @@ describe("AdminSettingsPage", () => {
     cleanup();
     apiMocks.getMyProfile.mockReset();
     apiMocks.getMyProfile.mockResolvedValue(null);
+    authMocks.portal.can_access_admin_portal = true;
   });
 
   it("keeps the Authentication menu icon visible beside the admin badge", async () => {
@@ -52,5 +57,24 @@ describe("AdminSettingsPage", () => {
     const icon = button.querySelector("svg");
 
     expect(icon?.classList.contains("shrink-0")).toBe(true);
+  });
+
+  it("falls back to Profile when a non-admin deep-links to Authentication", async () => {
+    authMocks.portal.can_access_admin_portal = false;
+    render(
+      <MemoryRouter initialEntries={["/settings?tab=authentication"]}>
+        <AdminSettingsPage />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/no profile available/i)).toBeTruthy();
+    });
+    expect(
+      screen.getByRole("button", { name: "Profile" }).getAttribute("data-active"),
+    ).toBe("true");
+    expect(
+      screen.queryByRole("button", { name: /authentication/i }),
+    ).toBeNull();
   });
 });

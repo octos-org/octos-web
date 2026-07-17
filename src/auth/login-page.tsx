@@ -127,7 +127,9 @@ export function LoginPage() {
             ? "This login is scoped to the addressed account. Use the exact email registered for this sub-account."
             : authStatus?.bootstrap_mode
               ? "Bootstrap admin access is enabled on this host."
-              : "Use an allowed or registered email to sign in."}
+              : authStatus?.allow_self_registration
+                ? "Verify your email to create an account and sign in."
+                : "Use an allowed or registered email to sign in."}
         </p>
 
         {soloEnabled && step !== "solo" && (

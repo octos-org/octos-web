@@ -177,7 +177,7 @@ export function AuthenticationTab() {
     return (
       <div
         role="alert"
-        className="glass-section rounded-lg border border-red-400/30 p-6 text-sm text-red-300"
+        className="glass-section rounded-lg border p-6 text-sm [background:var(--workbench-danger-bg)] [border-color:var(--workbench-danger-border)] [color:var(--workbench-danger-text)]"
       >
         <div className="flex items-center gap-2">
           <AlertCircle size={18} />
@@ -348,7 +348,7 @@ export function AuthenticationTab() {
                 className="workbench-input w-full px-3 py-2.5 text-sm text-text-strong"
               />
               {form.passwordConfigured && (
-                <span className="flex items-center gap-1 text-[11px] text-green-400">
+                <span className="flex items-center gap-1 text-[11px] [color:var(--workbench-success-text)]">
                   <CheckCircle2 size={11} />
                   A password is already configured. It is never returned to the browser.
                 </span>
@@ -377,8 +377,8 @@ export function AuthenticationTab() {
               role={saveError ? "alert" : "status"}
               className={`mt-4 flex items-center gap-2 rounded-xl border px-4 py-3 text-xs ${
                 saveError
-                  ? "border-red-400/30 bg-red-400/5 text-red-300"
-                  : "border-green-400/30 bg-green-400/5 text-green-300"
+                  ? "[background:var(--workbench-danger-bg)] [border-color:var(--workbench-danger-border)] [color:var(--workbench-danger-text)]"
+                  : "[background:var(--workbench-success-bg)] [border-color:var(--workbench-success-border)] [color:var(--workbench-success-text)]"
               }`}
             >
               {saveError ? <AlertCircle size={15} /> : <CheckCircle2 size={15} />}
@@ -448,8 +448,8 @@ export function AuthenticationTab() {
             role={testError ? "alert" : "status"}
             className={`mt-4 flex items-center gap-2 rounded-xl border px-4 py-3 text-xs ${
               testError
-                ? "border-red-400/30 bg-red-400/5 text-red-300"
-                : "border-green-400/30 bg-green-400/5 text-green-300"
+                ? "[background:var(--workbench-danger-bg)] [border-color:var(--workbench-danger-border)] [color:var(--workbench-danger-text)]"
+                : "[background:var(--workbench-success-bg)] [border-color:var(--workbench-success-border)] [color:var(--workbench-success-text)]"
             }`}
           >
             {testError ? <AlertCircle size={15} /> : <CheckCircle2 size={15} />}

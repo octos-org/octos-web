@@ -74,12 +74,23 @@ function asTabId(value: string | null): TabId | null {
   return TABS.some((tab) => tab.id === value) ? value as TabId : null;
 }
 
+function accessibleTabId(
+  value: string | null,
+  canAccessAdminPortal: boolean,
+): TabId {
+  const id = asTabId(value);
+  if (!id) return "profile";
+  const tab = TABS.find((entry) => entry.id === id);
+  return tab?.adminOnly && !canAccessAdminPortal ? "profile" : id;
+}
+
 export function AdminSettingsPage() {
   const { portal } = useAuth();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const canAccessAdminPortal = Boolean(portal?.can_access_admin_portal);
   const [activeTab, setActiveTab] = useState<TabId>(
-    () => asTabId(searchParams.get("tab")) ?? "profile",
+    () => accessibleTabId(searchParams.get("tab"), canAccessAdminPortal),
   );
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
@@ -103,16 +114,14 @@ export function AdminSettingsPage() {
   // Render-phase adjustment (the docs' "adjusting state when props change"
   // pattern): adopt a ?tab= change from the URL exactly once per params
   // change, so back/forward and deep links work without effect cascades.
-  const [lastTabParam, setLastTabParam] = useState<string | null>(null);
+  const [lastTabAccessKey, setLastTabAccessKey] = useState<string | null>(null);
   const tabParam = searchParams.get("tab");
-  if (tabParam !== lastTabParam) {
-    setLastTabParam(tabParam);
-    const nextTab = asTabId(tabParam);
-    if (nextTab && nextTab !== activeTab) {
-      const tab = TABS.find((entry) => entry.id === nextTab);
-      if (!tab?.adminOnly || portal?.can_access_admin_portal) {
-        setActiveTab(nextTab);
-      }
+  const tabAccessKey = `${tabParam ?? ""}:${canAccessAdminPortal}`;
+  if (tabAccessKey !== lastTabAccessKey) {
+    setLastTabAccessKey(tabAccessKey);
+    const nextTab = accessibleTabId(tabParam, canAccessAdminPortal);
+    if (nextTab !== activeTab) {
+      setActiveTab(nextTab);
     }
   }
 

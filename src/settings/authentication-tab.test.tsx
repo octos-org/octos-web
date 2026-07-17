@@ -75,6 +75,27 @@ describe("AuthenticationTab", () => {
         allow_self_registration: true,
       });
     });
+    expect((await screen.findByRole("status")).className).toContain(
+      "[color:var(--workbench-success-text)]",
+    );
+  });
+
+  it("uses theme-aware danger colors when saving fails", async () => {
+    apiMocks.saveAuthenticationSettings.mockRejectedValue(
+      new Error("SMTP save failed"),
+    );
+    render(<AuthenticationTab />);
+    await screen.findByDisplayValue("smtp.example.com");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /save authentication settings/i }),
+    );
+
+    const error = await screen.findByRole("alert");
+    expect(error.textContent).toContain("SMTP save failed");
+    expect(error.className).toContain(
+      "[color:var(--workbench-danger-text)]",
+    );
   });
 
   it("sends a test login email to the requested recipient", async () => {
