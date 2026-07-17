@@ -43,7 +43,7 @@ function SettingsNavButton() {
 }
 
 export function ChatLayout({ children }: { children: ReactNode }) {
-  const { user, portal, logout } = useAuth();
+  const { user, logout } = useAuth();
   const { sessions, currentSessionId, currentSessionTitle, historyTopic, renameSession } =
     useSession();
   const status = useOctosStatus();
@@ -161,9 +161,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  {portal?.can_access_admin_portal && (
-                    <SettingsNavButton />
-                  )}
+                  <SettingsNavButton />
                   <button
                     onClick={logout}
                     className="glass-icon-button p-2"

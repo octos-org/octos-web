@@ -15,7 +15,7 @@ const NAV_LINKS: Array<{ label: string; to: string; adminOnly?: boolean }> = [
   { label: "Chat", to: "/chat" },
   { label: "Slides", to: "/slides" },
   { label: "Sites", to: "/sites" },
-  { label: "Settings", to: "/settings", adminOnly: true },
+  { label: "Settings", to: "/settings" },
 ];
 
 function isActive(pathname: string, to: string): boolean {
