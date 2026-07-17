@@ -4,6 +4,7 @@ import { AuthGuard } from "./auth/auth-guard";
 import { LoginPage } from "./auth/login-page";
 import { OctosRuntimeProvider } from "./runtime/runtime-provider";
 import { ChatLayout } from "./layouts/chat-layout";
+import { WorkspaceLayout } from "./layouts/workspace-layout";
 import { ChatThread } from "./components/chat-thread";
 import { HomePage } from "./pages/home-page";
 import { HomeAssistantPage } from "./home/home-assistant-page";
@@ -15,17 +16,23 @@ import { SlidesPresentPage } from "./slides/pages/slides-present-page";
 import { SitesGalleryPage } from "./sites/pages/sites-gallery-page";
 import { SitesEditorPage } from "./sites/pages/sites-editor-page";
 import { StudioPage } from "./studio/studio-page";
+import { useLayout } from "./hooks/use-layout";
 
 function ChatPage() {
+  // Opt-in shell switch (Settings → Appearance → Chat Layout): "classic"
+  // is the default; "workspace" renders the notebook three-pane layout.
+  // Both wrap the same ChatThread inside the same runtime provider.
+  const { layout } = useLayout();
+  const Shell = layout === "workspace" ? WorkspaceLayout : ChatLayout;
   return (
     <OctosRuntimeProvider>
-      <ChatLayout>
+      <Shell>
         <div className="flex h-full flex-col min-h-0">
           <div className="flex-1 min-h-0 overflow-hidden">
             <ChatThread />
           </div>
         </div>
-      </ChatLayout>
+      </Shell>
     </OctosRuntimeProvider>
   );
 }
