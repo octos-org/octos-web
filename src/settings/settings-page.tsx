@@ -18,6 +18,7 @@ import {
   Volume2,
   Brain,
   AlarmClock,
+  ShieldCheck,
 } from "lucide-react";
 import {
   WorkbenchStatusPill,
@@ -40,8 +41,9 @@ import { AppearanceTab } from "./appearance-tab";
 import { VoiceTab } from "./voice-tab";
 import { MemoryTab } from "./memory-tab";
 import { CronTab } from "./cron-tab";
+import { AuthenticationTab } from "./authentication-tab";
 
-type TabId = "profile" | "appearance" | "llm" | "voice" | "memory" | "schedule" | "skills" | "channels" | "sandbox" | "tools" | "users" | "system" | "server" | "ominix";
+type TabId = "profile" | "appearance" | "llm" | "voice" | "memory" | "schedule" | "skills" | "channels" | "sandbox" | "tools" | "authentication" | "users" | "system" | "server" | "ominix";
 
 interface TabDef {
   id: TabId;
@@ -61,6 +63,7 @@ const TABS: TabDef[] = [
   { id: "channels", label: "Channels", icon: Radio },
   { id: "sandbox", label: "Sandbox", icon: Shield },
   { id: "tools", label: "Tools", icon: Wrench },
+  { id: "authentication", label: "Authentication", icon: ShieldCheck, adminOnly: true },
   { id: "users", label: "Users", icon: Users, adminOnly: true },
   { id: "system", label: "System", icon: Activity, adminOnly: true },
   { id: "server", label: "Server", icon: Server, adminOnly: true },
@@ -121,7 +124,7 @@ export function AdminSettingsPage() {
     setSearchParams(next, { replace: true });
   };
 
-  const isAdminOnlyTab = activeTab === "system" || activeTab === "server" || activeTab === "users" || activeTab === "ominix";
+  const isAdminOnlyTab = activeTab === "authentication" || activeTab === "system" || activeTab === "server" || activeTab === "users" || activeTab === "ominix";
 
   return (
     <div className="studio-shell settings-shell flex h-screen flex-col overflow-hidden">
@@ -172,10 +175,10 @@ export function AdminSettingsPage() {
                   data-active={activeTab === id ? "true" : undefined}
                   className="settings-tab-button flex w-full items-center gap-3 rounded-lg border px-4 py-3 text-left text-sm font-medium transition max-md:w-auto max-md:shrink-0 max-md:px-3"
                 >
-                  <Icon size={16} />
+                  <Icon size={16} className="shrink-0" />
                   {label}
                   {adminOnly && (
-                    <span className="ml-auto">
+                    <span className="ml-auto shrink-0">
                       <WorkbenchStatusPill tone="accent">Admin</WorkbenchStatusPill>
                     </span>
                   )}
@@ -188,6 +191,7 @@ export function AdminSettingsPage() {
             <div className={`mx-auto ${isAdminOnlyTab ? "max-w-4xl" : "max-w-3xl"}`}>
               {activeTab === "system" && portal?.can_access_admin_portal && <SystemTab />}
               {activeTab === "server" && portal?.can_access_admin_portal && <ServerTab />}
+              {activeTab === "authentication" && portal?.can_access_admin_portal && <AuthenticationTab />}
               {activeTab === "users" && portal?.can_access_admin_portal && profile && <UsersTab profile={profile} />}
               {activeTab === "ominix" && portal?.can_access_admin_portal && <OminixTab />}
 
