@@ -89,6 +89,7 @@ export const LLM_PROVIDERS: LlmProvider[] = [
     ],
   },
   { id: "zhipu", name: "Zhipu (GLM)", envKey: "ZHIPU_API_KEY", models: [] },
+  { id: "zai", name: "Z.ai (GLM)", envKey: "ZAI_API_KEY", models: [] },
   { id: "moonshot", name: "Moonshot", envKey: "MOONSHOT_API_KEY", models: [] },
   { id: "perplexity", name: "Perplexity", envKey: "PERPLEXITY_API_KEY", models: [] },
   {

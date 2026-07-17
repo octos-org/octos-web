@@ -19,6 +19,7 @@ import {
   Brain,
   AlarmClock,
   ShieldCheck,
+  KeyRound,
 } from "lucide-react";
 import {
   WorkbenchStatusPill,
@@ -29,6 +30,7 @@ import { getMyProfile, type Profile } from "./settings-api";
 import { setSelectedProfileId as persistSelectedProfile } from "@/api/client";
 import { ProfileTab } from "./profile-tab";
 import { LlmTab } from "./llm-tab";
+import { ApiKeysTab } from "./api-keys-tab";
 import { SkillsTab } from "./skills-tab";
 import { ChannelsTab } from "./channels-tab";
 import { UsersTab } from "./users-tab";
@@ -43,7 +45,7 @@ import { MemoryTab } from "./memory-tab";
 import { CronTab } from "./cron-tab";
 import { AuthenticationTab } from "./authentication-tab";
 
-type TabId = "profile" | "appearance" | "llm" | "voice" | "memory" | "schedule" | "skills" | "channels" | "sandbox" | "tools" | "authentication" | "users" | "system" | "server" | "ominix";
+type TabId = "profile" | "appearance" | "llm" | "api-keys" | "voice" | "memory" | "schedule" | "skills" | "channels" | "sandbox" | "tools" | "authentication" | "users" | "system" | "server" | "ominix";
 
 interface TabDef {
   id: TabId;
@@ -56,6 +58,7 @@ const TABS: TabDef[] = [
   { id: "profile", label: "Profile", icon: User },
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "llm", label: "LLM", icon: Cpu },
+  { id: "api-keys", label: "API Keys", icon: KeyRound },
   { id: "voice", label: "Voice", icon: Volume2 },
   { id: "memory", label: "Memory", icon: Brain },
   { id: "schedule", label: "Schedule", icon: AlarmClock },
@@ -216,6 +219,13 @@ export function AdminSettingsPage() {
                   {activeTab === "appearance" && <AppearanceTab />}
                   {activeTab === "llm" && (
                     <LlmTab profile={profile} onProfileUpdated={setProfile} />
+                  )}
+                  {activeTab === "api-keys" && (
+                    <ApiKeysTab
+                      key={profile.id}
+                      profile={profile}
+                      onProfileUpdated={setProfile}
+                    />
                   )}
                   {activeTab === "voice" && (
                     <VoiceTab
