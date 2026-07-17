@@ -542,7 +542,7 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
                 <code className="rounded bg-surface-container px-1.5 py-0.5 font-mono text-[11px] text-text">
                   {selectedProvider.envKey}
                 </code>{" "}
-                in Environment Variables
+                in Environment Variables (see the API Keys tab)
               </span>
             </div>
           )}
