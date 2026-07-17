@@ -331,6 +331,21 @@ export function clearProjection(sessionId: string, topic?: string): void {
   }
 }
 
+export function clearAllProjections(): void {
+  envelopesByKey.clear();
+  seqCountersByKey.clear();
+  cmidToThreadByKey.clear();
+  __resetProjectionCacheForTesting();
+  notifyProjectionListeners();
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener(
+    "crew:token_cleared",
+    clearAllProjections,
+  );
+}
+
 /** Build the shared store-key string. Mirrors `thread-store`'s
  *  internal `storeKey` so dual-writes target the same bucket. */
 export function projectionStoreKey(

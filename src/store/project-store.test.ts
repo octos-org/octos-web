@@ -1,6 +1,8 @@
+import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { listProjects, setArchived, toggleFavorite } from "./project-store";
+import { clearToken } from "@/api/client";
+import { listProjects, setArchived, toggleFavorite, useProjects } from "./project-store";
 
 const SLIDES_ID = "slides-3000-aaaaaa";
 const SITE_ID = "site-2000-bbbbbb";
@@ -112,6 +114,27 @@ describe("listProjects", () => {
     expect(projects.every((p) => p.id.startsWith("web-"))).toBe(true);
     expect(projects.some((p) => p.id === "slides-999-zzzzzz")).toBe(false);
     expect(projects.some((p) => p.id === "random-id")).toBe(false);
+  });
+
+  it("removes identity-bound session projects immediately when the token clears", () => {
+    seedSessions();
+    localStorage.setItem("octos_current_session", SESSION_ID);
+    localStorage.setItem("octos_session_stats", JSON.stringify({ [SESSION_ID]: {} }));
+    localStorage.setItem("octos_session_topics", JSON.stringify({ [SESSION_ID]: "slides" }));
+    localStorage.setItem("octos_deleted_sessions", JSON.stringify([SESSION_ID]));
+
+    const { result, unmount } = renderHook(() => useProjects());
+    expect(result.current.projects.some((project) => project.id === SESSION_ID)).toBe(true);
+
+    act(() => clearToken());
+
+    expect(result.current.projects.some((project) => project.id === SESSION_ID)).toBe(false);
+    expect(localStorage.getItem("octos_session_titles")).toBeNull();
+    expect(localStorage.getItem("octos_current_session")).toBeNull();
+    expect(localStorage.getItem("octos_session_stats")).toBeNull();
+    expect(localStorage.getItem("octos_session_topics")).toBeNull();
+    expect(localStorage.getItem("octos_deleted_sessions")).toBeNull();
+    unmount();
   });
 
   it("falls back to updatedAt 0 for web ids without a parsable timestamp", () => {

@@ -85,6 +85,16 @@ export function clearTasks(sessionId: string, topic?: string): void {
   notify();
 }
 
+export function clearAllTasks(): void {
+  tasksByKey.clear();
+  allTasksSnapshot = null;
+  notify();
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("crew:token_cleared", clearAllTasks);
+}
+
 function getAllTasksSnapshot(): ReadonlyArray<readonly [string, BackgroundTaskInfo[]]> {
   if (allTasksSnapshot && allTasksSnapshot.version === version) {
     return allTasksSnapshot.data;

@@ -162,6 +162,7 @@ const loadedSessions = new Set<string>();
 const loadingPromises = new Map<string, Promise<void>>();
 
 let version = 0;
+let identityGeneration = 0;
 const snapshotCache = new Map<string, { version: number; data: Thread[] }>();
 
 /**
@@ -3814,6 +3815,7 @@ export function loadHistory(
   options: LoadHistoryOptions = {},
 ): Promise<void> {
   const key = storeKey(sessionId, topic);
+  const generation = identityGeneration;
   if (!options.force && loadedSessions.has(key)) return Promise.resolve();
 
   const existing = loadingPromises.get(key);
@@ -3838,6 +3840,7 @@ export function loadHistory(
           undefined,
           topic,
         );
+        if (generation !== identityGeneration) return;
         accumulated.push(...page.messages);
         replayHistory(sessionId, accumulated.slice(), topic);
         if (!page.has_more) break;
@@ -3854,7 +3857,9 @@ export function loadHistory(
     } catch {
       loadedSessions.delete(key);
     } finally {
-      loadingPromises.delete(key);
+      if (loadingPromises.get(key) === promise) {
+        loadingPromises.delete(key);
+      }
     }
   })();
 
@@ -4274,6 +4279,25 @@ export function clearSession(sessionId: string, topic?: string): void {
     }
   }
   notify();
+}
+
+export function clearAllSessions(): void {
+  identityGeneration += 1;
+  sessionsByKey.clear();
+  loadedSessions.clear();
+  loadingPromises.clear();
+  snapshotCache.clear();
+  hydrateSnapshotByKey.clear();
+  placeholderRefetchInFlight.clear();
+  placeholderRefetchDirty.clear();
+  pendingClientMessageIds.clear();
+  seenSeqsByKey.clear();
+  appliedHydrateToolEnvelopesByKey.clear();
+  notify();
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("crew:token_cleared", clearAllSessions);
 }
 
 export function subscribe(callback: () => void): () => void {

@@ -228,6 +228,12 @@ if (typeof window !== "undefined") {
       );
     }
   });
+  window.addEventListener("crew:token_cleared", () => {
+    // Blob URLs and file rows belong to the authenticated profile. They are
+    // reconstructed after the next login, so never carry them across users.
+    revokeAll();
+    filesLoaded = false;
+  });
 }
 
 // --- Load files from all session histories on startup ---

@@ -195,10 +195,16 @@ function subscribe(listener: () => void): () => void {
       notifyProjectsChanged();
     }
   };
+  // Same-tab localStorage mutations do not emit a `storage` event. Token
+  // clearing is the account boundary, so invalidate the cached launcher
+  // snapshot explicitly after identity-bound session keys are removed.
+  const onTokenCleared = () => notifyProjectsChanged();
   window.addEventListener("storage", onStorage);
+  window.addEventListener("crew:token_cleared", onTokenCleared);
   return () => {
     listeners.delete(listener);
     window.removeEventListener("storage", onStorage);
+    window.removeEventListener("crew:token_cleared", onTokenCleared);
   };
 }
 

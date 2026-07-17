@@ -1,6 +1,20 @@
 import { API_BASE, TOKEN_KEY, ADMIN_TOKEN_KEY } from "@/lib/constants";
 import { getSettings } from "@/hooks/use-settings";
 
+// Session metadata is identity-bound but can be reconstructed from the
+// authenticated backend. Clear it whenever the token is cleared so a second
+// account using the same browser never inherits the previous account's
+// launcher cards, current-session pointer, or session decorations.
+const IDENTITY_BOUND_SESSION_STORAGE_KEYS = [
+  "octos_session_titles",
+  "octos_session_stats",
+  "octos_session_topics",
+  "octos_sessions_sync",
+  "octos_deleted_sessions",
+  "octos_current_session",
+  "octos_task_watcher_sessions_v1",
+] as const;
+
 function inferProfileIdFromHost(): string | null {
   if (typeof window === "undefined") return null;
   const hostname = window.location.hostname;
@@ -47,6 +61,9 @@ export function setToken(token: string, isAdmin = false) {
 export function clearToken() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(ADMIN_TOKEN_KEY);
+  for (const key of IDENTITY_BOUND_SESSION_STORAGE_KEYS) {
+    localStorage.removeItem(key);
+  }
   // Issue #111.3: clear `selected_profile` on token change so a
   // logout (or admin-login that follows a different account's
   // session) does not surface the prior profile id into the next
