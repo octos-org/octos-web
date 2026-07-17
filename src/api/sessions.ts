@@ -209,6 +209,33 @@ export async function deleteSession(sessionId: string): Promise<void> {
   });
 }
 
+export interface SessionCompactResult {
+  session_id: string;
+  compacted: boolean;
+  token_estimate_before: number;
+  token_estimate_after: number | null;
+}
+
+/**
+ * `session/compact` — force a context-compaction pass on the session NOW,
+ * bypassing the auto-compaction threshold (web parity for the CLI
+ * `/compact` command; server octos#1671). `sessionId` must be the SCOPED
+ * id (`web-…#topic` for a topic bucket): the RPC takes the key verbatim,
+ * there is no separate topic param. The server emits the usual
+ * `context/compaction_started|completed` lifecycle events around the
+ * pass, so `CompactionIndicator` renders the progress + outcome notice;
+ * the returned stats are a convenience for the caller. MUTATING. Old
+ * servers reject with method-not-found — surface that instead of
+ * retrying.
+ */
+export async function compactSession(
+  sessionId: string,
+): Promise<SessionCompactResult> {
+  return await callAuxWs<SessionCompactResult>(METHODS.SESSION_COMPACT, {
+    session_id: sessionId,
+  });
+}
+
 export async function getSessionStatus(
   sessionId: string,
   topic?: string,
