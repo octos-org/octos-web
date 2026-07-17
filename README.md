@@ -53,7 +53,7 @@ Multi-tenant accounts, per-user isolation, and the admin surfaces for them are w
 | `/` | Project launcher — every chat, deck, and site as a project card |
 | `/home` | Home-assistant standby — clock, weather/news/calendar/photo/smart-home widgets, night mode, wake-word |
 | `/voice` | Voice assistant — on-device VAD, streamed TTS with barge-in, spoken transcripts, user-selectable voices, live video chat |
-| `/chat` | The chat workbench — streaming turns, tool activity, approvals and clarifying-question cards, a context-compaction indicator, file uploads, rich media |
+| `/chat` | The chat workbench — streaming turns, tool activity, approvals and clarifying-question cards, a context-compaction indicator with a manual `/compact` command, file uploads, rich media |
 | `/studio/:projectId` | Studio — three-pane grounded workspace (sources · chat · skills) pinned to a project session |
 | `/slides`, `/slides/:id/present` | Slide-deck gallery, editor, and full-screen present mode |
 | `/sites`, `/sites/:id` | Generated-site gallery and editor with signed previews |

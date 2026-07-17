@@ -57,6 +57,7 @@ import {
 } from "@/store/thread-store";
 import { isProjectionV1Enabled } from "@/store/projection-store";
 import { uploadFiles } from "@/api/chat";
+import { compactSession } from "@/api/sessions";
 import {
   interruptActiveTurn,
   sendMessage as bridgeSend,
@@ -448,6 +449,7 @@ const COMMANDS = [
   { cmd: "/back", desc: "Switch back to the previous session" },
   { cmd: "/delete", desc: "Delete a session (/delete <name> or /d <name>)" },
   { cmd: "/clear", desc: "Clear current session and start fresh" },
+  { cmd: "/compact", desc: "Compact conversation context now (frees token budget)" },
   // Personality
   { cmd: "/soul", desc: "View or set custom personality (/soul, /soul show, /soul reset, /soul <text>)" },
   // Agent configuration
@@ -1867,6 +1869,33 @@ function Composer({ mountGhost, unmountGhost }: ComposerProps) {
         COMMANDS.map((c) => `${c.cmd} — ${c.desc}`).join("\n"),
       );
       setTimeout(() => setCmdFeedback(null), 10000);
+      releaseSending();
+      return;
+    }
+
+    if (trimmedInput === "/compact") {
+      // Manual context compaction (CLI `/compact` parity; server
+      // `session/compact`, octos#1671). The RPC takes the session key
+      // VERBATIM — there is no topic param — so a topic bucket must send
+      // its scoped `session#topic` id (the same key the pre-turn context
+      // manager is stored under). Progress and the outcome notice render
+      // through the server-emitted `context/compaction_started|completed`
+      // events (`CompactionIndicator`), so only RPC-level failures (old
+      // server, no runtime) surface in the feedback pill here.
+      setText("");
+      const scopedId = currentSessionId.includes("#")
+        ? currentSessionId
+        : historyTopic?.trim()
+          ? `${currentSessionId}#${historyTopic.trim()}`
+          : currentSessionId;
+      try {
+        await compactSession(scopedId);
+      } catch (e) {
+        setCmdFeedback(
+          `Compact failed: ${e instanceof Error ? e.message : "unknown error"}`,
+        );
+        setTimeout(() => setCmdFeedback(null), 4000);
+      }
       releaseSending();
       return;
     }
