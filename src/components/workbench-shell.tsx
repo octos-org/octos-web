@@ -33,7 +33,7 @@ const routeItems: Array<{
   { to: "/sites", label: "Sites", icon: Globe },
   { to: "/home", label: "Display", icon: MonitorSmartphone },
   { to: "/voice", label: "Voice", icon: Mic },
-  { to: "/settings", label: "Settings", icon: Settings, adminOnly: true },
+  { to: "/settings", label: "Settings", icon: Settings },
 ];
 
 function isRouteActive(pathname: string, to: string) {

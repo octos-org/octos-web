@@ -27,14 +27,21 @@ export function LoginPage() {
   const [sending, setSending] = useState(false);
 
   useEffect(() => {
-    if (initialAuthStatus) {
-      setAuthStatus(initialAuthStatus);
-      return;
-    }
-    authApi.status().then(setAuthStatus).catch(() => {
-      // Leave the page usable even if auth status probing fails.
-    });
-  }, [initialAuthStatus]);
+    // The context value provides the initial render. Always refresh it because
+    // authentication settings may have changed since AuthProvider mounted
+    // (for example, when an admin saves SMTP settings and then logs out).
+    let active = true;
+    authApi.status()
+      .then((status) => {
+        if (active) setAuthStatus(status);
+      })
+      .catch(() => {
+        // Leave the page usable even if auth status probing fails.
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const scopedProfile = authStatus?.scoped_profile ?? null;
   const tokenModeEnabled = useMemo(
@@ -44,11 +51,7 @@ export function LoginPage() {
   const emailLoginEnabled = authStatus?.email_login_enabled ?? true;
   const soloEnabled = authStatus?.local_solo_enabled ?? false;
 
-  useEffect(() => {
-    if (mode === "token" && !tokenModeEnabled) {
-      setMode("otp");
-    }
-  }, [mode, tokenModeEnabled]);
+  const activeMode = mode === "token" && !tokenModeEnabled ? "otp" : mode;
 
   async function handleSendCode() {
     setError("");
@@ -127,7 +130,9 @@ export function LoginPage() {
             ? "This login is scoped to the addressed account. Use the exact email registered for this sub-account."
             : authStatus?.bootstrap_mode
               ? "Bootstrap admin access is enabled on this host."
-              : "Use an allowed or registered email to sign in."}
+              : authStatus?.allow_self_registration
+                ? "Verify your email to create an account and sign in."
+                : "Use an allowed or registered email to sign in."}
         </p>
 
         {soloEnabled && step !== "solo" && (
@@ -157,7 +162,7 @@ export function LoginPage() {
           <button
             onClick={() => setMode("otp")}
             className={`flex-1 rounded-lg py-2 text-sm font-medium transition ${
-              mode === "otp"
+              activeMode === "otp"
                 ? "bg-accent text-on-accent"
                 : "bg-surface-container text-muted hover:text-text-strong"
             }`}
@@ -168,7 +173,7 @@ export function LoginPage() {
             <button
               onClick={() => setMode("token")}
               className={`flex-1 rounded-lg py-2 text-sm font-medium transition ${
-                mode === "token"
+                activeMode === "token"
                   ? "bg-accent text-on-accent"
                   : "bg-surface-container text-muted hover:text-text-strong"
               }`}
@@ -208,7 +213,7 @@ export function LoginPage() {
               Back
             </button>
           </div>
-        ) : mode === "otp" ? (
+        ) : activeMode === "otp" ? (
           step === "email" ? (
             <div className="space-y-4">
               <input

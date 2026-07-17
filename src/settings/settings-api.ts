@@ -654,6 +654,54 @@ export async function removeAllowedEmail(email: string): Promise<void> {
   });
 }
 
+// ── Admin: Authentication ──
+
+export interface AuthenticationSettings {
+  host: string;
+  port: number;
+  username: string;
+  from_address: string;
+  password_configured: boolean;
+  allow_self_registration: boolean;
+}
+
+export interface SaveAuthenticationSettingsBody {
+  host: string;
+  port: number;
+  username: string;
+  from_address: string;
+  password?: string;
+  allow_self_registration: boolean;
+}
+
+export interface AuthenticationTestResult {
+  ok: boolean;
+  message?: string;
+  error?: string;
+}
+
+export async function fetchAuthenticationSettings(): Promise<AuthenticationSettings> {
+  return await request<AuthenticationSettings>("/api/admin/smtp");
+}
+
+export async function saveAuthenticationSettings(
+  body: SaveAuthenticationSettingsBody,
+): Promise<void> {
+  await request<void>("/api/admin/smtp", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function sendAuthenticationTestEmail(
+  to: string,
+): Promise<AuthenticationTestResult> {
+  return await request<AuthenticationTestResult>("/api/admin/smtp/test", {
+    method: "POST",
+    body: JSON.stringify({ to }),
+  });
+}
+
 // ── Admin API types ──
 
 export interface BreakdownEntry {

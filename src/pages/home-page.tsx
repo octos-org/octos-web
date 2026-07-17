@@ -489,7 +489,7 @@ function WarmWorkbenchHomePage() {
 }
 
 function LegacyHomeNav() {
-  const { user, portal, logout } = useAuth();
+  const { user, logout } = useAuth();
   const { theme, toggleTheme, setUiStyle } = useTheme();
   const navigate = useNavigate();
 
@@ -528,17 +528,15 @@ function LegacyHomeNav() {
         <MessageSquare size={16} />
         Chat
       </button>
-      {portal?.can_access_admin_portal && (
-        <button
-          type="button"
-          onClick={() => navigate("/settings")}
-          className="rounded-xl p-2.5 text-muted hover:bg-surface-container hover:text-text-strong"
-          title="Settings"
-          aria-label="Settings"
-        >
-          <Settings size={18} />
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={() => navigate("/settings")}
+        className="rounded-xl p-2.5 text-muted hover:bg-surface-container hover:text-text-strong"
+        title="Settings"
+        aria-label="Settings"
+      >
+        <Settings size={18} />
+      </button>
       <button
         type="button"
         onClick={toggleTheme}

@@ -9,6 +9,9 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const unlockAudioMock = vi.hoisted(() => vi.fn());
+const themeMock = vi.hoisted(() => ({
+  uiStyle: "ivory-obsidian" as "ivory-obsidian" | "legacy-blue",
+}));
 
 vi.mock("@/components/studio-nav", () => ({
   StudioNav: ({ actions }: { actions?: React.ReactNode }) => (
@@ -19,7 +22,7 @@ vi.mock("@/components/studio-nav", () => ({
 vi.mock("@/hooks/use-theme", () => ({
   useTheme: () => ({
     theme: "light" as const,
-    uiStyle: "ivory-obsidian" as const,
+    uiStyle: themeMock.uiStyle,
     setTheme: vi.fn(),
     toggleTheme: vi.fn(),
     setUiStyle: vi.fn(),
@@ -93,6 +96,7 @@ function renderHome() {
 beforeEach(() => {
   localStorage.clear();
   seedFixtures();
+  themeMock.uiStyle = "ivory-obsidian";
 });
 
 afterEach(() => {
@@ -102,6 +106,13 @@ afterEach(() => {
 });
 
 describe("HomePage (Ivory Obsidian launcher)", () => {
+  it("keeps Settings available in the legacy shell for a non-admin user", () => {
+    themeMock.uiStyle = "legacy-blue";
+    renderHome();
+
+    expect(screen.getByRole("button", { name: "Settings" })).toBeTruthy();
+  });
+
   it("renders the hero, create card, and the design's three tabs", () => {
     renderHome();
 
