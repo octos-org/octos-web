@@ -1,6 +1,6 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AuthStatusResponse } from "@/api/types";
 import { LoginPage } from "./login-page";
@@ -12,6 +12,10 @@ const authMocks = vi.hoisted(() => ({
   soloLogin: vi.fn(),
 }));
 
+const apiMocks = vi.hoisted(() => ({
+  status: vi.fn(),
+}));
+
 vi.mock("./auth-context", () => ({
   useAuth: () => ({
     authStatus: authMocks.authStatus,
@@ -19,6 +23,11 @@ vi.mock("./auth-context", () => ({
     loginWithToken: authMocks.loginWithToken,
     soloLogin: authMocks.soloLogin,
   }),
+}));
+
+vi.mock("@/api/auth", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/api/auth")>()),
+  status: apiMocks.status,
 }));
 
 function renderLogin(allowSelfRegistration: boolean) {
@@ -30,6 +39,7 @@ function renderLogin(allowSelfRegistration: boolean) {
     local_solo_enabled: false,
     scoped_profile: null,
   };
+  apiMocks.status.mockResolvedValue(authMocks.authStatus);
   render(
     <MemoryRouter>
       <LoginPage />
@@ -38,6 +48,10 @@ function renderLogin(allowSelfRegistration: boolean) {
 }
 
 describe("LoginPage registration guidance", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   afterEach(() => cleanup());
 
   it("invites a new user to create an account when registration is open", () => {
@@ -57,5 +71,40 @@ describe("LoginPage registration guidance", () => {
     expect(
       screen.getByText(/use an allowed or registered email to sign in/i),
     ).toBeTruthy();
+  });
+
+  it("refreshes a stale initial auth status when the login page mounts", async () => {
+    authMocks.authStatus = {
+      bootstrap_mode: false,
+      email_login_enabled: false,
+      admin_token_login_enabled: false,
+      allow_self_registration: false,
+      local_solo_enabled: false,
+      scoped_profile: null,
+    };
+    apiMocks.status.mockResolvedValue({
+      bootstrap_mode: false,
+      email_login_enabled: true,
+      admin_token_login_enabled: false,
+      allow_self_registration: true,
+      local_solo_enabled: false,
+      scoped_profile: null,
+    } satisfies AuthStatusResponse);
+
+    render(
+      <MemoryRouter>
+        <LoginPage />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(apiMocks.status).toHaveBeenCalledOnce());
+    expect(
+      await screen.findByText(
+        /verify your email to create an account and sign in/i,
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.queryByText(/email otp login is not enabled on this host/i),
+    ).toBeNull();
   });
 });
