@@ -1,6 +1,29 @@
-import { Check, Moon, Palette, Sun } from "lucide-react";
+import { Check, LayoutGrid, MessagesSquare, Moon, Palette, Sun } from "lucide-react";
 
+import { useLayout, type AppLayout } from "@/hooks/use-layout";
 import { useTheme, type UiStyle } from "@/hooks/use-theme";
+
+const LAYOUT_OPTIONS: Array<{
+  id: AppLayout;
+  label: string;
+  description: string;
+  icon: typeof MessagesSquare;
+}> = [
+  {
+    id: "classic",
+    label: "Classic",
+    description:
+      "The current chat shell — session list, conversation, and a collapsible files panel.",
+    icon: MessagesSquare,
+  },
+  {
+    id: "workspace",
+    label: "Workspace (Beta)",
+    description:
+      "Notebook-style three-pane workspace — sources, agent, and artifacts/runs on one screen.",
+    icon: LayoutGrid,
+  },
+];
 
 const STYLE_OPTIONS: Array<{
   id: UiStyle;
@@ -42,6 +65,7 @@ const STYLE_OPTIONS: Array<{
 
 export function AppearanceTab() {
   const { theme, setTheme, toggleTheme, uiStyle, setUiStyle } = useTheme();
+  const { layout, setLayout } = useLayout();
 
   const chooseStyle = (next: UiStyle) => {
     setUiStyle(next);
@@ -102,6 +126,60 @@ export function AppearanceTab() {
                       style={{ backgroundColor: color }}
                     />
                   ))}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="glass-section p-5">
+        <div className="flex items-start gap-3">
+          <div className="workbench-icon-tile flex h-10 w-10 shrink-0 items-center justify-center">
+            <LayoutGrid size={18} />
+          </div>
+          <div className="min-w-0">
+            <h3 className="text-base font-semibold text-text-strong">Chat Layout</h3>
+            <p className="mt-1 text-sm text-muted">
+              Pick the shell used by the Chat page. Classic stays the default;
+              Workspace is the new notebook-style layout — switch back anytime.
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-5 grid gap-3 sm:grid-cols-2">
+          {LAYOUT_OPTIONS.map((option) => {
+            const active = layout === option.id;
+            const Icon = option.icon;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                aria-label={option.label}
+                aria-pressed={active}
+                data-active={active ? "true" : undefined}
+                data-testid={`layout-option-${option.id}`}
+                onClick={() => setLayout(option.id)}
+                className="workbench-card flex min-h-28 flex-col items-start justify-between gap-3 p-4 text-left"
+              >
+                <span className="flex w-full items-start justify-between gap-3">
+                  <span className="flex items-start gap-3">
+                    <Icon size={18} className="mt-0.5 shrink-0" />
+                    <span>
+                      <span className="block text-sm font-semibold text-text-strong">
+                        {option.label}
+                      </span>
+                      <span className="mt-1 block text-xs leading-5 text-muted">
+                        {option.description}
+                      </span>
+                    </span>
+                  </span>
+                  {active && (
+                    <span className="workbench-status-pill" data-tone="accent">
+                      <Check size={13} />
+                      Active
+                    </span>
+                  )}
                 </span>
               </button>
             );
