@@ -1,0 +1,19 @@
+{
+  "session_id": "session-capture-001",
+  "topic": "planning",
+  "thread_id": "thread-capture-001",
+  "seq": 3,
+  "payload": {
+    "type": "assistant_persisted",
+    "data": {
+      "text": "I found three implementation milestones.",
+      "meta": {
+        "message_id": "msg-capture-003",
+        "persisted_at": "2026-07-18T22:10:03Z",
+        "media": [
+          "artifacts/implementation-plan.md"
+        ]
+      }
+    }
+  }
+}
