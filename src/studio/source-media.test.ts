@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   mergeSourceMedia,
   relativeTime,
+  sourcePreviewPath,
   sourceKind,
+  sourceRowFromSkillActionJob,
 } from "./source-media";
 
 describe("mergeSourceMedia", () => {
@@ -71,6 +73,38 @@ describe("sourceKind", () => {
     expect(sourceKind("notes.md")).toBe("text");
     expect(sourceKind("README")).toBe("text");
     expect(sourceKind("archive.")).toBe("text");
+  });
+});
+
+describe("sourceRowFromSkillActionJob", () => {
+  it("keeps the normalized source path for grounding and the original file path for preview", () => {
+    const row = sourceRowFromSkillActionJob({
+      job_id: "job-photo",
+      batch_id: "batch-photo",
+      profile_id: "alan0x",
+      session_id: "web-abc",
+      action_id: "source.import",
+      skill_id: "mofa-notebook-source",
+      status: "succeeded",
+      input_path: "upload-handle-photo",
+      filename: "photo.jpg",
+      materialized_path: "uploads/photo.jpg",
+      source_id: "photo",
+      source_path: "notebook-sources/photo/source.md",
+      created_at: "2026-07-09T01:00:00Z",
+      updated_at: "2026-07-09T01:02:00Z",
+    });
+
+    expect(row.path).toBe("notebook-sources/photo/source.md");
+    expect(row.sourceId).toBe("photo");
+    expect(row.previewPath).toBe("uploads/photo.jpg");
+    expect(sourcePreviewPath(row)).toBe("uploads/photo.jpg");
+  });
+
+  it("falls back to the row path when no original preview path exists", () => {
+    expect(
+      sourcePreviewPath({ filename: "notes.md", path: "research/notes.md", timestamp: 1 }),
+    ).toBe("research/notes.md");
   });
 });
 

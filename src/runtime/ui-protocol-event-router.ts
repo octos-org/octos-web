@@ -41,6 +41,7 @@ import type {
   RouterStatusEvent,
   TaskOutputDeltaEvent,
   TaskUpdatedEvent,
+  SkillActionJobUpdatedEvent,
   ToolCompletedEvent,
   ToolProgressEvent,
   ToolStartedEvent,
@@ -1919,6 +1920,16 @@ function handleVoiceExit(cfg: RouterConfig, event: VoiceExitEvent): void {
   );
 }
 
+export function handleSkillActionJobUpdated(
+  cfg: RouterConfig,
+  event: SkillActionJobUpdatedEvent,
+): void {
+  dispatch(
+    cfg,
+    new CustomEvent("crew:skill_action_job_updated", { detail: event }),
+  );
+}
+
 /**
  * Subscribe the router to all relevant streams on a started bridge. The
  * caller owns bridge lifecycle (start/stop). Returns a detacher that
@@ -1998,6 +2009,9 @@ export function attachRouter(
   const offTaskUpdated = bridge.onTaskUpdated((e) => handleTaskUpdated(cfg, e));
   const offTaskOutputDelta = bridge.onTaskOutputDelta((e) =>
     handleTaskOutputDelta(cfg, e),
+  );
+  const offSkillActionJobUpdated = bridge.onSkillActionJobUpdated((e) =>
+    handleSkillActionJobUpdated(cfg, e),
   );
   const offTurnLifecycle = bridge.onTurnLifecycle((e) => {
     // The bridge muxes the three lifecycle events through a single
@@ -2120,6 +2134,7 @@ export function attachRouter(
       offVoiceExit();
       offTaskUpdated();
       offTaskOutputDelta();
+      offSkillActionJobUpdated();
       offTurnLifecycle();
       offApprovalRequested();
       offApprovalAutoResolved();

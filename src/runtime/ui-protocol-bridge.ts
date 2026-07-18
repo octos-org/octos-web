@@ -79,6 +79,8 @@ import type {
   UiTokenCostUpdate,
   UiFileMutationNotice,
   WarningEvent,
+  SkillActionJobStatus,
+  SkillActionJobUpdatedEvent,
 } from "./ui-protocol-types";
 
 export type {
@@ -140,6 +142,9 @@ export type {
   UiRetryBackoff,
   UiTokenCostUpdate,
   WarningEvent,
+  SkillActionJob,
+  SkillActionJobStatus,
+  SkillActionJobUpdatedEvent,
 } from "./ui-protocol-types";
 
 // ---------------------------------------------------------------------------
@@ -181,6 +186,11 @@ export const METHODS = {
   SESSION_WORKSPACE_GET: "session/workspace.get",
   SESSION_TITLE_SET: "session/title.set",
   SESSION_DELETE: "session/delete",
+  SKILL_ACTION_LIST: "skill/action/list",
+  SKILL_ACTION_INVOKE: "skill/action/invoke",
+  SKILL_ACTION_JOB_LIST: "skill/action/job/list",
+  SKILL_ACTION_JOB_READ: "skill/action/job/read",
+  SKILL_ACTION_JOB_UPDATED: "skill/action/job/updated",
   SYSTEM_STATUS_GET: "system/status.get",
   CONTENT_LIST: "content/list",
   CONTENT_DELETE: "content/delete",
@@ -320,6 +330,10 @@ export const UI_PROTOCOL_FEATURES = [
   // populated post-`session/open` from the negotiated `replayed_envelopes`
   // is what eliminates the N+1 bubble render after page reload.
   "state.session_hydrate.v1",
+  // UPCR-2026-027: persisted background jobs for manifest-declared
+  // skill actions such as notebook source import.
+  "skill.actions.v1",
+  "skill.action_jobs.v1",
   // UPCR-2026-026 (octos #1558) + UPCR-2026-022: the server filters the
   // context lifecycle family (context/compaction_started,
   // context/compaction_completed, context/normalization_reported) for
@@ -547,6 +561,9 @@ export interface UiProtocolBridge {
   onVoiceExit(handler: (e: VoiceExitEvent) => void): () => void;
   onTaskUpdated(handler: (e: TaskUpdatedEvent) => void): () => void;
   onTaskOutputDelta(handler: (e: TaskOutputDeltaEvent) => void): () => void;
+  onSkillActionJobUpdated(
+    handler: (e: SkillActionJobUpdatedEvent) => void,
+  ): () => void;
   onTurnLifecycle(
     handler: (
       e: TurnStartedEvent | TurnCompletedEvent | TurnErrorEvent,
@@ -1395,6 +1412,77 @@ function guardTaskOutputDelta(p: unknown): TaskOutputDeltaEvent | null {
   };
 }
 
+function isSkillActionJobStatus(value: unknown): value is SkillActionJobStatus {
+  return (
+    value === "queued" ||
+    value === "running" ||
+    value === "succeeded" ||
+    value === "failed" ||
+    value === "abandoned"
+  );
+}
+
+function optionalNonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function unwrapSkillActionJobPayload(
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!isPlainObject(payload.job)) return payload;
+
+  const job = { ...payload.job };
+  if (!isString(job.profile_id) && isString(payload.profile_id)) {
+    job.profile_id = payload.profile_id;
+  }
+  if (!isString(job.session_id) && isString(payload.session_id)) {
+    job.session_id = payload.session_id;
+  }
+  return job;
+}
+
+function guardSkillActionJobUpdated(p: unknown): SkillActionJobUpdatedEvent | null {
+  if (!isPlainObject(p)) return null;
+  const payload = unwrapSkillActionJobPayload(p);
+  if (
+    !isString(payload.job_id) ||
+    !isString(payload.batch_id) ||
+    !isString(payload.profile_id) ||
+    !isString(payload.session_id) ||
+    !isString(payload.action_id) ||
+    !isString(payload.skill_id) ||
+    !isString(payload.created_at) ||
+    !isString(payload.updated_at) ||
+    !isSkillActionJobStatus(payload.status)
+  ) {
+    return null;
+  }
+
+  const event: SkillActionJobUpdatedEvent = {
+    job_id: payload.job_id,
+    batch_id: payload.batch_id,
+    profile_id: payload.profile_id,
+    session_id: payload.session_id,
+    action_id: payload.action_id,
+    skill_id: payload.skill_id,
+    status: payload.status,
+    input_path: optionalNonEmptyString(payload.input_path),
+    filename: optionalNonEmptyString(payload.filename),
+    materialized_path: optionalNonEmptyString(payload.materialized_path),
+    output: optionalNonEmptyString(payload.output),
+    error: optionalNonEmptyString(payload.error),
+    source_id: optionalNonEmptyString(payload.source_id),
+    source_path: optionalNonEmptyString(payload.source_path),
+    metadata_path: optionalNonEmptyString(payload.metadata_path),
+    created_at: payload.created_at,
+    updated_at: payload.updated_at,
+  };
+  if (payload.result !== undefined) {
+    event.result = payload.result;
+  }
+  return event;
+}
+
 function guardContextCompactionStarted(p: unknown): ContextCompactionStartedEvent | null {
   if (!isPlainObject(p)) return null;
   if (!isString(p.session_id)) return null;
@@ -1449,15 +1537,32 @@ function guardTurnCompleted(p: unknown): TurnCompletedEvent | null {
 function guardTurnError(p: unknown): TurnErrorEvent | null {
   if (!isPlainObject(p)) return null;
   if (!isString(p.session_id) || !isString(p.turn_id)) return null;
-  if (!isPlainObject(p.error)) return null;
-  const err = p.error;
-  if (typeof err.code !== "number" || typeof err.message !== "string") {
+
+  if (isPlainObject(p.error)) {
+    const err = p.error;
+    if (
+      (typeof err.code !== "number" && typeof err.code !== "string") ||
+      typeof err.message !== "string"
+    ) {
+      return null;
+    }
+    return {
+      session_id: p.session_id,
+      turn_id: p.turn_id,
+      error: { code: err.code, message: err.message, data: err.data },
+    };
+  }
+
+  if (
+    (typeof p.code !== "number" && typeof p.code !== "string") ||
+    typeof p.message !== "string"
+  ) {
     return null;
   }
   return {
     session_id: p.session_id,
     turn_id: p.turn_id,
-    error: { code: err.code, message: err.message, data: err.data },
+    error: { code: p.code, message: p.message },
   };
 }
 
@@ -1978,6 +2083,8 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private readonly subGoalCleared =
     new Subscribers<SessionGoalClearedEvent>();
   private readonly subTaskOutputDelta = new Subscribers<TaskOutputDeltaEvent>();
+  private readonly subSkillActionJobUpdated =
+    new Subscribers<SkillActionJobUpdatedEvent>();
   private readonly subContextCompaction = new Subscribers<
     ContextCompactionStartedEvent | ContextCompactionCompletedEvent
   >();
@@ -2079,6 +2186,11 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     [METHODS.TASK_OUTPUT_DELTA]: {
       guard: guardTaskOutputDelta,
       emit: (v) => this.subTaskOutputDelta.emit(v as TaskOutputDeltaEvent),
+    },
+    [METHODS.SKILL_ACTION_JOB_UPDATED]: {
+      guard: guardSkillActionJobUpdated,
+      emit: (v) =>
+        this.subSkillActionJobUpdated.emit(v as SkillActionJobUpdatedEvent),
     },
     [METHODS.CONTEXT_COMPACTION_STARTED]: {
       guard: guardContextCompactionStarted,
@@ -2282,6 +2394,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.subVisualFailed.clear();
     this.subTaskUpdated.clear();
     this.subTaskOutputDelta.clear();
+    this.subSkillActionJobUpdated.clear();
     this.subTurnLifecycle.clear();
     this.subContextCompaction.clear();
     this.subApprovalRequested.clear();
@@ -2624,6 +2737,11 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   }
   onTaskOutputDelta(handler: Listener<TaskOutputDeltaEvent>): () => void {
     return this.subTaskOutputDelta.add(handler);
+  }
+  onSkillActionJobUpdated(
+    handler: Listener<SkillActionJobUpdatedEvent>,
+  ): () => void {
+    return this.subSkillActionJobUpdated.add(handler);
   }
   onTurnLifecycle(
     handler: Listener<TurnStartedEvent | TurnCompletedEvent | TurnErrorEvent>,
@@ -3533,6 +3651,7 @@ export const __INTERNAL_GUARDS_FOR_TEST__ = {
   guardSessionHydrate,
   guardTaskUpdated,
   guardTaskOutputDelta,
+  guardSkillActionJobUpdated,
   guardTurnStarted,
   guardTurnCompleted,
   guardTurnError,

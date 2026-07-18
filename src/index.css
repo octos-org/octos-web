@@ -4682,8 +4682,9 @@ button, a, input, textarea {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
-  padding: 1rem 0.75rem;
+  gap: 0.45rem;
+  min-height: 5.5rem;
+  padding: 0.75rem 0.5rem;
   border: 0.5px solid var(--color-border);
   border-radius: 12px;
   background: linear-gradient(160deg, var(--color-surface-light), var(--color-surface-container));
@@ -4720,9 +4721,23 @@ button, a, input, textarea {
   font-family: var(--font-label);
   font-size: 0.75rem;
   font-weight: 500;
-  line-height: 1.35;
-  letter-spacing: 0.05em;
+  line-height: 1.25;
+  letter-spacing: 0.02em;
   color: var(--color-text-strong);
+}
+
+.studio-skill-tile-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 0.25rem;
+  border-radius: 9999px;
+  background: var(--color-text-strong);
+  color: var(--color-surface);
+  padding: 0.1rem 0.25rem;
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
 }
 
 .studio-pane {
