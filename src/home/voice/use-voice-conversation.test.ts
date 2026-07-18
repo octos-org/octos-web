@@ -605,6 +605,68 @@ describe("interrupt() supersedes the drain loop (stale grace timer)", () => {
     expect(sendMessageMock).toHaveBeenCalledTimes(sendCountBefore + 2);
     expect(result.current.state).toBe("thinking");
   });
+
+  it("keeps one speaking VAD active across multiple reply audio clips", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        blob: async () => new Blob(["a"]),
+      })),
+    );
+    getActiveBridgeMock.mockReturnValue({
+      getConnectionState: () => "connected",
+    });
+
+    const { result, rerender, unmount } = renderHook(() =>
+      useVoiceConversation("voice-continuous-vad-test"),
+    );
+
+    await act(async () => {
+      await result.current.start();
+    });
+    const firstListeningUtterance = captureStartMock.mock.calls[0][0] as (
+      wav: Blob,
+    ) => void;
+    await act(async () => {
+      firstListeningUtterance(new Blob(["u1"]));
+      await flushMicrotasks();
+    });
+
+    threadsMock.value = [
+      {
+        id: "turn-multi",
+        userMsg: { text: "tell me a long story" },
+        pendingAssistant: null,
+        responses: [
+          {
+            role: "assistant",
+            text: "part one. part two.",
+            files: [{ path: "w/r1.wav" }, { path: "w/r2.wav" }],
+          },
+        ],
+      },
+    ];
+    rerender();
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    expect(result.current.state).toBe("speaking");
+    const startsAfterFirstClip = captureStartMock.mock.calls.length;
+    expect(audioMock.playAudioBlob).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      const finishFirstClip = audioMock.state.onEnded;
+      audioMock.state.onEnded = null;
+      finishFirstClip?.();
+      await flushMicrotasks();
+    });
+
+    expect(audioMock.playAudioBlob).toHaveBeenCalledTimes(2);
+    expect(captureStartMock).toHaveBeenCalledTimes(startsAfterFirstClip);
+    unmount();
+  });
 });
 
 describe("shouldHandleNoSpeechEvent", () => {

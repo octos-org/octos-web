@@ -346,6 +346,11 @@ export function useVoiceConversation(
   const ignoredTurnIdsRef = useRef<Set<string>>(new Set());
   const activeTurnIdRef = useRef<string | null>(null);
   const speechInterruptArmedRef = useRef(false);
+  // Which callback/threshold set the single live MicVAD is currently using.
+  // A streamed reply can contain dozens of audio files; keep the `speaking`
+  // capture mode across clip boundaries instead of re-running captureStart()
+  // for every file.
+  const captureModeRef = useRef<"listening" | "thinking" | "speaking" | null>(null);
   const replyTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const stateRef = useRef<VoiceState>("idle");
   stateRef.current = state;
@@ -492,9 +497,12 @@ export function useVoiceConversation(
 
   const beginBargeIn = useCallback(async () => {
     if (stateRef.current !== "thinking" && stateRef.current !== "speaking") return;
+    const captureMode = stateRef.current;
+    if (captureModeRef.current === captureMode) return;
+    captureModeRef.current = captureMode;
     speechInterruptArmedRef.current = false;
     const vadOptions =
-      stateRef.current === "speaking"
+      captureMode === "speaking"
         ? SPEAKING_INTERRUPT_VAD_OPTIONS
         : THINKING_INTERRUPT_VAD_OPTIONS;
     await captureStart(
@@ -505,6 +513,7 @@ export function useVoiceConversation(
         ) {
           return;
         }
+        captureModeRef.current = null;
         void captureStop();
         void sendUtteranceRef.current(wav);
       },
@@ -544,10 +553,12 @@ export function useVoiceConversation(
   const beginListening = useCallback(async () => {
     stateRef.current = "listening";
     setState("listening");
+    captureModeRef.current = "listening";
     await captureStart(
       (wav: Blob) => {
         // Ignore late utterances that land after we've left listening.
         if (stateRef.current !== "listening") return;
+        captureModeRef.current = null;
         void captureStop();
         void sendUtteranceRef.current(wav);
       },
@@ -660,6 +671,7 @@ export function useVoiceConversation(
     );
     ignoredTurnIdsRef.current = new Set();
     activeTurnIdRef.current = null;
+    captureModeRef.current = null;
     turnBaselineRef.current = threadsRef.current.length;
     setTurnBaseline(threadsRef.current.length);
     setLastAssistantText("");
@@ -717,6 +729,7 @@ export function useVoiceConversation(
     clearTimeout(graceTimerRef.current);
     activeTurnIdRef.current = null;
     speechInterruptArmedRef.current = false;
+    captureModeRef.current = null;
     audioQueueRef.current = [];
     audioTurnByPathRef.current.clear();
     speakingTurnIdRef.current = null;
@@ -781,13 +794,17 @@ export function useVoiceConversation(
       drainGenRef.current++;
       speechInterruptArmedRef.current = false;
       requestTurnInterrupt("user tapped orb while thinking");
+      captureModeRef.current = null;
       void captureStop();
       void beginListeningRef.current();
     }
   }, [captureStop, releaseAudio, requestTurnInterrupt]);
 
   useEffect(() => {
-    if (captureError) setState("error");
+    if (captureError) {
+      captureModeRef.current = null;
+      setState("error");
+    }
   }, [captureError]);
 
   // Play the assistant's TTS audio as soon as it lands in the thread, decoupled
