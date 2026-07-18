@@ -35,3 +35,29 @@ export async function uploadFiles(
 
   return resp.json();
 }
+
+export interface VoiceCandidateTranscription {
+  accepted: boolean;
+  transcript: string;
+  language: string;
+}
+
+/** Validate a possible voice interruption without creating or cancelling a
+ * turn. The incumbent AI reply remains authoritative until this returns an
+ * accepted, meaningful transcript. */
+export async function transcribeVoiceCandidate(
+  audio: File,
+): Promise<VoiceCandidateTranscription> {
+  const form = new FormData();
+  form.append("file", audio);
+  const resp = await fetch(`${API_BASE}/api/voice/transcribe`, {
+    method: "POST",
+    headers: buildApiHeaders(),
+    body: form,
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(text || `Voice transcription failed: HTTP ${resp.status}`);
+  }
+  return resp.json();
+}

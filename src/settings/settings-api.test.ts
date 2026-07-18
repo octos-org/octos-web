@@ -17,6 +17,13 @@ describe("mergeProfileConfig — voice TTS fields", () => {
     expect(next.tts_cloud).toEqual({ appid: "999", voice: "BV700" });
   });
 
+  it("should carry the ASR language override through a patch", () => {
+    const cfg = normalizeProfileConfig({});
+    const next = mergeProfileConfig(cfg, { asr_language: "English" });
+    expect(next.asr_language).toBe("English");
+    expect(mergeProfileConfig(next, { asr_language: null }).asr_language).toBeNull();
+  });
+
   it("should default tts fields to undefined when absent", () => {
     const cfg = normalizeProfileConfig({});
     expect(cfg.tts_provider).toBeUndefined();

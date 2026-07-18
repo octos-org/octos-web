@@ -26,11 +26,19 @@ const {
   captureStopMock,
   getActiveBridgeMock,
   sendMessageMock,
+  interruptActiveTurnMock,
+  transcribeVoiceCandidateMock,
 } = vi.hoisted(() => ({
   captureStartMock: vi.fn(async () => {}),
   captureStopMock: vi.fn(async () => {}),
   getActiveBridgeMock: vi.fn((): unknown => undefined),
   sendMessageMock: vi.fn(),
+  interruptActiveTurnMock: vi.fn(async () => true),
+  transcribeVoiceCandidateMock: vi.fn(async () => ({
+    accepted: true,
+    transcript: "继续说",
+    language: "Chinese",
+  })),
 }));
 
 vi.mock("./use-voice-capture", () => ({
@@ -92,7 +100,7 @@ vi.mock("@/store/thread-store", () => ({
 }));
 
 vi.mock("@/runtime/ui-protocol-send", () => ({
-  interruptActiveTurn: vi.fn(async () => true),
+  interruptActiveTurn: interruptActiveTurnMock,
   sendMessage: sendMessageMock,
 }));
 
@@ -102,6 +110,7 @@ vi.mock("@/runtime/ui-protocol-runtime", () => ({
 
 vi.mock("@/api/chat", () => ({
   uploadFiles: vi.fn(async () => []),
+  transcribeVoiceCandidate: transcribeVoiceCandidateMock,
 }));
 
 vi.mock("@/api/files", () => ({
@@ -372,6 +381,15 @@ describe("start() cancellation (post-unmount mic re-acquire)", () => {
     captureStartMock.mockClear();
     captureStopMock.mockClear();
     sendMessageMock.mockClear();
+    interruptActiveTurnMock.mockReset();
+    interruptActiveTurnMock.mockResolvedValue(true);
+    transcribeVoiceCandidateMock.mockReset();
+    transcribeVoiceCandidateMock.mockResolvedValue({
+      accepted: true,
+      transcript: "继续说",
+      language: "Chinese",
+    });
+    sendMessageMock.mockClear();
     getActiveBridgeMock.mockReset();
     getActiveBridgeMock.mockReturnValue(undefined);
   });
@@ -439,6 +457,15 @@ describe("interrupt() supersedes the drain loop (stale grace timer)", () => {
     audioMock.stopAudio.mockClear();
     captureStartMock.mockClear();
     captureStopMock.mockClear();
+    sendMessageMock.mockClear();
+    interruptActiveTurnMock.mockReset();
+    interruptActiveTurnMock.mockResolvedValue(true);
+    transcribeVoiceCandidateMock.mockReset();
+    transcribeVoiceCandidateMock.mockResolvedValue({
+      accepted: true,
+      transcript: "继续说",
+      language: "Chinese",
+    });
     getActiveBridgeMock.mockReset();
     getActiveBridgeMock.mockReturnValue(undefined);
   });
@@ -595,14 +622,58 @@ describe("interrupt() supersedes the drain loop (stale grace timer)", () => {
       bargeInOptions.onSpeechConfirmed();
       await flushMicrotasks();
     });
-    expect(audioMock.stopAudio).toHaveBeenCalled();
+    expect(audioMock.stopAudio).not.toHaveBeenCalled();
 
     await act(async () => {
       bargeInUtterance(new Blob(["u2"]));
       await flushMicrotasks();
     });
 
+    expect(transcribeVoiceCandidateMock).toHaveBeenCalledTimes(1);
+    expect(audioMock.stopAudio).toHaveBeenCalled();
     expect(sendMessageMock).toHaveBeenCalledTimes(sendCountBefore + 2);
+    expect(sendMessageMock.mock.calls.at(-1)?.[0].voiceTranscript).toBe("继续说");
+    expect(result.current.state).toBe("thinking");
+  });
+
+  it("preserves a thinking turn when candidate ASR is empty", async () => {
+    getActiveBridgeMock.mockReturnValue({
+      getConnectionState: () => "connected",
+    });
+    transcribeVoiceCandidateMock.mockResolvedValueOnce({
+      accepted: false,
+      transcript: "",
+      language: "Chinese",
+    });
+
+    const { result } = renderHook(() =>
+      useVoiceConversation("voice-empty-candidate-test"),
+    );
+    await act(async () => {
+      await result.current.start();
+    });
+    const listeningUtterance = captureStartMock.mock.calls[0][0] as (
+      wav: Blob,
+    ) => void;
+    await act(async () => {
+      listeningUtterance(new Blob(["u1"]));
+      await flushMicrotasks();
+    });
+    const sendCount = sendMessageMock.mock.calls.length;
+    const thinkingCall = captureStartMock.mock.calls.at(-1)!;
+    const candidateUtterance = thinkingCall[0] as (wav: Blob) => void;
+    const candidateOptions = thinkingCall[1] as {
+      onSpeechConfirmed: () => void;
+    };
+
+    await act(async () => {
+      candidateOptions.onSpeechConfirmed();
+      candidateUtterance(new Blob(["noise"]));
+      await flushMicrotasks();
+    });
+
+    expect(interruptActiveTurnMock).not.toHaveBeenCalled();
+    expect(sendMessageMock).toHaveBeenCalledTimes(sendCount);
     expect(result.current.state).toBe("thinking");
   });
 
@@ -670,6 +741,17 @@ describe("interrupt() supersedes the drain loop (stale grace timer)", () => {
 });
 
 describe("shouldHandleNoSpeechEvent", () => {
+  it("treats an empty context topic as the default topic", () => {
+    expect(
+      shouldHandleNoSpeechEvent(
+        { sessionId: "s1", threadId: "turn-1" },
+        "s1",
+        "",
+        "turn-1",
+      ),
+    ).toBe(true);
+  });
+
   it("matches the active voice turn in the same session/topic", () => {
     expect(
       shouldHandleNoSpeechEvent(

@@ -2327,6 +2327,9 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     if (extras?.media && extras.media.length > 0) {
       params.media = extras.media;
     }
+    if (extras?.voice_transcript?.trim()) {
+      params.voice_transcript = extras.voice_transcript.trim();
+    }
     if (extras?.topic && extras.topic.trim().length > 0) {
       params.topic = extras.topic;
     }
