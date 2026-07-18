@@ -3821,6 +3821,13 @@ export function loadHistory(
   const existing = loadingPromises.get(key);
   if (existing) return existing;
 
+  // The `finally` below compares against this promise's own identity, but the
+  // closure captures it before the assignment lands — a direct self-reference
+  // trips TS2454. A holder sidesteps that while keeping the binding `const`.
+  // Cleanup stays INSIDE the async body on purpose: the placeholder-refetch
+  // loop further down relies on the entry being gone the moment the load
+  // settles, not one microtask later.
+  const self: { current?: Promise<void> } = {};
   const promise = (async () => {
     try {
       // Issue #110.3: page through `getMessagesPage` so a session
@@ -3857,12 +3864,13 @@ export function loadHistory(
     } catch {
       loadedSessions.delete(key);
     } finally {
-      if (loadingPromises.get(key) === promise) {
+      if (loadingPromises.get(key) === self.current) {
         loadingPromises.delete(key);
       }
     }
   })();
 
+  self.current = promise;
   loadingPromises.set(key, promise);
   return promise;
 }
