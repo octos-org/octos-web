@@ -1,24 +1,19 @@
 /**
- * UI Protocol v1 → ThreadStore action router (Phase C-2, issue #68).
+ * UI Protocol compatibility-event router (Phase C-2, issue #68).
  *
- * Pure mapping layer. Each handler converts a typed bridge event into the
- * same ThreadStore mutations the SSE bridge already produces, so the v1
- * transport reaches an identical store state from a different wire format.
- * The bridge-level fail-closed guards (ui-protocol-bridge.ts) have already
- * rejected malformed events before anything reaches this module.
- *
- * Capability negotiation: picks option (A) per the C-2 plan — no current
- * mapping branches on `UiProtocolCapabilities`, so we use the bridge as-is.
+ * Canonical projection envelopes bypass this module and are the only chat
+ * render source. The retained handlers keep compatibility task/tool
+ * bookkeeping and DOM control-plane notifications in sync after bridge-level
+ * fail-closed guards accept their typed events.
  *
  * Side-effects this module is allowed to perform:
- *   - mutate ThreadStore (the canonical v1 invariant)
+ *   - mutate ThreadStore compatibility bookkeeping
  *   - dispatch DOM CustomEvents (`crew:thinking`, `crew:approval_requested`,
  *     `crew:bg_tasks`) so existing listeners (sidebar spinner, future
  *     approval modal) keep working without per-listener flag-gating.
  *
  * Side-effects this module deliberately does NOT perform:
- *   - touch MessageStore (the legacy flat-list path is reserved for SSE
- *     bridge; the v1 flag implicitly forces v2 thread store)
+ *   - mutate ProjectionStore (the bridge owns canonical envelope admission)
  *   - mutate session-context state directly (callers wire that up)
  */
 
@@ -34,7 +29,6 @@ import type {
   UserQuestionRequestedEvent,
   FileAttachedEvent,
   MessageDeltaEvent,
-  MessagePersistedEvent,
   ProgressUpdatedEvent,
   QueueStateEvent,
   RouterFailoverEvent,
@@ -57,7 +51,6 @@ import type {
 import * as ThreadStore from "@/store/thread-store";
 import * as TaskStore from "@/store/task-store";
 import type { MessageMeta } from "@/store/thread-store";
-import type { MessageInfo } from "@/api/types";
 import { recordRuntimeCounter } from "./observability";
 import { isSpawnOnlyToolName } from "./spawn-only-tools";
 import { aggregateCallStatus } from "./task-rollup";
@@ -69,10 +62,8 @@ import * as AutonomyStore from "@/store/autonomy-store";
 //
 // Regression-#2 fix (chat-thread `ThreadMessageMeta` footer):
 //
-// PR #93 narrowed the wire shape of `MessagePersistedEvent` to
-// metadata-only (`{message_id, persisted_at, media}`); model + tokens +
-// duration migrated to `progress/updated` notifications carrying
-// `metadata.kind === "token_cost_update"`. The legacy
+// Model + tokens + duration arrive in `progress/updated` notifications
+// carrying `metadata.kind === "token_cost_update"`. The legacy
 // `ThreadMessageMeta` renderer reads `message.meta.{model, tokens_in,
 // tokens_out, duration_s}` and goes blank when meta is absent.
 //
@@ -205,8 +196,8 @@ const lastTaskStateById = new Map<string, LastTaskState>();
 
 /**
  * Codex P2 round (2026-05-25) — dedupe set for `file/attached`
- * envelopes. The envelope's authoritative siblings (`message/persisted`,
- * `turn/spawn_complete`) MAY redeliver the same artefact, and the
+ * envelopes. A `turn/spawn_complete` compatibility event may redeliver the
+ * same artefact, and the
  * envelope itself can replay across reconnects. Without a dedupe layer
  * the file would attach twice to the owning bubble (`appendAssistantFile`
  * is path-deduplicated but `appendAssistantFileToToolCall` was added to
@@ -267,55 +258,6 @@ function defaultDispatch(event: Event): void {
 // Mappers
 // ---------------------------------------------------------------------------
 
-/**
- * Translate the flat `MessagePersistedEvent` (UPCR-2026-012 wire shape;
- * server P1.3 fix in PR #767 added `media`; subsequent
- * "summary-missing-in-chat" fix in 2026-05-19 added optional `content`)
- * into the `MessageInfo` shape that `ThreadStore.appendPersistedMessage`
- * expects, for the late-artifact path (no live `pendingAssistant` to
- * promote).
- *
- * The row's `content` is now sourced from `event.content` when the
- * server carries it (non-empty captions / summaries accompanying a
- * `send_file` / mofa_slides / fm_tts delivery), and falls back to `""`
- * when omitted. Pre-fix the client hardcoded `""` here, which dropped
- * the assistant's caption on every media-bearing late artifact —
- * users saw the file in chat but not the text summary explaining it.
- *
- * Two ThreadStore merge behaviors are still honoured:
- *   - empty `content` + non-empty `media`: ThreadStore's media-only-merge
- *     predicate (`isMediaOnlyCompanion`, thread-store.ts:1706) treats
- *     this as a companion row and merges the file into the preceding
- *     assistant response — preserves the legacy file-only delivery UX.
- *   - non-empty `content` + non-empty `media`: NOT a media-only
- *     companion, so it lands as its own row with text + file rendered
- *     together — this is the new path that surfaces summaries.
- *   - text-only rows with no live pending fall through `appendPersistedMessage`
- *     and become text rows; `session/hydrate` may later replace them
- *     with canonical text but seq stays stable.
- */
-function eventToMessageInfo(event: MessagePersistedEvent): MessageInfo {
-  const media = event.media ?? [];
-  // Use server-carried content when present so captions / summaries
-  // alongside a file delivery reach the chat bubble. Fall back to ""
-  // when omitted, which preserves the media-only-companion merge path
-  // for legacy file-only deliveries.
-  const content = event.content ?? "";
-  return {
-    role: event.role,
-    content,
-    thread_id: event.thread_id,
-    client_message_id: event.client_message_id,
-    response_to_client_message_id: undefined,
-    tool_call_id: undefined,
-    timestamp: event.persisted_at,
-    seq: event.seq,
-    intra_thread_seq: undefined,
-    media,
-    tool_calls: undefined,
-  };
-}
-
 export function handleMessageDelta(
   _cfg: RouterConfig,
   event: MessageDeltaEvent,
@@ -329,207 +271,6 @@ export function handleMessageDelta(
   ThreadStore.appendAssistantToken(event.turn_id, event.text);
 }
 
-export function handleMessagePersisted(
-  cfg: RouterConfig,
-  event: MessagePersistedEvent,
-): void {
-  // For live foreground turns the streamed `pendingAssistant.text`
-  // (accumulated from `message/delta`) is the authoritative text source
-  // and this event finalises the bubble. Since the 2026-05-19
-  // "summary-missing-in-chat" fix the server now ALSO carries the
-  // committed row's text on `event.content` (omitted when empty) so the
-  // late-artifact path can surface captions / summaries that arrived
-  // outside of a delta stream.
-  //
-  // Two cases:
-  //
-  //   (1) Match condition (assistant role + thread_id resolves to a
-  //       thread with `pendingAssistant`): keep the streamed text
-  //       (still authoritative for the live bubble), append each
-  //       `media` URL to the pending bubble, then finalise with the
-  //       event's `seq`. The downstream `turn/completed` no-ops
-  //       because `pendingAssistant` is null after this.
-  //
-  //   (2) Unmatched (no pending — late artifact, non-assistant role,
-  //       or assistant whose live pending was lost across reconnect):
-  //       fall through to `appendPersistedMessage` so a fresh row
-  //       appears in the thread. `event.content` (when present) is
-  //       surfaced as the row's text; `event.media` lands as
-  //       attachments — together they render as a text+file bubble
-  //       (mofa_slides "Generated 12 slides..." + deck.pptx,
-  //       fm_tts narration summary + audio, etc.).
-  if (event.role === "assistant" && event.thread_id) {
-    const promoted = tryPromotePendingFromPersisted(
-      cfg.sessionId,
-      cfg.topic,
-      event,
-    );
-    if (promoted) return;
-    // Phantom-bubble defence (production bug 2026-05-09; revised
-    // 2026-05-19 once the server began carrying `content` on the wire):
-    //
-    // The original defence dropped ALL assistant persisted rows with
-    // empty media that arrived without a pending to promote — built on
-    // the UPCR-2026-012 invariant that text only travels via
-    // `message/delta`, so a `message/persisted` arriving at an empty
-    // thread was a bookkeeping artefact whose text was already in the
-    // streamed bubble.
-    //
-    // Post-wire-content fix that invariant no longer holds: multi-iter
-    // assistant rows (assistant → tool → assistant within one turn)
-    // commit per-iteration with `content` populated. After the first
-    // iter's persist promotes/finalises the pending, the streamed
-    // pending is null, so subsequent iters' `message/delta` text is
-    // dropped by `appendAssistantToken`'s `isFinalizedAndIdle` guard
-    // — meaning iter-2+ text would be LOST if we kept dropping
-    // empty-media rows here. The new rule: drop only when BOTH content
-    // AND media are empty (true bookkeeping). A non-empty `content`
-    // or non-empty `media` falls through to `appendPersistedMessage`,
-    // whose seq-based dedupe (see `thread-store.ts:appendPersistedMessage`)
-    // prevents duplicate rendering when the streamed bubble already
-    // contained the text.
-    const eventMedia = event.media ?? [];
-    const eventContent = (event.content ?? "").trim();
-    if (eventMedia.length === 0 && eventContent.length === 0) {
-      return;
-    }
-    // turn/completed → message/persisted race dedup: when turn/completed
-    // finalises the assistant BEFORE this event, pendingAssistant is null
-    // (promotion fails above) and the finalized response has no
-    // historySeq. appendPersistedMessage's seq-based dedup misses,
-    // creating a duplicate bubble. Detect the already-rendered text here.
-    const threads = ThreadStore.getThreads(cfg.sessionId, cfg.topic);
-    const thread = threads.find((t) => t.id === event.thread_id);
-    if (thread) {
-      const needle = eventContent.slice(0, 200);
-      const alreadyRendered = thread.responses.some(
-        (r) =>
-          r.role === "assistant" &&
-          r.text.trim().slice(0, 200) === needle &&
-          needle.length > 0,
-      );
-      if (alreadyRendered) return;
-    }
-  }
-  ThreadStore.appendPersistedMessage(
-    cfg.sessionId,
-    cfg.topic,
-    eventToMessageInfo(event),
-  );
-}
-
-/**
- * If the live thread for `event.thread_id` has an in-flight
- * pendingAssistant, append the event's `media` URLs to the pending
- * bubble. Returns true when ownership was claimed (caller should NOT
- * also append a fresh row).
- *
- * Unlike the original promotion path, this DOES NOT overwrite the
- * pending text — the server's `MessagePersistedEvent` carries no
- * `content` field, so the streamed `message/delta` text is
- * authoritative for the bubble's body.
- *
- * M10 Phase 5b empty-placeholder fix: the persistence event for an
- * assistant turn frequently arrives BEFORE the streamed `message/delta`
- * carrying the bubble's text (the server emits durable
- * `message/persisted` immediately on commit; `message/delta` is
- * ephemeral and races). Pre-fix, finalising here would freeze an
- * empty bubble — and the late delta would then be dropped by
- * `appendAssistantToken`'s `isFinalizedAndIdle` guard, surfacing as
- * a phantom-chunk-drop counter increment and an empty timestamp-only
- * placeholder. The fix: finalise here ONLY when the bubble already has
- * content (text already streamed, OR media on the event) — leaving
- * the pending alive otherwise so subsequent deltas land in it. The
- * authoritative `turn/completed` always finalises, so the bubble
- * doesn't leak even if no delta ever arrives.
- */
-function tryPromotePendingFromPersisted(
-  sessionId: string,
-  topic: string | undefined,
-  event: MessagePersistedEvent,
-): boolean {
-  const threadId = event.thread_id;
-  if (!threadId) return false;
-  const threads = ThreadStore.getThreads(sessionId, topic);
-  const thread = threads.find((t) => t.id === threadId);
-  if (!thread || !thread.pendingAssistant) return false;
-  // appendAssistantFile is path-deduped, so re-adding a streamed file is
-  // a no-op. New media URLs that weren't already attached land here.
-  const eventMedia = event.media ?? [];
-  for (const path of eventMedia) {
-    ThreadStore.appendAssistantFile(threadId, {
-      filename: filenameFromPath(path),
-      path,
-      caption: "",
-    });
-  }
-  // 2026-05-19 wire-content fix: when the streamed `message/delta`
-  // raced/never-arrived and pending text is still empty, fall back to
-  // `event.content` from the wire so the finalised bubble shows real
-  // text instead of being empty. Streamed text remains authoritative
-  // for non-empty pending (re-applying content would clobber partial
-  // edits the user already saw on screen). This preserves the
-  // Phase 5b empty-placeholder fix's intent — keep the bubble alive
-  // until something renders — while shortcutting the "delta never
-  // shows up" failure mode now that the wire carries text directly.
-  //
-  // #245 P2 (codex fold 2): EXCEPT for a thread frozen by the
-  // post-reopen delta suppression. Its pending text is known-stale —
-  // deltas were deliberately dropped after the reconnect — so here the
-  // wire content is the authoritative text and must REPLACE the frozen
-  // partial before finalisation ("streamed text is authoritative" only
-  // holds when the stream was actually applied). Without this, the
-  // durable frame finalises the truncated pre-reconnect text.
-  const wireContent = (event.content ?? "").trim();
-  if (thread.suppressDeltasUntilDurable && wireContent.length > 0) {
-    // Use the narrow persisted-row replacement helper so the fallback keeps
-    // the durable text instead of a stale pre-reconnect partial.
-    ThreadStore.replaceFrozenPendingFromPersisted(
-      threadId,
-      event.content ?? "",
-      {
-        messageId: event.message_id,
-        persistedAt: event.persisted_at,
-        media: eventMedia,
-      },
-    );
-  } else if (
-    thread.pendingAssistant.text.trim().length === 0 &&
-    wireContent.length > 0
-  ) {
-    ThreadStore.appendAssistantToken(threadId, event.content ?? "");
-  }
-  // Phase 5b empty-placeholder defence: only finalise when the bubble
-  // has something to render right now. Empty pending + no-media event
-  // = wait for delta or `turn/completed` rather than freezing an empty
-  // row that drops the late delta. Code path stays idempotent: a
-  // late `message/persisted` replay for a thread already finalized
-  // returns early at the `pendingAssistant` null check above.
-  //
-  // Media-bearing branch: `eventMedia.length > 0` finalises
-  // immediately. Server-side contract is that media-bearing
-  // `message/persisted` rows pair their files with the row's content
-  // (text + file render together post-2026-05-19 wire-content fix);
-  // any text was either already streamed via `message/delta` or just
-  // appended above from `event.content`.
-  const pendingHasContent =
-    thread.pendingAssistant.text.trim().length > 0 ||
-    thread.pendingAssistant.files.length > 0 ||
-    thread.pendingAssistant.toolCalls.length > 0;
-  if (pendingHasContent || eventMedia.length > 0) {
-    ThreadStore.finalizeAssistant(threadId, {
-      committedSeq: event.seq,
-    });
-  } else {
-    // Stamp the seq onto the pending without finalising so a later
-    // `turn/completed` (which doesn't carry a per-message seq) still
-    // ends up with the durable per-thread sequence stamped on the
-    // committed row. No-op if pending already has this seq.
-    ThreadStore.stampPendingHistorySeq(threadId, event.seq);
-  }
-  return true;
-}
-
 function filenameFromPath(path: string): string {
   const idx = path.lastIndexOf("/");
   return idx === -1 ? path : path.slice(idx + 1);
@@ -540,9 +281,7 @@ function filenameFromPath(path: string): string {
  *
  * Each envelope is structurally complete and represents a NEW assistant
  * bubble under the originating user prompt — no merging into an existing
- * bubble, no reconstruction across events. This eliminates the splice-merge
- * bug class (sticky-map drift, phantom-chunk drop) that the legacy
- * `appendAssistantFile` / `appendPersistedMessage` paths suffer from.
+ * bubble and no reconstruction across events.
  *
  * Placement strategy (per the migration plan): use `event.thread_id` as
  * the placement key — server PR #680 made `thread_id` the
@@ -693,14 +432,10 @@ export function handleSpawnComplete(
  * UPCR-2026-014 M9-α-9 — route a `file/attached` envelope to the
  * bubble that hosts the originating `spawn_only` tool call.
  *
- * Redundancy contract: this handler is the slides-soak safety net. The
- * authoritative file-delivery path is still `message/persisted` +
- * `turn/spawn_complete` — both carry `media[]`, and both reducers
- * (`tryPromotePendingFromPersisted`, `handleSpawnComplete`) attach the
- * file via `appendAssistantFile`. When those reducers drop the
- * delivery (placement bug, sticky-thread drift, capability-filter
- * mismatch — the 5/8 → 0/8 mini soak gap), this handler still surfaces
- * the artefact on whichever bubble hosts the tool call.
+ * Redundancy contract: this handler is the slides-soak safety net.
+ * `turn/spawn_complete` may carry the same `media[]`; this typed event keeps
+ * artifact ownership attached to the matching compatibility tool state when
+ * that delivery is delayed or omitted.
  *
  * Placement priority:
  *   1. `tool_call_id` → ThreadStore.findThreadIdForToolCall →
@@ -723,9 +458,9 @@ export function handleSpawnComplete(
  *      bubble that would confuse the user.
  *
  * Dedupe contract (codex P2 round, 2026-05-25): keyed by
- * `(threadId, tool_call_id, path)`. A replay of the same envelope (or
- * a same-path delivery from the richer `message/persisted` reducer
- * AFTER this handler ran) is a no-op. The underlying store mutators
+ * `(threadId, tool_call_id, path)`. A replay of the same envelope (or a
+ * same-path compatibility delivery after this handler ran) is a no-op. The
+ * underlying store mutators
  * are path-deduplicated, but the dedupe set here is the canonical guard
  * so the metric / log only fires once per unique artefact.
  */
@@ -777,11 +512,8 @@ export function handleFileAttached(
         seenFileAttachments.add(dedupeKey);
 
         // Cross-slot cleanup: strip the path from "naive media
-        // siblings" — assistant slots with NO tool_calls that
-        // absorbed the path via the legacy `appendAssistantFile`
-        // latest-sibling fallback (`tryPromotePendingFromPersisted` →
-        // `pickAssistantSlot` → latest-finalized when the pending
-        // already moved). That's the documented mis-placement
+        // siblings" — assistant slots with NO tool_calls that absorbed the
+        // path via the latest-sibling fallback. That is the mis-placement
         // pattern `file/attached` exists to correct.
         //
         // Codex round 5 (2026-05-25): deliberately do NOT strip from
@@ -792,9 +524,8 @@ export function handleFileAttached(
         // `file/attached` complements) before its own claim envelope
         // arrives, or its `file/attached` may be absent entirely on
         // hydrate/fallback paths. The redundancy contract treats both
-        // delivery channels as authoritative for their respective
-        // owners; cleanup is limited to the narrow legacy
-        // mis-placement target.
+        // delivery channels as authoritative for their respective owners;
+        // cleanup is limited to the narrow mis-placement target.
         ThreadStore.stripFileFromNaiveSiblings(
           hostThreadId,
           event.tool_call_id,
@@ -1199,12 +930,9 @@ export function handleTurnCompleted(
     });
   }
   const meta = metaFromSnapshot(snap);
-  // `finalizeAssistant` is the happy path — works when the pending slot
-  // is still live. Codex P2: an earlier `message/persisted` already may
-  // have promoted the pending bubble (`tryPromotePendingFromPersisted`),
-  // in which case `finalizeAssistant`'s pending-required guard returns
-  // without applying our meta. Fall back to `patchLastResponseMeta` so
-  // the meta still lands on the now-finalised response.
+  // `finalizeAssistant` is the happy path while the compatibility pending
+  // slot is live. Fall back to `patchLastResponseMeta` so the metadata also
+  // lands on an already-finalised response.
   ThreadStore.finalizeAssistant(event.turn_id, meta ? { meta } : {});
   if (meta) {
     ThreadStore.patchLastResponseMeta(event.turn_id, { meta });
@@ -1502,9 +1230,9 @@ export function handleProgressUpdated(
     return;
   }
   if (event.metadata.kind === "stream_end") {
-    // stream_end signals text deltas are done but must NOT finalise the
-    // assistant. message/persisted or turn/completed owns that lifecycle
-    // step. Premature finalisation orphans the pending, causing a duplicate.
+    // stream_end signals text deltas are done but must not finalise the
+    // compatibility assistant slot. Its terminal event owns that lifecycle;
+    // canonical rendering is settled by `turn_terminal`.
     return;
   }
   if (event.metadata.kind === "voice_transcript") {
@@ -1985,9 +1713,6 @@ export function attachRouter(
   const offMessageDelta = bridge.onMessageDelta((e) =>
     handleMessageDelta(cfg, e),
   );
-  const offMessagePersisted = bridge.onMessagePersisted((e) =>
-    handleMessagePersisted(cfg, e),
-  );
   const offSpawnComplete = bridge.onSpawnComplete((e) =>
     handleSpawnComplete(cfg, e),
   );
@@ -2110,7 +1835,6 @@ export function attachRouter(
       if (detached) return;
       detached = true;
       offMessageDelta();
-      offMessagePersisted();
       offSpawnComplete();
       offFileAttached();
       offVisualGenerating();

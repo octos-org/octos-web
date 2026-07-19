@@ -8,27 +8,13 @@
  * `userMsg.timestamp` — no timestamp-primary sort within a thread, no
  * `Number.MAX_SAFE_INTEGER` fallback.
  *
- * This store remains the legacy fallback for servers that do not negotiate
- * `projection.envelope.v2`. The canonical v2 path is deliberately separate:
- * no legacy mutator writes into ProjectionStore.
+ * The canonical renderer reads ProjectionStore. This store remains available
+ * for compatibility event bookkeeping and shared presentation types; it is
+ * not a chat render source.
  */
 
-import { useSyncExternalStore } from "react";
-// M12 Phase D-3: history panel routes through the Phase D-2
-// `getMessages` wrapper in src/api/sessions.ts, which flips between
-// the WS `session/messages_page` method and the legacy REST
-// `/api/sessions/:id/messages` endpoint under the
-// `auxiliary_rest_to_ws_v1` flag. The wrapper preserves the array
-// return shape that `replayHistory` consumes; pagination metadata
-// (`has_more` / `next_offset`) drives the paged loader below
-// (issue #110.3 — silent 500-msg truncation).
-import { getMessagesPage } from "@/api/sessions";
-import type { MessageInfo } from "@/api/types";
 import { displayFilenameFromPath } from "@/lib/utils";
 import { recordRuntimeCounter } from "@/runtime/observability";
-import type {
-  Envelope,
-} from "@/runtime/ui-protocol-types";
 import { SPAWN_ONLY_TOOL_NAMES } from "@/runtime/spawn-only-tools";
 
 // ---------------------------------------------------------------------------
@@ -75,17 +61,14 @@ export interface ThreadMessage {
   timestamp: number;
   /** Server-side per-session sequence (assigned on persistence). */
   historySeq?: number;
-  /**
-   * Per-thread sequence — order within a thread.
-   * Kept for the legacy reducer's response ordering and hydrate dedupe.
-   */
+  /** Per-thread sequence used for compatibility-event response ordering. */
   intra_thread_seq?: number;
   meta?: MessageMeta;
   /**
    * For assistant/tool messages: parent thread root cmid.
    *
    * @deprecated Canonical v2 carries this on `user_message` envelopes.
-   * This field remains only for the old-server legacy renderer.
+   * Retained for compatibility-event routing.
    */
   responseToClientMessageId?: string;
   /** For user messages: their own cmid (= thread.id). */
@@ -98,7 +81,7 @@ export interface Thread {
   /** = `client_message_id` of the user message that rooted this thread. */
   id: string;
   /** Explicit server turn identity when the canonical v2 render adapter is
-   * active. Legacy rows omit it and continue to use `id` for interruption. */
+   * active. */
   turnId?: string;
   /** Render-only marker for a canonical background child stream. It is a
    * linked stream, not another response appended to its parent turn. */
@@ -122,15 +105,6 @@ export interface Thread {
    *  misclassified a persisted-but-unhydrated turn as a non-turn and
    *  sent a destructive num_turns for the wrong bubble). */
   placeholderOrigin?: boolean;
-  /** #245 P2: set on a reconnect reopen while this thread had in-flight
-   *  streamed text. While set, `appendAssistantToken` drops tokens for this
-   *  thread — the server's `after` replay re-emits deltas with no client
-   *  identity, so appending would double text, and clearing instead would
-   *  truncate whenever the replay window doesn't reach back to the thread's
-   *  earlier deltas. Freezing the bubble is the only lossless option; the
-   *  turn's durable frames (message/persisted, finalize, spawn-complete)
-   *  deliver the canonical text and clear the flag. */
-  suppressDeltasUntilDurable?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -146,102 +120,8 @@ interface SessionState {
 
 const sessionsByKey = new Map<string, SessionState>();
 const listeners = new Set<() => void>();
-const loadedSessions = new Set<string>();
-const loadingPromises = new Map<string, Promise<void>>();
-
-let version = 0;
-let identityGeneration = 0;
-const snapshotCache = new Map<string, { version: number; data: Thread[] }>();
-
-/**
- * WEB-NEW-17 — per-session set of server-side `seq` values seen by
- * `appendPersistedMessage` (live `message/persisted` events) and
- * `replayHistory` (hydration from `session/messages_page`).
- *
- * Why a top-level set instead of relying on the per-thread
- * `r.historySeq === incomingSeq` walk inside `appendPersistedMessage`:
- *   • `replayHistory` wipes `sessionsByKey[key]` and rebuilds — the
- *     rebuilt rows lose `historySeq` for `messages_page` polls (server's
- *     legacy `MessageInfo` struct strips `seq`, handlers.rs:810). After
- *     the rebuild the per-thread seq dedup misses, so a re-emitted live
- *     `message/persisted` carrying the same seq slips through.
- *   • The per-session `seenSeqsByKey` set survives `replayHistory`
- *     rebuilds (we only clear it on `clearSession`/`__resetForTests`),
- *     so a live event whose seq was already covered by an earlier
- *     live event OR by an earlier hydrate row is recognised as a
- *     duplicate even when the rebuilt thread responses have no seq.
- *
- * Keyed by `storeKey(sessionId, topic)`. The set holds only well-typed
- * non-negative integer seqs; rows without a seq (legacy daemons,
- * stripped polled rows) bypass the set and fall back to the existing
- * content+timestamp 5-min proximity dedupe.
- *
- * Memory: O(persisted-rows-per-session). Each entry is ~8 bytes; for a
- * 10k-message session that's ~80KB — comparable to the thread state the
- * set guards. `clearSession` releases it on session forget.
- */
-const seenSeqsByKey = new Map<string, Set<number>>();
-
-function rememberSeq(key: string, seq: number): void {
-  let set = seenSeqsByKey.get(key);
-  if (!set) {
-    set = new Set();
-    seenSeqsByKey.set(key, set);
-  }
-  set.add(seq);
-}
-
-function hasSeenSeq(key: string, seq: number): boolean {
-  return seenSeqsByKey.get(key)?.has(seq) ?? false;
-}
-
-/**
- * PR #243 follow-up (P2): `${thread_id}:${seq}` identities of hydrate
- * `replayed_tool_envelopes` already applied to the CURRENT thread
- * state for a store key. `(thread_id, seq)` is the canonical envelope
- * identity (see `Envelope` in `ui-protocol-types.ts`).
- *
- * Why: `applyHydrateDedup` re-runs the tool replay on every WS
- * `session/hydrate` (initial connect + every reconnect) and after
- * every `replayHistory` rebuild (the cached-hydrate re-application) —
- * even twice within ONE hydrate on the M10.5 seed path
- * (`seedFromHydrateMessages` → `replayHistory` → nested
- * `applyHydrateDedup`, then the outer pass's own tail call). But
- * `appendToolProgress` only suppresses *consecutive* duplicate lines,
- * so replaying the same `tool_progress` envelopes against unchanged
- * state duplicated every progress line per re-run.
- *
- * Lifecycle: an entry is added when the envelope is actually applied.
- * `replayHistory` drops the key's ledger when it replaces state
- * wholesale — rebuilt REST rows carry no progress timelines, so the
- * cached-hydrate re-application MUST re-attach. `clearSession` /
- * `__resetForTests` release it with the rest of the session state.
- */
-const appliedHydrateToolEnvelopesByKey = new Map<string, Set<string>>();
-
-/**
- * M10 Phase 6.2 (Bug C): per-session WS `session/hydrate` snapshot
- * cached so that subsequent `replayHistory` calls (the forced retries
- * in chat-thread.tsx fire at 2s/5s/12s) can replay the dedup pass on
- * the freshly-replayed thread state. Without this, the second retry
- * would undo the dedup we applied after the first replay.
- *
- * Keyed by `storeKey(sessionId, topic)`. Populated by the bridge's
- * post-`session/open` hydrate call (see `ui-protocol-runtime.ts`).
- * Cleared by `clearSession`.
- */
-// `HydrateSnapshot` (defined alongside `applyHydrateDedup` below) is
-// the authoritative shape; this Parameters lookup keeps the cache
-// value tied to whatever the dedup pass accepts so it stays in sync
-// if the function's signature widens further.
-const hydrateSnapshotByKey = new Map<
-  string,
-  Parameters<typeof applyHydrateDedup>[2]
->();
 
 function notify() {
-  version++;
-  snapshotCache.clear();
   for (const fn of listeners) fn();
 }
 
@@ -633,67 +513,9 @@ export function appendAssistantToken(threadId: string, token: string): void {
     });
     return;
   }
-  // #245 P2: post-reopen delta freeze — replayed deltas have no identity,
-  // so until a durable frame re-anchors this thread, appending would
-  // double the text (see `suppressPendingDeltasForReplay`).
-  if (found.thread.suppressDeltasUntilDurable) {
-    recordRuntimeCounter("octos_thread_phantom_chunk_dropped_total", {
-      surface: "thread_store",
-      kind: "replay_suppressed_token",
-    });
-    return;
-  }
   const slot = ensurePendingAssistant(found.thread);
   slot.text += token;
   notify();
-}
-
-/**
- * #245 P2 (part 2/2): freeze in-flight streamed text on a reconnect REOPEN.
- *
- * The bridge sends an `after` cursor on reopen, so the server replays the
- * disconnect gap as live-shaped frames. Durable frames dedup on the client
- * (`message/persisted` by seq, `turn/spawn_complete` by message_id) and tool
- * frames are idempotent (`addToolCall` on `(turn_id, tool_call_id)`), but
- * `message/delta` carries NO identity on the wire — the client cannot tell a
- * replayed delta from a new one. Appending replayed deltas doubles the text;
- * clearing the text and rebuilding from the replay truncates it whenever the
- * replay window does not reach back to the thread's earlier deltas (the
- * cursor is session-wide, so any durable frame that landed mid-stream —
- * a tool row, a background spawn-complete — moves it past them; a cursorless
- * reopen replays nothing at all). Codex review, both directions.
- *
- * So: neither append nor clear. Mark each thread that has in-flight streamed
- * text and DROP its delta tokens (replayed and live alike) until the next
- * durable frame for that thread — `message/persisted`, `finalizeAssistant`,
- * or a spawn-complete envelope — which carries the canonical full text and
- * clears the flag via `clearReplayDeltaSuppression`. The bubble freezes at
- * its pre-disconnect text instead of doubling, blanking, or truncating, and
- * snaps to the authoritative text when the turn persists.
- *
- * Runs for EVERY reopen, including topic-scoped bridges (which the hydrate
- * refetch skips) — the bridge sends `after` regardless of topic.
- */
-export function suppressPendingDeltasForReplay(
-  sessionId: string,
-  topic?: string,
-): void {
-  const state = sessionsByKey.get(storeKey(sessionId, topic));
-  if (!state) return;
-  for (const thread of state.threads) {
-    const pending = thread.pendingAssistant;
-    if (pending && pending.text.length > 0) {
-      thread.suppressDeltasUntilDurable = true;
-    }
-  }
-}
-
-/** Lift the post-reopen delta freeze for a thread once a durable frame
- *  (persisted row, finalize, spawn-complete) has delivered canonical text. */
-function clearReplayDeltaSuppression(thread: Thread): void {
-  if (thread.suppressDeltasUntilDurable) {
-    thread.suppressDeltasUntilDurable = false;
-  }
 }
 
 export function replaceAssistantText(threadId: string, text: string): void {
@@ -706,25 +528,6 @@ export function replaceAssistantText(threadId: string, text: string): void {
     });
     return;
   }
-  const slot = ensurePendingAssistant(found.thread);
-  slot.text = text;
-  notify();
-}
-
-/**
- * #245 P2: replace a replay-frozen pending's text with the durable persisted
- * content. This narrow legacy helper leaves normal streamed updates alone and
- * avoids retaining a stale partial after reconnect.
- */
-export function replaceFrozenPendingFromPersisted(
-  threadId: string,
-  text: string,
-  _meta: { messageId: string; persistedAt: string; media?: string[] },
-): void {
-  void _meta;
-  const found = ensureOrphanThread(threadId);
-  if (!found) return;
-  if (isFinalizedAndIdle(found.thread)) return;
   const slot = ensurePendingAssistant(found.thread);
   slot.text = text;
   notify();
@@ -1098,10 +901,7 @@ export function setToolCallStatus(
 
 /**
  * M10 Phase 2 (server PR #772): append a NEW assistant row to the thread
- * for a `turn/spawn_complete` envelope. Distinct from `appendAssistantFile`
- * + `appendPersistedMessage`, which both splice late media into the
- * existing assistant bubble — that splice-merge predicate is the bug
- * surface M10 deletes (Phase 5). This function ALWAYS adds a fresh
+ * for a `turn/spawn_complete` envelope. This function ALWAYS adds a fresh
  * `ThreadMessage` to `thread.responses` so multiple assistant bubbles
  * render under the originating user prompt (the renderer's
  * `responses.map` already supports N-bubbles per user message).
@@ -1234,70 +1034,25 @@ export function appendCompletionBubble(
   }
   const { thread } = host;
 
-  // #245 P2: a spawn-complete envelope is a durable frame — lift the
-  // post-reopen delta freeze for its host thread.
-  clearReplayDeltaSuppression(thread);
-
-  // Identity / upgrade-in-place. A replayed envelope on reconnect
-  // MUST NOT produce a duplicate row. Two stable identities exist:
-  //
-  //   • messageId  — Phase 1 P2-B fix reuses the persisted row's
-  //                  `message_id` on the envelope, so the spawn-complete
-  //                  envelope's id MATCHES its companion `message/persisted`
-  //                  but is DISTINCT from the spawn-ack's id. This is
-  //                  the strongest dedupe key.
-  //   • historySeq — `seq` is a per-session committed-row index. Robust
-  //                  for clean cases; but see the codex round-5 edge:
-  //                  legacy `replayHistory` (via `mergeMediaCompanionInto`)
-  //                  can MOVE a media-only companion's `historySeq` onto
-  //                  the preceding ack bubble, so finding `historySeq=N`
-  //                  on a non-empty row does NOT prove that row IS the
-  //                  spawn-complete row.
-  //
-  // Strategy: prefer `messageId` for the identity check. Fall back to
-  // `historySeq` only as a placeholder-upgrade hint — when we find a
-  // row with the same seq AND it has empty text (the persisted-only
-  // placeholder shape), upgrade in place. Non-empty-text rows at the
-  // matching seq are NOT considered duplicates: they may be merged ack
-  // rows whose seq was donated by a media-only companion. In that case
-  // we proceed to append a fresh row, which is the correct M10
-  // separate-bubble semantic.
-
-  // WEB-NEW-17: track the host session key once so every early-return
-  // branch below can mark the completion's seq seen without re-walking
-  // `sessionsByKey`. Falls back to `(sessionId, topic)` if the host
-  // wasn't found via the sessionsByKey walk (orphan-host paths above).
-  const hostKey: string | null = (() => {
-    for (const [k, s] of sessionsByKey.entries()) {
-      if (s === host.state) return k;
-    }
-    return opts.sessionId ? storeKey(opts.sessionId, opts.topic) : null;
-  })();
-  const markCompletionSeqSeen = (): void => {
-    if (typeof opts.historySeq === "number" && hostKey) {
-      rememberSeq(hostKey, opts.historySeq);
-    }
-  };
+  // Identity / upgrade-in-place. A replayed completion MUST NOT produce a
+  // duplicate row. `messageId` is the strongest identity; `historySeq` is a
+  // fallback for callers that do not supply it.
 
   if (opts.messageId) {
     for (let i = 0; i < thread.responses.length; i += 1) {
       const r = thread.responses[i];
       if (r.id !== opts.messageId) continue;
       // True identity match — this row IS the spawn-complete row.
-      // Upgrade-in-place if it's a placeholder (the persisted-only
-      // shape), no-op if it's already the full completion.
+      // Upgrade an empty placeholder in place; otherwise this is a replay.
       if (r.text.length > 0) {
-        markCompletionSeqSeen();
         return true;
       }
       thread.responses[i] = upgradePlaceholderRow(r, opts, threadId);
       sortResponsesInThread(thread);
-      markCompletionSeqSeen();
       notify();
       return true;
     }
     if (thread.pendingAssistant?.id === opts.messageId) {
-      markCompletionSeqSeen();
       return true;
     }
   }
@@ -1306,33 +1061,20 @@ export function appendCompletionBubble(
     for (let i = 0; i < thread.responses.length; i += 1) {
       const r = thread.responses[i];
       if (r.historySeq !== opts.historySeq) continue;
-      // Only a PLACEHOLDER row at the matching seq is the legitimate
-      // upgrade target. If the row has non-empty text it is either:
-      //   (a) a merged-ack row whose seq was donated by replayHistory's
-      //       media-only-companion merge — NOT this completion, so
-      //       fall through to append a fresh row;
-      //   (b) the spawn-complete row already filled in by an earlier
-      //       call (true replay; messageId match would have caught it
-      //       above unless callers omit messageId — test paths).
-      // We can't distinguish (a) from (b) reliably without messageId,
-      // so we fall through and let the append path take care of it.
-      // For (b) test-path callers, the next-best identity is "same
-      // text + same media list"; if that matches, treat as no-op.
+      // An empty row is a legitimate upgrade target. For a non-empty row,
+      // match content as the best available fallback identity.
       if (r.text.length > 0) {
         if (rowMatchesCompletionContent(r, opts)) {
-          markCompletionSeqSeen();
           return true;
         }
-        continue; // (a): merged-ack row, not our target
+        continue;
       }
       thread.responses[i] = upgradePlaceholderRow(r, opts, threadId);
       sortResponsesInThread(thread);
-      markCompletionSeqSeen();
       notify();
       return true;
     }
     if (thread.pendingAssistant?.historySeq === opts.historySeq) {
-      markCompletionSeqSeen();
       return true;
     }
   }
@@ -1355,11 +1097,6 @@ export function appendCompletionBubble(
   };
   thread.responses.push(completion);
   sortResponsesInThread(thread);
-  // WEB-NEW-17: mark the completion's seq so a follow-up
-  // `message/persisted` carrying the same seq (the legacy companion row
-  // the server's `event.spawn_complete.v1` suppression doesn't always
-  // cover for older daemons) is suppressed at the dedup gate.
-  markCompletionSeqSeen();
   notify();
 
   return true;
@@ -1371,11 +1108,16 @@ function parsePersistedAt(persistedAt: string | undefined): number {
   return Number.isFinite(t) ? t : Date.now();
 }
 
-/** Replace a placeholder row's empty text + (optional) files with the
- *  spawn-complete envelope's authoritative content, unioning files by
- *  path so a file already landed by the persisted-only row isn't lost
- *  or duplicated. Used for both `messageId` and `historySeq` upgrade
- *  paths. */
+function fileFromMediaPath(path: string): MessageFile {
+  return {
+    filename: displayFilenameFromPath(path),
+    path,
+    caption: "",
+  };
+}
+
+/** Replace an empty completion placeholder with its authoritative content,
+ *  unioning files by path. Used for both identity upgrade paths. */
 function upgradePlaceholderRow(
   existing: ThreadMessage,
   opts: AppendCompletionBubbleOptions,
@@ -1402,12 +1144,8 @@ function upgradePlaceholderRow(
   };
 }
 
-/** Best-effort content match for the dedupe-by-historySeq fallback
- *  when callers omit `messageId`. Same text and same file path set
- *  means this row IS the spawn-complete row already (true replay,
- *  no-op). Different content means the seq was likely donated by
- *  legacy `replayHistory` media-only-companion merging — in that case
- *  the caller should append a fresh row, not dedupe. */
+/** Best-effort content match for the `historySeq` fallback when callers omit
+ *  `messageId`. */
 function rowMatchesCompletionContent(
   row: ThreadMessage,
   opts: AppendCompletionBubbleOptions,
@@ -1452,12 +1190,9 @@ export function appendAssistantFile(
  * `responses` most-recent-first (the foreground bubble already
  * finalised).
  *
- * Cross-slot dedupe (codex round 2, 2026-05-25): the richer-envelope
- * reducers (`tryPromotePendingFromPersisted`,
- * `appendCompletionBubble` via the legacy `appendAssistantFile`
- * fallback) MAY have already attached the same `path` to a DIFFERENT
- * assistant slot in the thread (the "latest sibling" placement that
- * `file/attached` exists to correct). This handler treats the
+ * Cross-slot dedupe (codex round 2, 2026-05-25): another compatibility
+ * event may already have attached the same `path` to a different assistant
+ * slot in the thread. This handler treats the
  * `tool_call_id` envelope as the AUTHORITATIVE placement signal —
  * remove a stale copy from any other assistant slot first, then attach
  * to the owner. Without this, the same artefact would render on two
@@ -1627,8 +1362,7 @@ export function stripFileFromNaiveSiblings(
  * otherwise the copy is stale and the router calls
  * `stripFileFromAssistantSlot` to remove it.
  *
- * Returns rows in the same order ThreadStore exposes through
- * `getThreads` — pending first, then `responses` in arrival order.
+ * Returns pending first, then `responses` in arrival order.
  * Empty when the thread is not found.
  */
 export function snapshotAssistantSlots(
@@ -1674,38 +1408,6 @@ export function hasThreadInScope(
   return state.byId.has(threadId);
 }
 
-/**
- * M10 Phase 5b: stamp the per-thread server seq onto the in-flight
- * `pendingAssistant` without finalising it. Used by the v1 router's
- * empty-placeholder defence: when an assistant `message/persisted`
- * event arrives BEFORE the streamed `message/delta`, we acknowledge
- * the seq (so a later finalise without a seq from `turn/completed`
- * still picks up the durable identity) but leave the bubble in its
- * `pendingAssistant` slot so subsequent deltas can land in it.
- *
- * No-op when there's no pending bubble in `threadId`. Idempotent:
- * stamping the same seq twice is safe.
- */
-export function stampPendingHistorySeq(
-  threadId: string,
-  historySeq: number,
-): void {
-  const found = findThreadById(threadId);
-  if (!found || !found.thread.pendingAssistant) return;
-  if (found.thread.pendingAssistant.historySeq === historySeq) return;
-  found.thread.pendingAssistant = {
-    ...found.thread.pendingAssistant,
-    historySeq,
-    intra_thread_seq:
-      found.thread.pendingAssistant.intra_thread_seq ?? historySeq,
-  };
-  notify();
-
-  // This is legacy-only bookkeeping for a persisted acknowledgement that
-  // arrived before its matching delta. It intentionally has no side effects
-  // outside the fallback reducer.
-}
-
 export interface FinalizeAssistantOptions {
   /** Per-thread server sequence assigned at persistence time. */
   committedSeq?: number;
@@ -1723,9 +1425,9 @@ export interface FinalizeAssistantOptions {
 /**
  * Stamp `meta` (and optionally `status`) onto the most recent
  * *assistant* response for `threadId`. Used by the UI Protocol event
- * router (`handleTurnCompleted` / `handleTurnError`) when an earlier
- * `message/persisted` already promoted the pending bubble — by the
- * time `turn/completed` lands, `pendingAssistant` is null and
+ * router (`handleTurnCompleted` / `handleTurnError`) when the pending bubble
+ * has already been finalized — by the time `turn/completed` lands,
+ * `pendingAssistant` is null and
  * `finalizeAssistant`'s pending-required guard would otherwise drop the
  * accumulated per-turn cost snapshot on the floor. Codex P2 fix.
  *
@@ -1828,23 +1530,6 @@ export function finalizeAssistant(
     thread.responses.push(finalized);
     sortResponsesInThread(thread);
     thread.pendingAssistant = null;
-    // #245 P2: the turn reached a durable end — lift the post-reopen
-    // delta freeze so the next turn on this thread streams normally.
-    clearReplayDeltaSuppression(thread);
-    // WEB-NEW-17: mark the finalised row's seq so a follow-up
-    // `message/persisted` with the same seq (re-emitted on reconnect or
-    // through `session/hydrate` replay) is suppressed at the dedup gate
-    // in `appendPersistedMessage`. We walk `sessionsByKey` to find the
-    // hosting key since this entry point takes only `threadId` and the
-    // legacy reducer keys by `(sessionId, topic)`.
-    if (typeof finalized.historySeq === "number") {
-      for (const [k, s] of sessionsByKey.entries()) {
-        if (s === state) {
-          rememberSeq(k, finalized.historySeq);
-          break;
-        }
-      }
-    }
     notify();
 
     return;
@@ -1852,1160 +1537,6 @@ export function finalizeAssistant(
 }
 
 // ---------------------------------------------------------------------------
-// History rehydration
-// ---------------------------------------------------------------------------
-
-function fileFromMediaPath(path: string): MessageFile {
-  return {
-    filename: displayFilenameFromPath(path),
-    path,
-    caption: "",
-  };
-}
-
-/** Detect a "media-only companion" assistant record — a follow-on bubble
- *  that carries just the report's audio/podcast/etc. with no original text
- *  of its own. Common shapes:
- *    • completely empty content
- *    • content is only a `[file: ...]` placeholder line
- *    • content is just whitespace
- *  Used by adjacent-merge in `replayHistory` to fold the companion into
- *  its preceding text record so the user sees one bubble, not two. */
-function isMediaOnlyCompanion(m: ThreadMessage): boolean {
-  if (m.files.length === 0) return false;
-  if (m.toolCalls.length > 0) return false;
-  const trimmed = m.text.trim();
-  if (trimmed.length === 0) return true;
-  // Strip [file: ...] markers; if nothing else remains it's media-only.
-  const stripped = trimmed.replace(/\[file:[^\]]*\]/gi, "").trim();
-  return stripped.length === 0;
-}
-
-/** Merge a media-only companion's files into the preceding assistant
- *  record. Dedupes by `path`, preserves
- *  `historySeq = max(prev.historySeq, companion.historySeq)` so later
- *  ordering stays correct. */
-function mergeMediaCompanionInto(
-  prev: ThreadMessage,
-  companion: ThreadMessage,
-): void {
-  const seenPaths = new Set(prev.files.map((f) => f.path));
-  for (const f of companion.files) {
-    if (!seenPaths.has(f.path)) {
-      prev.files.push(f);
-      seenPaths.add(f.path);
-    }
-  }
-  const prevSeq = prev.historySeq ?? Number.NEGATIVE_INFINITY;
-  const compSeq = companion.historySeq ?? Number.NEGATIVE_INFINITY;
-  if (compSeq > prevSeq) {
-    prev.historySeq = companion.historySeq;
-    prev.intra_thread_seq = companion.intra_thread_seq ?? prev.intra_thread_seq;
-  }
-}
-
-/** Locate a prior assistant response in the same thread that already
- *  carries at least one of the incoming record's file paths AND whose
- *  text either matches the incoming text verbatim or is empty (in
- *  either direction). Returns -1 when no duplicate exists. */
-function findDuplicateAssistantWithFile(
-  responses: ThreadMessage[],
-  incoming: ThreadMessage,
-): number {
-  const incomingPaths = new Set(incoming.files.map((f) => f.path));
-  if (incomingPaths.size === 0) return -1;
-  const incomingText = incoming.text.trim();
-  for (let i = responses.length - 1; i >= 0; i -= 1) {
-    const r = responses[i];
-    if (r.role !== "assistant") continue;
-    if (r.files.length === 0) continue;
-    const hasOverlap = r.files.some((f) => incomingPaths.has(f.path));
-    if (!hasOverlap) continue;
-    const rText = r.text.trim();
-    const textsCompatible =
-      rText === incomingText ||
-      rText.length === 0 ||
-      incomingText.length === 0;
-    if (textsCompatible) return i;
-  }
-  return -1;
-}
-
-/** Merge `incoming` into `prev` for the duplicate-file collapse: union
- *  the file lists by path, prefer non-empty text, and preserve
- *  `historySeq = max(...)`. */
-function mergeDuplicateAssistantFile(
-  prev: ThreadMessage,
-  incoming: ThreadMessage,
-): void {
-  const seenPaths = new Set(prev.files.map((f) => f.path));
-  for (const f of incoming.files) {
-    if (!seenPaths.has(f.path)) {
-      prev.files.push(f);
-      seenPaths.add(f.path);
-    }
-  }
-  if (prev.text.trim().length === 0 && incoming.text.trim().length > 0) {
-    prev.text = incoming.text;
-  }
-  const prevSeq = prev.historySeq ?? Number.NEGATIVE_INFINITY;
-  const incSeq = incoming.historySeq ?? Number.NEGATIVE_INFINITY;
-  if (incSeq > prevSeq) {
-    prev.historySeq = incoming.historySeq;
-    prev.intra_thread_seq = incoming.intra_thread_seq ?? prev.intra_thread_seq;
-  }
-}
-
-function buildResponseFromApi(m: MessageInfo): ThreadMessage {
-  const role: ThreadMessage["role"] =
-    m.role === "user"
-      ? "user"
-      : m.role === "system"
-        ? "system"
-        : m.role === "tool"
-          ? "tool"
-          : "assistant";
-  const files = (m.media ?? []).map(fileFromMediaPath);
-  const toolCalls: ThreadToolCall[] =
-    m.tool_calls?.filter((tc) => tc.name).map((tc) => ({
-      id: tc.id || "",
-      name: tc.name || "",
-      status: "complete" as const,
-      progress: [],
-      retryCount: 0,
-    })) ?? [];
-
-  return {
-    id: nextId(),
-    role,
-    text: m.content,
-    files,
-    toolCalls,
-    status: "complete",
-    timestamp: m.timestamp ? new Date(m.timestamp).getTime() : Date.now(),
-    historySeq: typeof m.seq === "number" ? m.seq : undefined,
-    // Codex review #3: prefer the explicit per-thread sequence when the
-    // server emitted one (UI Protocol v1 PersistedMessage). Legacy REST
-    // history responses don't carry a separate intra_thread_seq, so
-    // `m.seq` (per-session) is the only axis available — fall back to it.
-    intra_thread_seq:
-      typeof m.intra_thread_seq === "number"
-        ? m.intra_thread_seq
-        : typeof m.seq === "number"
-          ? m.seq
-          : undefined,
-    responseToClientMessageId: m.response_to_client_message_id,
-    clientMessageId: m.client_message_id,
-    sourceToolCallId: m.tool_call_id,
-  };
-}
-
-/** Pick a thread_id for a legacy API record without one. Mirrors the
- *  server-side synthesizer in PR #1: walk the record stream, switch the
- *  current thread on every user-message role-flip, inheriting forward. */
-export function deriveLegacyThreadId(
-  m: MessageInfo,
-  context: { currentThreadId: string | null },
-): string {
-  if (m.thread_id) {
-    if (m.role === "user") {
-      context.currentThreadId =
-        m.client_message_id || m.thread_id || `synth-${nextId()}`;
-    } else if (!context.currentThreadId) {
-      context.currentThreadId = m.thread_id;
-    }
-    return m.thread_id;
-  }
-
-  if (m.role === "user") {
-    const id = m.client_message_id || `synth-${m.seq ?? nextId()}`;
-    context.currentThreadId = id;
-    return id;
-  }
-
-  if (context.currentThreadId) return context.currentThreadId;
-
-  // Orphan assistant/tool record before any user message — synthesize a
-  // standalone thread keyed by sequence so the record is at least visible.
-  const id = `synth-${m.seq ?? nextId()}`;
-  context.currentThreadId = id;
-  return id;
-}
-
-export function replayHistory(
-  sessionId: string,
-  apiMessages: MessageInfo[],
-  topic?: string,
-): void {
-  const key = storeKey(sessionId, topic);
-  // Carry over any in-flight pending assistants from the previous state
-  // so a replay triggered by retry-fetch (or by a tab regaining focus)
-  // doesn't wipe runtime progress that hasn't been persisted yet.
-  // Codex review #2.
-  const previous = sessionsByKey.get(key);
-  const carryPending = new Map<string, ThreadMessage>();
-  if (previous) {
-    for (const t of previous.threads) {
-      if (t.pendingAssistant) carryPending.set(t.id, t.pendingAssistant);
-    }
-  }
-  const state = { threads: [] as Thread[], byId: new Map<string, Thread>() };
-
-  const ctx = { currentThreadId: null as string | null };
-  for (const apiMessage of apiMessages) {
-    if (apiMessage.role === "system") continue;
-    // WEB-NEW-17: every hydrated row whose server seq is present joins
-    // the per-session seenSeqs set. The post-replay live wire (and any
-    // re-emit of the same persisted row from a reconnect /
-    // `session/hydrate`) then short-circuits at the top of
-    // `appendPersistedMessage`, even though the rebuilt
-    // `thread.responses[]` may have lost `historySeq` for sibling rows
-    // delivered via `messages_page` (which strips seq).
-    if (typeof apiMessage.seq === "number") {
-      rememberSeq(key, apiMessage.seq);
-    }
-    const threadId = deriveLegacyThreadId(apiMessage, ctx);
-    let thread = state.byId.get(threadId);
-
-    if (apiMessage.role === "user") {
-      const userMsg = buildResponseFromApi(apiMessage);
-      userMsg.role = "user";
-      userMsg.clientMessageId = apiMessage.client_message_id ?? threadId;
-      if (thread) {
-        // The bucket was synthesized earlier in this replay (assistant
-        // row preceded its user row) — the user row makes it a known
-        // turn.
-        thread.userMsg = userMsg;
-        markThreadAdopted(thread);
-      } else {
-        thread = {
-          id: threadId,
-          userMsg,
-          responses: [],
-          pendingAssistant: carryPending.get(threadId) ?? null,
-        };
-        state.byId.set(threadId, thread);
-        state.threads.push(thread);
-      }
-      continue;
-    }
-
-    if (!thread) {
-      // Synthesize an empty user-rooted thread to host the orphan response.
-      const placeholderUser: ThreadMessage = {
-        id: nextId(),
-        role: "user",
-        text: "",
-        files: [],
-        toolCalls: [],
-        status: "complete",
-        timestamp: apiMessage.timestamp
-          ? new Date(apiMessage.timestamp).getTime()
-          : Date.now(),
-        clientMessageId: threadId,
-      };
-      thread = {
-        id: threadId,
-        userMsg: placeholderUser,
-        responses: [],
-        pendingAssistant: carryPending.get(threadId) ?? null,
-        // Bucket synthesized WITHOUT its user row — turn-ness unknown
-        // (see `isPlaceholderThread`).
-        placeholderOrigin: true,
-      };
-      state.byId.set(threadId, thread);
-      state.threads.push(thread);
-    }
-
-    const built = buildResponseFromApi(apiMessage);
-
-    // Adjacent media-only companion coalescing: deep_research returns a
-    // text report (record N) immediately followed by a media-only file
-    // delivery (record N+1) that carries the audio/podcast as files but
-    // no new text of its own. Render them as ONE bubble with text +
-    // attached files instead of two.
-    //
-    // Conditions: both records are assistant-role on the same thread,
-    // historySeq is exactly +1 (no other records between them), and the
-    // incoming record matches `isMediaOnlyCompanion`.
-    if (
-      built.role === "assistant" &&
-      isMediaOnlyCompanion(built) &&
-      thread.responses.length > 0
-    ) {
-      const last = thread.responses[thread.responses.length - 1];
-      const lastSeq = last.historySeq;
-      const builtSeq = built.historySeq;
-      if (
-        last.role === "assistant" &&
-        typeof lastSeq === "number" &&
-        typeof builtSeq === "number" &&
-        builtSeq === lastSeq + 1 &&
-        last.text.trim().length > 0
-      ) {
-        mergeMediaCompanionInto(last, built);
-        continue;
-      }
-    }
-
-    // Duplicate assistant+file collapse: a prior assistant record on the
-    // same thread already carries one or more of the incoming record's
-    // file paths (overlap) AND the text either matches verbatim or one
-    // side is empty. This handles the replay shape where the persistence
-    // layer wrote both a streaming snapshot and a final delivery for the
-    // same file. Without this, the user sees two assistant bubbles with
-    // the same MP3/PNG attached.
-    if (
-      built.role === "assistant" &&
-      built.files.length > 0 &&
-      thread.responses.length > 0
-    ) {
-      const dupIdx = findDuplicateAssistantWithFile(thread.responses, built);
-      if (dupIdx !== -1) {
-        mergeDuplicateAssistantFile(thread.responses[dupIdx], built);
-        continue;
-      }
-    }
-
-    thread.responses.push(built);
-  }
-
-  // Re-attach any in-flight pendings that didn't surface in the API
-  // response yet (e.g. a fresh background turn whose user message lives
-  // only in the live store). They show up as user-rooted threads carried
-  // forward verbatim.
-  for (const [tid, pending] of carryPending) {
-    if (state.byId.has(tid)) continue;
-    if (previous) {
-      const prevThread = previous.byId.get(tid);
-      if (prevThread) {
-        const carried: Thread = {
-          id: tid,
-          userMsg: prevThread.userMsg,
-          responses: prevThread.responses,
-          pendingAssistant: pending,
-          // Carried forward VERBATIM — an unresolved orphan stays an
-          // orphan (codex #262 round 3 P1: dropping the flag here let
-          // the bucket bypass the rewind gate and inflate num_turns).
-          placeholderOrigin: prevThread.placeholderOrigin,
-        };
-        state.byId.set(tid, carried);
-        state.threads.push(carried);
-      }
-    }
-  }
-
-  // Sort threads by user-msg timestamp; sort responses within each thread by
-  // intra_thread_seq (= server seq for legacy).
-  state.threads.sort((a, b) => a.userMsg.timestamp - b.userMsg.timestamp);
-  for (const thread of state.threads) sortResponsesInThread(thread);
-
-  // PR #243 follow-up (P2): state for `key` is replaced wholesale and
-  // the rebuilt rows carry no tool progress timelines — drop the
-  // applied-tool-envelope ledger so the cached-hydrate re-application
-  // below is allowed to re-attach the replayed tool state to the
-  // fresh objects.
-  appliedHydrateToolEnvelopesByKey.delete(key);
-  sessionsByKey.set(key, state);
-  loadedSessions.add(key);
-
-  // M10 Phase 6.2 (Bug C): if the bridge already hydrated, apply its
-  // dedup pass against the freshly-replayed thread state. The forced
-  // retries in chat-thread.tsx mean `replayHistory` fires multiple
-  // times on a reload; we re-apply each time to keep the post-refresh
-  // DOM convergent with the live wire's suppressed-row shape.
-  //
-  // We always `notify()` first so subscribers see the freshly-replayed
-  // history even if `applyHydrateDedup` short-circuits (e.g. cached
-  // snapshot from an older server has no `replayed_envelopes`).
-  notify();
-  const cachedHydrate = hydrateSnapshotByKey.get(key);
-  if (cachedHydrate) {
-    applyHydrateDedup(sessionId, topic, cachedHydrate);
-  }
-}
-
-/**
- * M10 Phase 6.2 (Bug C) + M10.5 reload-mid-stream fix: cache the WS
- * `session/hydrate` result so that subsequent `replayHistory` calls
- * (the forced retries in chat-thread.tsx) re-run the dedup pass
- * against the freshly-replayed thread state. Triggers an immediate
- * dedup pass on the current state so a hydrate that lands AFTER the
- * first `replayHistory` still cleans up the duplicate rows.
- *
- * M10.5: also runs `applyHydrateDedup` when the store is empty for
- * this scope (no thread state yet). The dedup function's own
- * `seedFromHydrateMessages` will populate the store from
- * `hydrate.messages` when REST returned `[]`. Without this branch the
- * SPA produced an orphan completion bubble whenever REST and WS
- * disagreed about whether the session had any history.
- */
-export function setHydrateSnapshot(
-  sessionId: string,
-  topic: string | undefined,
-  hydrate: HydrateSnapshot,
-): void {
-  const key = storeKey(sessionId, topic);
-  hydrateSnapshotByKey.set(key, hydrate);
-  // Always invoke the dedup pass:
-  //   • If the store already has thread state for this scope, dedup
-  //     coalesces the legacy spawn-ack rows behind retained envelopes
-  //     (Bug C).
-  //   • If the store is empty for this scope, the dedup pass's
-  //     `seedFromHydrateMessages` step populates it from
-  //     `hydrate.messages` so the user prompt + narration row are
-  //     visible (M10.5 reload-mid-stream fallback).
-  applyHydrateDedup(sessionId, topic, hydrate);
-}
-
-/**
- * `HydratedMessage` shape `applyHydrateDedup` and `seedFromHydrateMessages`
- * accept. Mirrors `octos_core::ui_protocol::HydratedMessage` (cf.
- * `runtime/ui-protocol-types.ts`).
- *
- * The dedup pass below only reads the metadata fields (seq, message_id,
- * source, thread_id, turn_id, media). The seed pass additionally reads
- * `role`, `content`, `client_message_id`, and `persisted_at` so it can
- * reconstruct the full `Thread` shape when REST `loadHistory` returned
- * `[]` (M10.5 reload-mid-stream fallback).
- *
- * Both extra fields are optional on the wire — older servers omit them.
- * When absent, the seed pass treats the row the same way the legacy REST
- * `replayHistory` treats a `MessageInfo` with the same gaps: skip
- * unknown roles, default the content to empty string, etc.
- */
-export interface HydrateMessageRow {
-  seq: number;
-  message_id?: string;
-  source?: string;
-  thread_id?: string;
-  turn_id?: string;
-  media?: string[];
-  /** Wire role: `user | assistant | tool | system`. Absent on older
-   *  servers; treat as `assistant` so the row is at least visible. */
-  role?: string;
-  /** Verbatim text from the canonical session JSONL. */
-  content?: string;
-  /** Stable per-row client id. The seed pass uses this to root user
-   *  messages on the same `client_message_id` REST would have used. */
-  client_message_id?: string;
-  /** ISO-8601 persistence timestamp. Used for `Thread` ordering. */
-  persisted_at?: string;
-}
-
-export interface HydrateEnvelope {
-  thread_id?: string;
-  turn_id?: string;
-  response_to_client_message_id?: string;
-  task_id: string;
-  seq: number;
-  message_id: string;
-  content: string;
-  media?: string[];
-  persisted_at: string;
-}
-
-export interface HydrateSnapshot {
-  messages?: HydrateMessageRow[];
-  replayed_envelopes?: HydrateEnvelope[];
-  replayed_tool_envelopes?: Envelope[];
-}
-
-/**
- * Convert a [`HydrateMessageRow`] (the WS `session/hydrate` shape) into
- * a [`MessageInfo`] (the REST `/messages` shape) so the existing
- * `replayHistory` logic can ingest it without reimplementing the whole
- * adjacent-merge / orphan-thread / dedup pipeline. Skips rows that lack
- * the minimum (`role` + `content`) needed to reconstruct a chat bubble.
- */
-function hydrateRowToMessageInfo(row: HydrateMessageRow): MessageInfo | null {
-  if (!row.role || row.content === undefined) return null;
-  if (
-    row.role !== "user" &&
-    row.role !== "assistant" &&
-    row.role !== "tool" &&
-    row.role !== "system"
-  ) {
-    return null;
-  }
-  const timestamp =
-    typeof row.persisted_at === "string" && row.persisted_at.length > 0
-      ? row.persisted_at
-      : new Date().toISOString();
-  return {
-    seq: row.seq,
-    role: row.role,
-    content: row.content,
-    client_message_id: row.client_message_id,
-    thread_id: row.thread_id,
-    timestamp,
-    media: row.media,
-  };
-}
-
-/**
- * Merge hydrate media paths into `target`, returning a NEW
- * `ThreadMessage` (fresh object + fresh `files` array) when anything
- * was added, or `null` when the merge is a no-op.
- *
- * PR #243 follow-up (P2): the first cut pushed into `target.files` in
- * place. `ThreadUserBubble` / `ThreadAssistantBubble` are `React.memo`
- * components whose shallow comparison keys on the `message` object
- * reference, so an in-place push updated store state without ever
- * repainting the bubble — media merged into an EXISTING (REST-seeded)
- * message silently didn't display. Same convention as
- * `replaceAssistantSlot` (see the 2026-05-15 bug note there): every
- * mutation that changes a message's data MUST replace the containing
- * `ThreadMessage` object.
- */
-function mergeMediaIntoMessage(
-  target: ThreadMessage,
-  media?: string[],
-): ThreadMessage | null {
-  if (!media || media.length === 0) return null;
-  const seen = new Set(target.files.map((file) => file.path));
-  const added: MessageFile[] = [];
-  for (const path of media) {
-    if (seen.has(path)) continue;
-    added.push(fileFromMediaPath(path));
-    seen.add(path);
-  }
-  if (added.length === 0) return null;
-  return { ...target, files: [...target.files, ...added] };
-}
-
-function rowTimestampMs(row: HydrateMessageRow): number | null {
-  if (!row.persisted_at) return null;
-  const timestamp = new Date(row.persisted_at).getTime();
-  return Number.isFinite(timestamp) ? timestamp : null;
-}
-
-function hydrateRowMatchesResponse(
-  row: HydrateMessageRow,
-  response: ThreadMessage,
-): boolean {
-  if (typeof row.seq === "number" && response.historySeq === row.seq) {
-    return true;
-  }
-  if (row.content === undefined || response.text !== row.content) return false;
-  const timestamp = rowTimestampMs(row);
-  return timestamp === null || response.timestamp === timestamp;
-}
-
-/** Consume the server order carried by EVERY hydrate user row — media
- *  or not (codex #262 round 6 P2: normal user rows have no media and
- *  were skipped, so REST-seeded roots never learned their seq and the
- *  rewind gate could stay closed after a complete hydrate). Stamps
- *  `(persisted_at, seq)` onto matching user roots, then retries orphan
- *  adoption against the now-normalized scope. */
-function normalizeHydrateUserOrder(
-  sessionId: string,
-  topic: string | undefined,
-  rows: HydrateMessageRow[],
-): boolean {
-  if (rows.length === 0) return false;
-  const state = sessionsByKey.get(storeKey(sessionId, topic));
-  if (!state) return false;
-  let changed = false;
-  for (const row of rows) {
-    if (row.role !== "user") continue;
-    const anchor = row.client_message_id ?? row.thread_id;
-    const thread = anchor ? state.byId.get(anchor) : undefined;
-    if (!thread) continue;
-    const timestampMs = row.persisted_at
-      ? Date.parse(row.persisted_at)
-      : Number.NaN;
-    if (
-      normalizeUserRootOrder(
-        thread,
-        timestampMs,
-        typeof row.seq === "number" ? row.seq : undefined,
-      )
-    ) {
-      changed = true;
-    }
-  }
-  if (tryAdoptPlaceholders(state)) changed = true;
-  return changed;
-}
-
-function mergeHydrateMediaIntoExisting(
-  sessionId: string,
-  topic: string | undefined,
-  rows: HydrateMessageRow[],
-): boolean {
-  if (rows.length === 0) return false;
-  const state = sessionsByKey.get(storeKey(sessionId, topic));
-  if (!state) return false;
-  let changed = false;
-
-  for (const row of rows) {
-    if (!row.media || row.media.length === 0) continue;
-    if (row.role === "user") {
-      const anchor = row.client_message_id ?? row.thread_id;
-      const thread = anchor ? state.byId.get(anchor) : undefined;
-      if (!thread) continue;
-      const mergedUser = mergeMediaIntoMessage(thread.userMsg, row.media);
-      if (mergedUser) {
-        thread.userMsg = mergedUser;
-        changed = true;
-      }
-      // Order/adoption is handled by `normalizeHydrateUserOrder` (which
-      // also consumes NO-media user rows — codex #262 round 6 P2);
-      // this pass merges media only.
-      continue;
-    }
-
-    const thread = row.thread_id ? state.byId.get(row.thread_id) : undefined;
-    if (!thread) continue;
-    for (let i = 0; i < thread.responses.length; i += 1) {
-      if (hydrateRowMatchesResponse(row, thread.responses[i])) {
-        const merged = mergeMediaIntoMessage(thread.responses[i], row.media);
-        if (merged) {
-          thread.responses[i] = merged;
-          changed = true;
-        }
-        break;
-      }
-    }
-  }
-
-  return changed;
-}
-
-function replayHydrateToolEnvelopes(
-  sessionId: string,
-  topic: string | undefined,
-  envelopes: Envelope[] | undefined,
-): void {
-  if (!envelopes || envelopes.length === 0) return;
-  const key = storeKey(sessionId, topic);
-  // PR #243 follow-up (P2): scope the replay to the hydrating session.
-  // The tool mutators below route by `thread_id` alone — for an
-  // unknown thread `ensureOrphanThread` falls through to
-  // `pickHostSessionForOrphan()`, which would attach the replayed tool
-  // card to an ARBITRARY other session. A hydrate is scoped to ONE
-  // (sessionId, topic); skip envelopes whose thread cannot be resolved
-  // within that scope's own state (the `messages[]` seed pass runs
-  // before us, so any thread the snapshot carries rows for already
-  // exists here).
-  const state = sessionsByKey.get(key);
-  if (!state) return;
-  let applied = appliedHydrateToolEnvelopesByKey.get(key);
-  const ordered = [...envelopes].sort((a, b) => {
-    if (a.thread_id === b.thread_id) return a.seq - b.seq;
-    return a.thread_id.localeCompare(b.thread_id);
-  });
-
-  for (const envelope of ordered) {
-    if (!state.byId.has(envelope.thread_id)) {
-      recordRuntimeCounter("octos_hydrate_tool_envelope_unresolved_total", {
-        surface: "thread_store",
-      });
-      continue;
-    }
-    // PR #243 follow-up (P2): idempotency. This replay re-runs on every
-    // WS reconnect and after every `replayHistory` rebuild, but
-    // `appendToolProgress` only skips *consecutive* duplicate lines —
-    // re-applying the same `tool_progress` envelopes against unchanged
-    // state duplicated every progress line. Skip `(thread_id, seq)`
-    // pairs already applied to the current state generation (see
-    // `appliedHydrateToolEnvelopesByKey`); envelopes skipped above as
-    // unresolved are NOT marked, so a later hydrate that seeds their
-    // thread can still apply them.
-    const envelopeKey = `${envelope.thread_id}:${envelope.seq}`;
-    if (applied?.has(envelopeKey)) continue;
-    if (!applied) {
-      applied = new Set();
-      appliedHydrateToolEnvelopesByKey.set(key, applied);
-    }
-    applied.add(envelopeKey);
-    const payload = envelope.payload;
-    if (payload.type === "tool_start") {
-      addToolCall(
-        envelope.thread_id,
-        payload.data.tool_call_id,
-        payload.data.name,
-        payload.data.arguments,
-      );
-      continue;
-    }
-    if (payload.type === "tool_progress") {
-      appendToolProgress(
-        envelope.thread_id,
-        payload.data.tool_call_id,
-        payload.data.message,
-      );
-      continue;
-    }
-    if (payload.type === "tool_end") {
-      setToolCallStatus(
-        envelope.thread_id,
-        payload.data.tool_call_id,
-        payload.data.status === "error" ? "error" : "complete",
-      );
-    }
-  }
-}
-
-/**
- * M10.5 reload-mid-stream fallback: when REST `loadHistory` returned no
- * rows (server-side bug or just race) but the WS `session/hydrate`
- * carried `messages[]`, seed the store from those rows BEFORE
- * `applyHydrateDedup` runs. Without this, the SPA renders only the
- * envelope's completion bubble — with no user prompt or narration row
- * to anchor it — producing the orphan-completion shape the M10
- * hardening test catches.
- *
- * Idempotency: a subsequent `replayHistory` call (REST retries fire at
- * 2s/5s/12s) replaces state wholesale, so a real REST response that
- * lands later wins for any overlap with the hydrate seed. A second
- * hydrate snapshot for an already-seeded session is a no-op (state is
- * not empty).
- *
- * Returns `true` when seeding actually populated the store — callers
- * can use this to decide whether `applyHydrateDedup`'s envelope-emit
- * pass needs the now-existing thread state for placeholder upgrades.
- */
-/**
- * Returns `true` when every thread in `state` is an orphan-placeholder
- * — created by `appendCompletionBubble` for an envelope whose hydrate
- * snapshot has not yet landed. Such a thread has an empty user-bubble
- * (no text, no files) and is safe to replace with the canonical
- * hydrate seed, which carries the real prompt + narration rows.
- *
- * Codex SPA round 1 P2.2: an envelope-before-hydrate ordering puts a
- * placeholder thread in the store BEFORE `setHydrateSnapshot` runs.
- * Without this predicate the seed pass would treat the placeholder as
- * authoritative state and skip seeding, leaving the orphan-completion
- * shape this fix exists to prevent.
- */
-function allThreadsAreOrphanPlaceholders(state: SessionState): boolean {
-  if (state.threads.length === 0) return true;
-  for (const t of state.threads) {
-    if (t.userMsg.text.length > 0) return false;
-    if (t.userMsg.files.length > 0) return false;
-  }
-  return true;
-}
-
-/**
- * M10.5 reload-mid-stream regression fix: predicate matching the
- * `applyHydrateDedup` envelope-coverage contract for a single hydrate
- * row. A row is "covered" when:
- *
- *   - `source === "background"` (the legacy companion marker the live
- *     wire suppresses for negotiated clients), AND either
- *
- *     (a) `message_id` matches some envelope's `message_id` — the
- *         spawn-ack the envelope replaces; OR
- *     (b) `media` is non-empty AND every path is in some envelope's
- *         `media` set, with anchor (`thread_id`) match required and
- *         `turn_id` agreement when both sides expose it (codex
- *         round-6 P2 on the dedup loop applies here too).
- *
- * Use cases:
- *   • `seedFromHydrateMessages` filters covered rows BEFORE feeding
- *     `replayHistory` so the seed step never produces a sibling
- *     bubble for the legacy companion. Without this, the dedup loop
- *     downstream still drops the row but only if its `historySeq`
- *     survives `replayHistory`'s adjacent-merge intact — and any
- *     companion that the live wire emits AFTER the hydrate seed (via
- *     `message/persisted` for a long-running spawn_only completion)
- *     would still produce a duplicate bubble. Filtering at the seed
- *     contract level prevents both classes.
- *
- *   • `applyHydrateDedup`'s downstream loop continues to apply the
- *     same predicate to the post-seed thread state for any row that
- *     somehow survived (e.g. cached snapshot re-applied after a REST
- *     replay reseeded the store).
- *
- * Defensive: rows whose `source` is not `"background"` and rows whose
- * coverage cannot be proven (no message_id match AND no anchor for
- * the media-subset check) are NOT covered. We only delete on positive
- * evidence — a duplicate render is recoverable; an erased row is not.
- */
-function hydrateRowCoveredByEnvelope(
-  row: HydrateMessageRow,
-  envelopes: HydrateEnvelope[],
-): boolean {
-  if (envelopes.length === 0) return false;
-  if (row.source !== "background") return false;
-
-  // (a) message_id match — session-unique, works without thread_id.
-  if (row.message_id) {
-    for (const e of envelopes) {
-      if (e.message_id === row.message_id) return true;
-    }
-  }
-
-  // (b) anchor + media-subset match. Anchor required so a different
-  // completion in a different thread that happens to reuse a media
-  // path is never wrongly covered. When both sides expose `turn_id`
-  // they must agree (codex round-6 P2 on the dedup loop); when either
-  // side omits it we fall back to anchor+media match (current server
-  // emits `turn_id: None` on `MessagePersistedEvent`s).
-  const anchor = row.thread_id;
-  if (!anchor) return false;
-  if (!row.media || row.media.length === 0) return false;
-  for (const e of envelopes) {
-    const envAnchor = e.thread_id ?? e.response_to_client_message_id ?? null;
-    if (envAnchor !== anchor) continue;
-    if (row.turn_id && e.turn_id && row.turn_id !== e.turn_id) continue;
-    const envMedia = new Set(e.media ?? []);
-    if (envMedia.size === 0) continue;
-    if (row.media.every((p) => envMedia.has(p))) return true;
-  }
-  return false;
-}
-
-function seedFromHydrateMessages(
-  sessionId: string,
-  topic: string | undefined,
-  rows: HydrateMessageRow[],
-  envelopes: HydrateEnvelope[],
-): boolean {
-  if (rows.length === 0) return false;
-  const key = storeKey(sessionId, topic);
-  const existing = sessionsByKey.get(key);
-  // REST result wins for any overlap — only seed when state is empty
-  // OR when the only existing threads are orphan placeholders created
-  // by an envelope that landed before the hydrate response (codex SPA
-  // round 1 P2.2).
-  //
-  // This means: on a healthy REST response we never touch the seeded
-  // shape; on a `[]` REST response (the bug we're fixing) the seed
-  // remains visible until the next REST retry — which post-PR-1
-  // server fix is itself non-empty; on an envelope-before-hydrate
-  // ordering, the placeholder thread is replaced by the canonical
-  // hydrate history.
-  if (existing && !allThreadsAreOrphanPlaceholders(existing)) {
-    return false;
-  }
-
-  const apiMessages: MessageInfo[] = [];
-  let hasUserRow = false;
-  for (const row of rows) {
-    // M10.5 reload-mid-stream regression: skip rows the envelope
-    // contract already covers, BEFORE feeding `replayHistory`. If we
-    // let a covered `Background`-source row through, `replayHistory`
-    // may fold it into a sibling bubble via `mergeMediaCompanionInto`
-    // (donating its `historySeq`) and then `appendCompletionBubble`
-    // appends the envelope as a SEPARATE bubble — yielding the
-    // 1 user + 3 assistant shape `m10-harden-reload-midstream` catches.
-    // Drop the row at the seed contract; the envelope-emit pass then
-    // produces exactly 1 completion bubble downstream.
-    if (hydrateRowCoveredByEnvelope(row, envelopes)) continue;
-    const info = hydrateRowToMessageInfo(row);
-    if (!info) continue;
-    // Codex SPA round 1 P2.1: `replayHistory` skips `system` rows.
-    // If we feed a system-only batch through, `replayHistory` writes
-    // empty state, then re-invokes `applyHydrateDedup` (via its
-    // cached-hydrate dedup re-application at the end), which calls
-    // `seedFromHydrateMessages` again on the still-empty store —
-    // infinite recursion until the call stack overflows.
-    //
-    // Filter system rows here so the seedable count reflects what
-    // `replayHistory` will actually persist.
-    if (info.role === "system") continue;
-    apiMessages.push(info);
-    if (info.role === "user") hasUserRow = true;
-  }
-  if (apiMessages.length === 0) return false;
-  // Codex SPA round 2 P2: a hydrate with non-system but assistant/
-  // tool-only rows produces a `replayHistory` output that has only
-  // orphan-placeholder threads (empty user bubbles) — exactly the
-  // shape `allThreadsAreOrphanPlaceholders` greenlights for re-
-  // seeding. The cached-hydrate hook at the end of `replayHistory`
-  // would then call `applyHydrateDedup` again, which re-enters this
-  // function and recurses forever.
-  //
-  // Require at least one user row before seeding. A user-less hydrate
-  // is not a useful seed anyway: the canonical reload-mid-stream
-  // shape this fallback exists for ALWAYS carries the user prompt
-  // (it lives in the same JSONL the assistant rows do).
-  if (!hasUserRow) return false;
-  // Reuse `replayHistory`'s adjacent-merge + orphan-thread synthesis.
-  // It replaces state for `key` wholesale; an orphan-placeholder
-  // existing state is intentionally clobbered by the seed (P2.2).
-  replayHistory(sessionId, apiMessages, topic);
-  return true;
-}
-
-/**
- * M10 Phase 6.2 (Bug C): apply the WS `session/hydrate` dedup pass on
- * top of an already-hydrated thread state. Server PR #791 surfaces
- * three new fields on `session/hydrate` for connections that
- * negotiated `event.spawn_complete.v1`:
- *
- *   - `messages[i].message_id`  — stable per-row identity
- *   - `messages[i].source`      — wire-form `MessagePersistedSource`
- *   - `replayed_envelopes[]`    — retained `turn/spawn_complete` events
- *
- * The legacy REST `loadHistory` path returns the FULL ledger including
- * the per-file companion + spawn-ack rows that the live wire suppresses
- * for negotiated clients (server side rounds-3..6 of PR #791 deemed
- * server-side suppression intractable; the negotiated dedup contract
- * lives on the client). Without this pass, a page reload renders N+1
- * assistant bubbles where the live page rendered N.
- *
- * M10.5 reload-mid-stream addition: if `hydrate.messages` is non-empty
- * AND the store has no thread state for this scope, seed it from those
- * rows (via `seedFromHydrateMessages`) BEFORE the dedup pass. Without
- * this, an empty REST `loadHistory` response leaves the dedup pass
- * with no rows to coalesce and `appendCompletionBubble` produces an
- * orphan completion (the bug
- * `tests/m10-harden-reload-midstream.spec.ts` catches).
- *
- * Algorithm (per server PR #791 docstring on `replayed_envelopes`):
- *
- *   1. Index envelopes by `message_id` (the spawn-ack's id) and by the
- *      anchor `thread_id` (placement key).
- *   2. Build a `seq → HydratedMessage` map over the hydrated rows so we
- *      can look up `(message_id, source)` for each thread response by
- *      its `historySeq`.
- *   3. For each thread, walk responses and drop those whose hydrated
- *      counterpart has `source === "background"` AND either:
- *        (a) `message_id` matches an envelope's `message_id` — the
- *            spawn-ack the envelope replaces; or
- *        (b) it sits in the same anchor thread as an envelope and
- *            has an earlier or equal `seq` than that envelope — a
- *            per-file companion the envelope's `media` already
- *            covers.
- *   4. For each envelope, call `appendCompletionBubble` (idempotent via
- *      its existing `messageId` dedup, so a live-wire envelope already
- *      placed for the same row is a no-op).
- *
- * Best-effort: rows missing `historySeq`, hydrated rows whose
- * `message_id` / `source` are absent (older server, or non-negotiated
- * connection), or envelopes without an anchor thread are skipped — we
- * never delete a row we can't prove is the legacy duplicate.
- */
-export function applyHydrateDedup(
-  sessionId: string,
-  topic: string | undefined,
-  hydrate: HydrateSnapshot,
-): void {
-  const envelopes = hydrate.replayed_envelopes ?? [];
-  const messages = hydrate.messages ?? [];
-  // M10.5 reload-mid-stream fallback: if REST hasn't seeded the store
-  // yet (it returned `[]` or hasn't fired) but WS hydrate carried the
-  // full message list, seed from hydrate first so the dedup pass below
-  // and the envelope-emit have a thread to anchor to. Pass `envelopes`
-  // through so the seed step drops `Background`-source companion rows
-  // covered by an envelope BEFORE `replayHistory`'s adjacent-merge can
-  // fold their `historySeq` onto a sibling bubble — the bug
-  // `m10-harden-reload-midstream` catches when both the legacy
-  // companion AND the envelope land in the same hydrate response.
-  seedFromHydrateMessages(sessionId, topic, messages, envelopes);
-  if (mergeHydrateMediaIntoExisting(sessionId, topic, messages)) {
-    notify();
-  }
-  if (normalizeHydrateUserOrder(sessionId, topic, messages)) {
-    notify();
-  }
-  if (envelopes.length === 0) {
-    replayHydrateToolEnvelopes(sessionId, topic, hydrate.replayed_tool_envelopes);
-    return;
-  }
-
-  // Build the seq → row metadata index, including media so we can
-  // identify per-file companion rows by media-subset against an
-  // envelope's coalesced media list.
-  const rowBySeq = new Map<
-    number,
-    {
-      message_id?: string;
-      source?: string;
-      thread_id?: string;
-      media?: string[];
-    }
-  >();
-  for (const m of messages) {
-    rowBySeq.set(m.seq, {
-      message_id: m.message_id,
-      source: m.source,
-      thread_id: m.thread_id,
-      media: m.media,
-    });
-  }
-
-  // Per-envelope dedup. Per server PR #791 docstring: an envelope
-  // coalesces (a) the spawn-ack row by `message_id` match, (b)
-  // per-file `send_file` companion rows whose `media` paths are a
-  // subset of the envelope's `media` array. We index each envelope
-  // independently so a row's media-subset match is bounded to the
-  // SPECIFIC envelope whose media it covers — not the union of all
-  // envelopes in the same anchor thread (codex round-5 P2: that
-  // union would wrongly cover an unrelated row whose envelope aged
-  // out of the retention window but whose media path happened to
-  // appear in another retained envelope).
-  //
-  // A background-source row is covered by an envelope `e` when:
-  //   (a) `m.message_id === e.message_id` (the spawn-ack match), OR
-  //   (b) `m.thread_id` matches `e`'s anchor, `m.media` is non-empty,
-  //       AND every path in `m.media` is in `e.media` (the per-file
-  //       companion match — bounded to a single envelope).
-  // Companions not matching ANY envelope are preserved (a duplicate
-  // render is recoverable; an erased row is not).
-  const allEnvelopeMessageIds = new Set<string>();
-  for (const e of envelopes) allEnvelopeMessageIds.add(e.message_id);
-
-  // Pre-compute each envelope's media set (frozen) for the per-row
-  // subset check below. Carries `turn_id` so the match can be bounded
-  // to the same turn when both sides expose it (codex round-6 P2:
-  // a thread with two background completions emitting the same media
-  // path must NOT cross-pollinate through anchor+media alone).
-  const envelopeMediaSets: Array<{
-    anchor: string | null;
-    turn_id: string | null;
-    media: Set<string>;
-  }> = envelopes.map((e) => ({
-    anchor: e.thread_id ?? e.response_to_client_message_id ?? null,
-    turn_id: e.turn_id ?? null,
-    media: new Set(e.media ?? []),
-  }));
-
-  // Collect per-anchor "covered by media-subset" seqs AND a separate
-  // session-wide "covered by message_id" seq set (for the
-  // no-thread-id fallback).
-  const coveredSeqsByAnchor = new Map<string, Set<number>>();
-  const coveredSeqsByMessageId = new Set<number>();
-  for (const m of messages) {
-    if (m.source !== "background") continue;
-
-    // (a) message_id match — session-unique, works without thread_id.
-    if (m.message_id && allEnvelopeMessageIds.has(m.message_id)) {
-      coveredSeqsByMessageId.add(m.seq);
-      // Continue to (b) for completeness — a row covered by both
-      // routes is still covered exactly once below.
-    }
-
-    // (b) per-envelope media-subset match. Anchor required (a
-    // different completion in a different thread may reuse the same
-    // path; we never cross thread boundaries on media match). When
-    // both sides expose a `turn_id`, they must agree (codex round-6
-    // P2: two completions in the same thread that share a media path
-    // must NOT bleed across each other on media-subset alone).
-    //
-    // When either side omits `turn_id` we fall back to anchor+media
-    // match. The current server (PR #791 era) emits `turn_id: None`
-    // for `MessagePersistedEvent`s and does not stamp it on hydrated
-    // rows for spawn_only completions — applying a strict turn_id
-    // requirement would disable the Bug C fix entirely for live
-    // production traffic. The residual theoretical risk (codex
-    // round-8 P2: two background completions under the same prompt
-    // emit the SAME exact media path) is negligible in practice
-    // because spawn_only artefact paths embed UUIDv7s, so
-    // cross-completion path collisions don't occur. Once the server
-    // typed-id work propagates `turn_id` onto Message rows, this
-    // fallback can become a hard equality check.
-    const anchor = m.thread_id;
-    if (!anchor) continue;
-    if (!m.media || m.media.length === 0) continue;
-    let matched = false;
-    for (const env of envelopeMediaSets) {
-      if (env.anchor !== anchor) continue;
-      if (m.turn_id && env.turn_id && m.turn_id !== env.turn_id) {
-        continue;
-      }
-      // Bound the subset check to a SINGLE envelope's media so a
-      // companion only counts as covered when there's a specific
-      // envelope it pairs with.
-      if (m.media.every((p) => env.media.has(p))) {
-        matched = true;
-        break;
-      }
-    }
-    if (matched) {
-      let bag = coveredSeqsByAnchor.get(anchor);
-      if (!bag) {
-        bag = new Set<number>();
-        coveredSeqsByAnchor.set(anchor, bag);
-      }
-      bag.add(m.seq);
-    }
-  }
-
-  const key = storeKey(sessionId, topic);
-  const state = sessionsByKey.get(key);
-  if (!state) {
-    // No thread state to dedup — emit envelopes as fresh bubbles below.
-  } else {
-    // For each thread, drop responses whose `historySeq` is covered
-    // either by an anchor's media-subset match OR by a session-wide
-    // message_id match (no thread_id required for the latter — codex
-    // round-4 P2). Handles both the post-merge case (where the row's
-    // historySeq was donated by the companion at seq=N+1) and the
-    // un-merged case (separate ack + companion rows at seqs N and
-    // N+1).
-    let mutated = false;
-    for (const thread of state.threads) {
-      const anchorCovered = coveredSeqsByAnchor.get(thread.id);
-      // No covered set for this thread by anchor AND no session-wide
-      // message_id matches → nothing to drop here.
-      if (!anchorCovered && coveredSeqsByMessageId.size === 0) continue;
-      const filtered: ThreadMessage[] = [];
-      for (const r of thread.responses) {
-        if (typeof r.historySeq !== "number") {
-          filtered.push(r);
-          continue;
-        }
-        const isCovered =
-          (anchorCovered && anchorCovered.has(r.historySeq)) ||
-          coveredSeqsByMessageId.has(r.historySeq);
-        if (!isCovered) {
-          filtered.push(r);
-          continue;
-        }
-        // Defense-in-depth: only drop rows whose hydrated counterpart
-        // is genuinely background. If `messages[]` is missing (older
-        // server) the row is preserved (no covered match anyway).
-        const meta = rowBySeq.get(r.historySeq);
-        if (meta && meta.source !== "background") {
-          // Meta says non-background — protect even if covered set
-          // included the seq (defensive against an upstream bug).
-          filtered.push(r);
-          continue;
-        }
-        mutated = true;
-      }
-      if (filtered.length !== thread.responses.length) {
-        thread.responses = filtered;
-      }
-    }
-    if (mutated) {
-      // Bump the snapshot version so downstream selectors recompute.
-      version++;
-      snapshotCache.delete(key);
-    }
-  }
-
-  // Emit each envelope as a completion bubble. `appendCompletionBubble`
-  // is idempotent via its `messageId` dedup, so a live-wire envelope
-  // already placed for the same row is a no-op. The legacy spawn-ack
-  // row (if it survived to this point) is upgraded in place by the
-  // existing `appendCompletionBubble` placeholder-upgrade path; if the
-  // dedup loop above already deleted it, this call appends fresh.
-  for (const e of envelopes) {
-    const placementKey = e.thread_id ?? e.response_to_client_message_id;
-    if (!placementKey) continue;
-    appendCompletionBubble(placementKey, {
-      text: e.content,
-      media: e.media ?? [],
-      spawnComplete: true,
-      sourceClientMessageId: e.response_to_client_message_id,
-      historySeq: e.seq,
-      messageId: e.message_id,
-      persistedAt: e.persisted_at,
-      sessionId,
-      topic,
-    });
-  }
-  replayHydrateToolEnvelopes(sessionId, topic, hydrate.replayed_tool_envelopes);
-  notify();
-}
-
 export function applyVoiceTranscript(
   sessionId: string,
   topic: string | undefined,
@@ -3023,13 +1554,6 @@ export function applyVoiceTranscript(
     ...thread.userMsg,
     text,
   };
-  // NOTE (codex #262 rounds 3→6): a transcript proves the user turn
-  // exists but carries NO order information (no persisted timestamp or
-  // seq), so it must not open the rewind gate on a true orphan — the
-  // persisted user echo that follows carries both, and adoption runs
-  // through `tryAdoptPlaceholders` once every root is server-ordered.
-  // Real voice turns are minted by `addUserMessage` and were never
-  // placeholders.
   notify();
   return true;
 }
@@ -3064,457 +1588,11 @@ export function discardOptimisticVoiceTurn(
 }
 
 /**
- * Ingest a single persisted `MessageInfo` (e.g. from a `session_result`
- * notification on the WS bridge) into the appropriate thread without
- * replaying the whole session.
- *
- * Closes the M8.10 wave-6 leak: pre-fix, late `session_result` events for
- * deep_research / mofa / run_pipeline turns landed only in the legacy
- * MessageStore — which the v2 renderer ignores — leaving the v2 UI stuck
- * on the finalized spawn-ack. The WS event router now calls this helper
- * (M9-α-5/α-6 deleted the SSE bridge that previously fanned out the same
- * event) so the persisted record reaches `ThreadStore.responses`.
- *
- * Routing:
- *   • Use `message.thread_id` when present (server stamps it for both the
- *     non-media and media-bearing `_session_result` paths).
- *   • Fall back to `deriveLegacyThreadId` for legacy daemons that omit it.
- *
- * Merge: applies the same media-only-companion and duplicate-assistant-file
- * rules `replayHistory` uses against the existing tail of the thread, so a
- * late audio/podcast delivery folds into the spawn-ack assistant bubble
- * instead of producing an orphan duplicate.
- *
- * Idempotent: a second call for the same `historySeq` (from a replay) is a
- * no-op.
- *
- * Notes:
- *   • Does NOT touch `pendingAssistant` — a different turn in the same
- *     thread may still be running (rare but possible during overlap).
- *   • Skips `system` messages (mirrors `replayHistory`).
+ * Read compatibility-event state for diagnostics and non-render consumers.
+ * Dashboard components render exclusively through ProjectionStore.
  */
-export function appendPersistedMessage(
-  sessionId: string,
-  topic: string | undefined,
-  message: MessageInfo,
-): void {
-  if (message.role === "system") return;
-
-  // Prefer the explicit thread_id stamped by the server. For legacy
-  // daemons that omit it, walk the obvious fallbacks before reaching for
-  // `deriveLegacyThreadId` (which synthesizes a fresh id for an
-  // assistant record with no ambient context — wrong for a single late
-  // session_result delivery).
-  const directThreadId =
-    message.thread_id ||
-    message.response_to_client_message_id ||
-    (message.role === "user" ? message.client_message_id : undefined);
-  const ctx = { currentThreadId: null as string | null };
-  const threadId = directThreadId || deriveLegacyThreadId(message, ctx);
-  if (!threadId) return;
-
-  const key = storeKey(sessionId, topic);
-  let state = sessionsByKey.get(key);
-
-  // Locate (or adopt) the thread. Prefer the live session's bucket; fall
-  // back to a globally-known thread (e.g. orphan bucket created earlier on
-  // a different scope key); finally synthesize a placeholder so the late
-  // record is at least visible.
-  let thread: Thread | undefined = state?.byId.get(threadId);
-  if (!thread) {
-    const found = findThreadById(threadId);
-    if (found) {
-      state = found.state;
-      thread = found.thread;
-    }
-  }
-  if (!thread) {
-    if (!state) {
-      state = ensureSession(key);
-    }
-    const placeholderUser: ThreadMessage = {
-      id: nextId(),
-      role: "user",
-      text: "",
-      files: [],
-      toolCalls: [],
-      status: "complete",
-      timestamp: message.timestamp
-        ? new Date(message.timestamp).getTime()
-        : Date.now(),
-      clientMessageId: threadId,
-    };
-    thread = {
-      id: threadId,
-      userMsg: placeholderUser,
-      responses: [],
-      pendingAssistant: null,
-      // Same provenance rule as `ensureOrphanThread`: a bucket minted
-      // without its user message is turn-ness-UNKNOWN until the real
-      // user record (below) or `addUserMessage` adopts it.
-      placeholderOrigin: true,
-    };
-    insertThreadInTimestampOrder(state, thread);
-  }
-
-  // #245 P2: a persisted row IS the durable frame the post-reopen delta
-  // freeze waits for (even when the row dedups below — canonical text is
-  // already present in that case).
-  if (message.role === "assistant") {
-    clearReplayDeltaSuppression(thread);
-  }
-
-  if (message.role === "user") {
-    // Persisted user record echoing back through session_result — only
-    // adopt its text/files if the existing user bubble is empty. Voice turns
-    // are optimistically inserted with an audio file and empty text; the
-    // persisted echo carries the ASR transcript, so keep local media while
-    // filling the transcript in.
-    // A persisted USER record carries this root's server order — stamp
-    // it even when the bubble text is already filled (rounds 3+6: the
-    // echo used to update only empty bubbles, so optimistic siblings
-    // never entered the server clock domain and orphan adoption had to
-    // compare against client `Date.now()`). Adoption itself only
-    // happens through `tryAdoptPlaceholders`, i.e. once EVERY root in
-    // the scope is server-ordered.
-    let adopted = false;
-    if (state) {
-      normalizeUserRootOrder(
-        thread,
-        message.timestamp ? Date.parse(message.timestamp) : Number.NaN,
-        typeof message.seq === "number" ? message.seq : undefined,
-      );
-      adopted = tryAdoptPlaceholders(state);
-      if (!adopted) {
-        // Unresolvable from live traffic (round 7): fall back to a
-        // forced REST replay. Round 8 P2: `state` may be a DIFFERENT
-        // scope than the incoming (sessionId, topic) when the global
-        // findThreadById fallback located the orphan elsewhere —
-        // nudge the scope that owns the thread we just inspected.
-        let ownerKey = key;
-        for (const [k, s] of sessionsByKey.entries()) {
-          if (s === state) {
-            ownerKey = k;
-            break;
-          }
-        }
-        nudgePlaceholderRefetch(ownerKey, state);
-      }
-    }
-    const built = buildResponseFromApi(message);
-    if (thread.userMsg.text === "" && built.text.trim().length > 0) {
-      thread.userMsg = {
-        ...thread.userMsg,
-        text: built.text,
-        files: built.files.length > 0 ? built.files : thread.userMsg.files,
-        historySeq: built.historySeq,
-        intra_thread_seq: built.intra_thread_seq,
-        clientMessageId: message.client_message_id ?? threadId,
-      };
-      notify();
-    } else if (thread.userMsg.text === "" && thread.userMsg.files.length === 0) {
-      thread.userMsg = {
-        ...thread.userMsg,
-        text: built.text,
-        files: built.files,
-        historySeq: built.historySeq,
-        intra_thread_seq: built.intra_thread_seq,
-        clientMessageId: message.client_message_id ?? threadId,
-      };
-      notify();
-    } else if (adopted) {
-      notify();
-    }
-    return;
-  }
-
-  // Idempotency: skip if a response with the same historySeq is already in
-  // the thread. The server-side seq is per-session monotonic so this is a
-  // safe identity check when available.
-  const incomingSeq = typeof message.seq === "number" ? message.seq : undefined;
-  if (incomingSeq !== undefined) {
-    // WEB-NEW-17: per-session set guards against the live-after-hydrate
-    // (and hydrate-after-live) overlap. `replayHistory` wipes
-    // `thread.responses` and rebuilds, dropping `historySeq` on rows that
-    // came from `messages_page` (server strips seq). Without this set,
-    // a re-emitted live `message/persisted` carrying the same seq
-    // double-counts. The per-thread `r.historySeq === incomingSeq` walk
-    // below is retained as a redundant safety net for any future caller
-    // that bypasses this top-level gate.
-    if (hasSeenSeq(key, incomingSeq)) return;
-    for (const r of thread.responses) {
-      if (r.historySeq === incomingSeq) return;
-    }
-  } else {
-    // Fallback identity for legacy `session/messages_page` poll responses.
-    // The server's `MessageInfo` struct (`crates/octos-cli/src/api/handlers.rs`
-    // `MessageInfo`) strips `seq` and `message_id`, so polled rows arrive
-    // with `message.seq === undefined`. `task-watcher.ts` polls every
-    // ~2500ms, so without this fallback the same persisted row (e.g. the
-    // spawn_only "Background work started" ack) gets appended on every
-    // tick — producing the runaway duplicate-bubble pattern reported
-    // against `run_pipeline` deep_research. (role, content, timestamp)
-    // is the only deterministic identity available in the polled
-    // response shape.
-    const incomingTs = message.timestamp
-      ? new Date(message.timestamp).getTime()
-      : null;
-    const incomingText = typeof message.content === "string" ? message.content : "";
-    // PR #148 fixup (2026-05-22 dspfac re-repro): strict timestamp
-    // equality was too narrow — the live wire row's `r.timestamp` is
-    // stamped via `Date.now()` at append time (browser clock), while
-    // the polled `session/messages_page` row carries the server's
-    // RFC3339 `persisted_at`. They never line up exactly, so the
-    // dedupe missed and "Background work started..." duplicated again.
-    // Widen to a 5-minute proximity window: polled echo will land
-    // within seconds of the live row, while distinct repeated content
-    // is typically minutes apart. Non-empty text gate kept (codex
-    // MINOR on #148) so empty-content media-only rows don't collide.
-    const PROXIMITY_MS = 5 * 60 * 1000;
-    if (incomingTs !== null && incomingText.trim().length > 0) {
-      for (const r of thread.responses) {
-        if (
-          r.role === message.role &&
-          r.text === incomingText &&
-          Math.abs(r.timestamp - incomingTs) < PROXIMITY_MS
-        ) {
-          return;
-        }
-      }
-    }
-  }
-
-  const built = buildResponseFromApi(message);
-
-  // M10 Phase 5b: the legacy ADJACENT splice-merge (`isMediaOnlyCompanion`
-  // + adjacent-seq) is removed. That predicate folded a media-only
-  // persisted row into the *prior* text bubble — a fragile assumption
-  // that the late row was a "companion" of the immediately-prior text
-  // response, producing 5+ waves of bugs (sticky-map drift,
-  // phantom-chunk drop, wrong-bubble target). Each persisted assistant
-  // row is now its own bubble; the renderer supports N>=1 assistant
-  // bubbles per user prompt via `responses.map`. For `spawn_only`
-  // completions the `turn/spawn_complete` envelope (server PR #772)
-  // delivers content + media in one atomic event; the per-file
-  // companion `message/persisted` rows are filtered server-side under
-  // `event.spawn_complete.v1` (PR #773, Phase 5a).
-  //
-  // KEPT: the file-deduplication collapse below. Legacy SSE flows can
-  // deliver the same file twice (a `file` event attaches it to the
-  // pending/most-recent assistant slot via `appendAssistantFile`, then
-  // a `session_result` event re-persists the same row). Without the
-  // dedupe a non-spawn legacy file delivery would now render two
-  // bubbles holding the same MP3/PNG. Codex Phase 5b review P1/P2.
-  if (
-    built.role === "assistant" &&
-    built.files.length > 0 &&
-    thread.responses.length > 0
-  ) {
-    const dupIdx = findDuplicateAssistantWithFile(thread.responses, built);
-    if (dupIdx !== -1) {
-      mergeDuplicateAssistantFile(thread.responses[dupIdx], built);
-      // WEB-NEW-17: mark the seq seen even when the row merges into an
-      // existing file-bearing response — a re-delivery of the same seq
-      // must not double-merge.
-      if (incomingSeq !== undefined) rememberSeq(key, incomingSeq);
-      notify();
-      return;
-    }
-  }
-
-  thread.responses.push(built);
-  sortResponsesInThread(thread);
-  // WEB-NEW-17: record the seq so a subsequent live-or-hydrate replay
-  // of the same persisted row short-circuits at the top-level gate
-  // above, even after `replayHistory` rebuilds the thread state
-  // (legacy `messages_page` rows lose `historySeq`).
-  if (incomingSeq !== undefined) rememberSeq(key, incomingSeq);
-  notify();
-}
-
-// ---------------------------------------------------------------------------
-// History loading
-// ---------------------------------------------------------------------------
-
-export interface LoadHistoryOptions {
-  /**
-   * Bypass the per-session "already loaded" cache and force a fresh fetch.
-   * Used to recover from server persistence latency on reload — when the
-   * client loads /messages immediately after a streaming `done` event the
-   * JSONL may still be catching up, so the first fetch returns the user
-   * messages but not the assistant ones. The mount effect retries with
-   * `force: true` after a short delay to re-hydrate assistants once the
-   * server commits them.
-   */
-  force?: boolean;
-}
-
-/** Max pages to walk. Mirrors the server-side offset cap (10_000) /
- *  per-page limit (500) so a runaway page-loop cannot pin the tab. */
-const HISTORY_PAGE_LIMIT = 500;
-const HISTORY_MAX_PAGES = 20;
-
-export function loadHistory(
-  sessionId: string,
-  topic?: string,
-  options: LoadHistoryOptions = {},
-): Promise<void> {
-  const key = storeKey(sessionId, topic);
-  const generation = identityGeneration;
-  if (!options.force && loadedSessions.has(key)) return Promise.resolve();
-
-  const existing = loadingPromises.get(key);
-  if (existing) return existing;
-
-  // The `finally` below compares against this promise's own identity, but the
-  // closure captures it before the assignment lands — a direct self-reference
-  // trips TS2454. A holder sidesteps that while keeping the binding `const`.
-  // Cleanup stays INSIDE the async body on purpose: the placeholder-refetch
-  // loop further down relies on the entry being gone the moment the load
-  // settles, not one microtask later.
-  const self: { current?: Promise<void> } = {};
-  const promise = (async () => {
-    try {
-      // Issue #110.3: page through `getMessagesPage` so a session
-      // with >500 persisted messages renders ALL of them. Pre-fix
-      // every caller hard-coded `getMessages(..., 500, 0, ...)` and
-      // dropped everything past row 500 with no signal to the user.
-      // The first page is replayed immediately so the UI is
-      // populated quickly; subsequent pages accumulate and re-replay
-      // (replayHistory carries pending assistants across rebuilds).
-      const accumulated: MessageInfo[] = [];
-      let offset = 0;
-      for (let i = 0; i < HISTORY_MAX_PAGES; i += 1) {
-        const page = await getMessagesPage(
-          sessionId,
-          HISTORY_PAGE_LIMIT,
-          offset,
-          undefined,
-          topic,
-        );
-        if (generation !== identityGeneration) return;
-        accumulated.push(...page.messages);
-        replayHistory(sessionId, accumulated.slice(), topic);
-        if (!page.has_more) break;
-        // Defensive: server's `next_offset` should always advance,
-        // but if the field is missing or stuck, increment manually.
-        const nextOffset =
-          typeof page.next_offset === "number" && page.next_offset > offset
-            ? page.next_offset
-            : offset + page.messages.length;
-        if (nextOffset === offset) break;
-        offset = nextOffset;
-      }
-      loadedSessions.add(key);
-    } catch {
-      loadedSessions.delete(key);
-    } finally {
-      if (loadingPromises.get(key) === self.current) {
-        loadingPromises.delete(key);
-      }
-    }
-  })();
-
-  self.current = promise;
-  loadingPromises.set(key, promise);
-  return promise;
-}
-
-// ---------------------------------------------------------------------------
-// Public API — accessors
-// ---------------------------------------------------------------------------
-
 export function getThreads(sessionId: string, topic?: string): Thread[] {
-  const key = storeKey(sessionId, topic);
-  const cached = snapshotCache.get(key);
-  if (cached && cached.version === version) return cached.data;
-  const state = sessionsByKey.get(key);
-  const data = state ? state.threads.slice() : [];
-  snapshotCache.set(key, { version, data });
-  return data;
-}
-
-/**
- * Snapshot of the pending streaming assistant for a given thread.
- * Returns null when the thread doesn't exist or has no pending slot.
- * M9-γ-6 (issue #843): replaces the legacy
- * `MessageStore.getMessages(...).find(m => m.id === assistantMsgId)`
- * lookup the bridge used to detect "stream ended without `done`"
- * conditions.
- */
-export function getPendingAssistantSnapshot(
-  sessionId: string,
-  threadId: string,
-  topic?: string,
-): { text: string; status: "streaming" | "complete" | "error" } | null {
-  const key = storeKey(sessionId, topic);
-  const state = sessionsByKey.get(key);
-  if (!state) return null;
-  const thread = state.byId.get(threadId);
-  if (!thread || !thread.pendingAssistant) return null;
-  const p = thread.pendingAssistant;
-  return { text: p.text, status: p.status };
-}
-
-/**
- * Highest server-side `historySeq` observed for any persisted message
- * in this session/topic. Returns -1 when no persisted messages have
- * been ingested. M9-γ-6 (issue #843): replaces
- * `MessageStore.getMaxHistorySeq` for the task-watcher's incremental
- * sync cursor.
- */
-export function getMaxHistorySeq(
-  sessionId: string,
-  topic?: string,
-): number {
-  const key = storeKey(sessionId, topic);
-  const state = sessionsByKey.get(key);
-  if (!state) return -1;
-  let max = -1;
-  for (const t of state.threads) {
-    if (typeof t.userMsg.historySeq === "number" && t.userMsg.historySeq > max) {
-      max = t.userMsg.historySeq;
-    }
-    for (const r of t.responses) {
-      if (typeof r.historySeq === "number" && r.historySeq > max) {
-        max = r.historySeq;
-      }
-    }
-    if (
-      t.pendingAssistant &&
-      typeof t.pendingAssistant.historySeq === "number" &&
-      t.pendingAssistant.historySeq > max
-    ) {
-      max = t.pendingAssistant.historySeq;
-    }
-  }
-  return max;
-}
-
-/**
- * Flat list of file paths attached to any message in this session/topic.
- * M9-γ-6 (issue #843): replaces the task-watcher's
- * `MessageStore.getMessages(...).flatMap(m => m.files.map(f => f.path))`
- * call without exposing the legacy flat-`Message[]` shape.
- */
-export function getKnownFilePaths(
-  sessionId: string,
-  topic?: string,
-): string[] {
-  const key = storeKey(sessionId, topic);
-  const state = sessionsByKey.get(key);
-  if (!state) return [];
-  const out: string[] = [];
-  for (const t of state.threads) {
-    for (const f of t.userMsg.files) out.push(f.path);
-    for (const r of t.responses) {
-      for (const f of r.files) out.push(f.path);
-    }
-    if (t.pendingAssistant) {
-      for (const f of t.pendingAssistant.files) out.push(f.path);
-    }
-  }
-  return out;
+  return sessionsByKey.get(storeKey(sessionId, topic))?.threads.slice() ?? [];
 }
 
 /** True when the thread was minted as an orphan placeholder (a late
@@ -3534,297 +1612,15 @@ export function isPlaceholderThread(thread: Thread): boolean {
   return thread.placeholderOrigin === true;
 }
 
-/** Centralized adoption (codex #262 round 3): EVERY path that applies
- *  an authoritative user row — live add, orphan adoption, replay
- *  rebuild, persisted user echo, hydrate user-media merge, ASR
- *  transcript — must clear provenance, or the scope's rewind gate
- *  (`hasPlaceholderThreads`) sticks closed forever. Returns whether
- *  the flag actually flipped so callers can decide to notify. */
-function markThreadAdopted(thread: Thread): boolean {
-  if (thread.placeholderOrigin !== true) return false;
-  thread.placeholderOrigin = false;
-  return true;
-}
-
-/** Stamp server order (persisted timestamp + per-session seq) onto a
- *  user root. Returns whether anything changed. Content is untouched —
- *  this only normalizes the ORDER axes so `tryAdoptPlaceholders` can
- *  compare turns within a single server-authoritative domain
- *  (codex #262 round 6 P1: comparing an orphan's server timestamp
- *  against a sibling's optimistic `Date.now()` mixes clock domains,
- *  and skew re-orders real turns before opening the rewind gate). */
-function normalizeUserRootOrder(
-  thread: Thread,
-  timestampMs: number,
-  seq: number | undefined,
-): boolean {
-  let changed = false;
-  if (
-    Number.isFinite(timestampMs) &&
-    timestampMs > 0 &&
-    thread.userMsg.timestamp !== timestampMs
-  ) {
-    thread.userMsg = { ...thread.userMsg, timestamp: timestampMs };
-    changed = true;
-  }
-  if (typeof seq === "number" && thread.userMsg.historySeq !== seq) {
-    thread.userMsg = { ...thread.userMsg, historySeq: seq };
-    changed = true;
-  }
-  return changed;
-}
-
-/** Open the rewind gate for orphan buckets ONLY from a single
- *  server-authoritative total order (codex #262 rounds 4-6): when
- *  EVERY user root in the scope carries a per-session `historySeq`,
- *  sort the scope by seq and clear provenance. Seq is the one axis the
- *  server guarantees monotonic — timestamps are display-only and may
- *  tie at millisecond precision or come from the client clock for
- *  optimistic turns. Any root without seq (optimistic send whose echo
- *  hasn't landed, REST rows stripped by messages_page) keeps the gate
- *  closed; its own echo / the next hydrate normalizes it and retries
- *  here. Returns whether anything was adopted. */
-function tryAdoptPlaceholders(state: SessionState): boolean {
-  let sawPlaceholder = false;
-  for (const t of state.threads) {
-    if (t.placeholderOrigin === true) {
-      sawPlaceholder = true;
-      break;
-    }
-  }
-  if (!sawPlaceholder) return false;
-  const allOrdered = state.threads.every(
-    (t) => typeof t.userMsg.historySeq === "number",
-  );
-  if (!allOrdered) return false;
-  state.threads.sort(
-    (a, b) =>
-      (a.userMsg.historySeq as number) - (b.userMsg.historySeq as number),
-  );
-  for (const t of state.threads) {
-    if (t.placeholderOrigin === true) t.placeholderOrigin = false;
-  }
-  return true;
-}
-
-/** Fallback replay for a scope whose placeholders CANNOT resolve from
- *  live traffic — some sibling root carries no server seq and never
- *  will (topic scopes skip `session/hydrate` and REST `messages_page`
- *  strips `seq`; codex #262 rounds 7-8). The echoed turn IS persisted
- *  by the time this runs, so a REST replay begun AFTER the echo
- *  re-roots it (and every sibling) in server order and resolves the
- *  orphan without cross-domain heuristics.
- *
- *  Latch semantics (round 8): the latch marks an IN-FLIGHT nudge only
- *  and is always released on completion — each later persisted echo is
- *  a fresh server-side signal and may nudge again (loadHistory dedups
- *  concurrent fetches), and a resolved episode re-arms automatically.
- *  An in-flight mount/reconnect load may PREDATE the echoed row, so
- *  the nudge waits it out and then issues a genuinely fresh forced
- *  load if the scope is still gated. */
-const placeholderRefetchInFlight = new Set<string>();
-// Round 9 P1a: echoes that land while a nudge is in flight are QUEUED
-// here — the running task loops and issues another fresh load, so a
-// request that predates the newer echo can never be the last word.
-const placeholderRefetchDirty = new Set<string>();
-
-function nudgePlaceholderRefetch(key: string, state: SessionState): void {
-  if (!state.threads.some((t) => t.placeholderOrigin === true)) return;
-  if (placeholderRefetchInFlight.has(key)) {
-    placeholderRefetchDirty.add(key);
-    return;
-  }
-  placeholderRefetchInFlight.add(key);
-  const hashIdx = key.indexOf("#");
-  const sessionId = hashIdx === -1 ? key : key.slice(0, hashIdx);
-  const topic = hashIdx === -1 ? undefined : key.slice(hashIdx + 1);
-  void (async () => {
-    try {
-      do {
-        placeholderRefetchDirty.delete(key);
-        // Round 8 P1: `loadHistory` coalesces onto an in-flight load,
-        // which may have started BEFORE the echoed row was persisted.
-        // Drain it first; the forced load below then issues a fresh
-        // request (the finished load's `loadingPromises` entry is
-        // gone).
-        const existing = loadingPromises.get(key);
-        if (existing) await existing.catch(() => {});
-        if (!sessionsByKey.has(key)) return; // scope cleared — moot
-        // Round 9 P1b: fetch UNCONDITIONALLY once per armed signal.
-        // The previous post-drain placeholder scan skipped the fetch
-        // when a stale replay had SWEPT the orphan bucket (replay
-        // carries only pending assistants), leaving the echoed turn
-        // absent until an unrelated event. The armed echo itself is
-        // the trigger; the worst case of not scanning is one
-        // redundant history request in a rare overlap.
-        await loadHistory(sessionId, topic, { force: true });
-      } while (placeholderRefetchDirty.has(key));
-    } catch {
-      // loadHistory swallows fetch errors itself; defensive only.
-    } finally {
-      placeholderRefetchInFlight.delete(key);
-      placeholderRefetchDirty.delete(key);
-    }
-  })();
-}
-
-/** True when ANY bucket in the scope is still an orphan placeholder.
- *  While one exists the local turn list is KNOWN-incomplete (a late
- *  event arrived for a turn we have not seen the user message for), so
- *  relative rollback indices computed from it may target the wrong
- *  turn — the UI must withhold every Rewind affordance until hydration
- *  resolves the orphan (codex #262 round 2). */
-export function hasPlaceholderThreads(
-  sessionId: string,
-  topic?: string,
-): boolean {
-  const state = sessionsByKey.get(storeKey(sessionId, topic));
-  if (!state) return false;
-  return state.threads.some((t) => isPlaceholderThread(t));
-}
-
-/** Conversation-suffix trim for `session/rollback`: drop the last
- *  `dropTurns` REAL user-turn threads and EVERY thread after the cut
- *  (trailing orphan placeholders carry late events for the dropped
- *  suffix). Exact-key scope — topic caches are untouched by a root
- *  rollback. Keeps surviving thread objects intact, so their tool
- *  cards / progress timelines / meta survive (unlike a clear+reseed,
- *  whose HydratedMessage rows carry none of that state).
- *  Returns how many user turns were actually dropped. */
-export function dropLastUserTurnThreads(
-  sessionId: string,
-  topic: string | undefined,
-  dropTurns: number,
-): number {
-  if (!Number.isInteger(dropTurns) || dropTurns < 1) return 0;
-  const key = storeKey(sessionId, topic);
-  const state = sessionsByKey.get(key);
-  if (!state) return 0;
-  const userTurnIndices: number[] = [];
-  state.threads.forEach((thread, index) => {
-    if (!isPlaceholderThread(thread)) userTurnIndices.push(index);
-  });
-  if (userTurnIndices.length === 0) return 0;
-  const dropped = Math.min(dropTurns, userTurnIndices.length);
-  const cutIndex = userTurnIndices[userTurnIndices.length - dropped];
-  const removed = state.threads.slice(cutIndex);
-  state.threads = state.threads.slice(0, cutIndex);
-  for (const thread of removed) {
-    state.byId.delete(thread.id);
-  }
-  // Rebuild the seq-dedup ledger from the SURVIVING rows (codex #262
-  // round 2): `seq` is a per-session committed-row index and the
-  // server renumbers from the trimmed length, so the first messages
-  // persisted AFTER a rollback REUSE the seqs the dropped suffix
-  // burned. A stale ledger would make `hasSeenSeq` silently discard
-  // those fresh rows. Surviving rows keep their entries so hydrate /
-  // replay dedup still works for them.
-  const survivingSeqs = new Set<number>();
-  for (const thread of state.threads) {
-    const msgs = [thread.userMsg, ...thread.responses];
-    if (thread.pendingAssistant) msgs.push(thread.pendingAssistant);
-    for (const msg of msgs) {
-      if (typeof msg.historySeq === "number") {
-        survivingSeqs.add(msg.historySeq);
-      }
-    }
-  }
-  if (survivingSeqs.size > 0) seenSeqsByKey.set(key, survivingSeqs);
-  else seenSeqsByKey.delete(key);
-  notify();
-  return dropped;
-}
-
-/** Union authoritative seqs into a scope's seen-seq ledger. Used by
- *  the rollback applier after a surgical trim: the post-trim rebuild in
- *  `dropLastUserTurnThreads` derives entries from surviving rows'
- *  `historySeq` alone, but a prior forced `messages_page` replay can
- *  have stripped those fields and companion merges collapse multiple
- *  seqs into one row (codex #262 round 3). The rollback RESULT carries
- *  the authoritative surviving rows WITH seqs — union them in so live
- *  re-emissions for surviving rows keep deduping. */
-export function unionSeenSeqs(
-  sessionId: string,
-  topic: string | undefined,
-  seqs: number[],
-): void {
-  const key = storeKey(sessionId, topic);
-  for (const seq of seqs) {
-    if (typeof seq === "number" && Number.isFinite(seq)) {
-      rememberSeq(key, seq);
-    }
-  }
-}
-
-/** Exact-key variant of `clearSession`: clears ONLY the addressed
- *  scope. `clearSession(sessionId)` intentionally sweeps every
- *  topic-suffixed key too (session delete), which is wrong for a root
- *  `session/rollback` — the RPC mutates only the root SessionKey, so
- *  cached slides/site topic histories must survive locally. */
-export function clearSessionScope(
-  sessionId: string,
-  topic?: string,
-): void {
-  const key = storeKey(sessionId, topic);
-  sessionsByKey.delete(key);
-  loadedSessions.delete(key);
-  loadingPromises.delete(key);
-  hydrateSnapshotByKey.delete(key);
-  seenSeqsByKey.delete(key);
-  appliedHydrateToolEnvelopesByKey.delete(key);
-  placeholderRefetchInFlight.delete(key);
-  placeholderRefetchDirty.delete(key);
-  notify();
-}
 
 export function clearSession(sessionId: string, topic?: string): void {
   const key = storeKey(sessionId, topic);
   if (topic?.trim()) {
     sessionsByKey.delete(key);
-    loadedSessions.delete(key);
-    loadingPromises.delete(key);
-    hydrateSnapshotByKey.delete(key);
-    seenSeqsByKey.delete(key);
-    appliedHydrateToolEnvelopesByKey.delete(key);
-    placeholderRefetchInFlight.delete(key);
-    placeholderRefetchDirty.delete(key);
   } else {
     for (const k of [...sessionsByKey.keys()]) {
       if (k === sessionId || k.startsWith(`${sessionId}#`)) {
         sessionsByKey.delete(k);
-        loadedSessions.delete(k);
-        loadingPromises.delete(k);
-        hydrateSnapshotByKey.delete(k);
-        seenSeqsByKey.delete(k);
-        appliedHydrateToolEnvelopesByKey.delete(k);
-        placeholderRefetchInFlight.delete(k);
-        placeholderRefetchDirty.delete(k);
-      }
-    }
-    // Codex round-5 P3: a hydrate snapshot may exist without a
-    // matching `sessionsByKey` entry (the bridge cached the snapshot
-    // before REST `replayHistory` populated thread state). The
-    // sessionsByKey-only loop above misses it; sweep
-    // `hydrateSnapshotByKey` independently so a clear-then-replay
-    // sequence doesn't apply stale envelopes.
-    for (const k of [...hydrateSnapshotByKey.keys()]) {
-      if (k === sessionId || k.startsWith(`${sessionId}#`)) {
-        hydrateSnapshotByKey.delete(k);
-      }
-    }
-    // WEB-NEW-17: same orphan-key concern for the seen-seqs cache —
-    // sweep it independently so a clear-then-stream sequence doesn't
-    // suppress a fresh re-fired live row. Same for the applied
-    // tool-envelope ledger (PR #243 follow-up): a clear-then-hydrate
-    // sequence must be allowed to re-apply the replayed tool state.
-    for (const k of [...seenSeqsByKey.keys()]) {
-      if (k === sessionId || k.startsWith(`${sessionId}#`)) {
-        seenSeqsByKey.delete(k);
-      }
-    }
-    for (const k of [...appliedHydrateToolEnvelopesByKey.keys()]) {
-      if (k === sessionId || k.startsWith(`${sessionId}#`)) {
-        appliedHydrateToolEnvelopesByKey.delete(k);
       }
     }
   }
@@ -3832,16 +1628,7 @@ export function clearSession(sessionId: string, topic?: string): void {
 }
 
 export function clearAllSessions(): void {
-  identityGeneration += 1;
   sessionsByKey.clear();
-  loadedSessions.clear();
-  loadingPromises.clear();
-  snapshotCache.clear();
-  hydrateSnapshotByKey.clear();
-  placeholderRefetchInFlight.clear();
-  placeholderRefetchDirty.clear();
-  seenSeqsByKey.clear();
-  appliedHydrateToolEnvelopesByKey.clear();
   notify();
 }
 
@@ -3852,15 +1639,6 @@ if (typeof window !== "undefined") {
 export function subscribe(callback: () => void): () => void {
   listeners.add(callback);
   return () => listeners.delete(callback);
-}
-
-/** React hook — subscribe to a session's threads. */
-export function useThreads(sessionId: string, topic?: string): Thread[] {
-  return useSyncExternalStore(
-    (cb) => subscribe(cb),
-    () => getThreads(sessionId, topic),
-    () => getThreads(sessionId, topic),
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -3934,29 +1712,9 @@ export function resolveEventThreadId(
   return synthesized;
 }
 
-/** Test-only helper: reset all in-memory state. Not exported in production. */
-/** Test-only: read the cached hydrate snapshot for a scope. Rollback
- *  must REPLACE it with the trimmed projection (codex #262 round 2) —
- *  a stale cache resurrects dropped turns on the next replay/dedup
- *  pass, and that staleness is otherwise unobservable from outside. */
-export function __getHydrateSnapshotForTest(
-  sessionId: string,
-  topic?: string,
-): HydrateSnapshot | undefined {
-  return hydrateSnapshotByKey.get(storeKey(sessionId, topic));
-}
-
+/** Test-only helper: reset all in-memory state. */
 export function __resetForTests(): void {
   sessionsByKey.clear();
   listeners.clear();
-  loadedSessions.clear();
-  loadingPromises.clear();
-  snapshotCache.clear();
-  hydrateSnapshotByKey.clear();
-  placeholderRefetchInFlight.clear();
-  placeholderRefetchDirty.clear();
-  seenSeqsByKey.clear();
-  appliedHydrateToolEnvelopesByKey.clear();
-  version = 0;
   idCounter = 0;
 }

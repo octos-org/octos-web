@@ -1,3 +1,5 @@
+/* eslint-disable react-refresh/only-export-components -- This context module intentionally exports hooks and shared types. */
+
 import {
   createContext,
   useContext,
@@ -15,7 +17,7 @@ import {
   forkSession,
   setSessionTitle as apiSetSessionTitle,
 } from "@/api/sessions";
-import type { BackgroundTaskInfo, SessionInfo, MessageInfo } from "@/api/types";
+import type { BackgroundTaskInfo, SessionInfo } from "@/api/types";
 import { nextTopicForCommand } from "@/lib/slash-commands";
 import { eventMatchesScope } from "@/runtime/event-scope";
 import * as ThreadStore from "@/store/thread-store";
@@ -148,6 +150,7 @@ export function useModeState(sessionId?: string, topic?: string) {
   useEffect(() => {
     // Reset on scope change so a stale mode from the prior session/topic
     // doesn't persist into the active pill / switcher highlight.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- A scope change must clear mode state before scoped events are accepted.
     setQueueMode(null);
     setAdaptiveMode(null);
   }, [sessionId, topic]);
@@ -179,7 +182,6 @@ export interface SessionContextValue {
   historyTopic?: string;
   currentSessionTitle: string;
   currentSessionStats: SessionRunStats | null;
-  initialMessages: MessageInfo[];
   /** True if the current session has background work pending on the server. */
   activeTaskOnServer: boolean;
   /** Current queue mode as reported by backend /queue response. */
@@ -514,7 +516,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       ? resolveSessionScope(saved, loadStoredTopics()).topic
       : undefined;
   });
-  const [initialMessages, setInitialMessages] = useState<MessageInfo[]>([]);
   const [serverTaskActiveBySession, setServerTaskActiveBySession] = useState<
     Record<string, boolean>
   >({});
@@ -597,10 +598,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     localStorage.setItem("octos_current_session", currentSessionId);
   }, [currentSessionId]);
 
-  // Load history for restored session on mount. Issue #110.2: this
-  // is THE single owner of current-session hydration — runtime-provider
-  // and chat-thread previously each fired their own /messages call.
-  // Issue #110.3: paginates via `ThreadStore.loadHistory`.
+  // Restore the active scope and its task status. Canonical chat history is
+  // hydrated by the v2 bridge after its session/open acknowledgement.
   const restoredRef = useRef(false);
   useEffect(() => {
     if (restoredRef.current) return;
@@ -608,9 +607,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const saved = localStorage.getItem("octos_current_session");
     if (saved && saved.startsWith("web-")) {
       const { topic: restoredTopic } = resolveSessionScope(saved, sessionTopics);
-      if (ProjectionStore.isLegacyProjectionEnabled(saved, restoredTopic)) {
-        void ThreadStore.loadHistory(saved, restoredTopic);
-      }
       getSessionTasks(saved, restoredTopic)
         .then((tasks) => {
           setServerTaskActiveBySession((prev) =>
@@ -746,22 +742,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const onBridgeReady = () => {
       void refreshSessions();
-      if (!ProjectionStore.isLegacyProjectionEnabled(currentSessionId, activeHistoryTopic)) {
-        return;
-      }
-      void ThreadStore.loadHistory(currentSessionId, activeHistoryTopic, {
-        force: true,
-      });
     };
     window.addEventListener("crew:bridge_connected", onBridgeReady);
     return () => {
       window.removeEventListener("crew:bridge_connected", onBridgeReady);
     };
-  }, [
-    activeHistoryTopic,
-    currentSessionId,
-    refreshSessions,
-  ]);
+  }, [refreshSessions]);
 
   useEffect(() => {
     const refreshIfVisible = () => {
@@ -779,7 +765,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           rememberDeletedSession(deletedSessionId);
           forgetSessionLocalState(deletedSessionId);
           if (deletedSessionId === currentSessionId) {
-            setInitialMessages([]);
             setActiveHistoryTopic(undefined);
             setCurrentSessionId(generateSessionId());
           }
@@ -982,45 +967,24 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     if (id !== currentSessionId) {
       previousSessionIdRef.current = currentSessionId;
     }
-    // Issue #110.1: switch the visible session/topic SYNCHRONOUSLY so
-    // the sidebar click does not feel frozen on a slow `/messages`
-    // round-trip. Hydration runs async in the background with the
-    // existing stale-request guard so a rapid switch-then-back does
-    // not race messages from session A into session B's view.
-    //
-    // Issue #110.3: history loads via `ThreadStore.loadHistory`, which
-    // pages through `getMessagesPage` so >500-msg sessions render in
-    // full instead of silent truncation.
+    // Switch the visible session/topic synchronously. The scoped v2 bridge
+    // hydrates canonical history after its session/open acknowledgement.
     const requestId = ++switchRequestRef.current;
     // Shared bucket resolution with branchSession — see
     // resolveSessionScope.
     const { topic } = resolveSessionScope(id, sessionTopics);
     setCurrentSessionId(id);
     setActiveHistoryTopic(topic);
-    setInitialMessages([]);
 
-    void (async () => {
-      try {
-        const loadHistory = ProjectionStore.isLegacyProjectionEnabled(id, topic)
-          ? ThreadStore.loadHistory(id, topic, { force: true })
-          : Promise.resolve();
-        await Promise.all([
-          loadHistory,
-          getSessionTasks(id, topic)
-            .then((tasks) => {
-              if (switchRequestRef.current !== requestId) return;
-              setServerTaskActive(id, tasks.some(isTaskActive));
-            })
-            .catch(() => {
-              if (switchRequestRef.current !== requestId) return;
-              setServerTaskActive(id, false);
-            }),
-        ]);
-      } catch {
-        // ignore — loadHistory swallows internally; the catch here is
-        // defensive against task-watcher rejections that escape.
-      }
-    })();
+    void getSessionTasks(id, topic)
+      .then((tasks) => {
+        if (switchRequestRef.current !== requestId) return;
+        setServerTaskActive(id, tasks.some(isTaskActive));
+      })
+      .catch(() => {
+        if (switchRequestRef.current !== requestId) return;
+        setServerTaskActive(id, false);
+      });
   }, [currentSessionId, sessionTopics, setServerTaskActive]);
 
   const createSession = useCallback((title?: string) => {
@@ -1035,7 +999,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         ...prev,
       ]);
     }
-    setInitialMessages([]);
     setActiveHistoryTopic(undefined);
     setCurrentSessionId(nextId);
     return nextId;
@@ -1129,7 +1092,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     rememberDeletedSession(id);
     forgetSessionLocalState(id);
     if (id === currentSessionId) {
-      setInitialMessages([]);
       setActiveHistoryTopic(undefined);
       setCurrentSessionId(generateSessionId());
     }
@@ -1152,7 +1114,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         historyTopic: activeHistoryTopic,
         currentSessionTitle,
         currentSessionStats,
-        initialMessages,
         activeTaskOnServer,
         queueMode,
         adaptiveMode,

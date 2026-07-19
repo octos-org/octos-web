@@ -309,14 +309,13 @@ describe("ProjectionStore canonical admission", () => {
     dispose();
   });
 
-  it("selects render mode only through negotiated capability state", () => {
-    expect(ProjectionStore.isProjectionV2Enabled("session-store", "topic-a")).toBe(false);
-    ProjectionStore.setProjectionV2Pending("session-store", "topic-a");
-    expect(ProjectionStore.projectionMode("session-store", "topic-a")).toBe("pending");
-    ProjectionStore.setProjectionV2Enabled("session-store", "topic-a", true);
-    expect(ProjectionStore.projectionMode("session-store", "topic-a")).toBe("v2");
-    expect(ProjectionStore.isProjectionV2Enabled("session-store")).toBe(false);
-    ProjectionStore.setProjectionV2Enabled("session-store", "topic-a", false);
-    expect(ProjectionStore.projectionMode("session-store", "topic-a")).toBe("legacy");
+  it("resets a canonical scope without selecting another render mode", () => {
+    const key = ProjectionStore.projectionStoreKey("session-store", "topic-a");
+    ProjectionStore.ingest(key, frame(1, user("question"), { cursor: 1 }));
+    expect(ProjectionStore.getEnvelopes(key)).toHaveLength(1);
+
+    ProjectionStore.resetProjectionScope("session-store", "topic-a");
+
+    expect(ProjectionStore.getEnvelopes(key)).toEqual([]);
   });
 });

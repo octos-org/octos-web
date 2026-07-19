@@ -36,10 +36,9 @@ export interface MessageInfo {
   timestamp: string;
   media?: string[];
   tool_calls?: { id?: string; name?: string }[];
-  /** Per-thread sequence (UI Protocol v1 PersistedMessage). When the
-   *  server emits a typed event the per-thread sequence may differ from
-   *  the per-session `seq` — preserve it explicitly so thread ordering
-   *  uses the right axis. Codex review #3. */
+  /** Per-thread sequence. It may differ from the per-session `seq`, so
+   *  preserve it explicitly when a non-render API consumer needs that
+   *  ordering axis. */
   intra_thread_seq?: number;
 }
 

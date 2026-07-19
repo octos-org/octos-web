@@ -39,9 +39,6 @@ import type {
   VisualGeneratingEvent,
   VisualFailedEvent,
   VoiceExitEvent,
-  MessagePersistedEvent,
-  TaskOutputDeltaEvent,
-  TaskUpdatedEvent,
   TurnCompletedEvent,
   TurnErrorEvent,
   TurnSpawnCompleteEvent,
@@ -217,65 +214,9 @@ describe("type guards (fail-closed)", () => {
     });
   });
 
-  it("rejects message/persisted with no seq (UPCR-2026-012 flat shape)", () => {
-    expect(
-      guards.guardMessagePersisted({
-        session_id: "s",
-        role: "assistant",
-        message_id: "m",
-        source: "assistant",
-        cursor: { stream: "s", seq: 1 },
-        persisted_at: "2026-05-04T00:00:00Z",
-      }),
-    ).toBeNull();
-  });
 
-  it("rejects message/persisted with unknown role", () => {
-    expect(
-      guards.guardMessagePersisted({
-        session_id: "s",
-        seq: 1,
-        role: "narrator",
-        message_id: "m",
-        source: "assistant",
-        cursor: { stream: "s", seq: 1 },
-        persisted_at: "2026-05-04T00:00:00Z",
-      }),
-    ).toBeNull();
-  });
 
-  it("accepts the flat UPCR-2026-012 shape with thread_id", () => {
-    const ev = guards.guardMessagePersisted({
-      session_id: "s",
-      turn_id: "t",
-      thread_id: "th",
-      seq: 18,
-      role: "assistant",
-      message_id: "m",
-      source: "assistant",
-      cursor: { stream: "s", seq: 18 },
-      persisted_at: "2026-05-04T00:00:00Z",
-    });
-    expect(ev?.thread_id).toBe("th");
-    expect(ev?.seq).toBe(18);
-    expect(ev?.media).toBeUndefined();
-  });
 
-  it("accepts message/persisted with media (P1.3 server PR #767)", () => {
-    const ev = guards.guardMessagePersisted({
-      session_id: "s",
-      turn_id: "t",
-      thread_id: "th",
-      seq: 19,
-      role: "assistant",
-      message_id: "m2",
-      source: "background",
-      cursor: { stream: "s", seq: 19 },
-      persisted_at: "2026-05-04T00:00:00Z",
-      media: ["research/_report.md"],
-    });
-    expect(ev?.media).toEqual(["research/_report.md"]);
-  });
 
   // -------------------------------------------------------------------------
   // M10 Phase 2: turn/spawn_complete envelope guard
@@ -337,10 +278,7 @@ describe("type guards (fail-closed)", () => {
     // Codex round-4 P2: a `spawn_only` tool whose result is purely
     // artefactual (e.g. TTS audio drop, _report.md only) legitimately
     // produces empty `content` + non-empty `media`. Upgraded clients
-    // must accept this; rejecting it would silently drop file-only
-    // completions because the server suppresses the legacy
-    // `message/persisted` fallback once `event.spawn_complete.v1` is
-    // negotiated.
+    // must accept this so canonical file-only completions remain visible.
     const ev = guards.guardSpawnComplete({
       session_id: "sess-1",
       task_id: "t",
@@ -437,95 +375,29 @@ describe("type guards (fail-closed)", () => {
   // M10 Phase 6.2 (Bug C): session/hydrate result guard
   // -------------------------------------------------------------------------
 
-  it("guardSessionHydrate accepts a hydrate result with new PR #791 fields", () => {
-    const result = guards.guardSessionHydrate({
-      session_id: "sess-1",
-      cursor: { stream: "sess-1", seq: 25 },
-      messages: [
-        {
-          seq: 0,
-          role: "user",
-          content: "Use deep_search...",
-          thread_id: "synth_0",
-          persisted_at: "2026-05-04T00:00:00Z",
-          // No message_id / source — older-protocol row.
-        },
-        {
-          seq: 19,
-          role: "assistant",
-          content: "Research delivered.",
-          thread_id: "synth_0",
-          persisted_at: "2026-05-04T00:09:22Z",
-          message_id: "local:demo:19:1700000019000000000",
-          source: "background",
-        },
-        {
-          seq: 20,
-          role: "assistant",
-          content: "",
-          thread_id: "synth_0",
-          persisted_at: "2026-05-04T00:09:22Z",
-          message_id: "local:demo:20:1700000020000000000",
-          source: "background",
-          media: ["pf/file.md"],
-        },
-      ],
-      replayed_envelopes: [
-        {
-          session_id: "sess-1",
-          turn_id: "turn-1",
-          thread_id: "synth_0",
-          task_id: "task_abc",
-          seq: 19,
-          message_id: "local:demo:19:1700000019000000000",
-          source: "background",
-          cursor: { stream: "sess-1", seq: 19 },
-          persisted_at: "2026-05-04T00:09:22Z",
-          content: "Research delivered.",
-          media: ["pf/file.md"],
-        },
-      ],
-      replayed_tool_envelopes: [
-        {
-          thread_id: "synth_0",
-          seq: 7,
-          payload: {
-            type: "tool_start",
-            data: { tool_call_id: "tc-shell-1", name: "shell" },
-          },
-        },
-      ],
-    });
-    expect(result).not.toBeNull();
-    expect(result?.messages).toHaveLength(3);
-    expect(result?.messages?.[1].message_id).toBe(
-      "local:demo:19:1700000019000000000",
-    );
-    expect(result?.messages?.[1].source).toBe("background");
-    expect(result?.messages?.[0].message_id).toBeUndefined();
-    expect(result?.replayed_envelopes).toHaveLength(1);
-    expect(result?.replayed_envelopes?.[0].task_id).toBe("task_abc");
-    expect(result?.replayed_tool_envelopes).toHaveLength(1);
-    expect(result?.replayed_tool_envelopes?.[0].payload.type).toBe("tool_start");
-  });
 
-  it("guardSessionHydrate accepts a back-compat result without new fields (older server)", () => {
+
+  it("guardSessionHydrate retains canonical projection snapshot carriers", () => {
     const result = guards.guardSessionHydrate({
       session_id: "sess-1",
       cursor: { stream: "sess-1", seq: 5 },
-      messages: [
-        {
-          seq: 0,
-          role: "user",
-          content: "hi",
-          persisted_at: "2026-05-04T00:00:00Z",
-        },
-      ],
-      // No replayed_envelopes (server pre-#791, or non-negotiated client).
+      projection_envelopes: [{ seq: 1 }],
+      projection_snapshot: {
+        cursor: { stream: "sess-1", seq: 5 },
+        envelopes: [{ seq: 1 }, { seq: 2 }],
+      },
     });
-    expect(result).not.toBeNull();
-    expect(result?.messages).toHaveLength(1);
-    expect(result?.replayed_envelopes).toBeUndefined();
+
+    expect(result).toMatchObject({
+      session_id: "sess-1",
+      cursor: { stream: "sess-1", seq: 5 },
+      projection_envelopes: [{ seq: 1 }],
+      projection_snapshot: {
+        cursor: { stream: "sess-1", seq: 5 },
+        envelopes: [{ seq: 1 }, { seq: 2 }],
+      },
+    });
+    expect(result).not.toHaveProperty("messages");
   });
 
   it("guardSessionHydrate rejects a non-object payload", () => {
@@ -534,31 +406,6 @@ describe("type guards (fail-closed)", () => {
     expect(guards.guardSessionHydrate(42)).toBeNull();
   });
 
-  it("guardSessionHydrate drops malformed inner messages without poisoning the result", () => {
-    const result = guards.guardSessionHydrate({
-      session_id: "sess-1",
-      cursor: { stream: "sess-1", seq: 1 },
-      messages: [
-        {
-          seq: 0,
-          role: "user",
-          content: "ok",
-          persisted_at: "2026-05-04T00:00:00Z",
-        },
-        // Missing required fields — dropped.
-        { seq: "not-a-number", role: "assistant" },
-        // Invalid role — dropped.
-        {
-          seq: 2,
-          role: "narrator",
-          content: "",
-          persisted_at: "2026-05-04T00:00:00Z",
-        },
-      ],
-    });
-    expect(result).not.toBeNull();
-    expect(result?.messages).toHaveLength(1);
-  });
 
   it("rejects task/updated without task_id", () => {
     expect(
@@ -969,44 +816,6 @@ describe("connection lifecycle", () => {
     expect(states).toEqual(["connecting", "connected"]);
   });
 
-  it("includes auth token, profile, and ui_feature query params in the URL", async () => {
-    const bridge = createUiProtocolBridge(
-      makeBridgeOpts({ getProfileId: () => "prof-x" }),
-    );
-    void bridge.start({ sessionId: "sess-1" });
-    await Promise.resolve();
-    const ws = lastInstance();
-    expect(ws.url.startsWith("wss://test.local/api/ui-protocol/ws?")).toBe(
-      true,
-    );
-    expect(ws.url).toContain("token=test-token");
-    expect(ws.url).toContain("ui_feature=approval.typed.v1");
-    expect(ws.url).toContain("ui_feature=pane.snapshots.v1");
-    expect(ws.url).toContain("ui_feature=projection.envelope.v2");
-    // Regression-pin for the P1.3 capability negotiation: server gates
-    // both live broadcast and cursor replay of `message/persisted`
-    // notifications on this feature, so dropping it would silently
-    // disable spawn_only attachment delivery.
-    expect(ws.url).toContain("ui_feature=event.message_persisted.v1");
-    // Regression-pin for UPCR-2026-026: the server filters the whole
-    // context lifecycle family (compaction started/completed,
-    // normalization) for clients that did not negotiate this capability
-    // — the same silent-filter gap octos-tui#253 hit.
-    expect(ws.url).toContain("ui_feature=context.lifecycle.v1");
-    // Regression-pin for the M10 Phase 1 capability negotiation
-    // (server PR #772): server only emits the new
-    // `turn/spawn_complete` envelope when this capability is in the
-    // `ui_feature` query at session/open. Without it the SPA never
-    // receives the new bubble and falls back to legacy `message/persisted`
-    // splice-merge. Phase 5 deletes the splice-merge predicate; until
-    // then, this assertion locks the negotiation.
-    expect(ws.url).toContain("ui_feature=event.spawn_complete.v1");
-    // Regression-pin: do NOT pass Sec-WebSocket-Protocol. Chrome aborts the
-    // handshake when the client requests a subprotocol the server does not
-    // echo back, and the axum WS handler does not negotiate subprotocols.
-    // Auth flows entirely via the `?token=` query param above.
-    expect(ws.protocols).toBeUndefined();
-  });
 
   it("uses direct canonical v2 ingest only after session/open confirms the capability", async () => {
     const bridge = createUiProtocolBridge(makeBridgeOpts());
@@ -1040,7 +849,6 @@ describe("connection lifecycle", () => {
       params: userFrame,
     });
     const key = ProjectionStore.projectionStoreKey("sess-v2");
-    expect(ProjectionStore.projectionMode("sess-v2")).toBe("pending");
     expect(ProjectionStore.getEnvelopes(key)).toEqual([]);
 
     ws.triggerMessage({
@@ -1058,7 +866,6 @@ describe("connection lifecycle", () => {
       },
     });
     await start;
-    expect(ProjectionStore.isProjectionV2Enabled("sess-v2")).toBe(true);
     expect(ProjectionStore.getEnvelopes(key)).toHaveLength(1);
 
     ws.triggerMessage({
@@ -1155,9 +962,8 @@ describe("connection lifecycle", () => {
     await Promise.resolve();
     const open2 = findRequest(ws2, METHODS.SESSION_OPEN);
 
-    // The old v2 projection remains selected for rendering, but this new
-    // socket's replay must wait for its own capability confirmation.
-    expect(ProjectionStore.isProjectionV2Enabled("sess-reconnect-v2")).toBe(true);
+    // The current canonical projection remains visible, but this new socket's
+    // replay must wait for its own capability confirmation.
     ws2.triggerMessage({
       jsonrpc: "2.0",
       method: "projection/envelope",
@@ -1247,45 +1053,6 @@ describe("connection lifecycle", () => {
     await bridge.stop();
   });
 
-  it("keeps the legacy renderer selected when an old server omits the capability", async () => {
-    const bridge = createUiProtocolBridge(makeBridgeOpts());
-    const persisted = vi.fn();
-    bridge.onMessagePersisted(persisted);
-    const start = bridge.start({ sessionId: "sess-old" });
-    await Promise.resolve();
-    const ws = lastInstance();
-    ws.triggerOpen();
-    await Promise.resolve();
-    const open = findRequest(ws, METHODS.SESSION_OPEN);
-    ws.triggerMessage({
-      jsonrpc: "2.0",
-      id: open.id,
-      result: { opened: { session_id: "sess-old" } },
-    });
-    await start;
-    expect(ProjectionStore.isProjectionV2Enabled("sess-old")).toBe(false);
-    expect(ProjectionStore.projectionMode("sess-old")).toBe("legacy");
-
-    ws.triggerMessage({
-      jsonrpc: "2.0",
-      method: METHODS.MESSAGE_PERSISTED,
-      params: {
-        session_id: "sess-old",
-        turn_id: "turn-old",
-        thread_id: "thread-old",
-        seq: 1,
-        role: "assistant",
-        message_id: "message-old",
-        source: "assistant",
-        cursor: { stream: "sess-old", seq: 1 },
-        persisted_at: "2026-07-18T22:10:00Z",
-        content: "legacy response",
-      },
-    });
-    expect(persisted).toHaveBeenCalledTimes(1);
-    expect(ProjectionStore.getEnvelopes("sess-old")).toEqual([]);
-    await bridge.stop();
-  });
 
   it("auxiliary.rest_to_ws.v1 — appended to ui_feature ONLY when flag is ON", async () => {
     // Import the flag helper inside the test so we don't pollute the
@@ -2552,57 +2319,6 @@ describe("notification dispatch", () => {
     );
   });
 
-  it("routes message/persisted, task/updated, task/output/delta", async () => {
-    const { bridge, ws } = await freshConnected();
-    const persisted: MessagePersistedEvent[] = [];
-    const tasks: TaskUpdatedEvent[] = [];
-    const outputs: TaskOutputDeltaEvent[] = [];
-    bridge.onMessagePersisted((e) => persisted.push(e));
-    bridge.onTaskUpdated((e) => tasks.push(e));
-    bridge.onTaskOutputDelta((e) => outputs.push(e));
-
-    ws.triggerMessage({
-      jsonrpc: "2.0",
-      method: METHODS.MESSAGE_PERSISTED,
-      params: {
-        session_id: "sess-1",
-        turn_id: "t1",
-        thread_id: "th1",
-        seq: 18,
-        role: "assistant",
-        message_id: "m1",
-        source: "assistant",
-        cursor: { stream: "sess-1", seq: 18 },
-        persisted_at: "2026-05-04T00:00:00Z",
-      },
-    });
-    ws.triggerMessage({
-      jsonrpc: "2.0",
-      method: METHODS.TASK_UPDATED,
-      params: {
-        session_id: "sess-1",
-        turn_id: "t1",
-        task_id: "task-A",
-        state: "running",
-      },
-    });
-    ws.triggerMessage({
-      jsonrpc: "2.0",
-      method: METHODS.TASK_OUTPUT_DELTA,
-      params: {
-        session_id: "sess-1",
-        turn_id: "t1",
-        task_id: "task-A",
-        chunk: "log line",
-      },
-    });
-
-    expect(persisted).toHaveLength(1);
-    expect(persisted[0].thread_id).toBe("th1");
-    expect(persisted[0].seq).toBe(18);
-    expect(tasks[0].task_id).toBe("task-A");
-    expect(outputs[0].chunk).toBe("log line");
-  });
 
   it("routes turn/spawn_complete to onSpawnComplete (M10 Phase 2)", async () => {
     const { bridge, ws } = await freshConnected();
@@ -3078,60 +2794,6 @@ describe("rpc correlation", () => {
     expect(deltas).toHaveLength(1);
   });
 
-  it("sends the last-seen cursor as `after` on reopen, but not on the initial open", async () => {
-    // #245 P2: the initial session/open is cursorless (server serves live /
-    // full snapshot); a REOPEN sends `after` = the highest durable cursor
-    // seen, so the server replays only the disconnect gap.
-    vi.useFakeTimers();
-    const bridge = createUiProtocolBridge(makeBridgeOpts());
-    void bridge.start({ sessionId: "sess-1" });
-    await Promise.resolve();
-    const ws1 = lastInstance();
-    ws1.triggerOpen();
-    await Promise.resolve();
-    const open1 = findRequest(ws1, METHODS.SESSION_OPEN);
-    // The initial open must NOT carry `after`.
-    expect((open1.params as Record<string, unknown>).after).toBeUndefined();
-    // Ack seeds the cursor from the server's authoritative head.
-    ws1.triggerMessage({
-      jsonrpc: "2.0",
-      id: open1.id,
-      result: { opened: { session_id: "sess-1", cursor: { stream: "sess-1", seq: 5 } } },
-    });
-    await Promise.resolve();
-
-    // A durable frame advances the cursor to seq 18.
-    ws1.triggerMessage({
-      jsonrpc: "2.0",
-      method: METHODS.MESSAGE_PERSISTED,
-      params: {
-        session_id: "sess-1",
-        turn_id: "t1",
-        thread_id: "th1",
-        seq: 18,
-        role: "assistant",
-        message_id: "m1",
-        source: "assistant",
-        cursor: { stream: "sess-1", seq: 18 },
-        persisted_at: "2026-05-04T00:00:00Z",
-        text: "hello",
-      },
-    });
-    await Promise.resolve();
-
-    // Reconnect → the reopen's session/open must carry after = {sess-1, 18}.
-    ws1.triggerClose(1006, "abnormal");
-    await vi.advanceTimersByTimeAsync(1000);
-    const ws2 = lastInstance();
-    expect(ws2).not.toBe(ws1);
-    ws2.triggerOpen();
-    await Promise.resolve();
-    const open2 = findRequest(ws2, METHODS.SESSION_OPEN);
-    expect((open2.params as Record<string, unknown>).after).toEqual({
-      stream: "sess-1",
-      seq: 18,
-    });
-  });
 
   it("a bridge restarted for another session does not send the stale cursor", async () => {
     // #245 P2 (codex): `lastCursor` must not survive start → stop → start.
@@ -3152,9 +2814,9 @@ describe("rpc correlation", () => {
     await Promise.resolve();
     await bridge.stop();
 
-    // Restart the SAME instance on a different session. Its open ack seeds a
-    // LOWER seq than the stale sess-1 cursor (42) — the max-seq comparison
-    // alone would keep the stale one.
+    // Restart the SAME instance on a different session. Its canonical
+    // snapshot watermark is lower than the stale sess-1 cursor (42), so this
+    // verifies the reset does not retain the previous stream.
     void bridge.start({ sessionId: "sess-2" });
     await Promise.resolve();
     const ws2 = lastInstance();
@@ -3167,9 +2829,23 @@ describe("rpc correlation", () => {
     ws2.triggerMessage({
       jsonrpc: "2.0",
       id: open2.id,
-      result: { opened: { session_id: "sess-2", cursor: { stream: "sess-2", seq: 3 } } },
+      result: {
+        opened: {
+          session_id: "sess-2",
+          capabilities: {
+            supported_features: [
+              ProjectionStore.PROJECTION_ENVELOPE_V2_FEATURE,
+            ],
+          },
+        },
+      },
     });
     await Promise.resolve();
+    ProjectionStore.replaceSnapshot(
+      ProjectionStore.projectionStoreKey("sess-2"),
+      [],
+      { stream: "sess-2", seq: 3 },
+    );
 
     // The restarted lifecycle's REOPEN must send sess-2's cursor — never the
     // higher-seq sess-1 leftover (the server would reject the stream
@@ -3186,9 +2862,9 @@ describe("rpc correlation", () => {
     });
   });
 
-  it("seeds the reopen `after` from the open ack even with no durable frames", async () => {
-    // #245 P2: even a session that saw no cursor-bearing live frames still
-    // has an `after` for its next reopen — seeded from the open ack's head.
+  it("seeds the reopen `after` from a canonical snapshot watermark", async () => {
+    // Even a session with no admitted frame has an `after` for its next reopen
+    // once its canonical hydrate snapshot established a ledger watermark.
     vi.useFakeTimers();
     const bridge = createUiProtocolBridge(makeBridgeOpts());
     void bridge.start({ sessionId: "sess-1" });
@@ -3199,9 +2875,23 @@ describe("rpc correlation", () => {
     ws1.triggerMessage({
       jsonrpc: "2.0",
       id: findRequest(ws1, METHODS.SESSION_OPEN).id,
-      result: { opened: { session_id: "sess-1", cursor: { stream: "sess-1", seq: 3 } } },
+      result: {
+        opened: {
+          session_id: "sess-1",
+          capabilities: {
+            supported_features: [
+              ProjectionStore.PROJECTION_ENVELOPE_V2_FEATURE,
+            ],
+          },
+        },
+      },
     });
     await Promise.resolve();
+    ProjectionStore.replaceSnapshot(
+      ProjectionStore.projectionStoreKey("sess-1"),
+      [],
+      { stream: "sess-1", seq: 3 },
+    );
 
     ws1.triggerClose(1006, "abnormal");
     await vi.advanceTimersByTimeAsync(1000);

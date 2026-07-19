@@ -47,7 +47,6 @@ function makeSessionCtx(): SessionContextValue {
     historyTopic: undefined,
     currentSessionTitle: "",
     currentSessionStats: null,
-    initialMessages: [],
     activeTaskOnServer: false,
     queueMode: null,
     adaptiveMode: null,

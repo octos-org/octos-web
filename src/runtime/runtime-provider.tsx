@@ -38,12 +38,10 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
   const mountedRef = useRef(new Set<string>());
   const restoredWatchersRef = useRef(false);
 
-  // Run before passive history-loading effects in SessionProvider and the
-  // embedded chat surfaces. This leaves a real new-server session blank until
-  // `session/open` picks v2 or legacy, instead of momentarily fetching and
-  // rendering the legacy reducer before its capability is known.
+  // Clear stale canonical rows before the scoped bridge begins its fresh
+  // snapshot handshake. Rendering remains ProjectionStore-only throughout.
   useLayoutEffect(() => {
-    ProjectionStore.setProjectionV2Pending(currentSessionId, historyTopic);
+    ProjectionStore.resetProjectionScope(currentSessionId, historyTopic);
   }, [currentSessionId, historyTopic]);
 
   useEffect(() => {
@@ -52,14 +50,9 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
     restoreWatchedSessions();
   }, []);
 
-  // Load message history into the store when a session is activated.
-  // Issue #110.2: `ThreadStore.loadHistory` is now owned by
-  // `SessionProvider` (which fires it on mount + switchSession);
-  // RuntimeProvider only needs to drive the per-session FileStore
-  // and the eviction LRU here. Pre-fix this effect was a duplicate
-  // loadHistory call that competed with SessionProvider's load and
-  // chat-thread's retry timers, producing 3+ /messages requests on
-  // every mount.
+  // Keep session-scoped files warm and maintain the local cache LRU when a
+  // session becomes active. Chat history is supplied only by the canonical
+  // projection snapshot, not by a REST history fetch.
   useEffect(() => {
     void FileStore.loadSessionFiles(currentSessionId);
     mountedRef.current.add(currentSessionId);
@@ -166,10 +159,8 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
         // The WS bridge handles resumption automatically via
         // `session/open`'s replay cursor — when this session re-mounts
         // after a refresh, the bridge's `start()` call dispatches the
-        // server's outstanding envelopes back through the projection
-        // and ThreadStore catches up without an explicit resume call.
-        // M9-γ-6: ThreadStore's orphan-thread path opens the bucket on
-        // the first incoming token; no pre-emptive placeholder write.
+        // server's outstanding envelopes back through the canonical
+        // projection without an explicit resume call.
         if (status.active) {
           window.dispatchEvent(
             new CustomEvent("crew:thinking", {

@@ -8,9 +8,6 @@ import type { SiteProject } from "../types";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
 
-const threadStoreMocks = vi.hoisted(() => ({
-  loadHistory: vi.fn(),
-}));
 const bridgeSendMock = vi.hoisted(() => vi.fn());
 const sitesApiMocks = vi.hoisted(() => ({
   hydrateSiteProjectFromSession: vi.fn(),
@@ -35,11 +32,6 @@ vi.mock("@/runtime/runtime-provider", () => ({
 
 vi.mock("@/runtime/ui-protocol-send", () => ({
   sendMessage: bridgeSendMock,
-}));
-
-vi.mock("@/store/thread-store", () => ({
-  useThreads: () => [],
-  ...threadStoreMocks,
 }));
 
 vi.mock("../api", async () => {
@@ -130,7 +122,6 @@ async function mountSitesChat(): Promise<MountedHarness> {
 beforeEach(() => {
   installLocalStorageStub();
   localStorage.clear();
-  threadStoreMocks.loadHistory.mockReset();
   bridgeSendMock.mockReset();
   sitesApiMocks.hydrateSiteProjectFromSession.mockReset();
   sitesContextMocks.project = undefined;
