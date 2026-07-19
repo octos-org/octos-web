@@ -2,6 +2,7 @@
   "session_id": "session-capture-001",
   "thread_id": "thread-capture-002",
   "seq": 1,
+  "turn_id": "turn-capture-002",
   "cursor": {
     "stream": "session-capture-001",
     "seq": 412
@@ -9,7 +10,8 @@
   "payload": {
     "type": "assistant_delta",
     "data": {
-      "text": "This frame was replayed after reconnect."
+      "text": "This frame was replayed after reconnect.",
+      "assistant_segment_id": "segment-capture-002"
     }
   }
 }

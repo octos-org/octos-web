@@ -18,6 +18,7 @@
  */
 
 import * as ThreadStore from "@/store/thread-store";
+import * as ProjectionStore from "@/store/projection-store";
 import {
   getThinkingEffort,
   whenThinkingSeeded,
@@ -64,6 +65,9 @@ export interface SendOptions {
   skipOptimisticUserMessage?: boolean;
   onSessionActive?: (firstMessage: string) => void;
   onComplete?: () => void;
+  /** Explicit optimistic-overlay failure; v2 never silently removes a
+   * ghost when turn/start rejects or its canonical terminal fails. */
+  onError?: (error: Error) => void;
 }
 
 /** Re-validate the stored auth token after a send failure. The api/client
@@ -92,6 +96,21 @@ function probeAuthAfterSendFailure(): void {
 
 export function sendMessage(opts: SendOptions): void {
   void enqueueSendV1(opts);
+}
+
+function markSendFailure(
+  opts: SendOptions,
+  clientMessageId: string,
+  error: Error,
+): void {
+  if (
+    opts.skipOptimisticUserMessage ||
+    ProjectionStore.isProjectionV2Enabled(opts.sessionId, opts.historyTopic)
+  ) {
+    opts.onError?.(error);
+    return;
+  }
+  ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
 }
 
 /** UPCR-2026-015 (M9-β-1): build the `TurnStartParams` extras envelope
@@ -352,25 +371,22 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
       path,
       caption: "",
     }));
-    // M9-γ-4: Composer renders a `<GhostBubble>` overlay under
-    // projection_v1; it pre-registers the cmid so the first
-    // server-side envelope on this thread carries it (the projection
-    // captures it into `UserView.client_message_id` so the ghost can
-    // match-and-unmount). Skip the legacy reducer mutation so the
-    // ThreadStore stays free of an optimistic row.
-    if (!pinnedOpts.skipOptimisticUserMessage) {
+    // Canonical v2 receives the user row from the server envelope. Do not
+    // create an optimistic ThreadStore row; the Composer's ghost is the only
+    // temporary overlay and settles only on the matching cmid.
+    if (
+      !pinnedOpts.skipOptimisticUserMessage &&
+      !ProjectionStore.isProjectionV2Enabled(
+        pinnedOpts.sessionId,
+        pinnedOpts.historyTopic,
+      )
+    ) {
       ThreadStore.addUserMessage(pinnedOpts.sessionId, {
         text: pinnedOpts.text,
         clientMessageId,
         files: localFiles,
         topic: pinnedOpts.historyTopic,
       });
-    } else {
-      ThreadStore.registerPendingClientMessageId(
-        pinnedOpts.sessionId,
-        clientMessageId,
-        pinnedOpts.historyTopic,
-      );
     }
     pinnedOpts.onSessionActive?.(pinnedOpts.text);
   };
@@ -425,8 +441,19 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
           "ui-protocol-send: bridge start failed; aborting optimistic projection",
         );
       }
-      if (optimisticMirrored) {
-        ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
+      if (
+        optimisticMirrored ||
+        pinnedOpts.skipOptimisticUserMessage ||
+        ProjectionStore.isProjectionV2Enabled(
+          pinnedOpts.sessionId,
+          pinnedOpts.historyTopic,
+        )
+      ) {
+        markSendFailure(
+          pinnedOpts,
+          clientMessageId,
+          new Error("Unable to connect to the server."),
+        );
       }
       pinnedOpts.onComplete?.();
       release();
@@ -517,7 +544,11 @@ async function sendMessageV1(
         "ui-protocol-send: WS bridge unavailable; cannot send turn",
       );
     }
-    ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
+    markSendFailure(
+      opts,
+      clientMessageId,
+      new Error("WebSocket connection is unavailable."),
+    );
     onComplete?.();
     releaseLifecycleGate();
     return;
@@ -532,6 +563,7 @@ async function sendMessageV1(
   let completed = false;
   let lifecycleSafetyTimer: ReturnType<typeof setTimeout> | null = null;
   let offState: (() => void) | null = null;
+  let offProjectionTerminal: (() => void) | null = null;
   // Codex BLOCK F: track whether `turn/started` has arrived for this
   // turn. If a `BridgeStoppedError` from `sendTurn` lands after the
   // server accepted the turn (its `turn/started` notification reached
@@ -575,6 +607,10 @@ async function sendMessageV1(
       offState();
       offState = null;
     }
+    if (offProjectionTerminal !== null) {
+      offProjectionTerminal();
+      offProjectionTerminal = null;
+    }
     // Codex round 3 P2: invoke onComplete inside try/finally so a
     // throwing callback cannot wedge the per-session queue. The bridge
     // swallows subscriber exceptions inside its `Subscribers.emit`, so
@@ -595,6 +631,13 @@ async function sendMessageV1(
     complete: fireComplete,
   });
   const off = bridge.onTurnLifecycle((e) => {
+    // A negotiated v2 connection owns turn settlement through the canonical
+    // `turn_terminal` frame. Do not let a compatibility lifecycle notice
+    // preempt that terminal (and silently remove a ghost before its canonical
+    // error state arrives).
+    if (ProjectionStore.isProjectionV2Enabled(sessionId, historyTopic)) {
+      return;
+    }
     if (e.turn_id !== clientMessageId) return;
     // The bridge emits all three lifecycle variants through one channel.
     // We fire on `completed` and `error`; `started` cancels the grace
@@ -620,6 +663,35 @@ async function sendMessageV1(
       graceTimer = null;
     }
   });
+
+  // A negotiated v2 server settles turns through `turn_terminal`, not the
+  // legacy `turn/completed` / `turn/error` notifications. Match the explicit
+  // cmid when present; the server's turn id is the fallback identity for
+  // current turn/start calls.
+  if (typeof bridge.onProjectionTerminal === "function") {
+    offProjectionTerminal = bridge.onProjectionTerminal((event) => {
+      if (
+        event.client_message_id !== clientMessageId &&
+        event.turn_id !== clientMessageId
+      ) {
+        return;
+      }
+      if (event.outcome !== "completed") {
+        markSendFailure(
+          opts,
+          clientMessageId,
+          new Error(
+            event.error?.message ??
+              (event.outcome === "interrupted"
+                ? "Turn interrupted."
+                : "Turn failed."),
+          ),
+        );
+      }
+      off();
+      fireComplete();
+    });
+  }
 
   // Codex P2 round 2: if the bridge stops (user navigates away from this
   // session/topic, runtime tears down), `bridge.stop()` calls
@@ -679,7 +751,11 @@ async function sendMessageV1(
     // 15-min safety timer. Mark the bubble errored and release
     // immediately, mirroring the rejected-RPC catch branch below.
     if (!result?.accepted) {
-      ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
+      markSendFailure(
+        opts,
+        clientMessageId,
+        new Error("The server rejected this turn."),
+      );
       off();
       fireComplete();
     }
@@ -715,7 +791,11 @@ async function sendMessageV1(
     //    immediately.
     const finalizeAsError = () => {
       if (completed) return;
-      ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
+      markSendFailure(
+        opts,
+        clientMessageId,
+        err instanceof Error ? err : new Error(String(err)),
+      );
       off();
       fireComplete();
     };

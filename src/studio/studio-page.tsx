@@ -17,6 +17,7 @@ import {
 import { loadSessionFiles } from "@/store/file-store";
 import { recordProjectOpened } from "@/store/project-store";
 import * as ThreadStore from "@/store/thread-store";
+import { useProjectionMode } from "@/store/projection-render-adapter";
 
 import { mergeSourceMedia, type SourceRow } from "./source-media";
 import { StudioRail } from "./studio-rail";
@@ -106,6 +107,7 @@ export function StudioPage() {
 }
 
 function StudioWorkspace({ projectId }: { projectId: string }) {
+  const projectionMode = useProjectionMode(projectId);
   const [title, setTitle] = useState(() => readStoredTitle(projectId));
   const [panes, setPanes] = useState<PaneState>(loadPaneState);
 
@@ -178,6 +180,7 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
   // (dispatched by `runtime/ui-protocol-runtime.ts` each time the
   // bridge reaches `connected`).
   useEffect(() => {
+    if (projectionMode !== "legacy") return;
     void ThreadStore.loadHistory(projectId, undefined);
     const onBridgeReady = () => {
       void ThreadStore.loadHistory(projectId, undefined, { force: true });
@@ -186,7 +189,7 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
     return () => {
       window.removeEventListener("crew:bridge_connected", onBridgeReady);
     };
-  }, [projectId]);
+  }, [projectId, projectionMode]);
 
   const toggleSource = useCallback((path: string) => {
     setSelectedSources((prev) =>

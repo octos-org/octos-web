@@ -105,7 +105,7 @@ The unit suite is the merge gate. Playwright specs (in `tests/`) drive a real br
 ## How it connects
 
 - **Transport** — `src/runtime/ui-protocol-bridge.ts`: a strict, fail-closed JSON-RPC bridge over WebSocket at `/api/ui-protocol/ws`. Reconnects with exponential backoff, resumes with an `after` cursor + `session/hydrate`, and queues outbound RPCs while offline. This is the *only* chat transport (the legacy SSE/REST bridge is gone).
-- **Events → state** — `src/runtime/ui-protocol-event-router.ts` routes typed notifications (`message/delta`, `message/persisted`, `turn/spawn_complete`, `tool/*`, approvals, `user_question.v1` cards, `context.lifecycle.v1` compaction events, …) into `src/store/thread-store.ts`, the single source of truth keyed by `client_message_id`. A pure projection layer (`src/store/projection.ts`, envelopes → view-model) runs behind the `octos_projection_v1` flag.
+- **Events → state** — when `session/open` confirms `projection.envelope.v2`, flattened canonical envelopes flow directly through `src/store/projection-store.ts` and its read-only render adapter. Older servers continue to use the retained `src/store/thread-store.ts` notification path; the two render models are never combined.
 - **Auth** — session token (`octos_session_token`) and optional admin token (`octos_auth_token`) in localStorage; the WS handshake carries the token as a query parameter.
 
 The protocol contract lives in the octos repo (`crates/octos-core/src/ui_protocol.rs` and the API docs). Server merges do not wait for client releases — the spec is the contract.

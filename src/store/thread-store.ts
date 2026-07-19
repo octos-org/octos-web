@@ -8,13 +8,9 @@
  * `userMsg.timestamp` — no timestamp-primary sort within a thread, no
  * `Number.MAX_SAFE_INTEGER` fallback.
  *
- * M9-γ-6 (issue #843): the parallel legacy flat-list store has been
- * deleted; ThreadStore is the single source of truth for chat state.
- * The projection-mode shim (γ-3) translates every mutation entry point
- * into an `Envelope` and dual-writes it through `projection-store.ts`
- * when the `octos_projection_v1` flag is on; the legacy reducer that
- * builds `Thread[]` for `getThreads()` keeps running so the UI keeps
- * the same shape.
+ * This store remains the legacy fallback for servers that do not negotiate
+ * `projection.envelope.v2`. The canonical v2 path is deliberately separate:
+ * no legacy mutator writes into ProjectionStore.
  */
 
 import { useSyncExternalStore } from "react";
@@ -32,16 +28,8 @@ import { displayFilenameFromPath } from "@/lib/utils";
 import { recordRuntimeCounter } from "@/runtime/observability";
 import type {
   Envelope,
-  EnvelopeToolEndStatus,
-  Payload,
 } from "@/runtime/ui-protocol-types";
 import { SPAWN_ONLY_TOOL_NAMES } from "@/runtime/spawn-only-tools";
-import {
-  ingest as projectionIngest,
-  isProjectionV1Enabled,
-  nextSeq as projectionNextSeq,
-  projectionStoreKey,
-} from "./projection-store";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -89,24 +77,15 @@ export interface ThreadMessage {
   historySeq?: number;
   /**
    * Per-thread sequence — order within a thread.
-   *
-   * @deprecated M9-γ-5 (issue #842): the projection collapses identity
-   * to server `seq` (`(thread_id, seq)`); per-thread ordering is implicit
-   * in the envelope arrival order. Field kept on the legacy reducer's
-   * `Thread`/`ThreadMessage` shape so flag-OFF code paths still compile;
-   * projection-mode consumers MUST NOT depend on it.
+   * Kept for the legacy reducer's response ordering and hydrate dedupe.
    */
   intra_thread_seq?: number;
   meta?: MessageMeta;
   /**
    * For assistant/tool messages: parent thread root cmid.
    *
-   * @deprecated M9-γ-5 (issue #842): under projection_v1, `client_message_id`
-   * lives ONLY on `user_message` envelopes (per the locked rule from γ-1
-   * round-2); thread membership is derived from `(thread_id, seq)`. Field
-   * kept on the legacy reducer's `Thread`/`ThreadMessage` shape so flag-OFF
-   * code paths still compile; projection-mode consumers MUST NOT depend
-   * on it.
+   * @deprecated Canonical v2 carries this on `user_message` envelopes.
+   * This field remains only for the old-server legacy renderer.
    */
   responseToClientMessageId?: string;
   /** For user messages: their own cmid (= thread.id). */
@@ -118,6 +97,15 @@ export interface ThreadMessage {
 export interface Thread {
   /** = `client_message_id` of the user message that rooted this thread. */
   id: string;
+  /** Explicit server turn identity when the canonical v2 render adapter is
+   * active. Legacy rows omit it and continue to use `id` for interruption. */
+  turnId?: string;
+  /** Render-only marker for a canonical background child stream. It is a
+   * linked stream, not another response appended to its parent turn. */
+  backgroundChild?: boolean;
+  /** Canonical parent linkage for `backgroundChild` render rows. */
+  parentTurnId?: string;
+  responseToClientMessageId?: string;
   userMsg: ThreadMessage;
   /** Assistant + tool messages bound to this thread, ordered by
    *  intra_thread_seq (server-authoritative) with arrival-order fallback. */
@@ -296,20 +284,6 @@ function findThreadById(
   for (const state of sessionsByKey.values()) {
     const thread = state.byId.get(threadId);
     if (thread) return { state, thread };
-  }
-  return null;
-}
-
-/** Find the storeKey hosting the given thread. Used by the projection-mode
- *  shim: legacy entry points like `appendAssistantToken` carry a
- *  threadId without (sessionId, topic), so the shim walks
- *  `sessionsByKey` to find the bucket — same lookup as `findThreadById`
- *  but returning the key string for `projectionIngest()`. Returns null
- *  when the thread is not yet hosted (caller should skip the dual-write
- *  rather than silently invent a bucket). */
-function findStoreKeyForThread(threadId: string): string | null {
-  for (const [key, state] of sessionsByKey.entries()) {
-    if (state.byId.has(threadId)) return key;
   }
   return null;
 }
@@ -518,142 +492,8 @@ function sortResponsesInThread(thread: Thread): void {
 }
 
 // ---------------------------------------------------------------------------
-// Projection-mode shim (M9-γ-3, issue #840)
-//
-// When the `octos_projection_v1` localStorage flag is `"1"`, every
-// legacy mutation entry point ALSO synthesizes an `Envelope` and
-// ingests it into the projection store (`./projection-store.ts`). The
-// legacy reducer continues to run unchanged so `getThreads()` keeps
-// returning the same `Thread[]` shape — that's why the existing 191
-// tests pass under both flag states. The projection log accumulates in
-// parallel; new projection-only tests assert against
-// `getProjection()`.
-//
-// Seq synthesis: per-(storeKey, threadId) monotonic counter inside
-// `projection-store`. Deterministic, NOT `Date.now()` — when γ-5 stops
-// using the legacy reducer, the projection re-projects the same log
-// and produces a byte-identical view.
-// ---------------------------------------------------------------------------
-
-/** Resolve the storeKey for a thread when only the threadId is in
- *  hand. Walks live sessions; returns null when the thread has not yet
- *  been routed (e.g. the very first call before `addUserMessage`). The
- *  shim uses this to skip translating envelopes for un-routed threads —
- *  no information is lost; the projection just doesn't see the event,
- *  same as if the legacy reducer dropped it as orphan-without-host. */
-function shimResolveKey(threadId: string): string | null {
-  return findStoreKeyForThread(threadId);
-}
-
-/** Pending `client_message_id` SET per storeKey. Set when
- *  `addUserMessage` opens a thread; consumed (cleared) on the FIRST
- *  envelope emitted for that thread so the cmid lands exactly once on
- *  the wire. The projection captures the cmid into its `UserView` from
- *  the first envelope it sees for a given thread.
- *
- *  M9-γ-5 (issue #842): the prior implementation keyed cmids by
- *  threadId — but for a fresh user-rooted thread the threadId IS the
- *  cmid (callers in `sse-bridge` and `ui-protocol-send` pass the same
- *  string for both). The projection re-derives thread membership from
- *  `(thread_id, seq)` ordering, so the threadId-keyed inner map is
- *  redundant. A flat `Set<cmid>` per storeKey is the minimal carrier:
- *  on shim ingest, if `threadId` is in the set we attach + remove. */
-const pendingClientMessageIds = new Map<string, Set<string>>();
-
-function setPendingClientMessageId(
-  storeKey: string,
-  cmid: string,
-): void {
-  let perKey = pendingClientMessageIds.get(storeKey);
-  if (!perKey) {
-    perKey = new Set();
-    pendingClientMessageIds.set(storeKey, perKey);
-  }
-  perKey.add(cmid);
-}
-
-function consumePendingClientMessageId(
-  storeKey: string,
-  threadId: string,
-): string | undefined {
-  // For fresh user-rooted threads, `threadId === cmid`. Look up the
-  // threadId in the set; if present, that IS the cmid.
-  const perKey = pendingClientMessageIds.get(storeKey);
-  if (!perKey || !perKey.has(threadId)) return undefined;
-  perKey.delete(threadId);
-  return threadId;
-}
-
-/** Translate-and-ingest helper for the dual-write path. Handles the
- *  pending-cmid handoff so a thread's first envelope carries the
- *  client_message_id without callers having to thread it through every
- *  shim site explicitly. */
-function shimIngest(
-  storeKey: string,
-  threadId: string,
-  payload: Payload,
-  options: { client_message_id?: string; seq?: number } = {},
-): void {
-  const seq = options.seq ?? projectionNextSeq(storeKey, threadId);
-  const cmid =
-    options.client_message_id !== undefined
-      ? options.client_message_id
-      : consumePendingClientMessageId(storeKey, threadId);
-  const envelope: Envelope = {
-    thread_id: threadId,
-    seq,
-    payload,
-    ...(cmid !== undefined ? { client_message_id: cmid } : {}),
-  };
-  projectionIngest(storeKey, envelope);
-}
-
-/** Map a legacy `ThreadToolCall.status` (which carries `"running"` for
- *  in-flight calls) to the projection's `tool_end` status enum
- *  (`"complete" | "error"`). The projection has no concept of a
- *  running/in-flight tool — `tool_start` opens, `tool_end` closes.
- *  `"running"` is a no-op signal that does not warrant a `tool_end`
- *  envelope; the shim returns null and the caller skips emission. */
-function shimMapToolEndStatus(
-  status: "running" | "complete" | "error",
-): EnvelopeToolEndStatus | null {
-  if (status === "complete") return "complete";
-  if (status === "error") return "error";
-  return null;
-}
-
-// ---------------------------------------------------------------------------
 // Public API — mutators
 // ---------------------------------------------------------------------------
-
-/**
- * M9-γ-4: Register a pending `client_message_id` WITHOUT mutating the
- * legacy reducer. Used by the `<GhostBubble>` overlay so the very first
- * dual-write envelope on this thread (e.g. an `assistant_delta` from
- * the server's reflected response) carries the cmid — which the
- * projection captures into `UserView.client_message_id` and the
- * GhostBubble matches on to settle.
- *
- * The legacy reducer is intentionally untouched: under projection_v1,
- * the optimistic user bubble is a pure visual overlay; the durable user
- * row only enters `getThreads()` if/when an orphan thread is opened by
- * a later assistant token (`appendAssistantToken` calls
- * `ensureOrphanThread`). This guarantees the acceptance criterion:
- * "ThreadStore must NOT have a `<GhostBubble>` row when flag ON."
- *
- * M9-γ-5 (issue #842): the redundant `threadId` parameter is gone. The
- * threadId IS the cmid for fresh user-rooted threads, and the projection
- * re-derives thread membership from `(thread_id, seq)` — there is
- * nothing additional to bucket the cmid by.
- */
-export function registerPendingClientMessageId(
-  sessionId: string,
-  clientMessageId: string,
-  topic?: string,
-): void {
-  const key = storeKey(sessionId, topic);
-  setPendingClientMessageId(key, clientMessageId);
-}
 
 export interface AddUserMessageOptions {
   text: string;
@@ -761,17 +601,6 @@ export function addUserMessage(
   insertThreadInTimestampOrder(state, thread);
   notify();
 
-  // M9-γ-3 dual-write: a fresh user message roots the thread. The
-  // projection has no `user_message` payload variant — user identity
-  // is captured implicitly from the FIRST envelope that names a given
-  // `thread_id` (per γ-2 `projection.ts` § "Capture user identity").
-  // We register the cmid in the pending-cmid map so the next envelope
-  // for this thread carries `client_message_id` on the wire — that's
-  // what γ-4's GhostBubble overlay matches against.
-  if (isProjectionV1Enabled()) {
-    setPendingClientMessageId(key, opts.clientMessageId);
-  }
-
   return {
     threadId: thread.id,
     pendingAssistantId: pendingAssistant.id,
@@ -817,17 +646,6 @@ export function appendAssistantToken(threadId: string, token: string): void {
   const slot = ensurePendingAssistant(found.thread);
   slot.text += token;
   notify();
-
-  // M9-γ-3 dual-write: streamed token → assistant_delta envelope.
-  if (isProjectionV1Enabled()) {
-    const key = shimResolveKey(threadId);
-    if (key) {
-      shimIngest(key, threadId, {
-        type: "assistant_delta",
-        data: { text: token },
-      });
-    }
-  }
 }
 
 /**
@@ -891,79 +709,25 @@ export function replaceAssistantText(threadId: string, text: string): void {
   const slot = ensurePendingAssistant(found.thread);
   slot.text = text;
   notify();
-
-  // M9-γ-3 dual-write: legacy `replace` semantics has no direct
-  // projection counterpart (projection accumulates deltas + finalises
-  // on `assistant_persisted`). Emit the full replacement text as an
-  // `assistant_delta`. This is OK for the migration window: projection
-  // and legacy disagree on accumulated text shape, but legacy is the
-  // current truth source for `getThreads()`. γ-5 will retire the legacy
-  // path entirely; by then the SSE bridge no longer emits `replace`
-  // events (only deltas + persisted), so the drift goes away.
-  if (isProjectionV1Enabled()) {
-    const key = shimResolveKey(threadId);
-    if (key) {
-      shimIngest(key, threadId, {
-        type: "assistant_delta",
-        data: { text },
-      });
-    }
-  }
 }
 
 /**
- * #245 P2 (codex fold 3): replace a replay-frozen pending's text with the
- * canonical content of its persisted row — projection-safely.
- *
- * `replaceAssistantText` dual-writes its replacement as an `assistant_delta`,
- * which the projection APPENDS; on the frozen-reconnect path a pre-freeze
- * delta is already in the projection log, so the append corrupts
- * projection-mode text ("partial anspartial answer…") and nothing overwrites
- * it afterwards (`finalizeAssistant` emits only tool_end/turn_completed, and
- * the promotion path skips `appendPersistedMessage`'s assistant_persisted
- * emission) — the corruption would be permanent. This variant emits the
- * replacement as the `assistant_persisted` it actually is: the projection
- * reducer OVERWRITES `assistantText` on that payload, and the caller's
- * follow-up `finalizeAssistant` emits `turn_completed`, matching the normal
- * wire order (persisted → completed).
+ * #245 P2: replace a replay-frozen pending's text with the durable persisted
+ * content. This narrow legacy helper leaves normal streamed updates alone and
+ * avoids retaining a stale partial after reconnect.
  */
 export function replaceFrozenPendingFromPersisted(
   threadId: string,
   text: string,
-  meta: { messageId: string; persistedAt: string; media?: string[] },
+  _meta: { messageId: string; persistedAt: string; media?: string[] },
 ): void {
+  void _meta;
   const found = ensureOrphanThread(threadId);
   if (!found) return;
   if (isFinalizedAndIdle(found.thread)) return;
   const slot = ensurePendingAssistant(found.thread);
   slot.text = text;
   notify();
-  if (isProjectionV1Enabled()) {
-    const key = shimResolveKey(threadId);
-    if (key) {
-      // Deliberately uses the shim's contiguous local seq (NOT the wire
-      // seq): the projection buffers out-of-order envelopes per thread,
-      // so a sparse wire seq would park this overwrite in the buffer
-      // forever. Replay dedup is already handled upstream — a re-emitted
-      // persisted row for the same wire seq is dropped by the store's
-      // seq gate before any shim emission happens.
-      const media = meta.media ?? [];
-      shimIngest(key, threadId, {
-        type: "assistant_persisted",
-        data: {
-          text,
-          meta: {
-            message_id: meta.messageId,
-            persisted_at: meta.persistedAt,
-            // Mirror the normal persisted-row shim: media-bearing rows
-            // keep their file association in projection mode (codex
-            // fold 4).
-            ...(media.length > 0 ? { media: media.slice() } : {}),
-          },
-        },
-      });
-    }
-  }
 }
 
 /**
@@ -1092,27 +856,6 @@ export function addToolCall(
     });
     notify();
 
-    // M9-γ-3 dual-write (codex round-1 BLOCK 2): the retry-collapse
-    // path mutates legacy state in place but the wire still receives a
-    // fresh `tool_start` for the NEW `tool_call_id`. The projection
-    // keys tool cards on `tool_call_id`, so without this emission a
-    // retry would never open a card for the new id and any subsequent
-    // `tool_progress` / `tool_end` envelope would synthesise an
-    // empty-name placeholder card (γ-2's "progress without a prior
-    // start" path) — mismatching the legacy reducer's view.
-    if (isProjectionV1Enabled() && toolCallId) {
-      const key = shimResolveKey(threadId);
-      if (key) {
-        shimIngest(key, threadId, {
-          type: "tool_start",
-          data: {
-            tool_call_id: toolCallId,
-            name,
-            ...(args !== undefined ? { arguments: args } : {}),
-          },
-        });
-      }
-    }
     return;
   }
 
@@ -1133,24 +876,6 @@ export function addToolCall(
   });
   notify();
 
-  // M9-γ-3 dual-write: tool_start envelope. The projection requires a
-  // non-empty `tool_call_id` for routing (it keys on `tool_call_id`);
-  // legacy supports the empty-id fallback for legacy daemons. Skip the
-  // dual-write for empty-id calls — the projection isn't responsible
-  // for legacy compat, γ-5 cleanup makes the server's id mandatory.
-  if (isProjectionV1Enabled() && toolCallId) {
-    const key = shimResolveKey(threadId);
-    if (key) {
-      shimIngest(key, threadId, {
-        type: "tool_start",
-        data: {
-          tool_call_id: toolCallId,
-          name,
-          ...(args !== undefined ? { arguments: args } : {}),
-        },
-      });
-    }
-  }
 }
 
 /** Maximum runtime progress entries kept per tool call. Old entries are
@@ -1289,20 +1014,6 @@ export function appendToolProgress(
   replaceAssistantSlot(found.thread, oldTarget, newTarget);
   notify();
 
-  // M9-γ-3 dual-write: tool_progress envelope. Per the brief, the
-  // projection drops late tool_progress events that arrive after a
-  // `turn_completed` for the same thread (see the projection's hard
-  // barrier). The shim emits unconditionally; the projection itself
-  // enforces the barrier and bumps `metrics.droppedAfterTurnCompleted`.
-  if (isProjectionV1Enabled() && toolCallId) {
-    const key = shimResolveKey(threadId);
-    if (key) {
-      shimIngest(key, threadId, {
-        type: "tool_progress",
-        data: { tool_call_id: toolCallId, message },
-      });
-    }
-  }
 }
 
 export function setToolCallStatus(
@@ -1382,22 +1093,6 @@ export function setToolCallStatus(
   });
   notify();
 
-  // M9-γ-3 dual-write: setToolCallStatus → tool_end envelope. Skip
-  // the `"running"` flavour (projection has no in-flight status —
-  // tool_start opens, tool_end closes); only `"complete"` and
-  // `"error"` translate to a wire-level `tool_end`.
-  if (isProjectionV1Enabled() && toolCallId) {
-    const endStatus = shimMapToolEndStatus(status);
-    if (endStatus !== null) {
-      const key = shimResolveKey(threadId);
-      if (key) {
-        shimIngest(key, threadId, {
-          type: "tool_end",
-          data: { tool_call_id: toolCallId, status: endStatus },
-        });
-      }
-    }
-  }
   return true;
 }
 
@@ -1667,36 +1362,6 @@ export function appendCompletionBubble(
   markCompletionSeqSeen();
   notify();
 
-  // M9-γ-3 dual-write: completion bubble → assistant_persisted envelope.
-  // The projection enforces text/meta finalisation here. Use the
-  // server-authoritative `historySeq` as the projection seq when the
-  // caller supplied one (matches the wire-level seq on a replay) so
-  // late re-emissions of the same row dedup cleanly via the
-  // projection's `(thread_id, seq)` idempotency.
-  if (isProjectionV1Enabled()) {
-    const key =
-      shimResolveKey(threadId) ??
-      (opts.sessionId
-        ? projectionStoreKey(opts.sessionId, opts.topic)
-        : null);
-    if (key) {
-      const messageId = opts.messageId ?? completion.id;
-      shimIngest(key, threadId, {
-        type: "assistant_persisted",
-        data: {
-          text: opts.text,
-          meta: {
-            message_id: messageId,
-            persisted_at:
-              opts.persistedAt ??
-              new Date(completion.timestamp).toISOString(),
-            ...(opts.media.length > 0 ? { media: opts.media.slice() } : {}),
-          },
-        },
-      }, opts.historySeq !== undefined ? { seq: opts.historySeq } : undefined);
-    }
-  }
-
   return true;
 }
 
@@ -1770,24 +1435,6 @@ export function appendAssistantFile(
   if (slot.files.some((f) => f.path === file.path)) return true;
   slot.files = [...slot.files, file];
   notify();
-
-  // M9-γ-3 dual-write: file delivery → file_attached envelope. Legacy
-  // `MessageFile` doesn't carry `mime` / `size_bytes`; use defensible
-  // defaults that the projection accepts (the wire-level event always
-  // carries both, this is only the migration-time shim).
-  if (isProjectionV1Enabled()) {
-    const key = shimResolveKey(threadId);
-    if (key) {
-      shimIngest(key, threadId, {
-        type: "file_attached",
-        data: {
-          path: file.path,
-          mime: "",
-          size_bytes: 0,
-        },
-      });
-    }
-  }
 
   return true;
 }
@@ -1871,21 +1518,6 @@ export function appendAssistantFileToToolCall(
       files: [...slot.files, file],
     });
     notify();
-
-    // M9-γ-3 dual-write parity with `appendAssistantFile`.
-    if (isProjectionV1Enabled()) {
-      const key = shimResolveKey(threadId);
-      if (key) {
-        shimIngest(key, threadId, {
-          type: "file_attached",
-          data: {
-            path: file.path,
-            mime: "",
-            size_bytes: 0,
-          },
-        });
-      }
-    }
   }
 
   return true;
@@ -2069,20 +1701,9 @@ export function stampPendingHistorySeq(
   };
   notify();
 
-  // M9-γ-3 dual-write: stamp-only operation has no projection
-  // counterpart. The projection finalises bubbles on
-  // `assistant_persisted` (which carries `meta.message_id` +
-  // `persisted_at`); a bare seq-stamp without text/meta is purely a
-  // legacy bookkeeping fix the v1 router needs to acknowledge a
-  // `message/persisted` that arrived BEFORE its `message/delta`.
-  // Intentionally no envelope emission here.
-  //
-  // Why this no-op is safe under the projection: the `historySeq`
-  // stamp is purely a legacy reducer detail. The projection's gap-
-  // buffer applies envelopes in canonical `(thread_id, seq)` order on
-  // arrival; the eventual `assistant_persisted` / `turn_completed`
-  // envelope is what finalises the bubble. A bare stamp without
-  // text/meta carries no projection-relevant payload, so we elide it.
+  // This is legacy-only bookkeeping for a persisted acknowledgement that
+  // arrived before its matching delta. It intentionally has no side effects
+  // outside the fallback reducer.
 }
 
 export interface FinalizeAssistantOptions {
@@ -2171,10 +1792,6 @@ export function finalizeAssistant(
     // lost over the wire would otherwise leave the chip spinning forever.
     // Only flip running → complete; preserve "error" and existing
     // "complete" entries (tool_end already arrived for those).
-    // Also remember which ids were swept so the projection dual-write
-    // below can emit synthetic `tool_end` envelopes for them BEFORE
-    // `turn_completed` (codex round-1 BLOCK 3).
-    //
     // SPAWN_ONLY EXCEPTION (codex PR #147 review BLOCKER, 2026-05-22):
     // spawn_only tools (`run_pipeline`, `podcast_generate`, `fm_tts`,
     // ...) intentionally fire their foreground `tool/completed` ~ms
@@ -2187,7 +1804,6 @@ export function finalizeAssistant(
     // before the background work actually finishes. We leave
     // spawn_only chips alone here; `handleTaskUpdated` flips them
     // when the supervisor task settles.
-    const sweptToolCallIds: string[] = [];
     const sweptToolCalls = thread.pendingAssistant.toolCalls.map((tc) => {
       if (tc.status === "running") {
         if (SPAWN_ONLY_TOOL_NAMES.has(tc.name)) {
@@ -2195,7 +1811,6 @@ export function finalizeAssistant(
           // comes from `handleTaskUpdated`, not the turn sweep.
           return tc;
         }
-        if (tc.id) sweptToolCallIds.push(tc.id);
         return { ...tc, status: "complete" as const };
       }
       return tc;
@@ -2231,50 +1846,6 @@ export function finalizeAssistant(
       }
     }
     notify();
-
-    // M9-γ-3 dual-write: finalize → turn_completed envelope (the
-    // projection's hard barrier). Maps token usage best-effort from
-    // the legacy `meta` (which carries `tokens_in` / `tokens_out` —
-    // we mirror them onto the projection's `input_tokens` /
-    // `output_tokens`). The barrier is what the brief's projection-
-    // only test "Late `tool_progress` after `turn_completed`"
-    // exercises.
-    if (isProjectionV1Enabled()) {
-      const key = shimResolveKey(threadId);
-      if (key) {
-        // codex round-1 BLOCK 3: emit a synthetic `tool_end` for every
-        // tool call that legacy `finalizeAssistant` swept from
-        // `running` → `complete` (the wire never delivered an explicit
-        // tool_end). MUST happen BEFORE `turn_completed` since the
-        // projection's hard barrier drops anything after a thread is
-        // marked complete — a late tool_end on the wire would never
-        // reach the projection's tool card. Empty-id calls (legacy
-        // daemon path) are skipped at sweep-collection time.
-        for (const sweptId of sweptToolCallIds) {
-          shimIngest(key, threadId, {
-            type: "tool_end",
-            data: { tool_call_id: sweptId, status: "complete" },
-          });
-        }
-
-        const meta = opts.meta ?? finalized.meta;
-        const usage =
-          meta !== undefined
-            ? {
-                ...(meta.tokens_in
-                  ? { input_tokens: meta.tokens_in }
-                  : {}),
-                ...(meta.tokens_out
-                  ? { output_tokens: meta.tokens_out }
-                  : {}),
-              }
-            : {};
-        shimIngest(key, threadId, {
-          type: "turn_completed",
-          data: { token_usage: usage },
-        });
-      }
-    }
 
     return;
   }
@@ -3759,32 +3330,6 @@ export function appendPersistedMessage(
   // (legacy `messages_page` rows lose `historySeq`).
   if (incomingSeq !== undefined) rememberSeq(key, incomingSeq);
   notify();
-
-  // M9-γ-3 dual-write: a persisted assistant row corresponds to an
-  // `assistant_persisted` envelope. Tool/system rows have no projection
-  // counterpart in γ-2 (the projection's payload tagged-union doesn't
-  // carry tool-result rows — they live as `tool_end` + per-tool
-  // progress). Limit the dual-write to assistant rows for now; γ-5
-  // will fold tool persistence into the projection's surface.
-  if (isProjectionV1Enabled() && built.role === "assistant") {
-    const key = projectionStoreKey(sessionId, topic);
-    const messageId = built.id;
-    const persistedAt = message.timestamp
-      ? new Date(message.timestamp).toISOString()
-      : new Date().toISOString();
-    const media = (message.media ?? []).slice();
-    shimIngest(key, threadId, {
-      type: "assistant_persisted",
-      data: {
-        text: built.text,
-        meta: {
-          message_id: messageId,
-          persisted_at: persistedAt,
-          ...(media.length > 0 ? { media } : {}),
-        },
-      },
-    }, built.historySeq !== undefined ? { seq: built.historySeq } : undefined);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -4225,7 +3770,6 @@ export function clearSessionScope(
   loadedSessions.delete(key);
   loadingPromises.delete(key);
   hydrateSnapshotByKey.delete(key);
-  pendingClientMessageIds.delete(key);
   seenSeqsByKey.delete(key);
   appliedHydrateToolEnvelopesByKey.delete(key);
   placeholderRefetchInFlight.delete(key);
@@ -4240,7 +3784,6 @@ export function clearSession(sessionId: string, topic?: string): void {
     loadedSessions.delete(key);
     loadingPromises.delete(key);
     hydrateSnapshotByKey.delete(key);
-    pendingClientMessageIds.delete(key);
     seenSeqsByKey.delete(key);
     appliedHydrateToolEnvelopesByKey.delete(key);
     placeholderRefetchInFlight.delete(key);
@@ -4252,7 +3795,6 @@ export function clearSession(sessionId: string, topic?: string): void {
         loadedSessions.delete(k);
         loadingPromises.delete(k);
         hydrateSnapshotByKey.delete(k);
-        pendingClientMessageIds.delete(k);
         seenSeqsByKey.delete(k);
         appliedHydrateToolEnvelopesByKey.delete(k);
         placeholderRefetchInFlight.delete(k);
@@ -4298,7 +3840,6 @@ export function clearAllSessions(): void {
   hydrateSnapshotByKey.clear();
   placeholderRefetchInFlight.clear();
   placeholderRefetchDirty.clear();
-  pendingClientMessageIds.clear();
   seenSeqsByKey.clear();
   appliedHydrateToolEnvelopesByKey.clear();
   notify();
@@ -4414,7 +3955,6 @@ export function __resetForTests(): void {
   hydrateSnapshotByKey.clear();
   placeholderRefetchInFlight.clear();
   placeholderRefetchDirty.clear();
-  pendingClientMessageIds.clear();
   seenSeqsByKey.clear();
   appliedHydrateToolEnvelopesByKey.clear();
   version = 0;

@@ -19,6 +19,7 @@ import type { BackgroundTaskInfo, SessionInfo, MessageInfo } from "@/api/types";
 import { nextTopicForCommand } from "@/lib/slash-commands";
 import { eventMatchesScope } from "@/runtime/event-scope";
 import * as ThreadStore from "@/store/thread-store";
+import * as ProjectionStore from "@/store/projection-store";
 import * as TaskStore from "@/store/task-store";
 import * as FileStore from "@/store/file-store";
 
@@ -585,6 +586,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setSessionActiveFlag(prev, sessionId, false),
     );
     ThreadStore.clearSession(sessionId);
+    ProjectionStore.clearProjection(sessionId);
     TaskStore.clearTasks(sessionId);
     FileStore.clearSessionFiles(sessionId);
     setSessions((prev) => prev.filter((s) => s.id !== sessionId));
@@ -606,7 +608,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const saved = localStorage.getItem("octos_current_session");
     if (saved && saved.startsWith("web-")) {
       const { topic: restoredTopic } = resolveSessionScope(saved, sessionTopics);
-      void ThreadStore.loadHistory(saved, restoredTopic);
+      if (ProjectionStore.isLegacyProjectionEnabled(saved, restoredTopic)) {
+        void ThreadStore.loadHistory(saved, restoredTopic);
+      }
       getSessionTasks(saved, restoredTopic)
         .then((tasks) => {
           setServerTaskActiveBySession((prev) =>
@@ -742,6 +746,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const onBridgeReady = () => {
       void refreshSessions();
+      if (!ProjectionStore.isLegacyProjectionEnabled(currentSessionId, activeHistoryTopic)) {
+        return;
+      }
       void ThreadStore.loadHistory(currentSessionId, activeHistoryTopic, {
         force: true,
       });
@@ -994,8 +1001,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
     void (async () => {
       try {
+        const loadHistory = ProjectionStore.isLegacyProjectionEnabled(id, topic)
+          ? ThreadStore.loadHistory(id, topic, { force: true })
+          : Promise.resolve();
         await Promise.all([
-          ThreadStore.loadHistory(id, topic, { force: true }),
+          loadHistory,
           getSessionTasks(id, topic)
             .then((tasks) => {
               if (switchRequestRef.current !== requestId) return;

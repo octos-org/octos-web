@@ -5,7 +5,8 @@ import {
   sendMessage,
 } from "@/runtime/ui-protocol-send";
 import { getActiveBridge } from "@/runtime/ui-protocol-runtime";
-import { useThreads, type Thread, type ThreadMessage } from "@/store/thread-store";
+import type { Thread, ThreadMessage } from "@/store/thread-store";
+import { useRenderThreads } from "@/store/projection-render-adapter";
 import { buildFileUrl } from "@/api/files";
 import { buildApiHeaders } from "@/api/client";
 import { useVoiceCapture } from "./use-voice-capture";
@@ -161,7 +162,7 @@ export function buildVoiceTurns(
   threads: Thread[],
   baseline = 0,
 ): VoiceConversationTurn[] {
-  return threads.slice(baseline).map((thread) => {
+  return threads.slice(baseline).filter((thread) => !thread.backgroundChild).map((thread) => {
     const assistants: ThreadMessage[] = [
       ...thread.responses.filter((m) => m.role === "assistant"),
       ...(thread.pendingAssistant ? [thread.pendingAssistant] : []),
@@ -277,7 +278,7 @@ export function useVoiceConversation(
    *  the user expresses an exit intent — invoked AFTER the farewell audio. */
   onExit?: () => void,
 ): VoiceConversation {
-  const threads = useThreads(sessionId, historyTopic);
+  const threads = useRenderThreads(sessionId, historyTopic);
   const capture = useVoiceCapture();
   // Destructure the STABLE function refs (useVoiceCapture returns a fresh
   // object each render, but start/stop are useCallback([])-stable). Depending
@@ -414,17 +415,23 @@ export function useVoiceConversation(
 
   const requestTurnInterrupt = useCallback(
     (reason: string): boolean => {
-      const turnId =
-        activeTurnIdRef.current ??
+      const activeClientMessageId = activeTurnIdRef.current;
+      const pendingThread =
+        (activeClientMessageId
+          ? threadsRef.current.find((thread) => thread.id === activeClientMessageId)
+          : undefined) ??
         threadsRef.current.find(
           (t) =>
             t.pendingAssistant !== null &&
             t.pendingAssistant.status === "streaming",
-        )?.id ??
-        null;
+        );
+      const turnId = pendingThread?.turnId ?? activeClientMessageId ?? pendingThread?.id ?? null;
       if (!turnId) return false;
-      ignoredTurnIdsRef.current.add(turnId);
-      if (activeTurnIdRef.current === turnId) {
+      // Audio/reply bookkeeping keys on render-thread ids (the canonical user
+      // cmid), whereas interrupt RPCs use the server's explicit turn id.
+      const ignoredThreadId = pendingThread?.id ?? activeClientMessageId;
+      if (ignoredThreadId) ignoredTurnIdsRef.current.add(ignoredThreadId);
+      if (activeTurnIdRef.current === activeClientMessageId) {
         activeTurnIdRef.current = null;
       }
       void interruptActiveTurn({
@@ -1012,10 +1019,11 @@ export function useVoiceConversation(
   stopRef.current = stop;
   useEffect(() => () => stopRef.current(), []);
 
-  const lastUserText =
-    threads.length > turnBaseline
-      ? (threads[threads.length - 1].userMsg?.text ?? "")
-      : "";
+  const latestUserThread = threads
+    .slice(turnBaseline)
+    .reverse()
+    .find((thread) => !thread.backgroundChild);
+  const lastUserText = latestUserThread?.userMsg.text ?? "";
   const turns = buildVoiceTurns(threads, turnBaseline);
 
   const dismissVisual = useCallback(() => setVisual(null), []);

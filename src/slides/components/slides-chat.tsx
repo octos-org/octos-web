@@ -7,6 +7,7 @@ import { SessionContext, useModeState } from "@/runtime/session-context";
 import { ScopedRuntimeBridge } from "@/runtime/runtime-provider";
 import { sendMessage as bridgeSend } from "@/runtime/ui-protocol-send";
 import * as ThreadStore from "@/store/thread-store";
+import { useProjectionMode } from "@/store/projection-render-adapter";
 
 import { buildSlidesSlug, waitForSlidesScaffold } from "../api";
 import { useSlides } from "../context/slides-context";
@@ -36,6 +37,7 @@ export function SlidesChat({ sessionId, retryNonce = 0 }: Props) {
   const projectScaffolded = project?.scaffolded;
   const projectScaffoldError = project?.scaffoldError;
   const historyTopic = projectSlug ? `slides ${projectSlug}` : undefined;
+  const projectionMode = useProjectionMode(sessionId, historyTopic);
 
   // Codex round-3 BLOCK D.b: when the retry button fires, the layout
   // clears `scaffoldError` and bumps `retryNonce`. Reset the
@@ -67,6 +69,7 @@ export function SlidesChat({ sessionId, retryNonce = 0 }: Props) {
   // bridge reaches `connected`, and re-issue `loadHistory` with
   // `force: true` so the dedup guard does not short-circuit it.
   useEffect(() => {
+    if (projectionMode !== "legacy") return;
     void ThreadStore.loadHistory(sessionId, historyTopic);
     const onBridgeReady = () => {
       void ThreadStore.loadHistory(sessionId, historyTopic, { force: true });
@@ -75,7 +78,7 @@ export function SlidesChat({ sessionId, retryNonce = 0 }: Props) {
     return () => {
       window.removeEventListener("crew:bridge_connected", onBridgeReady);
     };
-  }, [historyTopic, sessionId]);
+  }, [historyTopic, projectionMode, sessionId]);
 
   useEffect(() => {
     // Codex round-3 BLOCK D.b: also gate on `projectScaffoldError`.
