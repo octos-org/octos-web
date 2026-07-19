@@ -3,10 +3,16 @@
   "topic": "planning",
   "thread_id": "thread-capture-001",
   "seq": 3,
+  "turn_id": "turn-capture-001",
+  "cursor": {
+    "stream": "session-capture-001",
+    "seq": 102
+  },
   "payload": {
     "type": "assistant_persisted",
     "data": {
       "text": "I found three implementation milestones.",
+      "assistant_segment_id": "segment-capture-001",
       "meta": {
         "message_id": "msg-capture-003",
         "persisted_at": "2026-07-18T22:10:03Z",

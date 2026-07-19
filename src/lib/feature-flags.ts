@@ -1,10 +1,9 @@
 /**
  * Client-side feature flags backed by `localStorage`.
  *
- * Each flag follows the same shape as the `projection_v1` flag in
- * `src/store/projection-store.ts`: cache-on-first-read so a mid-session
- * flip cannot start a feature partway through a request/response cycle,
- * with a test-only helper that resets both the cache and the storage key.
+ * Each flag is cached on first read so a mid-session flip cannot start a
+ * feature partway through a request/response cycle, with a test-only helper
+ * that resets both the cache and the storage key.
  *
  * Production defaults vary per flag — see each flag's doc comment. Some
  * flags ship OFF until a cutover phase flips them ON (e.g. Phase C
@@ -44,7 +43,7 @@
 //     of silently flipping a user back to REST.
 //
 // Cached on first read; mid-session flips do not take effect until the
-// next page reload — matches `projection_v1` behavior. The cache-once
+// next page reload. The cache-once
 // pattern protects against a flip in the middle of a single RPC and
 // against half-the-app-on / half-off routing within a page load.
 
@@ -92,7 +91,7 @@ function readAuxRestToWsV1FromStorage(): boolean {
  * page load. A subsequent flip is a one-shot `console.warn` and is
  * otherwise ignored until the next reload.
  *
- * Mirrors `isProjectionV1Enabled` in `src/store/projection-store.ts`.
+ * This is independent of negotiated protocol capabilities.
  */
 export function isAuxRestToWsV1Enabled(): boolean {
   if (cachedAuxRestToWsV1 !== null) {

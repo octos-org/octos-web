@@ -482,9 +482,8 @@ function tryPromotePendingFromPersisted(
   // durable frame finalises the truncated pre-reconnect text.
   const wireContent = (event.content ?? "").trim();
   if (thread.suppressDeltasUntilDurable && wireContent.length > 0) {
-    // Projection-safe variant (codex fold 3): `replaceAssistantText`
-    // would dual-write the replacement as an appended `assistant_delta`
-    // and corrupt projection-mode text on top of the pre-freeze delta.
+    // Use the narrow persisted-row replacement helper so the fallback keeps
+    // the durable text instead of a stale pre-reconnect partial.
     ThreadStore.replaceFrozenPendingFromPersisted(
       threadId,
       event.content ?? "",

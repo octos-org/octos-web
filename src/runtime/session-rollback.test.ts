@@ -10,9 +10,11 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as ThreadStore from "@/store/thread-store";
+import * as ProjectionStore from "@/store/projection-store";
 import type { SessionRollbackResult } from "./ui-protocol-types";
 
 const rollbackSession = vi.fn();
+const hydrateSession = vi.fn();
 vi.mock("./ui-protocol-runtime", () => ({
   getActiveBridge: () => mockBridge,
 }));
@@ -24,7 +26,10 @@ vi.mock("@/api/sessions", () => ({
   getMessagesPage: (...args: unknown[]) => getMessagesPage(...args),
 }));
 // Reassigned per-test; `null` simulates a disconnected scope.
-let mockBridge: { rollbackSession: typeof rollbackSession } | null = {
+let mockBridge: {
+  rollbackSession: typeof rollbackSession;
+  hydrateSession?: typeof hydrateSession;
+} | null = {
   rollbackSession,
 };
 
@@ -62,15 +67,90 @@ function trimmedResult(): SessionRollbackResult {
 beforeEach(() => {
   mockBridge = { rollbackSession };
   rollbackSession.mockReset();
+  hydrateSession.mockReset();
   getMessagesPage.mockReset();
   getMessagesPage.mockRejectedValue(new Error("no fetch in test"));
 });
 
 afterEach(() => {
   ThreadStore.__resetForTests();
+  ProjectionStore.__resetProjectionForTests();
 });
 
 describe("rollbackSessionTurns", () => {
+  it("replaces the canonical v2 snapshot without mutating the legacy fallback", async () => {
+    const key = ProjectionStore.projectionStoreKey(SESSION);
+    ProjectionStore.setProjectionV2Enabled(SESSION, undefined, true);
+    ProjectionStore.ingest(key, {
+      session_id: SESSION,
+      thread_id: "thread-before-rollback",
+      turn_id: "turn-before-rollback",
+      seq: 1,
+      client_message_id: "cmid-before-rollback",
+      cursor: { stream: SESSION, seq: 1 },
+      payload: { type: "user_message", data: { text: "drop me", files: [] } },
+    });
+    // This represents stale legacy state left over from an earlier
+    // old-server connection. v2 rollback must not touch it.
+    ThreadStore.addUserMessage(SESSION, {
+      text: "legacy fallback remains untouched",
+      clientMessageId: "cmid-legacy",
+    });
+    rollbackSession.mockResolvedValue(trimmedResult());
+    hydrateSession.mockResolvedValue({
+      projection_snapshot: {
+        cursor: { stream: SESSION, seq: 2 },
+        envelopes: [
+          {
+            session_id: SESSION,
+            thread_id: "thread-kept",
+            turn_id: "turn-kept",
+            seq: 1,
+            client_message_id: "cmid-keep",
+            cursor: { stream: SESSION, seq: 1 },
+            payload: {
+              type: "user_message",
+              data: { text: "canonical keep", files: [] },
+            },
+          },
+          {
+            session_id: SESSION,
+            thread_id: "thread-kept",
+            turn_id: "turn-kept",
+            seq: 2,
+            cursor: { stream: SESSION, seq: 2 },
+            payload: {
+              type: "assistant_persisted",
+              data: {
+                assistant_segment_id: "segment-kept",
+                text: "canonical reply",
+                meta: {
+                  message_id: "message-kept",
+                  persisted_at: "2026-07-18T00:00:00Z",
+                },
+              },
+            },
+          },
+        ],
+      },
+    });
+    mockBridge = { rollbackSession, hydrateSession };
+
+    const outcome = await rollbackSessionTurns(SESSION, undefined, 1);
+
+    expect(outcome).toEqual({ ok: true, droppedTurns: 1 });
+    expect(hydrateSession).toHaveBeenCalledWith(["messages"]);
+    expect(ProjectionStore.getProjection(key).threads[0]?.user?.text).toBe(
+      "canonical keep",
+    );
+    expect(
+      ProjectionStore.getProjection(key).threads[0]?.assistantSegments[0]?.text,
+    ).toBe("canonical reply");
+    expect(ThreadStore.getThreads(SESSION)[0]?.userMsg.text).toBe(
+      "legacy fallback remains untouched",
+    );
+  });
+
   it("surgically trims the dropped suffix and keeps surviving threads", async () => {
     // Local store holds TWO turns; the server trims to one.
     ThreadStore.addUserMessage(SESSION, {

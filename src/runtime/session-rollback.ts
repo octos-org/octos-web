@@ -32,6 +32,11 @@
 import { useSyncExternalStore } from "react";
 import * as ThreadStore from "@/store/thread-store";
 import { setHydrateSnapshot } from "@/store/thread-store";
+import * as ProjectionStore from "@/store/projection-store";
+import {
+  parseProjectionEnvelopeV2,
+  type ProjectionEnvelopeV2,
+} from "./projection-envelope-v2";
 import { getActiveBridge } from "./ui-protocol-runtime";
 
 export type RollbackOutcome =
@@ -132,6 +137,60 @@ function isTurnInProgress(err: unknown): boolean {
   );
 }
 
+/** Reconcile a v2 rollback from the server's durable projection snapshot.
+ * The legacy rollback payload is deliberately not translated into canonical
+ * envelopes: doing so would recreate the retired shadow path. If an older
+ * hydrate response has no v2 snapshot carrier, clear the affected canonical
+ * scope rather than showing rows the server has just removed. */
+async function reconcileProjectionAfterRollback(
+  sessionId: string,
+  topic: string | undefined,
+  bridge: ReturnType<typeof getActiveBridge>,
+): Promise<void> {
+  if (!bridge) return;
+  const projectionKey = ProjectionStore.projectionStoreKey(sessionId, topic);
+  const priorWatermark = ProjectionStore.getWatermark(projectionKey);
+  ProjectionStore.beginSnapshot(projectionKey, priorWatermark);
+  let replaced = false;
+  try {
+    if (typeof bridge.hydrateSession !== "function") return;
+    const hydrate = await bridge.hydrateSession(["messages"]);
+    const raw = hydrate?.projection_snapshot?.envelopes ??
+      hydrate?.projection_envelopes;
+    if (raw === undefined) return;
+    const envelopes = raw
+      .map((frame) => parseProjectionEnvelopeV2(frame))
+      .filter(
+        (parsed): parsed is { ok: true; value: ProjectionEnvelopeV2 } =>
+          parsed.ok,
+      )
+      .map((parsed) => parsed.value)
+      .filter((envelope) => {
+        if (envelope.session_id !== sessionId) return false;
+        const snapshotTopic = envelope.topic?.trim() || undefined;
+        const requestedTopic = topic?.trim() || undefined;
+        return snapshotTopic === undefined || snapshotTopic === requestedTopic;
+      });
+    const cursor = hydrate?.projection_snapshot?.cursor ?? hydrate?.cursor;
+    ProjectionStore.replaceSnapshot(
+      projectionKey,
+      envelopes,
+      cursor?.stream ? cursor : null,
+    );
+    replaced = true;
+  } finally {
+    if (!replaced) {
+      // No canonical snapshot is available. Replace (rather than merely
+      // finish) so rows deleted by the rollback cannot remain rendered.
+      ProjectionStore.replaceSnapshot(
+        projectionKey,
+        [],
+        priorWatermark,
+      );
+    }
+  }
+}
+
 /**
  * Roll the session back by `numTurns` user turns and trim the local
  * thread state to match.
@@ -161,6 +220,10 @@ export async function rollbackSessionTurns(
         ok: false,
         reason: isTurnInProgress(err) ? "turn_in_progress" : "rpc_failed",
       };
+    }
+    if (ProjectionStore.isProjectionV2Enabled(sessionId, topic)) {
+      await reconcileProjectionAfterRollback(sessionId, topic, bridge);
+      return { ok: true, droppedTurns: result.dropped_turns };
     }
     const droppedLocally = ThreadStore.dropLastUserTurnThreads(
       sessionId,

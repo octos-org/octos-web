@@ -48,6 +48,7 @@ import type {
   TurnStartedEvent,
   WarningEvent,
 } from "./ui-protocol-types";
+import * as ProjectionStore from "@/store/projection-store";
 
 // ---------------------------------------------------------------------------
 // MockWebSocket
@@ -170,6 +171,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  ProjectionStore.__resetProjectionForTests();
 });
 
 // ---------------------------------------------------------------------------
@@ -980,6 +982,7 @@ describe("connection lifecycle", () => {
     expect(ws.url).toContain("token=test-token");
     expect(ws.url).toContain("ui_feature=approval.typed.v1");
     expect(ws.url).toContain("ui_feature=pane.snapshots.v1");
+    expect(ws.url).toContain("ui_feature=projection.envelope.v2");
     // Regression-pin for the P1.3 capability negotiation: server gates
     // both live broadcast and cursor replay of `message/persisted`
     // notifications on this feature, so dropping it would silently
@@ -1003,6 +1006,285 @@ describe("connection lifecycle", () => {
     // echo back, and the axum WS handler does not negotiate subprotocols.
     // Auth flows entirely via the `?token=` query param above.
     expect(ws.protocols).toBeUndefined();
+  });
+
+  it("uses direct canonical v2 ingest only after session/open confirms the capability", async () => {
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const legacyDeltas = vi.fn();
+    const terminals = vi.fn();
+    bridge.onMessageDelta(legacyDeltas);
+    bridge.onProjectionTerminal(terminals);
+
+    const start = bridge.start({ sessionId: "sess-v2" });
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(ws, METHODS.SESSION_OPEN);
+
+    const userFrame = {
+      session_id: "sess-v2",
+      thread_id: "thread-v2",
+      turn_id: "turn-v2",
+      seq: 1,
+      client_message_id: "cmid-v2",
+      cursor: { stream: "sess-v2", seq: 41 },
+      payload: {
+        type: "user_message",
+        data: { text: "canonical question", files: [] },
+      },
+    };
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: "projection/envelope",
+      params: userFrame,
+    });
+    const key = ProjectionStore.projectionStoreKey("sess-v2");
+    expect(ProjectionStore.projectionMode("sess-v2")).toBe("pending");
+    expect(ProjectionStore.getEnvelopes(key)).toEqual([]);
+
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      result: {
+        opened: {
+          session_id: "sess-v2",
+          capabilities: {
+            supported_features: [
+              ProjectionStore.PROJECTION_ENVELOPE_V2_FEATURE,
+            ],
+          },
+        },
+      },
+    });
+    await start;
+    expect(ProjectionStore.isProjectionV2Enabled("sess-v2")).toBe(true);
+    expect(ProjectionStore.getEnvelopes(key)).toHaveLength(1);
+
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: "projection/envelope",
+      params: {
+        ...userFrame,
+        seq: 3,
+        cursor: { stream: "sess-v2", seq: 43 },
+        payload: {
+          type: "turn_terminal",
+          data: { outcome: "errored", error: { code: "x", message: "failed" } },
+        },
+      },
+    });
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: "projection/envelope",
+      params: {
+        ...userFrame,
+        seq: 2,
+        cursor: { stream: "sess-v2", seq: 42 },
+        payload: {
+          type: "assistant_delta",
+          data: { assistant_segment_id: "segment-v2", text: "Answer" },
+        },
+      },
+    });
+    expect(legacyDeltas).not.toHaveBeenCalled();
+    expect(ProjectionStore.getProjection(key).threads[0].assistantSegments[0]?.text).toBe(
+      "Answer",
+    );
+    expect(terminals).toHaveBeenCalledWith(
+      expect.objectContaining({
+        turn_id: "turn-v2",
+        client_message_id: "cmid-v2",
+        outcome: "errored",
+      }),
+    );
+    await bridge.stop();
+  });
+
+  it("buffers reconnect v2 frames until the new session/open confirmation", async () => {
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const start = bridge.start({ sessionId: "sess-reconnect-v2" });
+    await Promise.resolve();
+    const ws1 = lastInstance();
+    ws1.triggerOpen();
+    await Promise.resolve();
+    const open1 = findRequest(ws1, METHODS.SESSION_OPEN);
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      id: open1.id,
+      result: {
+        opened: {
+          session_id: "sess-reconnect-v2",
+          capabilities: {
+            supported_features: [
+              ProjectionStore.PROJECTION_ENVELOPE_V2_FEATURE,
+            ],
+          },
+        },
+      },
+    });
+    await start;
+
+    const key = ProjectionStore.projectionStoreKey("sess-reconnect-v2");
+    const base = {
+      session_id: "sess-reconnect-v2",
+      thread_id: "thread-reconnect-v2",
+      turn_id: "turn-reconnect-v2",
+      client_message_id: "cmid-reconnect-v2",
+    };
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      method: "projection/envelope",
+      params: {
+        ...base,
+        seq: 1,
+        cursor: { stream: "sess-reconnect-v2", seq: 1 },
+        payload: {
+          type: "user_message",
+          data: { text: "question", files: [] },
+        },
+      },
+    });
+    expect(ProjectionStore.getEnvelopes(key)).toHaveLength(1);
+
+    ws1.triggerClose(1006, "reconnect");
+    await vi.advanceTimersByTimeAsync(1000);
+    const ws2 = lastInstance();
+    ws2.triggerOpen();
+    await Promise.resolve();
+    const open2 = findRequest(ws2, METHODS.SESSION_OPEN);
+
+    // The old v2 projection remains selected for rendering, but this new
+    // socket's replay must wait for its own capability confirmation.
+    expect(ProjectionStore.isProjectionV2Enabled("sess-reconnect-v2")).toBe(true);
+    ws2.triggerMessage({
+      jsonrpc: "2.0",
+      method: "projection/envelope",
+      params: {
+        ...base,
+        seq: 2,
+        cursor: { stream: "sess-reconnect-v2", seq: 2 },
+        payload: {
+          type: "assistant_delta",
+          data: { assistant_segment_id: "segment-reconnect-v2", text: "answer" },
+        },
+      },
+    });
+    expect(ProjectionStore.getEnvelopes(key)).toHaveLength(1);
+
+    ws2.triggerMessage({
+      jsonrpc: "2.0",
+      id: open2.id,
+      result: {
+        opened: {
+          session_id: "sess-reconnect-v2",
+          capabilities: {
+            supported_features: [
+              ProjectionStore.PROJECTION_ENVELOPE_V2_FEATURE,
+            ],
+          },
+        },
+      },
+    });
+    await Promise.resolve();
+
+    expect(ProjectionStore.getEnvelopes(key)).toHaveLength(2);
+    expect(ProjectionStore.getProjection(key).threads[0].assistantSegments[0]?.text).toBe(
+      "answer",
+    );
+    await bridge.stop();
+  });
+
+  it("uses the installed v2 snapshot watermark—not the open-ack head—on reconnect", async () => {
+    vi.useFakeTimers();
+    const sessionId = "sess-v2-watermark";
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const start = bridge.start({ sessionId });
+    await Promise.resolve();
+    const ws1 = lastInstance();
+    ws1.triggerOpen();
+    await Promise.resolve();
+    const open1 = findRequest(ws1, METHODS.SESSION_OPEN);
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      id: open1.id,
+      result: {
+        opened: {
+          session_id: sessionId,
+          // This is the server's current head, not proof that the client has
+          // installed the corresponding projection snapshot yet.
+          cursor: { stream: sessionId, seq: 99 },
+          capabilities: {
+            supported_features: [
+              ProjectionStore.PROJECTION_ENVELOPE_V2_FEATURE,
+            ],
+          },
+        },
+      },
+    });
+    await start;
+
+    // Empty snapshots still establish a safe ledger baseline. The bridge's
+    // store subscription must observe it even though no envelope admission
+    // callback fires.
+    ProjectionStore.replaceSnapshot(
+      ProjectionStore.projectionStoreKey(sessionId),
+      [],
+      { stream: sessionId, seq: 5 },
+    );
+
+    ws1.triggerClose(1006, "reconnect");
+    await vi.advanceTimersByTimeAsync(1000);
+    const ws2 = lastInstance();
+    ws2.triggerOpen();
+    await Promise.resolve();
+    const open2 = findRequest(ws2, METHODS.SESSION_OPEN);
+    expect((open2.params as Record<string, unknown>).after).toEqual({
+      stream: sessionId,
+      seq: 5,
+    });
+    await bridge.stop();
+  });
+
+  it("keeps the legacy renderer selected when an old server omits the capability", async () => {
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const persisted = vi.fn();
+    bridge.onMessagePersisted(persisted);
+    const start = bridge.start({ sessionId: "sess-old" });
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(ws, METHODS.SESSION_OPEN);
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      result: { opened: { session_id: "sess-old" } },
+    });
+    await start;
+    expect(ProjectionStore.isProjectionV2Enabled("sess-old")).toBe(false);
+    expect(ProjectionStore.projectionMode("sess-old")).toBe("legacy");
+
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      method: METHODS.MESSAGE_PERSISTED,
+      params: {
+        session_id: "sess-old",
+        turn_id: "turn-old",
+        thread_id: "thread-old",
+        seq: 1,
+        role: "assistant",
+        message_id: "message-old",
+        source: "assistant",
+        cursor: { stream: "sess-old", seq: 1 },
+        persisted_at: "2026-07-18T22:10:00Z",
+        content: "legacy response",
+      },
+    });
+    expect(persisted).toHaveBeenCalledTimes(1);
+    expect(ProjectionStore.getEnvelopes("sess-old")).toEqual([]);
+    await bridge.stop();
   });
 
   it("auxiliary.rest_to_ws.v1 — appended to ui_feature ONLY when flag is ON", async () => {

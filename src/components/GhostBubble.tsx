@@ -4,28 +4,27 @@
  * Spec:  `api/OCTOS_UI_PROTOCOL_V1_SPEC_2026-04-24.md` § 14 (M9-γ Envelope).
  * ADR:   `docs/M9-GAMMA-SERVER-PROJECTION-ADR.md` (PR #830).
  * Issue: octos-org/octos#841.
- * γ-3:   `src/store/projection-store.ts` (the projection log + flag).
+ * Canonical state: `src/store/projection-store.ts`.
  *
- * Under the `projection_v1` feature flag, clicking Send NO LONGER
+ * When the server negotiates canonical projection v2, clicking Send no longer
  * mutates `ThreadStore` synchronously. The Composer instead mounts one
  * of these `<GhostBubble>` rows in its own React tree — visually
- * identical to a real user bubble — and unmounts it once the projection
- * sees a `UserView` with a matching `client_message_id`.
+ * identical to a real user bubble — and marks it settled once the projection
+ * sees a `UserView` with a matching `client_message_id`. The parent removes a
+ * successful settled overlay after terminal completion, but keeps a compact
+ * retry/error state if that terminal fails.
  *
  * The ghost is OUTSIDE `ThreadStore`. This component owns its own
  * presentation state (text, files, attached_at). On every projection
  * `ingest()` (the only authoritative event that adds an envelope to
  * the log) we ask the projection-store via the O(1) `hasCmid` index
- * whether our cmid has landed; when it has, the ghost calls `onSettle`
- * and the parent unmounts.
+ * whether our cmid has landed; when it has, the ghost calls `onSettle` and
+ * the parent records canonical settlement.
  *
- * Subscription model (codex BLOCK 1 fix): we subscribe to
- * `ProjectionStore.subscribe`, NOT `ThreadStore.subscribe`. The
- * thread-store's mutators call `notify()` BEFORE the projection
- * dual-write — so a ThreadStore-only subscription would see the notify
- * before the envelope is actually in the projection log, leaving us
- * waiting for a later unrelated notify (or the 30s timeout). The
- * projection-store fires AFTER `ingest()` commits, closing the race.
+ * Subscription model: we subscribe to `ProjectionStore.subscribe`, not
+ * `ThreadStore.subscribe`. A v2 envelope becomes visible only after the
+ * canonical store admits it, so this subscription closes the optimistic
+ * overlay against the same source the renderer reads.
  *
  * Failure mode: if 30 seconds pass without settling, render an inline
  * error + retry button. The 30s timer is local to the component (no
@@ -73,8 +72,14 @@ export interface GhostBubbleProps {
   /** Optional topic scope (mirrors `historyTopic`). */
   topic?: string;
   /** Fired once the projection has captured `UserView.client_message_id
-   *  === clientMessageId`. The parent owns lifecycle and unmounts. */
+   *  === clientMessageId`. The parent owns final terminal lifecycle. */
   onSettle: () => void;
+  /** Immediate transport/RPC failure supplied by the send path. Unlike the
+   * timeout this is authoritative and must remain visible for retry. */
+  failure?: string;
+  /** The canonical user row has landed. A later terminal failure renders a
+   * compact retry affordance instead of duplicating that user bubble. */
+  settled?: boolean;
   /** Called when the user clicks Retry from the timeout error state.
    *  Implementation re-issues the send via the Composer's normal
    *  channel; failure must NOT pollute ThreadStore. */
@@ -97,8 +102,8 @@ function formatGhostTimestamp(ts: number): string {
 
 /**
  * Visual-only optimistic user bubble. Mounted by the Composer on Send
- * under `projection_v1`; unmounted by the parent when `onSettle` fires
- * (or kept around in error state for the user to retry).
+ * for a negotiated projection-v2 session; hidden after a successful terminal
+ * and retained as an explicit retry state when failure occurs.
  */
 export function GhostBubble({
   clientMessageId,
@@ -107,6 +112,8 @@ export function GhostBubble({
   sessionId,
   topic,
   onSettle,
+  failure,
+  settled = false,
   onRetry,
 }: GhostBubbleProps): React.ReactElement {
   // attached_at is captured ONCE at mount so re-renders (e.g. from a
@@ -127,21 +134,19 @@ export function GhostBubble({
   // Subscribe to projection-store ingests. The projection-store fires
   // its listeners AFTER each `ingest()` commits — so our `hasCmid`
   // check is guaranteed to see the new envelope. (Subscribing to
-  // `ThreadStore.subscribe` would be racy: the legacy thread-store
-  // mutators call `notify()` BEFORE the projection dual-write.)
+  // ThreadStore is intentionally not involved: v2 never dual-writes through
+  // the legacy reducer.)
   //
   // Cmid lookup is O(1) — backed by `projection-store`'s
   // `cmidToThread` index, populated as a side effect of `ingest()`.
   useEffect(() => {
-    if (settledRef.current) return;
+    if (settled || settledRef.current) return;
 
     // Fast-path: the projection might already carry our cmid by the
-    // time this effect runs (rare race: server reflection landed inside
-    // the same microtask as the send dispatch, or — more commonly — the
-    // ThreadStore's `addUserMessage` shim already ingested a
-    // user-rooted envelope before the GhostBubble mounted). Settling
-    // synchronously here is safe — the parent's unmount will tear down
-    // the timer below.
+    // time this effect runs (for example, server reflection landed inside
+    // the same microtask as the send dispatch). Settling synchronously here
+    // is safe — the parent records the settled state and removes it after a
+    // successful terminal.
     if (ProjectionStore.hasCmid(storeKey, clientMessageId)) {
       settledRef.current = true;
       onSettle();
@@ -159,11 +164,11 @@ export function GhostBubble({
     return () => {
       unsubscribe();
     };
-  }, [storeKey, clientMessageId, onSettle]);
+  }, [settled, storeKey, clientMessageId, onSettle]);
 
   // Local 30s timeout — purely component-scoped, no global state.
   useEffect(() => {
-    if (timedOut) return;
+    if (settled || timedOut || failure) return;
     const id = window.setTimeout(() => {
       if (settledRef.current) return;
       setTimedOut(true);
@@ -171,7 +176,7 @@ export function GhostBubble({
     return () => {
       window.clearTimeout(id);
     };
-  }, [timedOut]);
+  }, [failure, settled, timedOut]);
 
   const handleRetry = useCallback(() => {
     if (!onRetry) return;
@@ -212,13 +217,14 @@ export function GhostBubble({
     </>
   ) : null;
 
-  const trailing = timedOut ? (
+  const failureMessage = failure ?? (timedOut ? "Send not confirmed within 30s." : null);
+  const trailing = failureMessage ? (
     <div
       data-testid="ghost-bubble-error"
       role="alert"
       className="mt-1.5 flex items-center gap-2 rounded-[10px] border border-red-500/20 bg-red-500/12 px-3 py-1.5 text-[11px] text-red-400"
     >
-      <span>Send not confirmed within 30s.</span>
+      <span>{failureMessage}</span>
       {onRetry && (
         <button
           data-testid="ghost-bubble-retry"
@@ -232,6 +238,31 @@ export function GhostBubble({
     </div>
   ) : null;
 
+  // The canonical user bubble is already rendered by the projection. If its
+  // terminal arrives later with an error, preserve a retry/error state but do
+  // not render a second copy of the user's text.
+  if (settled && failureMessage) {
+    return (
+      <div
+        data-testid="ghost-bubble-terminal-error"
+        role="alert"
+        className="mx-4 mt-2 flex items-center gap-2 rounded-[10px] border border-red-500/20 bg-red-500/12 px-3 py-1.5 text-[11px] text-red-400"
+      >
+        <span>{failureMessage}</span>
+        {onRetry && (
+          <button
+            data-testid="ghost-bubble-retry"
+            type="button"
+            onClick={handleRetry}
+            className="rounded-md bg-red-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-red-700"
+          >
+            Retry
+          </button>
+        )}
+      </div>
+    );
+  }
+
   return (
     <UserBubbleShell
       text={text || null}
@@ -242,7 +273,7 @@ export function GhostBubble({
       textTestId="ghost-bubble-text"
       outerDataAttributes={{
         "data-client-message-id": clientMessageId,
-        "data-ghost-state": timedOut ? "timed-out" : "pending",
+        "data-ghost-state": failure ? "failed" : timedOut ? "timed-out" : "pending",
       }}
     />
   );

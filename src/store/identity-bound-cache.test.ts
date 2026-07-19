@@ -8,7 +8,6 @@ const ADMIN_SESSION = "web-admin-session";
 
 beforeEach(() => {
   ProjectionStore.__resetProjectionForTests();
-  ProjectionStore.__setProjectionV1ForTests(true);
   ThreadStore.__resetForTests();
   TaskStore.clearTasks(ADMIN_SESSION);
 });
@@ -26,6 +25,18 @@ describe("identity-bound in-memory stores", () => {
       clientMessageId: "admin-message",
     });
     ThreadStore.appendAssistantToken("admin-message", "private response");
+    ProjectionStore.ingest(ADMIN_SESSION, {
+      session_id: ADMIN_SESSION,
+      thread_id: "admin-message",
+      turn_id: "turn-admin-message",
+      seq: 1,
+      cursor: { stream: ADMIN_SESSION, seq: 1 },
+      client_message_id: "admin-message",
+      payload: {
+        type: "user_message",
+        data: { text: "administrator-only conversation", files: [] },
+      },
+    });
     TaskStore.replaceTasks(ADMIN_SESSION, [
       {
         id: "admin-task",

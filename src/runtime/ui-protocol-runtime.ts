@@ -12,6 +12,10 @@ import {
   createUiProtocolBridge,
   type UiProtocolBridge,
 } from "./ui-protocol-bridge";
+import {
+  parseProjectionEnvelopeV2,
+  type ProjectionEnvelopeV2,
+} from "./projection-envelope-v2";
 import type {
   ConnectionState,
   UiGoalRecord,
@@ -19,6 +23,7 @@ import type {
 } from "./ui-protocol-types";
 import { attachRouter, type RouterAttachment } from "./ui-protocol-event-router";
 import * as AutonomyStore from "@/store/autonomy-store";
+import * as ProjectionStore from "@/store/projection-store";
 import {
   setHydrateSnapshot,
   suppressPendingDeltasForReplay,
@@ -52,6 +57,21 @@ interface ActiveBridge {
 }
 
 let active: ActiveBridge | null = null;
+
+// The canonical store owns gap detection. Keep this bridge-level callback
+// narrow: it only hydrates the currently mounted scope and never reaches
+// into ThreadStore while v2 is active.
+ProjectionStore.onRehydrateRequested((storeKey) => {
+  const current = active;
+  if (!current) return;
+  if (
+    ProjectionStore.projectionStoreKey(current.sessionId, current.topic) !==
+    storeKey
+  ) {
+    return;
+  }
+  runHydrateFor(current.sessionId, current.topic, current.bridge, generation);
+}, { persistent: true });
 
 /**
  * Monotonic generation counter. Each `startBridgeForSession` /
@@ -199,7 +219,9 @@ export async function startBridgeForSession(
       // truncate it) — the turn's durable frames deliver canonical text and
       // lift the freeze. Runs for ALL reopens (topic-scoped bridges
       // included), unlike the topic-gated hydrate below.
-      suppressPendingDeltasForReplay(sessionId, topic);
+      if (!ProjectionStore.isProjectionV2Enabled(sessionId, topic)) {
+        suppressPendingDeltasForReplay(sessionId, topic);
+      }
       runHydrateFor(sessionId, topic, bridge, myGeneration);
       runAutonomySnapshotFor(sessionId, topic, bridge, myGeneration);
     });
@@ -292,20 +314,81 @@ function runHydrateFor(
   bridge: UiProtocolBridge,
   capturedGeneration: number,
 ): void {
-  if (topic && topic.trim() !== "") return;
+  const projectionKey = ProjectionStore.projectionStoreKey(sessionId, topic);
+  const useProjectionV2 = ProjectionStore.isProjectionV2Enabled(sessionId, topic);
+  // Legacy hydrate cannot safely address topic scopes on this bridge. The
+  // canonical envelope store can: its snapshot is scoped by `(session,topic)`.
+  if (!useProjectionV2 && topic && topic.trim() !== "") return;
+  const ownsProjectionSnapshot = useProjectionV2
+    ? ProjectionStore.beginSnapshot(
+      projectionKey,
+      ProjectionStore.getWatermark(projectionKey),
+    )
+    : false;
+  // A reconnect hydrate and a gap recovery can race. The first one owns the
+  // atomic snapshot transition; its buffered-live replay covers both causes,
+  // so a second RPC must not finish or replace the first one's buffer.
+  if (useProjectionV2 && !ownsProjectionSnapshot) return;
   void (async () => {
-    if (capturedGeneration !== generation) return;
+    if (capturedGeneration !== generation) {
+      if (ownsProjectionSnapshot) {
+        ProjectionStore.finishSnapshotWithoutReplace(projectionKey);
+      }
+      return;
+    }
     // Defensive: test mocks of `UiProtocolBridge` may pre-date this
     // method. Production builds always have it.
-    if (typeof bridge.hydrateSession !== "function") return;
-    const hydrate = await bridge.hydrateSession(["messages"]);
-    if (capturedGeneration !== generation) return;
-    if (!hydrate) return;
-    setHydrateSnapshot(sessionId, topic, {
-      messages: hydrate.messages,
-      replayed_envelopes: hydrate.replayed_envelopes,
-      replayed_tool_envelopes: hydrate.replayed_tool_envelopes,
-    });
+    if (typeof bridge.hydrateSession !== "function") {
+      if (ownsProjectionSnapshot) {
+        ProjectionStore.finishSnapshotWithoutReplace(projectionKey);
+      }
+      return;
+    }
+    try {
+      const hydrate = await bridge.hydrateSession(["messages"]);
+      if (capturedGeneration !== generation) return;
+      if (useProjectionV2) {
+        if (!hydrate) return;
+        const rawSnapshot =
+          hydrate.projection_snapshot?.envelopes ?? hydrate.projection_envelopes;
+        if (rawSnapshot !== undefined) {
+          const envelopes = rawSnapshot
+            .map((frame) => parseProjectionEnvelopeV2(frame))
+            .filter(
+              (parsed): parsed is { ok: true; value: ProjectionEnvelopeV2 } =>
+                parsed.ok,
+            )
+            .map((parsed) => parsed.value)
+            .filter((envelope) => {
+              if (envelope.session_id !== sessionId) return false;
+              const snapshotTopic = envelope.topic?.trim() || undefined;
+              const requestedTopic = topic?.trim() || undefined;
+              // Older servers omit `topic` from a snapshot that was already
+              // scoped by the hydrate request. An explicit mismatched topic
+              // is never safe to install into this bucket.
+              return snapshotTopic === undefined || snapshotTopic === requestedTopic;
+            });
+          const cursor = hydrate.projection_snapshot?.cursor ?? hydrate.cursor;
+          ProjectionStore.replaceSnapshot(
+            projectionKey,
+            envelopes,
+            cursor?.stream ? cursor : null,
+          );
+          return;
+        }
+        return;
+      }
+      if (!hydrate) return;
+      setHydrateSnapshot(sessionId, topic, {
+        messages: hydrate.messages,
+        replayed_envelopes: hydrate.replayed_envelopes,
+        replayed_tool_envelopes: hydrate.replayed_tool_envelopes,
+      });
+    } finally {
+      if (ownsProjectionSnapshot) {
+        ProjectionStore.finishSnapshotWithoutReplace(projectionKey);
+      }
+    }
   })();
 }
 

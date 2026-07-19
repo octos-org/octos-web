@@ -13,7 +13,11 @@ import {
 import { ScopedRuntimeBridge } from "@/runtime/runtime-provider";
 import { sendMessage as bridgeSend } from "@/runtime/ui-protocol-send";
 import * as ThreadStore from "@/store/thread-store";
-import { useThreads, type Thread } from "@/store/thread-store";
+import type { Thread } from "@/store/thread-store";
+import {
+  useProjectionMode,
+  useRenderThreads,
+} from "@/store/projection-render-adapter";
 
 // M9-γ-6: the legacy `Message` shape from MessageStore is gone. SitesChat
 // only needs a flat list shape for its scaffold-prompt seeding logic;
@@ -55,7 +59,7 @@ function flattenThreadsToMessages(threads: Thread[]): Message[] {
 
   const out: Message[] = [];
   for (const t of threads) {
-    if (t.userMsg.role !== "tool") {
+    if (!t.backgroundChild && t.userMsg.role !== "tool") {
       out.push({
         id: t.userMsg.id,
         role: t.userMsg.role,
@@ -75,7 +79,10 @@ function flattenThreadsToMessages(threads: Thread[]): Message[] {
         id: r.id,
         role: r.role,
         text: r.text,
-        responseToClientMessageId: t.id,
+        responseToClientMessageId:
+          r.responseToClientMessageId ??
+          t.responseToClientMessageId ??
+          t.id,
         files: r.files,
         toolCalls: flatToolCalls(r.toolCalls),
         status: r.status,
@@ -89,7 +96,10 @@ function flattenThreadsToMessages(threads: Thread[]): Message[] {
         id: t.pendingAssistant.id,
         role: t.pendingAssistant.role,
         text: t.pendingAssistant.text,
-        responseToClientMessageId: t.id,
+        responseToClientMessageId:
+          t.pendingAssistant.responseToClientMessageId ??
+          t.responseToClientMessageId ??
+          t.id,
         files: t.pendingAssistant.files,
         toolCalls: flatToolCalls(t.pendingAssistant.toolCalls),
         status: t.pendingAssistant.status,
@@ -125,10 +135,11 @@ export function SitesChat({ sessionId }: Props) {
   const projectScaffolded = project?.scaffolded;
   const projectScaffoldError = project?.scaffoldError;
   const historyTopic = project?.preset ? `site ${project.preset}` : undefined;
-  // M10.5: ThreadStore is the single source of truth. SitesChat still
-  // reads a flattened `Message[]` for backwards compatibility with its
-  // internal scaffold-prompt seeding logic.
-  const threads = useThreads(sessionId, historyTopic);
+  // Flatten the negotiated render source for the existing scaffold-prompt
+  // seeding logic. In a v2 session this is canonical projection state; old
+  // servers retain the legacy ThreadStore fallback.
+  const threads = useRenderThreads(sessionId, historyTopic);
+  const projectionMode = useProjectionMode(sessionId, historyTopic);
   const messages = useMemo(
     () => flattenThreadsToMessages(threads),
     [threads],
@@ -142,6 +153,7 @@ export function SitesChat({ sessionId }: Props) {
   // `connected`) and re-issue with `force: true` so the dedup gate
   // doesn't short-circuit.
   useEffect(() => {
+    if (projectionMode !== "legacy") return;
     void ThreadStore.loadHistory(sessionId, historyTopic);
     const onBridgeReady = () => {
       void ThreadStore.loadHistory(sessionId, historyTopic, { force: true });
@@ -150,7 +162,7 @@ export function SitesChat({ sessionId }: Props) {
     return () => {
       window.removeEventListener("crew:bridge_connected", onBridgeReady);
     };
-  }, [historyTopic, sessionId]);
+  }, [historyTopic, projectionMode, sessionId]);
 
   const ensureSiteScaffolded = useCallback(
     async (request?: SessionSendRequest) => {

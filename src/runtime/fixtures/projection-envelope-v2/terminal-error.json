@@ -3,10 +3,15 @@
   "topic": "planning",
   "thread_id": "thread-capture-001",
   "seq": 5,
+  "turn_id": "turn-capture-001",
+  "cursor": {
+    "stream": "session-capture-001",
+    "seq": 104
+  },
   "payload": {
-    "type": "turn_completed",
+    "type": "turn_terminal",
     "data": {
-      "status": "error",
+      "outcome": "errored",
       "token_usage": {
         "input_tokens": 120,
         "output_tokens": 37

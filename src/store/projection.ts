@@ -1,112 +1,104 @@
 /**
- * M9-γ-2: Pure-function projection `(envelopes) → ChatViewModel`.
+ * Pure canonical projection for `projection.envelope.v2`.
  *
- * Spec: `api/OCTOS_UI_PROTOCOL_V1_SPEC_2026-04-24.md` § 14
- *       "M9-γ Envelope".
- * ADR:  `docs/M9-GAMMA-SERVER-PROJECTION-ADR.md`.
- * UPCR: `UPCR-2026-014`.
- *
- * Pure: no React, no hooks, no Date.now, no fetch. Same `Envelope[]`
- * input ⇒ byte-identical `ChatViewModel`. Identity is `(thread_id, seq)`.
- *
- * **Order-independence (codex BLOCK 1, 2)**: out-of-order envelopes are
- * BUFFERED, not dropped. Each thread tracks `expectedNextSeq`. Arrivals
- * with `seq > expectedNextSeq` are buffered as gap candidates; arrivals
- * with `seq < expectedNextSeq` AND not yet applied are buffered as
- * "fill the gap". When a gap fills the projection drains the buffer in
- * canonical seq order. The only true drops are exact-`(thread_id, seq)`
- * duplicates of an applied envelope (`metrics.duplicates`) and arrivals
- * after `turn_completed` on the same thread
- * (`metrics.droppedAfterTurnCompleted`). `metrics.outOfOrder` counts
- * buffered-then-drained envelopes (back-compat name; not dropped).
- *
- * Pure module: no imports from `thread-store` and (post-γ-6)
- * `message-store` no longer exists.
- *
- * **`turn_completed` barrier**: the projection ignores trailing
- * envelopes after `turn_completed` on a `thread_id` and bumps
- * `droppedAfterTurnCompleted`. The bridge re-syncs the connection.
- *
- * **Referential stability (codex BLOCK 4)**: top-level `project()`
- * memoizes by input-array identity (same `envelopes` ref ⇒ same
- * `ChatViewModel` ref). Per-thread `ThreadView` caching is keyed on
- * `(appliedCount, lastSeq)`: when a thread's contributing envelopes
- * haven't changed across distinct `project()` calls, the projection
- * returns the same `ThreadView` reference. This is the simpler
- * variant the brief authorised — a future iteration may switch to a
- * structural hash when callers need finer-grained reuse.
+ * The store owns admission, gap recovery, snapshots, and cursor watermarks;
+ * this module only turns already-admitted v2 envelopes into immutable render
+ * state. Keeping it pure makes segment and attachment ownership behavior
+ * independently testable.
  */
 
 import type {
-  Envelope,
-  EnvelopeTokenUsage,
-  EnvelopeToolEndStatus,
-  FileRef,
-  MessageMeta,
-  Payload,
-} from "../runtime/ui-protocol-types";
-
-// ─── ChatViewModel shape ───────────────────────────────────────────────────
+  ProjectionEnvelopeV2,
+  ProjectionEnvelopeV2Cursor,
+  ProjectionEnvelopeV2FileRef,
+  ProjectionEnvelopeV2MessageMeta,
+  ProjectionEnvelopeV2TerminalError,
+  ProjectionEnvelopeV2TerminalOutcome,
+  ProjectionEnvelopeV2TokenUsage,
+  ProjectionEnvelopeV2ToolEndStatus,
+} from "../runtime/projection-envelope-v2";
 
 export interface UserView {
-  /** First seq in this thread; stable identity for the row. */
   seq: number;
-  /** Reflected from `Envelope.client_message_id` on the user-message-
-   *  rooted envelope. The projection never consults this for identity;
-   *  γ-4's `<GhostBubble>` overlay uses it to match-and-unmount. */
   client_message_id?: string;
-  /** User-typed text from a `user_message` envelope. Empty until a
-   *  `user_message` envelope has been observed. */
   text: string;
-  /** File attachments from a `user_message` envelope. */
-  files: ReadonlyArray<FileRef>;
+  files: ReadonlyArray<ProjectionFileView>;
 }
 
-export interface AssistantView {
-  text: string;
-  meta: MessageMeta | null;
-  persisted: boolean;
+export interface ProjectionFileView extends ProjectionEnvelopeV2FileRef {
+  seq: number;
 }
 
 export interface ToolCallView {
   tool_call_id: string;
   name: string;
-  args?: unknown;
+  arguments?: unknown;
+  arguments_preview?: string;
   progress: ReadonlyArray<string>;
-  status: EnvelopeToolEndStatus | null;
+  status: ProjectionEnvelopeV2ToolEndStatus | null;
   error: string | null;
+  reason?: string;
+  output_preview?: string;
+  duration_ms?: number;
+  /** Segment selected at tool-open time, never inferred from a later bubble. */
+  assistant_segment_id?: string;
+  files: ReadonlyArray<ProjectionFileView>;
 }
 
-export interface FileView {
+export interface AssistantSegmentView {
+  assistant_segment_id: string;
   seq: number;
-  path: string;
-  mime: string;
-  size_bytes: number;
+  text: string;
+  meta: ProjectionEnvelopeV2MessageMeta | null;
+  persisted: boolean;
+  files: ReadonlyArray<ProjectionFileView>;
+  toolCalls: ReadonlyArray<ToolCallView>;
+}
+
+export interface TurnTerminalView {
+  outcome: ProjectionEnvelopeV2TerminalOutcome;
+  error: ProjectionEnvelopeV2TerminalError | null;
+  tokenUsage: ProjectionEnvelopeV2TokenUsage | null;
+  seq: number;
+}
+
+export interface BackgroundChildView {
+  thread_id: string;
+  turn_id: string;
+  seq: number;
+  parent_turn_id: string;
+  response_to_client_message_id: string;
+  task_id: string;
+  tool_call_id?: string;
+  message_id: string;
+  source: string;
+  persisted_at: string;
+  content: string;
+  files: ReadonlyArray<ProjectionFileView>;
 }
 
 export interface ThreadView {
   thread_id: string;
+  turn_id: string;
   user: UserView | null;
-  assistant: AssistantView | null;
+  assistantSegments: ReadonlyArray<AssistantSegmentView>;
   toolCalls: ReadonlyArray<ToolCallView>;
-  files: ReadonlyArray<FileView>;
-  completed: boolean;
-  tokenUsage: EnvelopeTokenUsage | null;
+  terminal: TurnTerminalView | null;
+  /** Present only for the independent child stream itself. */
+  backgroundChild: BackgroundChildView | null;
+  cursor: ProjectionEnvelopeV2Cursor | null;
 }
 
 export interface ChatViewModel {
+  /** Includes parent and child streams. Consumers link `backgroundChild` via
+   * `parent_turn_id`; a child never mutates the parent's terminal stream. */
   threads: ReadonlyArray<ThreadView>;
 }
 
-// ─── Projection metrics ─────────────────────────────────────────────────
-
 export interface ProjectionMetrics {
-  /** Exact `(thread_id, seq)` collision of an already-applied envelope. */
   duplicates: number;
-  /** Envelopes ignored because they arrived after `turn_completed`. */
-  droppedAfterTurnCompleted: number;
-  /** Envelopes that arrived out of canonical seq order and were
-   *  buffered until the gap filled (NOT dropped — eventually applied). */
+  droppedAfterTerminal: number;
+  /** Input observations that were not presented in per-thread seq order. */
   outOfOrder: number;
 }
 
@@ -115,374 +107,343 @@ export interface ProjectionResult {
   metrics: ProjectionMetrics;
 }
 
-// ─── Memoization (codex BLOCK 4) ───────────────────────────────────────────
+type MutableFile = ProjectionFileView;
 
-const projectionCache = new WeakMap<
-  ReadonlyArray<Envelope>,
-  ProjectionResult
->();
-
-// Per-thread ThreadView cache keyed on (appliedCount, lastSeq). When
-// a thread_id produces the same tuple across distinct projections, we
-// return the same ThreadView ref. Bounded by the number of distinct
-// thread_ids observed in the process lifetime.
-const threadViewCache = new Map<
-  string,
-  { count: number; lastSeq: number; view: ThreadView }
->();
-
-/** Test-only: drop the per-thread cache. Tests that re-use the same
- *  `thread_id` across cases need the cache cleared in `beforeEach` so
- *  cross-test bleed doesn't return a stale ThreadView reference. */
-export function __resetProjectionCacheForTesting(): void {
-  threadViewCache.clear();
-  // projectionCache is a WeakMap keyed on input identity; unrelated
-  // tests can't collide there, so no clear required.
+interface MutableTool {
+  tool_call_id: string;
+  name: string;
+  arguments?: unknown;
+  arguments_preview?: string;
+  progress: string[];
+  status: ProjectionEnvelopeV2ToolEndStatus | null;
+  error: string | null;
+  reason?: string;
+  output_preview?: string;
+  duration_ms?: number;
+  assistant_segment_id?: string;
+  files: MutableFile[];
 }
 
-// ─── Projection ────────────────────────────────────────────────────────────
+interface MutableSegment {
+  assistant_segment_id: string;
+  seq: number;
+  text: string;
+  meta: ProjectionEnvelopeV2MessageMeta | null;
+  persisted: boolean;
+  files: MutableFile[];
+  toolCallIds: string[];
+}
 
-export function project(envelopes: ReadonlyArray<Envelope>): ChatViewModel {
+interface MutableThread {
+  thread_id: string;
+  turn_id: string;
+  user: UserView | null;
+  segments: Map<string, MutableSegment>;
+  segmentOrder: string[];
+  activeSegmentId: string | null;
+  tools: Map<string, MutableTool>;
+  toolOrder: string[];
+  terminal: TurnTerminalView | null;
+  backgroundChild: BackgroundChildView | null;
+  cursor: ProjectionEnvelopeV2Cursor | null;
+}
+
+/** Retained for tests that previously reset the shadow projector. There is no
+ * module cache in the v2 projector. */
+export function __resetProjectionCacheForTesting(): void {}
+
+export function project(envelopes: ReadonlyArray<ProjectionEnvelopeV2>): ChatViewModel {
   return projectWithMetrics(envelopes).view;
 }
 
 export function projectWithMetrics(
-  envelopes: ReadonlyArray<Envelope>,
+  envelopes: ReadonlyArray<ProjectionEnvelopeV2>,
 ): ProjectionResult {
-  const cached = projectionCache.get(envelopes);
-  if (cached) return cached;
-  const computed = computeProjection(envelopes);
-  projectionCache.set(envelopes, computed);
-  return computed;
-}
-
-function computeProjection(
-  envelopes: ReadonlyArray<Envelope>,
-): ProjectionResult {
-  interface ThreadAcc {
-    thread_id: string;
-    user: MutableUserView | null;
-    assistantText: string;
-    assistantMeta: MessageMeta | null;
-    assistantPersisted: boolean;
-    assistantSeen: boolean;
-    toolOrder: string[];
-    tools: Map<string, MutableToolCall>;
-    files: FileView[];
-    completed: boolean;
-    tokenUsage: EnvelopeTokenUsage | null;
-    seenSeqs: Set<number>;
-    lastSeq: number; // sentinel: -1
-    expectedNextSeq: number; // = lastSeq + 1
-    pendingByGap: Map<number, Envelope>;
-    seenUserMessage: boolean;
-    /** Envelopes APPLIED to this thread (excludes ignored dups /
-     *  dropped-after-completed). Used by the per-thread view cache. */
-    appliedCount: number;
+  const byThread = new Map<string, ProjectionEnvelopeV2[]>();
+  const order: string[] = [];
+  let outOfOrder = 0;
+  for (const envelope of envelopes) {
+    let list = byThread.get(envelope.thread_id);
+    if (!list) {
+      list = [];
+      byThread.set(envelope.thread_id, list);
+      order.push(envelope.thread_id);
+    }
+    const previous = list[list.length - 1];
+    if (previous && envelope.seq < previous.seq) outOfOrder += 1;
+    list.push(envelope);
   }
-  interface MutableUserView {
-    seq: number;
-    client_message_id?: string;
-    text: string;
-    files: FileRef[];
-  }
-  interface MutableToolCall {
-    tool_call_id: string;
-    name: string;
-    args?: unknown;
-    progress: string[];
-    status: EnvelopeToolEndStatus | null;
-    error: string | null;
-  }
-
-  const threadOrder: string[] = [];
-  const threads = new Map<string, ThreadAcc>();
 
   let duplicates = 0;
-  let droppedAfterTurnCompleted = 0;
-  let outOfOrder = 0;
+  let droppedAfterTerminal = 0;
+  const views: ThreadView[] = [];
 
-  const getThread = (thread_id: string): ThreadAcc => {
-    const existing = threads.get(thread_id);
-    if (existing) return existing;
-    const fresh: ThreadAcc = {
-      thread_id,
+  for (const threadId of order) {
+    const source = byThread.get(threadId)!;
+    const sorted = source.slice().sort((a, b) => a.seq - b.seq);
+    const state: MutableThread = {
+      thread_id: threadId,
+      turn_id: sorted[0]?.turn_id ?? threadId,
       user: null,
-      assistantText: "",
-      assistantMeta: null,
-      assistantPersisted: false,
-      assistantSeen: false,
-      toolOrder: [],
+      segments: new Map(),
+      segmentOrder: [],
+      activeSegmentId: null,
       tools: new Map(),
-      files: [],
-      completed: false,
-      tokenUsage: null,
-      seenSeqs: new Set(),
-      lastSeq: -1,
-      expectedNextSeq: 0,
-      pendingByGap: new Map(),
-      seenUserMessage: false,
-      appliedCount: 0,
+      toolOrder: [],
+      terminal: null,
+      backgroundChild: null,
+      cursor: null,
     };
-    threads.set(thread_id, fresh);
-    threadOrder.push(thread_id);
-    return fresh;
-  };
+    const seen = new Set<number>();
 
-  function applyEnvelope(thread: ThreadAcc, env: Envelope): void {
-    thread.seenSeqs.add(env.seq);
-    if (env.seq > thread.lastSeq) {
-      thread.lastSeq = env.seq;
-    }
-    thread.expectedNextSeq = thread.lastSeq + 1;
-    thread.appliedCount += 1;
-
-    // Capture user identity from the FIRST envelope we apply in
-    // canonical order. Thread membership is determined exclusively by
-    // `(thread_id, seq)` (M9-γ-5, issue #842). The cmid is stored only
-    // so γ-4's GhostBubble overlay can match its server reflection and
-    // unmount; the projection itself does NOT depend on it for
-    // identity. Text + files come exclusively from a user_message
-    // payload via applyPayload.
-    if (thread.user === null) {
-      thread.user = {
-        seq: env.seq,
-        ...(env.client_message_id !== undefined
-          ? { client_message_id: env.client_message_id }
-          : {}),
-        text: "",
-        files: [],
-      };
-    }
-
-    applyPayload(thread, env.payload);
-  }
-
-  function drainPending(thread: ThreadAcc): void {
-    while (
-      !thread.completed &&
-      thread.pendingByGap.has(thread.expectedNextSeq)
-    ) {
-      const next = thread.pendingByGap.get(thread.expectedNextSeq)!;
-      thread.pendingByGap.delete(thread.expectedNextSeq);
-      applyEnvelope(thread, next);
-    }
-  }
-
-  for (const env of envelopes) {
-    const thread = getThread(env.thread_id);
-
-    // True duplicate of an already-applied (thread_id, seq).
-    if (thread.seenSeqs.has(env.seq)) {
-      duplicates += 1;
-      continue;
-    }
-
-    // Hard barrier.
-    if (thread.completed) {
-      droppedAfterTurnCompleted += 1;
-      continue;
-    }
-
-    // In-order arrival.
-    if (env.seq === thread.expectedNextSeq) {
-      applyEnvelope(thread, env);
-      drainPending(thread);
-      continue;
-    }
-
-    // Future arrival (gap above expected): buffer.
-    if (env.seq > thread.expectedNextSeq) {
-      if (thread.pendingByGap.has(env.seq)) {
+    for (const envelope of sorted) {
+      if (seen.has(envelope.seq)) {
         duplicates += 1;
         continue;
       }
-      thread.pendingByGap.set(env.seq, env);
-      outOfOrder += 1;
-      continue;
+      seen.add(envelope.seq);
+      if (state.terminal !== null) {
+        // A background completion has its own thread id, so this only rejects
+        // invalid parent-stream traffic after its terminal event.
+        droppedAfterTerminal += 1;
+        continue;
+      }
+      state.turn_id = envelope.turn_id;
+      if (envelope.cursor) state.cursor = envelope.cursor;
+      applyEnvelope(state, envelope);
     }
 
-    // Late fill (env.seq < expectedNextSeq, not yet seen): buffer +
-    // drain. Codex BLOCK 1: don't drop — buffer for canonical replay.
-    thread.pendingByGap.set(env.seq, env);
-    outOfOrder += 1;
-    drainPending(thread);
-  }
-
-  // Build immutable views with per-thread reference stability.
-  const threadViews: ThreadView[] = threadOrder.map((thread_id) => {
-    const acc = threads.get(thread_id)!;
-
-    const cached = threadViewCache.get(thread_id);
-    if (
-      cached &&
-      cached.count === acc.appliedCount &&
-      cached.lastSeq === acc.lastSeq
-    ) {
-      return cached.view;
-    }
-
-    const assistant: AssistantView | null = acc.assistantSeen
-      ? {
-          text: acc.assistantText,
-          meta: acc.assistantMeta,
-          persisted: acc.assistantPersisted,
-        }
-      : null;
-    const toolCalls: ToolCallView[] = acc.toolOrder.map((tcId) => {
-      const t = acc.tools.get(tcId)!;
+    const tools = state.toolOrder.map((id) => toToolView(state.tools.get(id)!));
+    const segments = state.segmentOrder.map((id) => {
+      const segment = state.segments.get(id)!;
       return {
-        tool_call_id: t.tool_call_id,
-        name: t.name,
-        ...(t.args !== undefined ? { args: t.args } : {}),
-        progress: t.progress.slice(),
-        status: t.status,
-        error: t.error,
+        assistant_segment_id: segment.assistant_segment_id,
+        seq: segment.seq,
+        text: segment.text,
+        meta: segment.meta,
+        persisted: segment.persisted,
+        files: segment.files.map(copyFile),
+        toolCalls: segment.toolCallIds
+          .map((id) => state.tools.get(id))
+          .filter((tool): tool is MutableTool => tool !== undefined)
+          .map(toToolView),
       };
     });
-    const userView: UserView | null = acc.user
-      ? {
-          seq: acc.user.seq,
-          ...(acc.user.client_message_id !== undefined
-            ? { client_message_id: acc.user.client_message_id }
-            : {}),
-          text: acc.user.text,
-          files: acc.user.files.slice(),
-        }
-      : null;
-    const view: ThreadView = {
-      thread_id: acc.thread_id,
-      user: userView,
-      assistant,
-      toolCalls,
-      files: acc.files.slice(),
-      completed: acc.completed,
-      tokenUsage: acc.tokenUsage,
-    };
-    threadViewCache.set(thread_id, {
-      count: acc.appliedCount,
-      lastSeq: acc.lastSeq,
-      view,
+    views.push({
+      thread_id: state.thread_id,
+      turn_id: state.turn_id,
+      user: state.user,
+      assistantSegments: segments,
+      toolCalls: tools,
+      terminal: state.terminal,
+      backgroundChild: state.backgroundChild,
+      cursor: state.cursor,
     });
-    return view;
-  });
+  }
 
   return {
-    view: { threads: threadViews },
-    metrics: { duplicates, droppedAfterTurnCompleted, outOfOrder },
+    view: { threads: views },
+    metrics: { duplicates, droppedAfterTerminal, outOfOrder },
   };
+}
 
-  // ── inner: payload dispatch ───────────────────────────────────────────
-  function applyPayload(thread: ThreadAcc, payload: Payload): void {
-    switch (payload.type) {
-      case "user_message": {
-        // Codex BLOCK 3: populate UserView.text + files from the
-        // user_message payload. First-seen wins per thread.
-        if (!thread.user) {
-          thread.user = {
-            seq: thread.lastSeq,
-            text: payload.data.text,
-            files: payload.data.files.slice(),
-          };
-        } else if (!thread.seenUserMessage) {
-          thread.user.text = payload.data.text;
-          thread.user.files = payload.data.files.slice();
-        }
-        thread.seenUserMessage = true;
-        return;
-      }
-      case "assistant_delta": {
-        thread.assistantSeen = true;
-        if (!thread.assistantPersisted) {
-          thread.assistantText += payload.data.text;
-        }
-        return;
-      }
-      case "assistant_persisted": {
-        thread.assistantSeen = true;
-        thread.assistantText = payload.data.text;
-        thread.assistantMeta = payload.data.meta;
-        thread.assistantPersisted = true;
-        return;
-      }
-      case "tool_start": {
-        const id = payload.data.tool_call_id;
-        if (thread.tools.has(id)) return;
-        thread.tools.set(id, {
-          tool_call_id: id,
-          name: payload.data.name,
-          ...(payload.data.arguments !== undefined
-            ? { args: payload.data.arguments }
+function applyEnvelope(state: MutableThread, envelope: ProjectionEnvelopeV2): void {
+  const { payload } = envelope;
+  switch (payload.type) {
+    case "user_message": {
+      if (state.user === null) {
+        state.user = {
+          seq: envelope.seq,
+          ...(envelope.client_message_id !== undefined
+            ? { client_message_id: envelope.client_message_id }
             : {}),
-          progress: [],
-          status: null,
-          error: null,
+          text: payload.data.text,
+          files: payload.data.files.map((file) => toFile(file, envelope.seq)),
+        };
+      }
+      return;
+    }
+    case "assistant_delta": {
+      const segment = ensureSegment(state, payload.data.assistant_segment_id, envelope.seq);
+      state.activeSegmentId = segment.assistant_segment_id;
+      if (!segment.persisted) segment.text += payload.data.text;
+      return;
+    }
+    case "reasoning_delta":
+      // Reasoning is intentionally not merged into assistant content.
+      return;
+    case "assistant_persisted": {
+      const segment = ensureSegment(state, payload.data.assistant_segment_id, envelope.seq);
+      state.activeSegmentId = segment.assistant_segment_id;
+      segment.text = payload.data.text;
+      segment.meta = payload.data.meta;
+      segment.persisted = true;
+      for (const mediaPath of payload.data.meta.media ?? []) {
+        addFile(segment.files, {
+          path: mediaPath,
+          mime: "application/octet-stream",
+          size_bytes: 0,
+          seq: envelope.seq,
         });
-        thread.toolOrder.push(id);
-        return;
       }
-      case "tool_progress": {
-        const id = payload.data.tool_call_id;
-        const tool = thread.tools.get(id);
-        if (!tool) {
-          const opened: MutableToolCall = {
-            tool_call_id: id,
-            name: "",
-            progress: [payload.data.message],
-            status: null,
-            error: null,
-          };
-          thread.tools.set(id, opened);
-          thread.toolOrder.push(id);
-          return;
+      return;
+    }
+    case "tool_start": {
+      const tool = ensureTool(state, payload.data.tool_call_id);
+      tool.name = payload.data.name;
+      if (payload.data.arguments !== undefined) {
+        tool.arguments = payload.data.arguments;
+      }
+      if (payload.data.arguments_preview !== undefined) {
+        tool.arguments_preview = payload.data.arguments_preview;
+      }
+      if (state.activeSegmentId) {
+        tool.assistant_segment_id = state.activeSegmentId;
+        const segment = state.segments.get(state.activeSegmentId)!;
+        if (!segment.toolCallIds.includes(tool.tool_call_id)) {
+          segment.toolCallIds.push(tool.tool_call_id);
         }
-        tool.progress.push(payload.data.message);
-        return;
       }
-      case "tool_end": {
-        const id = payload.data.tool_call_id;
-        const tool = thread.tools.get(id);
-        if (!tool) {
-          const opened: MutableToolCall = {
-            tool_call_id: id,
-            name: "",
-            progress: [],
-            status: payload.data.status,
-            error:
-              payload.data.status === "error"
-                ? payload.data.error ?? null
-                : null,
-          };
-          thread.tools.set(id, opened);
-          thread.toolOrder.push(id);
-          return;
-        }
-        tool.status = payload.data.status;
-        tool.error =
-          payload.data.status === "error"
-            ? payload.data.error ?? null
-            : null;
-        return;
+      return;
+    }
+    case "tool_progress": {
+      const tool = ensureTool(state, payload.data.tool_call_id);
+      tool.progress.push(payload.data.message);
+      return;
+    }
+    case "tool_end": {
+      const tool = ensureTool(state, payload.data.tool_call_id);
+      tool.status = payload.data.status;
+      tool.error = payload.data.error ?? null;
+      if (payload.data.reason !== undefined) tool.reason = payload.data.reason;
+      if (payload.data.output_preview !== undefined) tool.output_preview = payload.data.output_preview;
+      if (payload.data.duration_ms !== undefined) tool.duration_ms = payload.data.duration_ms;
+      return;
+    }
+    case "file_attached": {
+      const file = toFile(payload.data, envelope.seq);
+      const owner = payload.data;
+      if (owner.assistant_segment_id) {
+        const segment = ensureSegment(state, owner.assistant_segment_id, envelope.seq);
+        addFile(segment.files, file);
       }
-      case "file_attached": {
-        thread.files.push({
-          seq: thread.lastSeq,
-          path: payload.data.path,
-          mime: payload.data.mime,
-          size_bytes: payload.data.size_bytes,
-        });
-        return;
+      if (owner.tool_call_id) {
+        const tool = ensureTool(state, owner.tool_call_id);
+        addFile(tool.files, file);
       }
-      case "turn_completed": {
-        thread.completed = true;
-        thread.tokenUsage = payload.data.token_usage;
-        return;
-      }
-      default: {
-        const _exhaustive: never = payload;
-        void _exhaustive;
-        return;
-      }
+      return;
+    }
+    case "turn_terminal":
+      state.terminal = {
+        outcome: payload.data.outcome,
+        error: payload.data.error ?? null,
+        tokenUsage: payload.data.token_usage ?? null,
+        seq: envelope.seq,
+      };
+      return;
+    case "background/spawn_complete": {
+      state.backgroundChild = {
+        thread_id: envelope.thread_id,
+        turn_id: envelope.turn_id,
+        seq: envelope.seq,
+        parent_turn_id: payload.data.parent_turn_id,
+        response_to_client_message_id:
+          payload.data.response_to_client_message_id,
+        task_id: payload.data.task_id,
+        ...(payload.data.tool_call_id !== undefined
+          ? { tool_call_id: payload.data.tool_call_id }
+          : {}),
+        message_id:
+          payload.data.message_id ??
+          `${envelope.turn_id}:background:${payload.data.task_id}:${envelope.seq}`,
+        source: payload.data.source ?? "background",
+        persisted_at:
+          payload.data.persisted_at ?? payload.data.meta?.persisted_at ?? "",
+        content: payload.data.content,
+        files: (payload.data.media ?? payload.data.meta?.media ?? []).map((path) => ({
+          path,
+          mime: "application/octet-stream",
+          size_bytes: 0,
+          seq: envelope.seq,
+        })),
+      };
+      return;
     }
   }
+}
+
+function ensureSegment(
+  state: MutableThread,
+  assistantSegmentId: string,
+  seq: number,
+): MutableSegment {
+  const existing = state.segments.get(assistantSegmentId);
+  if (existing) return existing;
+  const created: MutableSegment = {
+    assistant_segment_id: assistantSegmentId,
+    seq,
+    text: "",
+    meta: null,
+    persisted: false,
+    files: [],
+    toolCallIds: [],
+  };
+  state.segments.set(assistantSegmentId, created);
+  state.segmentOrder.push(assistantSegmentId);
+  return created;
+}
+
+function ensureTool(state: MutableThread, toolCallId: string): MutableTool {
+  const existing = state.tools.get(toolCallId);
+  if (existing) return existing;
+  const created: MutableTool = {
+    tool_call_id: toolCallId,
+    name: "",
+    progress: [],
+    status: null,
+    error: null,
+    files: [],
+  };
+  state.tools.set(toolCallId, created);
+  state.toolOrder.push(toolCallId);
+  return created;
+}
+
+function toFile(file: ProjectionEnvelopeV2FileRef, seq: number): MutableFile {
+  return { path: file.path, mime: file.mime, size_bytes: file.size_bytes, seq };
+}
+
+function addFile(target: MutableFile[], file: MutableFile): void {
+  const existing = target.find((item) => item.path === file.path);
+  if (!existing) {
+    target.push(file);
+    return;
+  }
+  // A dedicated file_attached event has richer metadata than media on a
+  // persisted message, so upgrade the existing row without moving it.
+  if (existing.mime === "application/octet-stream" && file.mime) existing.mime = file.mime;
+  if (existing.size_bytes === 0 && file.size_bytes > 0) existing.size_bytes = file.size_bytes;
+}
+
+function copyFile(file: MutableFile): ProjectionFileView {
+  return { path: file.path, mime: file.mime, size_bytes: file.size_bytes, seq: file.seq };
+}
+
+function toToolView(tool: MutableTool): ToolCallView {
+  return {
+    tool_call_id: tool.tool_call_id,
+    name: tool.name,
+    ...(tool.arguments !== undefined ? { arguments: tool.arguments } : {}),
+    ...(tool.arguments_preview !== undefined ? { arguments_preview: tool.arguments_preview } : {}),
+    progress: tool.progress.slice(),
+    status: tool.status,
+    error: tool.error,
+    ...(tool.reason !== undefined ? { reason: tool.reason } : {}),
+    ...(tool.output_preview !== undefined ? { output_preview: tool.output_preview } : {}),
+    ...(tool.duration_ms !== undefined ? { duration_ms: tool.duration_ms } : {}),
+    ...(tool.assistant_segment_id !== undefined
+      ? { assistant_segment_id: tool.assistant_segment_id }
+      : {}),
+    files: tool.files.map(copyFile),
+  };
 }

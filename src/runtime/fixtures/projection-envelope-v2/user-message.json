@@ -3,7 +3,12 @@
   "topic": "planning",
   "thread_id": "thread-capture-001",
   "seq": 1,
+  "turn_id": "turn-capture-001",
   "client_message_id": "cmid-capture-001",
+  "cursor": {
+    "stream": "session-capture-001",
+    "seq": 100
+  },
   "payload": {
     "type": "user_message",
     "data": {

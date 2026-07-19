@@ -96,6 +96,12 @@ export interface SessionOpenedResult {
   session_id: string;
   active_profile_id?: string;
   cursor?: UiCursor;
+  /** Features actually accepted by the server for this connection. The
+   * request list is only an offer; rendering may select v2 only from this
+   * negotiated response. Older servers simply omit this field. */
+  capabilities?: {
+    supported_features?: string[];
+  };
   workspace_root?: string;
   panes?: unknown;
   /** Server-persisted per-session reasoning effort, surfaced on the
@@ -1003,6 +1009,12 @@ export interface SessionHydrateResult {
   pending_approvals?: unknown[];
   replayed_envelopes?: TurnSpawnCompleteEvent[];
   replayed_tool_envelopes?: Envelope[];
+  /** Optional canonical snapshot carrier. Older servers omit it. */
+  projection_envelopes?: unknown[];
+  projection_snapshot?: {
+    envelopes?: unknown[];
+    cursor?: UiCursor;
+  };
 }
 
 /** Result of `session/rollback` — conversation-only rewind. The server
@@ -1173,12 +1185,6 @@ export interface Envelope {
   client_message_id?: ClientMessageId;
   payload: Payload;
 }
-
-/** Wire-form capability flag for UPCR-2026-014. Servers advertise it via
- *  `UiProtocolCapabilities.supported_features`; clients request it via
- *  the `X-Octos-Ui-Features` header. Mirrors
- *  `UI_PROTOCOL_FEATURE_PROJECTION_ENVELOPE_V1` in the Rust types. */
-export const UI_PROTOCOL_FEATURE_PROJECTION_ENVELOPE_V1 = "projection.envelope.v1";
 
 // ── Type guards (optional ergonomic helpers) ─────────────────────────────
 //
