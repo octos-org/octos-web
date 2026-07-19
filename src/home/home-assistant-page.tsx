@@ -33,8 +33,6 @@ import {
 } from "@/runtime/session-context";
 import { UiProtocolApprovalHost } from "@/components/ui-protocol-approval-host";
 import { UiProtocolQuestionHost } from "@/components/ui-protocol-question-host";
-import * as ThreadStore from "@/store/thread-store";
-import { useProjectionMode } from "@/store/projection-render-adapter";
 import { useWakeLock } from "./use-wake-lock";
 import { StandbyView } from "./standby-view";
 import { ConversationView } from "./conversation-view";
@@ -229,22 +227,6 @@ export function HomeAssistantPage() {
     homeSessionId,
     HOME_HISTORY_TOPIC,
   );
-  const projectionMode = useProjectionMode(homeSessionId, HOME_HISTORY_TOPIC);
-
-  // Load conversation history on mount; retry when bridge reconnects.
-  useEffect(() => {
-    if (projectionMode !== "legacy") return;
-    void ThreadStore.loadHistory(homeSessionId, HOME_HISTORY_TOPIC);
-    const onBridgeReady = () => {
-      void ThreadStore.loadHistory(homeSessionId, HOME_HISTORY_TOPIC, {
-        force: true,
-      });
-    };
-    window.addEventListener("crew:bridge_connected", onBridgeReady);
-    return () => {
-      window.removeEventListener("crew:bridge_connected", onBridgeReady);
-    };
-  }, [homeSessionId, projectionMode]);
 
   const [activeTask, setActiveTask] = useState(false);
   const setServerTaskActive = useCallback(
@@ -259,7 +241,6 @@ export function HomeAssistantPage() {
       historyTopic: HOME_HISTORY_TOPIC,
       currentSessionTitle: "Home Assistant",
       currentSessionStats: null,
-      initialMessages: [] as never[],
       activeTaskOnServer: activeTask,
       queueMode: queueMode as QueueMode,
       adaptiveMode: adaptiveMode as AdaptiveMode,

@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HomeAssistantPage } from "./home-assistant-page";
 
 const navigateMock = vi.hoisted(() => vi.fn());
-const loadHistoryMock = vi.hoisted(() => vi.fn());
 const unlockAudioMock = vi.hoisted(() => vi.fn());
 const runtimeMock = vi.hoisted(() => ({
   ready: true,
@@ -45,10 +44,6 @@ vi.mock("@/components/ui-protocol-approval-host", () => ({
 
 vi.mock("@/components/ui-protocol-question-host", () => ({
   UiProtocolQuestionHost: () => null,
-}));
-
-vi.mock("@/store/thread-store", () => ({
-  loadHistory: (...args: unknown[]) => loadHistoryMock(...args),
 }));
 
 vi.mock("./use-wake-lock", () => ({
@@ -130,7 +125,6 @@ describe("HomeAssistantPage wake word", () => {
     cleanup();
     localStorage.clear();
     navigateMock.mockReset();
-    loadHistoryMock.mockReset();
     unlockAudioMock.mockReset();
     runtimeMock.ready = true;
     runtimeMock.loading = false;

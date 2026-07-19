@@ -9,9 +9,6 @@ import type { SlidesProject } from "../types";
   true;
 
 const bridgeSendMock = vi.hoisted(() => vi.fn());
-const threadStoreMocks = vi.hoisted(() => ({
-  loadHistory: vi.fn(),
-}));
 const slidesApiMocks = vi.hoisted(() => ({
   buildSlidesSlug: vi.fn(),
   fetchSlidesManifest: vi.fn(),
@@ -30,8 +27,6 @@ vi.mock("@/runtime/runtime-provider", () => ({
 vi.mock("@/runtime/ui-protocol-send", () => ({
   sendMessage: bridgeSendMock,
 }));
-
-vi.mock("@/store/thread-store", () => threadStoreMocks);
 
 vi.mock("../api", () => slidesApiMocks);
 
@@ -99,7 +94,6 @@ async function flushAsyncWork() {
 beforeEach(() => {
   localStorage.clear();
   bridgeSendMock.mockReset();
-  threadStoreMocks.loadHistory.mockReset();
   slidesApiMocks.buildSlidesSlug.mockReset();
   slidesApiMocks.fetchSlidesManifest.mockReset();
   slidesApiMocks.listSlidesFiles.mockReset();

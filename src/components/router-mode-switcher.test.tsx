@@ -45,7 +45,6 @@ function makeSessionCtx(
     historyTopic: undefined,
     currentSessionTitle: "",
     currentSessionStats: null,
-    initialMessages: [],
     activeTaskOnServer: false,
     queueMode: null,
     adaptiveMode,

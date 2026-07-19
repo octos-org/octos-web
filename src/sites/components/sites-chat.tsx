@@ -12,12 +12,8 @@ import {
 } from "@/runtime/session-context";
 import { ScopedRuntimeBridge } from "@/runtime/runtime-provider";
 import { sendMessage as bridgeSend } from "@/runtime/ui-protocol-send";
-import * as ThreadStore from "@/store/thread-store";
 import type { Thread } from "@/store/thread-store";
-import {
-  useProjectionMode,
-  useRenderThreads,
-} from "@/store/projection-render-adapter";
+import { useRenderThreads } from "@/store/projection-render-adapter";
 
 // M9-γ-6: the legacy `Message` shape from MessageStore is gone. SitesChat
 // only needs a flat list shape for its scaffold-prompt seeding logic;
@@ -128,6 +124,7 @@ function sleep(ms: number): Promise<void> {
 export function SitesChat({ sessionId }: Props) {
   const { project, save } = useSites();
   const projectRef = useRef(project);
+  // eslint-disable-next-line react-hooks/refs -- The stable scaffold callback must read the latest project without being recreated for every save.
   projectRef.current = project;
   const scaffoldPromiseRef = useRef<Promise<void> | null>(null);
   const projectId = project?.id;
@@ -135,34 +132,13 @@ export function SitesChat({ sessionId }: Props) {
   const projectScaffolded = project?.scaffolded;
   const projectScaffoldError = project?.scaffoldError;
   const historyTopic = project?.preset ? `site ${project.preset}` : undefined;
-  // Flatten the negotiated render source for the existing scaffold-prompt
-  // seeding logic. In a v2 session this is canonical projection state; old
-  // servers retain the legacy ThreadStore fallback.
+  // Flatten canonical projection state for the existing scaffold-prompt
+  // seeding logic.
   const threads = useRenderThreads(sessionId, historyTopic);
-  const projectionMode = useProjectionMode(sessionId, historyTopic);
   const messages = useMemo(
     () => flattenThreadsToMessages(threads),
     [threads],
   );
-
-  // Mirror the slides-chat fix: `loadHistory` mount-races the bridge
-  // handshake, throws "no connected bridge", catch silently clears
-  // loadedSessions, deps never change, no retry. Listen for
-  // `crew:bridge_connected` (dispatched at
-  // `runtime/ui-protocol-runtime.ts:152` when the bridge reaches
-  // `connected`) and re-issue with `force: true` so the dedup gate
-  // doesn't short-circuit.
-  useEffect(() => {
-    if (projectionMode !== "legacy") return;
-    void ThreadStore.loadHistory(sessionId, historyTopic);
-    const onBridgeReady = () => {
-      void ThreadStore.loadHistory(sessionId, historyTopic, { force: true });
-    };
-    window.addEventListener("crew:bridge_connected", onBridgeReady);
-    return () => {
-      window.removeEventListener("crew:bridge_connected", onBridgeReady);
-    };
-  }, [historyTopic, projectionMode, sessionId]);
 
   const ensureSiteScaffolded = useCallback(
     async (request?: SessionSendRequest) => {
@@ -322,7 +298,6 @@ export function SitesChat({ sessionId }: Props) {
       historyTopic,
       currentSessionTitle: projectTitle || "Site Agent",
       currentSessionStats: null,
-      initialMessages: [] as never[],
       activeTaskOnServer: false,
       queueMode,
       adaptiveMode,

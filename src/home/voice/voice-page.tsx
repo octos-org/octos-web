@@ -10,7 +10,7 @@
  * pipeline). Entry point lives on the root page (`/`).
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ScopedRuntimeBridge } from "@/runtime/runtime-provider";
 import { UiProtocolQuestionHost } from "@/components/ui-protocol-question-host";
@@ -20,8 +20,6 @@ import {
   type QueueMode,
   type AdaptiveMode,
 } from "@/runtime/session-context";
-import * as ThreadStore from "@/store/thread-store";
-import { useProjectionMode } from "@/store/projection-render-adapter";
 import { VoiceView } from "./voice-view";
 
 const VOICE_SESSION_KEY = "octos_voice_session_id";
@@ -48,22 +46,6 @@ export function VoicePage() {
   }, []);
 
   const { queueMode, adaptiveMode } = useModeState(voiceSessionId);
-  const projectionMode = useProjectionMode(voiceSessionId);
-
-  // Load this session's history on mount; retry when the bridge reconnects.
-  useEffect(() => {
-    if (projectionMode !== "legacy") return;
-    void ThreadStore.loadHistory(voiceSessionId);
-    const onBridgeReady = () => {
-      void ThreadStore.loadHistory(voiceSessionId, undefined, {
-        force: true,
-      });
-    };
-    window.addEventListener("crew:bridge_connected", onBridgeReady);
-    return () => {
-      window.removeEventListener("crew:bridge_connected", onBridgeReady);
-    };
-  }, [projectionMode, voiceSessionId]);
 
   const [activeTask, setActiveTask] = useState(false);
   const setServerTaskActive = useCallback(
@@ -78,7 +60,6 @@ export function VoicePage() {
       historyTopic: "",
       currentSessionTitle: "Voice",
       currentSessionStats: null,
-      initialMessages: [] as never[],
       activeTaskOnServer: activeTask,
       queueMode: queueMode as QueueMode,
       adaptiveMode: adaptiveMode as AdaptiveMode,

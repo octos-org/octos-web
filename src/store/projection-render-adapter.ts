@@ -2,15 +2,13 @@
  * Read-only render adapter for the canonical projection model.
  *
  * Presentational chat components still consume the long-lived `Thread` shape.
- * This adapter supplies that shape from ProjectionStore when v2 was negotiated
- * and delegates to ThreadStore only for an old-server session. It never writes
- * either store.
+ * This adapter always supplies that shape from ProjectionStore and never writes
+ * to it.
  */
 
 import { useSyncExternalStore } from "react";
 import { displayFilenameFromPath } from "@/lib/utils";
 import * as ProjectionStore from "@/store/projection-store";
-import * as ThreadStore from "@/store/thread-store";
 import type {
   AssistantSegmentView,
   BackgroundChildView,
@@ -30,34 +28,6 @@ interface CachedRenderThreads {
 }
 
 const cache = new Map<string, CachedRenderThreads>();
-const EMPTY_LEGACY_THREADS: Thread[] = [];
-
-function legacyThreads(sessionId: string, topic?: string): Thread[] {
-  const legacy = ThreadStore as typeof ThreadStore;
-  // Vitest's module mock proxy throws when an absent named export is read;
-  // check ownership before touching it so isolated legacy-render mocks can
-  // continue providing only useThreads.
-  if (
-    Object.prototype.hasOwnProperty.call(legacy, "getThreads") &&
-    typeof legacy.getThreads === "function"
-  ) {
-    return legacy.getThreads(sessionId, topic);
-  }
-  // Production ThreadStore always exports getThreads. Returning a stable
-  // empty snapshot for narrow isolated mocks keeps useSyncExternalStore's
-  // contract intact without invoking another hook from this selector.
-  return EMPTY_LEGACY_THREADS;
-}
-
-function subscribeLegacy(listener: () => void): () => void {
-  const legacy = ThreadStore as typeof ThreadStore & {
-    subscribe?: (callback: () => void) => () => void;
-  };
-  return Object.prototype.hasOwnProperty.call(legacy, "subscribe") &&
-    typeof legacy.subscribe === "function"
-    ? legacy.subscribe(listener)
-    : () => {};
-}
 
 function timestamp(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
@@ -312,16 +282,8 @@ export function projectionToRenderThreads(
   );
 }
 
-/** Select the active render source without ever combining the two models. */
+/** Select the canonical render source. */
 export function getRenderThreads(sessionId: string, topic?: string): Thread[] {
-  const mode = ProjectionStore.projectionMode(sessionId, topic);
-  // Do not briefly render a legacy REST/history result before the server has
-  // selected its capability path. The old-server fallback becomes visible as
-  // soon as its session/open ack chooses `legacy`.
-  if (mode === "pending") return EMPTY_LEGACY_THREADS;
-  if (mode === "legacy") {
-    return legacyThreads(sessionId, topic);
-  }
   const key = ProjectionStore.projectionStoreKey(sessionId, topic);
   const view = ProjectionStore.getProjection(key);
   const cached = cache.get(key);
@@ -331,44 +293,12 @@ export function getRenderThreads(sessionId: string, topic?: string): Thread[] {
   return threads;
 }
 
-/** React selector used by every chat render surface. Both stores notify so a
- * capability transition switches cleanly, but only one store is read. */
+/** React selector used by every chat render surface. */
 export function useRenderThreads(sessionId: string, topic?: string): Thread[] {
   return useSyncExternalStore(
-    (listener) => {
-      const offProjection = ProjectionStore.subscribe(listener);
-      const offLegacy = subscribeLegacy(listener);
-      return () => {
-        offProjection();
-        offLegacy();
-      };
-    },
+    ProjectionStore.subscribe,
     () => getRenderThreads(sessionId, topic),
     () => getRenderThreads(sessionId, topic),
-  );
-}
-
-/** Reactive capability selector for history/clear surfaces that must avoid
- * touching legacy content once a v2 session has been confirmed. */
-export function useProjectionV2(sessionId: string, topic?: string): boolean {
-  return useSyncExternalStore(
-    ProjectionStore.subscribe,
-    () => ProjectionStore.isProjectionV2Enabled(sessionId, topic),
-    () => ProjectionStore.isProjectionV2Enabled(sessionId, topic),
-  );
-}
-
-/** Reactive negotiated mode for history loaders. `pending` must not load or
- * surface legacy content, otherwise a new server can render both paths during
- * its handshake. */
-export function useProjectionMode(
-  sessionId: string,
-  topic?: string,
-): ProjectionStore.ProjectionMode {
-  return useSyncExternalStore(
-    ProjectionStore.subscribe,
-    () => ProjectionStore.projectionMode(sessionId, topic),
-    () => ProjectionStore.projectionMode(sessionId, topic),
   );
 }
 

@@ -29,7 +29,7 @@ afterEach(() => {
 });
 
 describe("projection render adapter", () => {
-  it("does not expose legacy history while capability negotiation is pending", () => {
+  it("never exposes ThreadStore rows", () => {
     ThreadStore.addUserMessage(sessionId, {
       text: "legacy row must not flash",
       clientMessageId: "legacy-cmid",
@@ -37,19 +37,12 @@ describe("projection render adapter", () => {
       topic,
     });
 
-    ProjectionStore.setProjectionV2Pending(sessionId, topic);
-    expect(ProjectionStore.projectionMode(sessionId, topic)).toBe("pending");
+    ProjectionStore.resetProjectionScope(sessionId, topic);
     expect(getRenderThreads(sessionId, topic)).toEqual([]);
-
-    ProjectionStore.setProjectionV2Enabled(sessionId, topic, false);
-    expect(getRenderThreads(sessionId, topic).map((thread) => thread.id)).toEqual([
-      "legacy-cmid",
-    ]);
   });
 
-  it("renders only canonical segments in v2 mode and preserves a terminal failure", () => {
+  it("renders only canonical segments and preserves a terminal failure", () => {
     const key = ProjectionStore.projectionStoreKey(sessionId, topic);
-    ProjectionStore.setProjectionV2Enabled(sessionId, topic, true);
     const frames: ProjectionEnvelopeV2[] = [
       frame(1, {
         type: "user_message",
@@ -100,7 +93,6 @@ describe("projection render adapter", () => {
 
   it("keeps a background completion as a linked child stream, not a parent response", () => {
     const key = ProjectionStore.projectionStoreKey(sessionId, topic);
-    ProjectionStore.setProjectionV2Enabled(sessionId, topic, true);
     ProjectionStore.ingest(key, frame(1, {
       type: "user_message",
       data: { text: "start a background task", files: [] },

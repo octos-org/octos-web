@@ -54,7 +54,6 @@ import {
   type ThreadMessage,
   type ThreadToolCall,
 } from "@/store/thread-store";
-import { isProjectionV2Enabled } from "@/store/projection-store";
 import { useRenderThreads } from "@/store/projection-render-adapter";
 import { uploadFiles } from "@/api/chat";
 import { compactSession } from "@/api/sessions";
@@ -217,7 +216,6 @@ function useBlobUrl(filePath: string, sessionId?: string): BlobUrlState {
     let revoked = false;
     let url: string | undefined;
 
-    setBlobState({ filePath, sessionId, status: "loading" });
     const token = getToken();
     const apiUrl = buildFileUrl(filePath, { sessionId });
     fetch(apiUrl, {
@@ -1173,31 +1171,10 @@ function isVisibleResponse(
   // on the assistant message; rendering them as standalone bubbles would
   // duplicate output (the assistant already shows tool-call status + progress).
   if (message.role === "tool") return false;
-  // 2026-05-14 hard-refresh replay fix: mirror the server-side wire
-  // filter `is_metadata_only_assistant_row` at the SPA render boundary.
-  //
-  // The agent's iterative tool-call loop commits an Assistant `Message`
-  // per LLM iteration. For a turn whose first LLM iteration emits only
-  // `tool_calls` (no rendered text and no media) — the canonical
-  // shape that brackets every `tool/started` → `tool/completed` for a
-  // spawn_only tool such as `run_pipeline` — the JSONL row has
-  // `content=""`, `media=[]` and (server-side) `tool_calls=[...]`.
-  //
-  // The server's `MessageCommitObserver` suppresses these rows from
-  // the LIVE `message/persisted` wire (see `is_metadata_only_assistant_row`
-  // in `crates/octos-cli/src/api/ui_protocol.rs`). The legacy REST
-  // `session/messages_page` returns the unfiltered JSONL — and its
-  // `MessageInfo` shape (handlers.rs:531) strips `tool_calls`. So on
-  // a hard refresh `replayHistory` ingests a `ThreadMessage` with
-  // `text=""`, `files=[]`, `toolCalls=[]` and renders it as an empty
-  // timestamp-only bubble (the recurring user-visible regression).
-  //
-  // Match predicate: assistant role, no text content, no files, no
-  // tool-call data. Live state cannot match this predicate after
-  // `tool/started` runs (which populates `toolCalls`), so the spawn_only
-  // heartbeat path covered by `chat-thread-heartbeat.test.tsx` is
-  // untouched. A finalised bubble with progress chips always carries
-  // `toolCalls.length > 0`.
+  // Filter metadata-only assistant entries at the projection render boundary.
+  // A turn that contains neither text, files, nor tool-call data would become
+  // a timestamp-only bubble; tool-bearing entries remain visible because they
+  // carry their tool-call state.
   if (
     message.role === "assistant" &&
     !message.text.trim() &&
@@ -1488,15 +1465,6 @@ function ChatThreadV2({
   const hasThreads = threads.length > 0;
   const hasGhosts = visibleGhosts.length > 0;
 
-  // Issue #110.2: history hydration is owned by `SessionProvider`
-  // (its restored-on-mount effect + switchSession). Pre-fix this
-  // effect fired its own `loadThreadHistory` plus 3 retry timers at
-  // 2s/5s/12s — multiplying every /chat mount into 4 /messages
-  // round-trips that competed with SessionProvider's load. The
-  // retries were originally added to recover from SSE-era persistence
-  // latency; the M9 WS transport persists synchronously before
-  // emitting `message/persisted`, so the retries are obsolete.
-
   return (
     <div className="flex h-full min-h-0 flex-col bg-transparent">
       {/* Mounted ONCE at thread level (codex R3): a per-bubble mount
@@ -1556,9 +1524,7 @@ function ChatThreadV2({
 // ---------------------------------------------------------------------------
 
 interface ComposerProps {
-  /** M9-γ-4: mount a `<GhostBubble>` overlay for the current send.
-   *  Composer calls this when projection v2 is negotiated; otherwise the
-   *  legacy `addUserMessage` path keeps producing the optimistic row. */
+  /** Mount a `<GhostBubble>` overlay for the current canonical send. */
   mountGhost: (spec: GhostSpec) => void;
   /** Tear down a ghost (used by the Retry path to clear a stale
    *  overlay before re-issuing the send). */
@@ -1594,8 +1560,7 @@ function Composer({
   // the server-persisted value on every `session/open` ack; the send path
   // reads the same store so every user turn carries the choice.
   const thinkingEffort = useThinkingEffort(currentSessionId, historyTopic);
-  // Read running state from the negotiated render selector. In v2 this is
-  // canonical projection state; old servers still provide legacy threads.
+  // Read running state from the canonical render selector.
   const threadsForRunning = useRenderThreads(currentSessionId, historyTopic);
   const isRunning = useMemo(
     () =>
@@ -1893,10 +1858,7 @@ function Composer({
     // upload mutates `pendingFiles`. The ghost's contents are frozen at
     // send-click — exactly what the user sees in a live bubble — and
     // the same snapshot powers retry (codex BLOCK 2).
-    const projectionV2 = isProjectionV2Enabled(currentSessionId, historyTopic);
-    const pinnedClientMessageId = projectionV2
-      ? crypto.randomUUID()
-      : undefined;
+    const pinnedClientMessageId = crypto.randomUUID();
     const ghostTextSnapshot = trimmedInput;
     const ghostFilesSnapshot = pendingFiles.map((pf) => pf.file);
 
@@ -2049,58 +2011,42 @@ function Composer({
     // about to leave the client. Hold onto the original payload so the
     // ghost's Retry button can re-issue the send with a NEW cmid
     // (codex BLOCK 2 — Retry truly resends, not just dismisses).
-    let ghostMounted = false;
-    if (projectionV2 && pinnedClientMessageId) {
-      const cmid = pinnedClientMessageId;
-      const retryPayload = {
-        ...finalPayload,
-        historyTopic: requestedTopic,
-      };
-      const retryFiles = ghostFilesSnapshot;
-      const retryText = ghostTextSnapshot;
-      // Recursive-closure factory: each retry mints a fresh cmid and
-      // mounts a new ghost; the new ghost's `retry` closure captures
-      // the freshly minted cmid so an N-th retry stays consistent.
-      const buildRetry = (currentCmid: string): (() => void) => () => {
-        unmountGhost(currentCmid);
-        const retryCmid = crypto.randomUUID();
-        mountGhost({
-          clientMessageId: retryCmid,
-          text: retryText,
-          files: retryFiles,
-          retry: buildRetry(retryCmid),
-        });
-        // Re-issue the send with the new cmid + the same payload.
-        // The bridge re-registers the pending cmid so the projection's
-        // first envelope on the new thread captures it. Failure of
-        // this retry must NOT pollute ThreadStore — the ghost's
-        // contract is purely visual.
-        bridgeSend({
-          ...retryPayload,
-          clientMessageId: retryCmid,
-          skipOptimisticUserMessage: true,
-          onSessionActive: (firstMsg) => markSessionActive(firstMsg),
-          onComplete: () => {
-            refreshSessions();
-            completeGhost(retryCmid);
-          },
-          onError: (error) => failGhost(retryCmid, error),
-        });
-        // Release synchronously after the bridge has the request:
-        // `bridgeSend` is fire-and-forget and `ui-protocol-send.ts`
-        // already serializes via a per-session FIFO. Holding `sending`
-        // until `onComplete` (turn/completed) locked the composer for
-        // the whole turn — see issue #112.3 follow-up.
-        releaseSending();
-      };
+    const cmid = pinnedClientMessageId;
+    const retryPayload = {
+      ...finalPayload,
+      historyTopic: requestedTopic,
+    };
+    const retryFiles = ghostFilesSnapshot;
+    const retryText = ghostTextSnapshot;
+    // Recursive-closure factory: each retry mints a fresh cmid and mounts a
+    // new ghost, so every retry remains tied to its canonical user envelope.
+    const buildRetry = (currentCmid: string): (() => void) => () => {
+      unmountGhost(currentCmid);
+      const retryCmid = crypto.randomUUID();
       mountGhost({
-        clientMessageId: cmid,
+        clientMessageId: retryCmid,
         text: retryText,
         files: retryFiles,
-        retry: buildRetry(cmid),
+        retry: buildRetry(retryCmid),
       });
-      ghostMounted = true;
-    }
+      bridgeSend({
+        ...retryPayload,
+        clientMessageId: retryCmid,
+        onSessionActive: (firstMsg) => markSessionActive(firstMsg),
+        onComplete: () => {
+          refreshSessions();
+          completeGhost(retryCmid);
+        },
+        onError: (error) => failGhost(retryCmid, error),
+      });
+      releaseSending();
+    };
+    mountGhost({
+      clientMessageId: cmid,
+      text: retryText,
+      files: retryFiles,
+      retry: buildRetry(cmid),
+    });
 
     // Send via the WS UI Protocol bridge (`/api/ui-protocol/ws`).
     // M9-α-5/α-6 deleted the legacy SSE chat transport — `bridgeSend`
@@ -2108,27 +2054,15 @@ function Composer({
     bridgeSend({
       ...finalPayload,
       historyTopic: requestedTopic,
-      // M9-γ-4: pin the cmid through the send so the ghost's
-      // projection-match predicate sees an envelope tagged with the
-      // exact same value. In legacy mode the bridge mints its own as before.
-      ...(pinnedClientMessageId !== undefined
-        ? { clientMessageId: pinnedClientMessageId }
-        : {}),
-      // M9-γ-4: tell the bridge to skip the optimistic
-      // `ThreadStore.addUserMessage` mirror — we've already mounted a
-      // visual `<GhostBubble>` instead. The bridge still registers the
-      // pending cmid so the projection's first envelope captures it.
-      skipOptimisticUserMessage: ghostMounted,
+      // Pin the cmid through the send so the ghost's projection-match
+      // predicate sees the exact same canonical identity.
+      clientMessageId: pinnedClientMessageId,
       onSessionActive: (firstMsg) => markSessionActive(firstMsg),
       onComplete: () => {
         refreshSessions();
-        if (pinnedClientMessageId !== undefined) {
-          completeGhost(pinnedClientMessageId);
-        }
+        completeGhost(pinnedClientMessageId);
       },
-      ...(pinnedClientMessageId !== undefined
-        ? { onError: (error: Error) => failGhost(pinnedClientMessageId, error) }
-        : {}),
+      onError: (error: Error) => failGhost(pinnedClientMessageId, error),
     });
     // Release synchronously after the bridge has the request. The
     // per-session FIFO at `ui-protocol-send.ts:163-291` serializes

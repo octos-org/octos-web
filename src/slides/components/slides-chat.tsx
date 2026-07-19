@@ -6,8 +6,6 @@ import { UiProtocolQuestionHost } from "@/components/ui-protocol-question-host";
 import { SessionContext, useModeState } from "@/runtime/session-context";
 import { ScopedRuntimeBridge } from "@/runtime/runtime-provider";
 import { sendMessage as bridgeSend } from "@/runtime/ui-protocol-send";
-import * as ThreadStore from "@/store/thread-store";
-import { useProjectionMode } from "@/store/projection-render-adapter";
 
 import { buildSlidesSlug, waitForSlidesScaffold } from "../api";
 import { useSlides } from "../context/slides-context";
@@ -37,7 +35,6 @@ export function SlidesChat({ sessionId, retryNonce = 0 }: Props) {
   const projectScaffolded = project?.scaffolded;
   const projectScaffoldError = project?.scaffoldError;
   const historyTopic = projectSlug ? `slides ${projectSlug}` : undefined;
-  const projectionMode = useProjectionMode(sessionId, historyTopic);
 
   // Codex round-3 BLOCK D.b: when the retry button fires, the layout
   // clears `scaffoldError` and bumps `retryNonce`. Reset the
@@ -51,34 +48,6 @@ export function SlidesChat({ sessionId, retryNonce = 0 }: Props) {
       bridgeScaffoldErrorRef.current = null;
     }
   }, [retryNonce]);
-
-  // Load history for this session. `loadHistory` ultimately calls
-  // `callAuxWs(SESSION_MESSAGES_PAGE, …)` which throws synchronously if
-  // the v1 bridge has not yet reached `connectionState === "connected"`.
-  // The fire-and-forget shape used to mount-race the bridge handshake
-  // (which lands ~t+500-700 ms): the throw was swallowed in
-  // ThreadStore's catch, `loadedSessions` was cleared, but the effect
-  // deps `[sessionId, historyTopic]` never changed so no retry fired —
-  // the left chat panel stayed blank for the entire session lifetime
-  // (live mini3 regression 2026-05-18 on `/slides/slides-…-th18yr`).
-  //
-  // Mirror the SessionProvider pattern at
-  // `runtime/session-context.tsx:676`: listen for the
-  // `crew:bridge_connected` window event that
-  // `runtime/ui-protocol-runtime.ts:152` dispatches every time the
-  // bridge reaches `connected`, and re-issue `loadHistory` with
-  // `force: true` so the dedup guard does not short-circuit it.
-  useEffect(() => {
-    if (projectionMode !== "legacy") return;
-    void ThreadStore.loadHistory(sessionId, historyTopic);
-    const onBridgeReady = () => {
-      void ThreadStore.loadHistory(sessionId, historyTopic, { force: true });
-    };
-    window.addEventListener("crew:bridge_connected", onBridgeReady);
-    return () => {
-      window.removeEventListener("crew:bridge_connected", onBridgeReady);
-    };
-  }, [historyTopic, projectionMode, sessionId]);
 
   useEffect(() => {
     // Codex round-3 BLOCK D.b: also gate on `projectScaffoldError`.
@@ -214,7 +183,6 @@ export function SlidesChat({ sessionId, retryNonce = 0 }: Props) {
       historyTopic,
       currentSessionTitle: project?.title || "Slides Agent",
       currentSessionStats: null,
-      initialMessages: [] as never[],
       activeTaskOnServer: false,
       queueMode,
       adaptiveMode,
