@@ -52,9 +52,6 @@ export interface SendOptions {
    *  paths to `Agent::process_message`, the same entry the
    *  gateway-mode `ApiChannel` and `octos chat` CLI use. */
   media: string[];
-  /** ASR text already accepted by the candidate preflight. The audio stays
-   *  attached, but the server must not run a second nondeterministic ASR pass. */
-  voiceTranscript?: string;
   clientMessageId?: string;
   /** #1478: mark this turn as a live video call (camera on) so the server
    *  treats the attached frame as the user's current camera view. Omitted /
@@ -121,11 +118,6 @@ export function buildTurnStartExtras(
       size_bytes: 0,
     }));
     extras.media = media;
-  }
-
-  const voiceTranscript = opts.voiceTranscript?.trim();
-  if (voiceTranscript) {
-    extras.voice_transcript = voiceTranscript;
   }
 
   const topic = opts.historyTopic?.trim();

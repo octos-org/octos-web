@@ -177,19 +177,6 @@ describe("buildTurnStartExtras live_video (#1478)", () => {
   });
 });
 
-describe("buildTurnStartExtras voice transcript", () => {
-  it("forwards a trimmed prevalidated transcript", () => {
-    expect(
-      buildTurnStartExtras({
-        sessionId: SESSION,
-        text: "",
-        media: ["up/utterance.wav"],
-        voiceTranscript: "  继续说  ",
-      })?.voice_transcript,
-    ).toBe("继续说");
-  });
-});
-
 describe("sendMessage", () => {
   // Codex NIT H rewrite: this test now exercises the actual #109.1
   // contract — when `startBridgeForSession`'s underlying bridge start
