@@ -1,0 +1,34 @@
+{
+  "session_id": "session-capture-001",
+  "topic": "planning",
+  "thread_id": "turn-capture-001:background:task-capture-001",
+  "seq": 1,
+  "turn_id": "turn-capture-001:background:task-capture-001",
+  "cursor": {
+    "stream": "session-capture-001",
+    "seq": 105
+  },
+  "payload": {
+    "type": "background/spawn_complete",
+    "data": {
+      "parent_turn_id": "turn-capture-001",
+      "task_id": "task-capture-001",
+      "tool_call_id": "call-capture-002",
+      "response_to_client_message_id": "cmid-capture-001",
+      "message_id": "msg-capture-background-001",
+      "source": "background",
+      "persisted_at": "2026-07-18T22:10:09Z",
+      "content": "The background analysis is ready.",
+      "media": [
+        "artifacts/background-analysis.md"
+      ],
+      "meta": {
+        "message_id": "msg-capture-background-001",
+        "persisted_at": "2026-07-18T22:10:09Z",
+        "media": [
+          "artifacts/background-analysis.md"
+        ]
+      }
+    }
+  }
+}

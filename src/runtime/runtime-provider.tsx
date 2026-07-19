@@ -6,11 +6,12 @@
  * synchronization themselves.
  */
 
-import { type ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef } from "react";
 import { SessionProvider, useSession } from "./session-context";
 import * as FileStore from "@/store/file-store";
 import * as TaskStore from "@/store/task-store";
 import * as ThreadStore from "@/store/thread-store";
+import * as ProjectionStore from "@/store/projection-store";
 // The per-session status indicator (active turn, deferred files,
 // background tasks) routes through the `getSessionStatus` wrapper,
 // which calls the WS `session/status.get` method. The legacy REST
@@ -36,6 +37,14 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
   const { currentSessionId, historyTopic, setServerTaskActive } = useSession();
   const mountedRef = useRef(new Set<string>());
   const restoredWatchersRef = useRef(false);
+
+  // Run before passive history-loading effects in SessionProvider and the
+  // embedded chat surfaces. This leaves a real new-server session blank until
+  // `session/open` picks v2 or legacy, instead of momentarily fetching and
+  // rendering the legacy reducer before its capability is known.
+  useLayoutEffect(() => {
+    ProjectionStore.setProjectionV2Pending(currentSessionId, historyTopic);
+  }, [currentSessionId, historyTopic]);
 
   useEffect(() => {
     if (restoredWatchersRef.current) return;
@@ -65,6 +74,7 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
         if (id !== currentSessionId) {
           mountedRef.current.delete(id);
           ThreadStore.clearSession(id);
+          ProjectionStore.clearProjection(id);
           TaskStore.clearTasks(id);
           break;
         }

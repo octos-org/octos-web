@@ -1,0 +1,19 @@
+{
+  "session_id": "session-capture-001",
+  "topic": "planning",
+  "thread_id": "thread-capture-001",
+  "seq": 4,
+  "turn_id": "turn-capture-001",
+  "cursor": {
+    "stream": "session-capture-001",
+    "seq": 103
+  },
+  "payload": {
+    "type": "tool_end",
+    "data": {
+      "tool_call_id": "call-capture-001",
+      "status": "error",
+      "error": "workspace access was denied"
+    }
+  }
+}

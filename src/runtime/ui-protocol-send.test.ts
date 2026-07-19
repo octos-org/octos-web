@@ -61,6 +61,7 @@ vi.mock("./ui-protocol-bridge", async () => {
 });
 
 import * as ThreadStore from "@/store/thread-store";
+import * as ProjectionStore from "@/store/projection-store";
 import {
   __resetThinkingStoreForTest,
   setThinkingEffort,
@@ -99,6 +100,7 @@ function makeBridge(): UiProtocolBridge & {
     onTaskUpdated: vi.fn(() => () => {}),
     onTaskOutputDelta: vi.fn(() => () => {}),
     onTurnLifecycle: vi.fn(() => () => {}),
+    onProjectionTerminal: vi.fn(() => () => {}),
     onApprovalRequested: vi.fn(() => () => {}),
     onApprovalAutoResolved: vi.fn(() => () => {}),
     onUserQuestionRequested: vi.fn(() => () => {}),
@@ -118,6 +120,7 @@ beforeEach(() => {
   __resetUiProtocolRuntimeForTest();
   __resetSendQueueForTest();
   ThreadStore.__resetForTests();
+  ProjectionStore.__resetProjectionForTests();
   window.localStorage.clear();
   __bridgeFactoryOverride.current = null;
 });
@@ -126,6 +129,7 @@ afterEach(() => {
   window.localStorage.clear();
   __resetUiProtocolRuntimeForTest();
   __resetSendQueueForTest();
+  ProjectionStore.__resetProjectionForTests();
   __bridgeFactoryOverride.current = null;
 });
 
@@ -296,6 +300,109 @@ describe("sendMessage", () => {
     const threads = ThreadStore.getThreads(SESSION);
     expect(threads).toHaveLength(1);
     expect(threads[0].id).toBe("cmid-default");
+  });
+
+  it("surfaces an errored canonical terminal through the ghost error callback", async () => {
+    const bridge = makeBridge();
+    __setActiveBridgeForTest(SESSION, bridge);
+    ProjectionStore.setProjectionV2Enabled(SESSION, undefined, true);
+    let terminalHandler:
+      | Parameters<UiProtocolBridge["onProjectionTerminal"]>[0]
+      | undefined;
+    (bridge.onProjectionTerminal as ReturnType<typeof vi.fn>).mockImplementation(
+      (handler: Parameters<UiProtocolBridge["onProjectionTerminal"]>[0]) => {
+        terminalHandler = handler;
+        return () => {
+          terminalHandler = undefined;
+        };
+      },
+    );
+    const onError = vi.fn();
+
+    sendMessage({
+      sessionId: SESSION,
+      text: "canonical failure",
+      media: [],
+      clientMessageId: "cmid-terminal-error",
+      skipOptimisticUserMessage: true,
+      onError,
+    });
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+
+    terminalHandler?.({
+      session_id: SESSION,
+      thread_id: "thread-terminal-error",
+      turn_id: "cmid-terminal-error",
+      client_message_id: "cmid-terminal-error",
+      outcome: "errored",
+      error: { code: "provider_error", message: "Provider stopped." },
+    });
+
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({
+      message: "Provider stopped.",
+    }));
+    expect(ThreadStore.getThreads(SESSION)).toEqual([]);
+  });
+
+  it("waits for the canonical terminal instead of a compatibility lifecycle event in v2", async () => {
+    const bridge = makeBridge();
+    __setActiveBridgeForTest(SESSION, bridge);
+    ProjectionStore.setProjectionV2Enabled(SESSION, undefined, true);
+    let lifecycleHandler:
+      | ((e: { turn_id: string; reason?: string; error?: unknown }) => void)
+      | undefined;
+    let terminalHandler:
+      | Parameters<UiProtocolBridge["onProjectionTerminal"]>[0]
+      | undefined;
+    (bridge.onTurnLifecycle as ReturnType<typeof vi.fn>).mockImplementation(
+      (handler: (e: { turn_id: string; reason?: string; error?: unknown }) => void) => {
+        lifecycleHandler = handler;
+        return () => {
+          lifecycleHandler = undefined;
+        };
+      },
+    );
+    (bridge.onProjectionTerminal as ReturnType<typeof vi.fn>).mockImplementation(
+      (handler: Parameters<UiProtocolBridge["onProjectionTerminal"]>[0]) => {
+        terminalHandler = handler;
+        return () => {
+          terminalHandler = undefined;
+        };
+      },
+    );
+    const onComplete = vi.fn();
+    const onError = vi.fn();
+
+    sendMessage({
+      sessionId: SESSION,
+      text: "canonical only",
+      media: [],
+      clientMessageId: "cmid-canonical-only",
+      skipOptimisticUserMessage: true,
+      onComplete,
+      onError,
+    });
+    for (let i = 0; i < 12; i += 1) await Promise.resolve();
+
+    lifecycleHandler?.({
+      turn_id: "cmid-canonical-only",
+      error: { code: "legacy_error" },
+    });
+    expect(onComplete).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+
+    terminalHandler?.({
+      session_id: SESSION,
+      thread_id: "thread-canonical-only",
+      turn_id: "cmid-canonical-only",
+      client_message_id: "cmid-canonical-only",
+      outcome: "errored",
+      error: { code: "canonical_error", message: "Canonical failure." },
+    });
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Canonical failure." }),
+    );
+    expect(onComplete).toHaveBeenCalledTimes(1);
   });
 
   it("subscribes to turn lifecycle so onComplete fires on turn/completed", async () => {

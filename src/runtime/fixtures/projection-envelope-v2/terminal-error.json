@@ -1,0 +1,28 @@
+{
+  "session_id": "session-capture-001",
+  "topic": "planning",
+  "thread_id": "thread-capture-001",
+  "seq": 5,
+  "turn_id": "turn-capture-001",
+  "cursor": {
+    "stream": "session-capture-001",
+    "seq": 104
+  },
+  "payload": {
+    "type": "turn_terminal",
+    "data": {
+      "outcome": "errored",
+      "token_usage": {
+        "input_tokens": 120,
+        "output_tokens": 37
+      },
+      "error": {
+        "code": "runtime_error",
+        "message": "The model provider stopped the turn.",
+        "data": {
+          "retryable": true
+        }
+      }
+    }
+  }
+}

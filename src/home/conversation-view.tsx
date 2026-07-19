@@ -2,8 +2,8 @@
  * Conversation view for the home assistant UI.
  *
  * Large-font chat bubbles optimised for arm's-length reading (>1 m).
- * Reuses OctosRuntimeProvider + ThreadStore for message state, and
- * `bridgeSend` for the WS send path.
+ * Reuses OctosRuntimeProvider + the negotiated render adapter for message
+ * state, and `bridgeSend` for the WS send path.
  *
  * Auto-returns to standby after configurable idle seconds (from settings).
  *
@@ -38,12 +38,12 @@ import {
 } from "lucide-react";
 import { useSession } from "@/runtime/session-context";
 import {
-  useThreads,
   type Thread,
   type ThreadMessage,
   type MessageFile,
   type ThreadToolCall,
 } from "@/store/thread-store";
+import { useRenderThreads } from "@/store/projection-render-adapter";
 import {
   interruptActiveTurn, sendMessage as bridgeSend } from "@/runtime/ui-protocol-send";
 import { getActiveBridge } from "@/runtime/ui-protocol-runtime";
@@ -193,7 +193,7 @@ function PendingBubble({ pending }: { pending: ThreadMessage }) {
 
 export function ConversationView({ onBack, prefill }: ConversationViewProps) {
   const { currentSessionId, historyTopic, refreshSessions, markSessionActive } = useSession();
-  const threads = useThreads(currentSessionId, historyTopic);
+  const threads = useRenderThreads(currentSessionId, historyTopic);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -402,7 +402,7 @@ export function ConversationView({ onBack, prefill }: ConversationViewProps) {
         void interruptActiveTurn({
           sessionId: currentSessionId,
           historyTopic,
-          turnId: pendingThread.id,
+          turnId: pendingThread.turnId ?? pendingThread.id,
           reason: "user cancelled",
         }).catch(() => {
           // best-effort: swallow transport errors.
@@ -532,7 +532,7 @@ export function ConversationView({ onBack, prefill }: ConversationViewProps) {
         {threads.map((thread: Thread) => (
           <div key={thread.id} className="mb-4">
             {/* User bubble — plain text */}
-            {thread.userMsg && (
+            {!thread.backgroundChild && thread.userMsg && (
               <div className="flex justify-end mb-2">
                 <div className="home-bubble home-bubble-user max-w-[80%] rounded-lg px-5 py-3">
                   <div className="home-bubble-text text-white">

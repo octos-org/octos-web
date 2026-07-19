@@ -15,13 +15,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as ThreadStore from "@/store/thread-store";
 import * as TaskStore from "@/store/task-store";
 import * as AutonomyStore from "@/store/autonomy-store";
-import {
-  __resetProjectionForTests,
-  __setProjectionV1ForTests,
-  getEnvelopes,
-  projectionStoreKey,
-} from "@/store/projection-store";
-import { project } from "@/store/projection";
+import { __resetProjectionForTests } from "@/store/projection-store";
 import {
   handleLoopUpdated,
   handleLoopCompleted,
@@ -86,7 +80,6 @@ afterEach(() => {
   ThreadStore.__resetForTests();
   __resetRouterStateForTest();
   __resetTurnMetaForTest();
-  __setProjectionV1ForTests(false);
   __resetProjectionForTests();
 });
 
@@ -308,49 +301,6 @@ describe("router event mapping", () => {
     // finalized thread drops late tokens via the ordinary phantom-chunk
     // guard, same as any completed turn.
     expect(thread.suppressDeltasUntilDurable).toBeFalsy();
-  });
-
-  it("frozen promotion does not corrupt projection-mode text (codex fold 3)", () => {
-    // With octos_projection_v1 on, `replaceAssistantText` dual-writes an
-    // appended `assistant_delta` — on top of the pre-freeze delta already in
-    // the projection log that projected "partial anspartial answer…", and
-    // nothing overwrote it afterwards. The frozen branch must emit the
-    // replacement as `assistant_persisted` (overwrite semantics) instead.
-    __setProjectionV1ForTests(true);
-    const cmid = "cmid-frozen-projection";
-    seedThread(cmid, "ask");
-    ThreadStore.appendAssistantToken(cmid, "partial ans"); // pre-freeze delta
-    ThreadStore.suppressPendingDeltasForReplay(SESSION);
-    handleMessagePersisted(
-      { sessionId: SESSION },
-      {
-        session_id: SESSION,
-        turn_id: cmid,
-        thread_id: cmid,
-        seq: 61,
-        role: "assistant",
-        message_id: "msg-frozen-proj",
-        source: "assistant",
-        cursor: { stream: SESSION, seq: 61 },
-        persisted_at: "2026-07-08T00:00:00Z",
-        content: "partial answer continues to the real end.",
-        media: ["/files/chart.png"],
-      },
-    );
-    // Legacy store finalized canonically…
-    const [thread] = ThreadStore.getThreads(SESSION);
-    expect(thread.responses[0].text).toBe(
-      "partial answer continues to the real end.",
-    );
-    // …and the projection agrees (no "partial anspartial answer…" concat).
-    const vm = project(getEnvelopes(projectionStoreKey(SESSION)));
-    const projThread = vm.threads.find((t) => t.thread_id === cmid);
-    expect(projThread?.assistant?.text).toBe(
-      "partial answer continues to the real end.",
-    );
-    // Media-bearing persisted rows keep their file association in the
-    // projection (codex fold 4) — like the normal persisted-row shim.
-    expect(projThread?.assistant?.meta?.media).toEqual(["/files/chart.png"]);
   });
 
   it("message/persisted (assistant, no media, empty pending) leaves pending alive for the late delta", () => {
@@ -3006,10 +2956,12 @@ class FakeBridge implements UiProtocolBridge {
       this.emitApprovalRequested = undefined;
     };
   }
-  onUserQuestionRequested(_h: unknown) {
+  onUserQuestionRequested(h: unknown) {
+    void h;
     return () => {};
   }
-  onApprovalAutoResolved(_h: unknown) {
+  onApprovalAutoResolved(h: unknown) {
+    void h;
     return () => {};
   }
   onToolStarted(h: (e: ToolStartedEvent) => void) {
@@ -3880,7 +3832,7 @@ describe("regression C: turn/completed stamps per-turn meta snapshot onto the fi
     );
     // Turn-1: cumulative=(100,20), baseline self-seeded to (100,20),
     // delta=(0,0). Footer text effectively omits tokens.
-    let [thread] = ThreadStore.getThreads(SESSION);
+    const [thread] = ThreadStore.getThreads(SESSION);
     expect(thread.responses[0].meta?.tokens_in).toBe(0);
     expect(thread.responses[0].meta?.tokens_out).toBe(0);
 

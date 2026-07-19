@@ -1,0 +1,18 @@
+{
+  "session_id": "session-capture-001",
+  "topic": "planning",
+  "thread_id": "thread-capture-001",
+  "seq": 2,
+  "turn_id": "turn-capture-001",
+  "cursor": {
+    "stream": "session-capture-001",
+    "seq": 101
+  },
+  "payload": {
+    "type": "assistant_delta",
+    "data": {
+      "text": "I will start by identifying the major flows.",
+      "assistant_segment_id": "segment-capture-001"
+    }
+  }
+}

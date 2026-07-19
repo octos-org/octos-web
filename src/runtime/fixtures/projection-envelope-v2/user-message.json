@@ -1,0 +1,25 @@
+{
+  "session_id": "session-capture-001",
+  "topic": "planning",
+  "thread_id": "thread-capture-001",
+  "seq": 1,
+  "turn_id": "turn-capture-001",
+  "client_message_id": "cmid-capture-001",
+  "cursor": {
+    "stream": "session-capture-001",
+    "seq": 100
+  },
+  "payload": {
+    "type": "user_message",
+    "data": {
+      "text": "Please turn this screenshot into an implementation plan.",
+      "files": [
+        {
+          "path": "uploads/capture-001.png",
+          "mime": "image/png",
+          "size_bytes": 2048
+        }
+      ]
+    }
+  }
+}

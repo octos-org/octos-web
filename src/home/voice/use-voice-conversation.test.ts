@@ -89,6 +89,7 @@ const threadsMock = vi.hoisted(() => ({ value: [] as unknown[] }));
 
 vi.mock("@/store/thread-store", () => ({
   useThreads: () => threadsMock.value,
+  getThreads: () => threadsMock.value,
 }));
 
 vi.mock("@/runtime/ui-protocol-send", () => ({

@@ -40,6 +40,7 @@ vi.mock("@/runtime/session-context", () => ({
 
 vi.mock("@/store/thread-store", () => ({
   useThreads: () => threadMock.threads,
+  getThreads: () => threadMock.threads,
 }));
 
 vi.mock("@/runtime/ui-protocol-send", () => ({

@@ -16,6 +16,12 @@
 import { getToken, getSelectedProfileId } from "@/api/client";
 import { TOKEN_KEY, ADMIN_TOKEN_KEY } from "@/lib/constants";
 import {
+  parseProjectionEnvelopeV2,
+  type ProjectionEnvelopeV2,
+  type ProjectionEnvelopeV2TerminalOutcome,
+} from "./projection-envelope-v2";
+import * as ProjectionStore from "@/store/projection-store";
+import {
   AUX_REST_TO_WS_V1_FEATURE,
   isAuxRestToWsV1Enabled,
 } from "@/lib/feature-flags";
@@ -281,6 +287,7 @@ export const METHODS = {
  * under `octos_auxiliary_rest_to_ws_v1`).
  */
 export const UI_PROTOCOL_FEATURES = [
+  ProjectionStore.PROJECTION_ENVELOPE_V2_FEATURE,
   "approval.typed.v1",
   "user_question.v1",
   "pane.snapshots.v1",
@@ -411,6 +418,19 @@ export class BridgeTimeoutError extends Error {
     super(`rpc timeout: ${method} after ${timeoutMs}ms`);
     this.name = "BridgeTimeoutError";
   }
+}
+
+/** Canonical v2 terminal surface used by the send queue. It is intentionally
+ * separate from the legacy turn lifecycle notifications, which v2 servers
+ * no longer need to emit. */
+export interface ProjectionTerminalEvent {
+  session_id: string;
+  topic?: string;
+  thread_id: string;
+  turn_id: string;
+  client_message_id?: string;
+  outcome: ProjectionEnvelopeV2TerminalOutcome;
+  error?: { code: string; message: string; data?: unknown };
 }
 
 export interface UiProtocolBridge {
@@ -551,6 +571,9 @@ export interface UiProtocolBridge {
     handler: (
       e: TurnStartedEvent | TurnCompletedEvent | TurnErrorEvent,
     ) => void,
+  ): () => void;
+  onProjectionTerminal(
+    handler: (event: ProjectionTerminalEvent) => void,
   ): () => void;
   /** UPCR-2026-026 context-compaction lifecycle (started | completed);
    *  discriminate by `threshold_tokens` (present only on started). */
@@ -756,15 +779,6 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-interface ProjectionEnvelope {
-  session_id?: string;
-  turn_id: string;
-  payload: {
-    type: string;
-    data: Record<string, unknown>;
-  };
-}
-
 function guardHydrateToolEnvelope(p: unknown): Envelope | null {
   if (!isPlainObject(p)) return null;
   if (!isString(p.thread_id)) return null;
@@ -830,19 +844,9 @@ function guardHydrateToolEnvelope(p: unknown): Envelope | null {
   };
 }
 
-function guardProjectionEnvelope(p: unknown): ProjectionEnvelope | null {
-  if (!isPlainObject(p)) return null;
-  if (!isString(p.turn_id)) return null;
-  if (!isPlainObject(p.payload)) return null;
-  if (typeof p.payload.type !== "string") return null;
-  return {
-    session_id: typeof p.session_id === "string" ? p.session_id : undefined,
-    turn_id: p.turn_id,
-    payload: {
-      type: p.payload.type,
-      data: isPlainObject(p.payload.data) ? p.payload.data : {},
-    },
-  };
+function guardProjectionEnvelope(p: unknown): ProjectionEnvelopeV2 | null {
+  const parsed = parseProjectionEnvelopeV2(p);
+  return parsed.ok ? parsed.value : null;
 }
 
 function guardMessageDelta(p: unknown): MessageDeltaEvent | null {
@@ -1221,12 +1225,40 @@ export function guardSessionHydrate(p: unknown): SessionHydrateResult | null {
     }
   }
 
+  const projectionEnvelopes = Array.isArray(p.projection_envelopes)
+    ? p.projection_envelopes.slice()
+    : undefined;
+  const rawProjectionSnapshot = isPlainObject(p.projection_snapshot)
+    ? p.projection_snapshot
+    : undefined;
+  const projectionSnapshot = rawProjectionSnapshot
+    ? {
+        ...(Array.isArray(rawProjectionSnapshot.envelopes)
+          ? { envelopes: rawProjectionSnapshot.envelopes.slice() }
+          : {}),
+        ...(isPlainObject(rawProjectionSnapshot.cursor) &&
+        typeof rawProjectionSnapshot.cursor.stream === "string" &&
+        typeof rawProjectionSnapshot.cursor.seq === "number" &&
+        Number.isFinite(rawProjectionSnapshot.cursor.seq) &&
+        rawProjectionSnapshot.cursor.seq >= 0
+          ? {
+              cursor: {
+                stream: rawProjectionSnapshot.cursor.stream,
+                seq: rawProjectionSnapshot.cursor.seq,
+              },
+            }
+          : {}),
+      }
+    : undefined;
+
   return {
     session_id: p.session_id,
     cursor,
     messages,
     replayed_envelopes: replayedEnvelopes,
     replayed_tool_envelopes: replayedToolEnvelopes,
+    projection_envelopes: projectionEnvelopes,
+    projection_snapshot: projectionSnapshot,
   };
 }
 
@@ -1897,6 +1929,24 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
    *  because the bridge cannot tell what scope they belong to without
    *  server help. Tracked as a follow-up server issue. */
   private topicScope: string | null = null;
+  /** Flips only after the current connection's `session/open` confirms the
+   * capability. Parsed frames arriving during the handshake are buffered so
+   * a server that replays immediately cannot race the acknowledgement. */
+  private projectionV2Active = false;
+  /** The transport-level capability decision for this particular socket.
+   * Keep it distinct from `projectionV2Active`: during a reconnect the
+   * already-confirmed projection remains rendered, but no inbound frame may
+   * enter the canonical ledger until this socket's new `session/open` ack. */
+  private projectionHandshake: "pending" | "accepted" | "rejected" = "rejected";
+  private pendingProjectionFrames: ProjectionEnvelopeV2[] = [];
+  private unsubscribeProjectionAdmission: (() => void) | null = null;
+  /** Keeps reconnect `after` synchronized when a hydrate installs an empty
+   * canonical snapshot (there is no admitted envelope to trigger the other
+   * hook in that case). */
+  private unsubscribeProjectionStore: (() => void) | null = null;
+  /** Terminal notifications are derived after admission so a terminal that
+   * drained from a per-thread gap emits exactly once. */
+  private readonly emittedProjectionTerminals = new Set<string>();
   private stopped = false;
   private reconnectAttempts = 0;
   /** True only after `scheduleReconnect` has exhausted
@@ -1924,16 +1974,11 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
    *  resets the flag in `onWsOpen`) or fails (the bounded reconnect
    *  loop takes over and eventually re-latches the abandonment). */
   private visibilityReconnectInFlight = false;
-  /** #245 P2: the highest durable ledger cursor we have seen for this
-   *  session — seeded from the `session/open` ack's `opened.cursor` and
-   *  advanced by the cursor-bearing live frames (`message/persisted`,
-   *  `turn/completed`, `turn/spawn_complete`). Sent back as `after` on a
-   *  REOPEN so the server replays only what happened during the gap
-   *  (`replay_after_with_head`), instead of the reconnect relying solely on
-   *  a full `session/hydrate` refetch. One monotonic stream per session, so
-   *  the highest `seq` wins. Null until the first open acks — a cursorless
-   *  open is "live only / full snapshot" server-side, which is exactly what
-   *  the initial open wants. */
+  /** #245 P2: the highest safe durable ledger cursor for this session. Legacy
+   *  notifications and old-server open acks advance it directly. For v2 it
+   *  comes only from ProjectionStore's globally contiguous snapshot/live
+   *  watermark—never from a per-thread sequence or an uninstalled ack head.
+   *  Sent back as `after` on a REOPEN so the server replays only the gap. */
   private lastCursor: UiCursor | null = null;
   /** Issue #137: bound visibilitychange listener. Stashed so `stop()`
    *  can remove it; React strict-mode and SPA session-switch flows
@@ -1984,6 +2029,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private readonly subTurnLifecycle = new Subscribers<
     TurnStartedEvent | TurnCompletedEvent | TurnErrorEvent
   >();
+  private readonly subProjectionTerminal = new Subscribers<ProjectionTerminalEvent>();
   private readonly subApprovalRequested = new Subscribers<ApprovalRequestedEvent>();
   private readonly subApprovalAutoResolved =
     new Subscribers<ApprovalAutoResolvedEvent>();
@@ -2148,16 +2194,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     },
     "projection/envelope": {
       guard: guardProjectionEnvelope,
-      emit: (v) => {
-        const env = v as ProjectionEnvelope;
-        if (env.payload?.type === "assistant_delta" && typeof env.payload.data?.text === "string") {
-          this.subMessageDelta.emit({
-            session_id: env.session_id ?? "",
-            turn_id: env.turn_id,
-            text: env.payload.data.text,
-          });
-        }
-      },
+      emit: (v) => this.handleProjectionEnvelope(v as ProjectionEnvelopeV2),
     },
     // Issue #113.2 (was M12 Phase D-3 TODO): the server emits
     // `session/title-updated` after a successful `session/title.set`,
@@ -2229,6 +2266,24 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     // envelope-mismatch drop. Empty string => no scope (root).
     const t = opts.topic?.trim();
     this.topicScope = t && t.length > 0 ? t : null;
+    this.projectionV2Active = false;
+    this.projectionHandshake = "pending";
+    this.pendingProjectionFrames = [];
+    this.emittedProjectionTerminals.clear();
+    this.unsubscribeProjectionAdmission?.();
+    this.unsubscribeProjectionStore?.();
+    this.unsubscribeProjectionAdmission = ProjectionStore.onEnvelopeAdmitted(
+      (storeKey, envelope) => this.handleAdmittedProjectionEnvelope(storeKey, envelope),
+    );
+    this.unsubscribeProjectionStore = ProjectionStore.subscribe(() => {
+      this.syncProjectionWatermark();
+    });
+    if (this.sessionId) {
+      ProjectionStore.setProjectionV2Pending(
+        this.sessionId,
+        this.topicScope ?? undefined,
+      );
+    }
     this.reconnectAttempts = 0;
     this.reconnectAbandoned = false;
     this.latchReason = null;
@@ -2283,6 +2338,11 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.subTaskUpdated.clear();
     this.subTaskOutputDelta.clear();
     this.subTurnLifecycle.clear();
+    this.subProjectionTerminal.clear();
+    this.unsubscribeProjectionAdmission?.();
+    this.unsubscribeProjectionAdmission = null;
+    this.unsubscribeProjectionStore?.();
+    this.unsubscribeProjectionStore = null;
     this.subContextCompaction.clear();
     this.subApprovalRequested.clear();
     this.subApprovalAutoResolved.clear();
@@ -2630,6 +2690,9 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   ): () => void {
     return this.subTurnLifecycle.add(handler);
   }
+  onProjectionTerminal(handler: Listener<ProjectionTerminalEvent>): () => void {
+    return this.subProjectionTerminal.add(handler);
+  }
   onContextCompaction(
     handler: Listener<ContextCompactionStartedEvent | ContextCompactionCompletedEvent>,
   ): () => void {
@@ -2841,6 +2904,12 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       this.flushSendQueue();
       return;
     }
+    // A reconnect must obtain a fresh capability acknowledgement before its
+    // replay can mutate the canonical ledger. Do not flip the rendered mode
+    // here: retaining the prior v2 projection avoids a legacy flash/clear
+    // while the handshake is in flight.
+    this.projectionHandshake = "pending";
+    this.pendingProjectionFrames = [];
     try {
       const params: Record<string, unknown> = {
         session_id: this.requireSessionId(),
@@ -2864,10 +2933,6 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
         { bypassQueue: true },
       );
       if (this.stopped) return;
-      // Seed/advance the cursor from the open ack — the server stamps
-      // `opened.cursor` with the authoritative head, so even a session with
-      // no cursor-bearing live frames yet has an `after` for its next reopen.
-      this.advanceCursor(openResult?.opened?.cursor);
       this.reconnectAttempts = 0;
       this.reconnectAbandoned = false;
       // Issue #137: a successful (re)open clears the latch reason and
@@ -2881,6 +2946,21 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       // `startBridgeForSession`.
       const isReopen = this.hasEverOpened;
       this.hasEverOpened = true;
+      const supportedFeatures =
+        openResult?.opened?.capabilities?.supported_features;
+      const negotiatedProjectionV2 =
+        Array.isArray(supportedFeatures) &&
+        supportedFeatures.includes(
+          ProjectionStore.PROJECTION_ENVELOPE_V2_FEATURE,
+        );
+      // An old server's open cursor remains the legacy reconnect baseline.
+      // For v2, the open ack may be ahead of a hydrate snapshot or a live
+      // frame from another thread; only ProjectionStore's contiguous ledger
+      // watermark may advance `after` in that mode.
+      if (!negotiatedProjectionV2) {
+        this.advanceCursor(openResult?.opened?.cursor);
+      }
+      this.setProjectionV2Active(negotiatedProjectionV2);
       this.setState("connected");
       // Surface the `opened` payload (initial + reopen) so the runtime
       // layer can seed server-persisted per-session state — today the
@@ -3034,7 +3114,111 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     // (message/persisted, turn/completed, turn/spawn_complete). Deltas carry
     // no cursor, so this tracks the last DURABLE position — exactly what the
     // server's `after` replay filters on (`entry.seq > after.seq`).
-    this.advanceCursor((result as { cursor?: unknown }).cursor);
+    if (note.method !== "projection/envelope") {
+      this.advanceCursor((result as { cursor?: unknown }).cursor);
+    }
+  }
+
+  /** Apply capability selection after `session/open`; the offered feature
+   * list never decides rendering on its own. */
+  private setProjectionV2Active(active: boolean): void {
+    this.projectionV2Active = active;
+    this.projectionHandshake = active ? "accepted" : "rejected";
+    if (!this.sessionId) return;
+    ProjectionStore.setProjectionV2Enabled(
+      this.sessionId,
+      this.topicScope ?? undefined,
+      active,
+    );
+    if (!active) {
+      this.pendingProjectionFrames = [];
+      return;
+    }
+    const buffered = this.pendingProjectionFrames;
+    this.pendingProjectionFrames = [];
+    for (const envelope of buffered) {
+      this.handleProjectionEnvelope(envelope);
+    }
+  }
+
+  private syncProjectionWatermark(): void {
+    if (!this.projectionV2Active || !this.sessionId) return;
+    const storeKey = ProjectionStore.projectionStoreKey(
+      this.sessionId,
+      this.topicScope ?? undefined,
+    );
+    this.advanceCursor(ProjectionStore.getWatermark(storeKey));
+  }
+
+  /** Direct canonical v2 receive path. Legacy event subscribers are never
+   * invoked here, which guarantees a negotiated server renders one model. */
+  private handleProjectionEnvelope(envelope: ProjectionEnvelopeV2): void {
+    if (!this.sessionId || envelope.session_id !== this.sessionId) return;
+    if (this.projectionHandshake === "pending") {
+      this.pendingProjectionFrames.push(envelope);
+      return;
+    }
+    // A server that did not negotiate v2 may still send an unknown/canary
+    // notification. It is neither a legacy event nor a canonical append for
+    // this connection, so drop it instead of retaining an unbounded buffer.
+    if (!this.projectionV2Active) return;
+    const topic = envelope.topic ?? this.topicScope ?? undefined;
+    const storeKey = ProjectionStore.projectionStoreKey(envelope.session_id, topic);
+    const result = ProjectionStore.ingest(storeKey, envelope);
+    if (!result.accepted) return;
+
+    // Store watermarks advance only through contiguous global ledger cursors;
+    // reconnect never treats a thread sequence as the ledger cursor.
+    this.advanceCursor(ProjectionStore.getWatermark(storeKey));
+  }
+
+  /** Terminals are emitted from canonical admission, not raw arrival. That
+   * covers a terminal drained behind a gap and one replayed after snapshot
+   * hydration, both of which must settle the send queue/ghost exactly once. */
+  private handleAdmittedProjectionEnvelope(
+    storeKey: string,
+    envelope: ProjectionEnvelopeV2,
+  ): void {
+    if (
+      !this.projectionV2Active ||
+      !this.sessionId ||
+      envelope.session_id !== this.sessionId
+    ) {
+      return;
+    }
+    const topic = envelope.topic ?? this.topicScope ?? undefined;
+    if (
+      storeKey !==
+      ProjectionStore.projectionStoreKey(envelope.session_id, topic)
+    ) {
+      return;
+    }
+    // Snapshot replacement admits frames without flowing through
+    // `handleProjectionEnvelope`. Advance from the store's ledger watermark
+    // here as well, so reconnect `after` is always a cursor—not a thread
+    // sequence—and includes snapshot/replay progress.
+    this.advanceCursor(ProjectionStore.getWatermark(storeKey));
+    if (envelope.payload.type !== "turn_terminal") return;
+    const identity = [storeKey, envelope.thread_id, String(envelope.seq)].join(":");
+    if (this.emittedProjectionTerminals.has(identity)) return;
+    this.emittedProjectionTerminals.add(identity);
+    const clientMessageId = ProjectionStore.clientMessageIdForTurn(
+      storeKey,
+      envelope.turn_id,
+    );
+    this.subProjectionTerminal.emit({
+      session_id: envelope.session_id,
+      ...(topic !== undefined ? { topic } : {}),
+      thread_id: envelope.thread_id,
+      turn_id: envelope.turn_id,
+      ...(clientMessageId !== undefined
+        ? { client_message_id: clientMessageId }
+        : {}),
+      outcome: envelope.payload.data.outcome,
+      ...(envelope.payload.data.error !== undefined
+        ? { error: envelope.payload.data.error }
+        : {}),
+    });
   }
 
   /** Advance `lastCursor` to the highest durable ledger position seen
