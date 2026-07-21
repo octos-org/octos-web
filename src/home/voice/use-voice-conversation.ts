@@ -226,7 +226,9 @@ export function shouldHandleNoSpeechEvent(
   activeTurnId: string | null,
 ): boolean {
   if (!detail || detail.sessionId !== sessionId) return false;
-  if ((detail.topic ?? undefined) !== (topic ?? undefined)) return false;
+  const normalizeTopic = (value: string | undefined) =>
+    value?.trim() ? value.trim() : undefined;
+  if (normalizeTopic(detail.topic) !== normalizeTopic(topic)) return false;
   const eventTurnId = detail.threadId ?? detail.turnId ?? "";
   return activeTurnId === null || eventTurnId === activeTurnId;
 }

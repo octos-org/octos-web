@@ -25,6 +25,14 @@ const ROUTES: { id: string; label: string; hint: string }[] = [
   { id: "cloud", label: "Cloud (Volcano)", hint: "Volcano Engine cloud TTS (requires App ID + token)." },
 ];
 
+const ASR_LANGUAGES = [
+  "Chinese", "English", "Cantonese", "Arabic", "German", "French",
+  "Spanish", "Portuguese", "Indonesian", "Italian", "Korean", "Russian",
+  "Thai", "Vietnamese", "Japanese", "Turkish", "Hindi", "Malay", "Dutch",
+  "Swedish", "Danish", "Finnish", "Polish", "Czech", "Filipino", "Persian",
+  "Greek", "Romanian", "Hungarian", "Macedonian",
+] as const;
+
 // Preset Volcano voices (voice_type IDs). Label = friendly name shown to the
 // user; value = the `voice_type` written to `tts_cloud.voice`.
 const VOICES: { id: string; label: string }[] = [
@@ -56,6 +64,7 @@ export function VoiceTab({
   // `null`/absent override → "inherit" (NOT "auto"): show the server-default
   // option so we don't misrepresent the state or clobber inheritance on save.
   const [route, setRoute] = useState(cfg.tts_provider ?? "inherit");
+  const [asrLanguage, setAsrLanguage] = useState(cfg.asr_language ?? "inherit");
   const [cloud, setCloud] = useState<CloudTtsConfig>({ ...(cfg.tts_cloud ?? {}) });
   // Whether the profile already had a cloud override, and whether the user has
   // edited any cloud field this session. Used to avoid persisting an empty `{}`
@@ -101,6 +110,7 @@ export function VoiceTab({
         // `inherit` → null clears the override so the server default applies.
         tts_provider: route === "inherit" ? null : route,
         tts_cloud: ttsCloud,
+        asr_language: asrLanguage === "inherit" ? null : asrLanguage,
         env_vars: envVars,
       });
       onProfileUpdated(updated);
@@ -116,6 +126,35 @@ export function VoiceTab({
 
   return (
     <div className="space-y-6">
+      <div className="glass-section rounded-lg p-6">
+        <div className="flex items-center gap-3 mb-6">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
+            <Volume2 size={20} />
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-text-strong">Speech recognition (ASR)</h3>
+            <p className="text-xs text-muted">Choose the language expected from this profile</p>
+          </div>
+        </div>
+        <label htmlFor="asr-language" className="mb-1.5 block text-xs font-medium text-muted">
+          Recognition language
+        </label>
+        <select
+          id="asr-language"
+          value={asrLanguage}
+          onChange={(event) => setAsrLanguage(event.target.value)}
+          className={SELECT_CLASS}
+        >
+          <option value="inherit">Inherit (server default)</option>
+          {ASR_LANGUAGES.map((language) => (
+            <option key={language} value={language}>{language}</option>
+          ))}
+        </select>
+        <p className="mt-1.5 text-xs text-muted">
+          Applied on the next utterance. “Auto” is intentionally unavailable because the current Qwen3-ASR model does not support it reliably.
+        </p>
+      </div>
+
       {/* Route card */}
       <div className="glass-section rounded-lg p-6">
         <div className="flex items-center gap-3 mb-6">
