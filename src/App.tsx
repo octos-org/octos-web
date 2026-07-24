@@ -9,6 +9,7 @@ import { ChatThread } from "./components/chat-thread";
 import { HomePage } from "./pages/home-page";
 import { HomeAssistantPage } from "./home/home-assistant-page";
 import { VoicePage } from "./home/voice/voice-page";
+import { LearningPage } from "./learning/learning-page";
 import { AdminSettingsPage } from "./settings/settings-page";
 import { SlidesGalleryPage } from "./slides/pages/slides-gallery-page";
 import { SlidesEditorPage } from "./slides/pages/slides-editor-page";
@@ -48,6 +49,7 @@ export function App() {
             <Route path="/" element={<HomePage />} />
             <Route path="/home" element={<HomeAssistantPage />} />
             <Route path="/voice" element={<VoicePage />} />
+            <Route path="/learn" element={<LearningPage />} />
             <Route path="/chat/*" element={<ChatPage />} />
             {/* Studio revived (Ivory Obsidian workspace): /studio/:projectId
                 hosts the 3-pane workspace pinned to a `web-*` chat session.

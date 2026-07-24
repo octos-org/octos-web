@@ -12,6 +12,7 @@ import { buildApiHeaders } from "@/api/client";
 import { useVoiceCapture } from "./use-voice-capture";
 import { useCameraFrame } from "./use-camera-frame";
 import { playAudioBlob, stopAudio, unlockAudio } from "./audio-playback";
+import { stripLearningContext } from "@/learning/learning-context";
 
 export type VoiceState = "idle" | "listening" | "thinking" | "speaking" | "error";
 
@@ -21,7 +22,7 @@ export interface VoiceConversation {
   lastAssistantText: string;
   turns: VoiceConversationTurn[];
   error: string | null;
-  start: () => Promise<void>;
+  start: (options?: VoiceConversationStartOptions) => Promise<void>;
   stop: () => void;
   interrupt: () => void;
   /** Whether the camera is on (each spoken turn then attaches a frame). */
@@ -45,6 +46,29 @@ export interface VoiceConversation {
   /** UPCR-2026-025: true once an exit intent fired; the view shows a farewell
    *  while the last reply audio finishes, then navigates home. */
   exiting: boolean;
+}
+
+export interface VoiceConversationStartOptions {
+  /** Submit already-captured audio instead of waiting for a new utterance. */
+  initialAudio?: Blob | null;
+  /** Wake audio deliberately excludes the camera frame. */
+  includeCamera?: boolean;
+}
+
+export interface VoiceTurnSendContext {
+  sessionId: string;
+  turnId: string;
+  mediaPaths: string[];
+  currentFramePath?: string;
+}
+
+export interface VoiceConversationOptions {
+  /** Build application context after uploads resolve, so frame paths are exact. */
+  buildTurnText?: (context: VoiceTurnSendContext) => string;
+  /** Start the privacy-visible camera stream when voice capture starts. */
+  autoStartCamera?: boolean;
+  /** Learning sessions show their recent hydrated history when resumed. */
+  showExistingTurns?: boolean;
 }
 
 export interface VoiceConversationTurn {
@@ -170,7 +194,7 @@ export function buildVoiceTurns(
     const assistantText = stripVisualMarker(
       [...assistants].reverse().find((m) => m.text.trim().length > 0)?.text ?? "",
     );
-    const userText = thread.userMsg.text.trim();
+    const userText = stripLearningContext(thread.userMsg.text);
     const awaitingTranscript =
       userText.length === 0 &&
       thread.userMsg.files.some((f) => AUDIO_EXT.test(f.path));
@@ -277,6 +301,7 @@ export function useVoiceConversation(
   /** UPCR-2026-025: called to leave the voice screen (e.g. navigate('/')) when
    *  the user expresses an exit intent — invoked AFTER the farewell audio. */
   onExit?: () => void,
+  options?: VoiceConversationOptions,
 ): VoiceConversation {
   const threads = useRenderThreads(sessionId, historyTopic);
   const capture = useVoiceCapture();
@@ -406,7 +431,9 @@ export function useVoiceConversation(
   // drainQueue. Each stores itself into its own ref every render.
   const beginListeningRef = useRef<() => Promise<void>>(async () => {});
   const beginBargeInRef = useRef<() => Promise<void>>(async () => {});
-  const sendUtteranceRef = useRef<(wav: Blob) => Promise<void>>(async () => {});
+  const sendUtteranceRef = useRef<
+    (wav: Blob, includeCamera?: boolean) => Promise<void>
+  >(async () => {});
   const drainQueueRef = useRef<() => Promise<void>>(async () => {});
 
   const releaseAudio = useCallback(() => {
@@ -448,7 +475,7 @@ export function useVoiceConversation(
   );
 
   const sendCapturedUtterance = useCallback(
-    async (wav: Blob) => {
+    async (wav: Blob, includeCamera?: boolean) => {
       try {
         const turnId = crypto.randomUUID();
         activeTurnIdRef.current = turnId;
@@ -460,20 +487,30 @@ export function useVoiceConversation(
         // VLM sees the frame. Degrades to audio-only on a failed grab.
         const files = await assembleTurnFiles(
           file,
-          cameraActiveRef.current,
+          includeCamera ?? cameraActiveRef.current,
           cameraGrab,
         );
         // Surface the exact image sent to the AI (the model's view).
         const sentFrame = files.find((f) => f.type.startsWith("image/"));
         if (sentFrame) showSentFrame(sentFrame);
         const paths = await uploadFiles(files, "recording");
+        const sentFrameIndex = sentFrame ? files.indexOf(sentFrame) : -1;
+        const currentFramePath =
+          sentFrameIndex >= 0 ? paths[sentFrameIndex] : undefined;
+        const text =
+          options?.buildTurnText?.({
+            sessionId,
+            turnId,
+            mediaPaths: paths,
+            currentFramePath,
+          }) ?? "";
         // The server-side STT transcribes the audio in `media` into the prompt.
         // The reply's TTS audio arrives asynchronously and is played by the
         // threads watcher below (not here in onComplete).
         sendMessage({
           sessionId,
           historyTopic,
-          text: "",
+          text,
           media: paths,
           clientMessageId: turnId,
           // #1478: this turn carries a live camera frame iff one was actually
@@ -499,7 +536,13 @@ export function useVoiceConversation(
         setState("error");
       }
     },
-    [historyTopic, sessionId, cameraGrab, showSentFrame],
+    [
+      cameraGrab,
+      historyTopic,
+      options?.buildTurnText,
+      sessionId,
+      showSentFrame,
+    ],
   );
 
   const beginBargeIn = useCallback(async () => {
@@ -657,7 +700,9 @@ export function useVoiceConversation(
   sendUtteranceRef.current = sendCapturedUtterance;
   drainQueueRef.current = drainQueue;
 
-  const start = useCallback(async () => {
+  const start = useCallback(async (
+    startOptions?: VoiceConversationStartOptions,
+  ) => {
     // Capture this start's generation. A later stop() (unmount, exit) or a
     // newer start() bumps the counter; every await below re-checks it and
     // abandons, so a stale start can never re-acquire the microphone.
@@ -679,8 +724,9 @@ export function useVoiceConversation(
     ignoredTurnIdsRef.current = new Set();
     activeTurnIdRef.current = null;
     captureModeRef.current = null;
-    turnBaselineRef.current = threadsRef.current.length;
-    setTurnBaseline(threadsRef.current.length);
+    const baseline = options?.showExistingTurns ? 0 : threadsRef.current.length;
+    turnBaselineRef.current = baseline;
+    setTurnBaseline(baseline);
     setLastAssistantText("");
     // Rich output: mark pre-existing artifacts as seen so re-entry doesn't
     // re-surface a prior turn's visual; reset the live visual/generating state.
@@ -723,8 +769,32 @@ export function useVoiceConversation(
       if (startGenRef.current !== gen) return;
     }
     if (startGenRef.current !== gen) return;
+    // Let StrictMode's effect cleanup/replay invalidate the first development
+    // start before a one-shot wake clip can be sent twice.
+    await Promise.resolve();
+    if (startGenRef.current !== gen) return;
+    if (options?.autoStartCamera) {
+      // Do not block the greeting on camera startup. The wake turn explicitly
+      // passes includeCamera=false; subsequent VAD turns use the live state.
+      void cameraStart();
+    }
+    if (startOptions?.initialAudio) {
+      await sendCapturedUtterance(
+        startOptions.initialAudio,
+        startOptions.includeCamera ?? false,
+      );
+      return;
+    }
     await beginListening();
-  }, [beginListening, sessionId, historyTopic]);
+  }, [
+    beginListening,
+    cameraStart,
+    historyTopic,
+    options?.autoStartCamera,
+    options?.showExistingTurns,
+    sendCapturedUtterance,
+    sessionId,
+  ]);
 
   const stop = useCallback(() => {
     // Invalidate any in-flight start() (it re-checks this after each await).
@@ -1023,7 +1093,9 @@ export function useVoiceConversation(
     .slice(turnBaseline)
     .reverse()
     .find((thread) => !thread.backgroundChild);
-  const lastUserText = latestUserThread?.userMsg.text ?? "";
+  const lastUserText = stripLearningContext(
+    latestUserThread?.userMsg.text ?? "",
+  );
   const turns = buildVoiceTurns(threads, turnBaseline);
 
   const dismissVisual = useCallback(() => setVisual(null), []);

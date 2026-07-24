@@ -50,7 +50,9 @@ import { unlockAudio } from "./voice/audio-playback";
 import {
   describeWakeWordListener,
   useWakeWordListener,
+  type WakeWordDetection,
 } from "./voice/use-wake-word-listener";
+import { storeWakeAudio } from "@/learning/wake-audio-handoff";
 
 type Mode = "standby" | "conversation";
 
@@ -123,9 +125,10 @@ function HomeAssistantShell() {
   const nightActive = useNightMode();
   const voiceRuntime = useOminixRuntimeSummary();
 
-  const handleWakeDetected = useCallback(() => {
+  const handleWakeDetected = useCallback((detection: WakeWordDetection) => {
     unlockAudio();
-    navigate("/voice");
+    storeWakeAudio(detection.audio);
+    navigate("/learn");
   }, [navigate]);
 
   const wakeWord = useWakeWordListener({
