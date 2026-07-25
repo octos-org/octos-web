@@ -7,6 +7,7 @@ import {
 import { getActiveBridge } from "@/runtime/ui-protocol-runtime";
 import type { Thread, ThreadMessage } from "@/store/thread-store";
 import { useRenderThreads } from "@/store/projection-render-adapter";
+import * as ProjectionStore from "@/store/projection-store";
 import { buildFileUrl } from "@/api/files";
 import { buildApiHeaders } from "@/api/client";
 import { useVoiceCapture } from "./use-voice-capture";
@@ -185,6 +186,7 @@ export function collectFreshAudioWithTurnIds(
 export function buildVoiceTurns(
   threads: Thread[],
   baseline = 0,
+  liveTranscripts: ReadonlyMap<string, string> = new Map(),
 ): VoiceConversationTurn[] {
   return threads.slice(baseline).filter((thread) => !thread.backgroundChild).map((thread) => {
     const assistants: ThreadMessage[] = [
@@ -194,7 +196,9 @@ export function buildVoiceTurns(
     const assistantText = stripVisualMarker(
       [...assistants].reverse().find((m) => m.text.trim().length > 0)?.text ?? "",
     );
-    const userText = stripLearningContext(thread.userMsg.text);
+    const userText = stripLearningContext(
+      liveTranscripts.get(thread.id) ?? thread.userMsg.text,
+    );
     const awaitingTranscript =
       userText.length === 0 &&
       thread.userMsg.files.some((f) => AUDIO_EXT.test(f.path));
@@ -322,6 +326,9 @@ export function useVoiceConversation(
   const cameraError = camera.error;
   const [state, setState] = useState<VoiceState>("idle");
   const [lastAssistantText, setLastAssistantText] = useState("");
+  const [liveTranscripts, setLiveTranscripts] = useState<
+    ReadonlyMap<string, string>
+  >(() => new Map());
   const [visual, setVisual] = useState<VisualArtifact | null>(null);
   const [generating, setGenerating] = useState(false);
   const [exiting, setExiting] = useState(false);
@@ -878,6 +885,42 @@ export function useVoiceConversation(
   }, [captureStop, releaseAudio, requestTurnInterrupt]);
 
   useEffect(() => {
+    const projectionKey = ProjectionStore.projectionStoreKey(
+      sessionId,
+      historyTopic,
+    );
+    return ProjectionStore.onEnvelopeAdmitted((storeKey, envelope) => {
+      if (
+        storeKey !== projectionKey ||
+        envelope.payload.type !== "file_attached" ||
+        (stateRef.current !== "thinking" && stateRef.current !== "speaking")
+      ) {
+        return;
+      }
+      const path = envelope.payload.data.path;
+      if (!AUDIO_EXT.test(path) || playedPathsRef.current.has(path)) return;
+      const renderThreadId =
+        ProjectionStore.clientMessageIdForTurn(storeKey, envelope.turn_id) ??
+        envelope.client_message_id ??
+        envelope.thread_id;
+      if (ignoredTurnIdsRef.current.has(renderThreadId)) return;
+
+      // Reply audio is an interaction side effect, not durable chat content.
+      // Observe the admitted envelope directly so a TTS file that lands after
+      // the canonical turn terminal can still play without weakening the
+      // projection's hard post-terminal rendering barrier.
+      playedPathsRef.current.add(path);
+      audioTurnByPathRef.current.set(path, renderThreadId);
+      audioQueueRef.current.push(path);
+      speechInterruptArmedRef.current = false;
+      activeTurnIdRef.current = null;
+      clearTimeout(replyTimerRef.current);
+      clearTimeout(graceTimerRef.current);
+      void drainQueueRef.current();
+    });
+  }, [historyTopic, sessionId]);
+
+  useEffect(() => {
     if (captureError) {
       captureModeRef.current = null;
       setState("error");
@@ -1048,6 +1091,39 @@ export function useVoiceConversation(
   }, [sessionId]);
 
   useEffect(() => {
+    const onTranscript = (ev: Event) => {
+      const detail = (ev as CustomEvent).detail as
+        | {
+            sessionId?: string;
+            topic?: string;
+            threadId?: string;
+            turnId?: string;
+            transcript?: string;
+          }
+        | undefined;
+      if (
+        !detail ||
+        detail.sessionId !== sessionId ||
+        (detail.topic ?? undefined) !== (historyTopic ?? undefined)
+      ) {
+        return;
+      }
+      const threadId = detail.threadId ?? detail.turnId ?? "";
+      const transcript = detail.transcript?.trim() ?? "";
+      if (!threadId || !transcript) return;
+      setLiveTranscripts((current) => {
+        if (current.get(threadId) === transcript) return current;
+        const next = new Map(current);
+        next.set(threadId, transcript);
+        return next;
+      });
+    };
+    window.addEventListener("crew:voice_transcript", onTranscript);
+    return () =>
+      window.removeEventListener("crew:voice_transcript", onTranscript);
+  }, [historyTopic, sessionId]);
+
+  useEffect(() => {
     const onNoSpeech = (ev: Event) => {
       const detail = (ev as CustomEvent).detail as
         | {
@@ -1094,9 +1170,13 @@ export function useVoiceConversation(
     .reverse()
     .find((thread) => !thread.backgroundChild);
   const lastUserText = stripLearningContext(
-    latestUserThread?.userMsg.text ?? "",
+    (latestUserThread
+      ? liveTranscripts.get(latestUserThread.id)
+      : undefined) ??
+      latestUserThread?.userMsg.text ??
+      "",
   );
-  const turns = buildVoiceTurns(threads, turnBaseline);
+  const turns = buildVoiceTurns(threads, turnBaseline, liveTranscripts);
 
   const dismissVisual = useCallback(() => setVisual(null), []);
 
