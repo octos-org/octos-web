@@ -2047,6 +2047,16 @@ describe("notification dispatch", () => {
     await bridge.stop();
   });
 
+  it("negotiates the canonical projection envelope server token", () => {
+    // The octos-one server gates `projection/envelope` on
+    // `projection.envelope.v1` only (octos-cli api/ui_protocol.rs:1331);
+    // the web-side v2 token names the frame shape, not a server
+    // capability. Both must be offered or the canonical projection path
+    // never activates.
+    expect(UI_PROTOCOL_FEATURES).toContain("projection.envelope.v1");
+    expect(UI_PROTOCOL_FEATURES).toContain("projection.envelope.v2");
+  });
+
   it("negotiates the M15 autonomy capabilities incl. the umbrella token", () => {
     // codex #263 round 1 P1: once ANY tokens are sent the server
     // requires `coding.autonomy.v1` AND the runtime child — children

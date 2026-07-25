@@ -275,6 +275,14 @@ export const METHODS = {
  */
 export const UI_PROTOCOL_FEATURES = [
   ProjectionStore.PROJECTION_ENVELOPE_V2_FEATURE,
+  // The octos-one server gates the canonical `projection/envelope`
+  // notification on `projection.envelope.v1` only (octos-cli
+  // `api/ui_protocol.rs:1331`, echo at :1401-1403). The web-side "v2"
+  // token names the flattened frame shape, not a server capability —
+  // sending v2 alone negotiated nothing and left the canonical
+  // projection path permanently inactive. Send both; unknown tokens are
+  // ignored by older servers, so this is additive/backwards-compatible.
+  ProjectionStore.PROJECTION_ENVELOPE_V1_FEATURE,
   "approval.typed.v1",
   "user_question.v1",
   "pane.snapshots.v1",

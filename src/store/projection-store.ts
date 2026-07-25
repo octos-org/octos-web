@@ -18,6 +18,24 @@ import type {
 
 export const PROJECTION_ENVELOPE_V2_FEATURE = "projection.envelope.v2";
 
+/**
+ * Canonical projection envelope capability as negotiated by the octos-one
+ * server (`octos_core::ui_protocol::UI_PROTOCOL_FEATURE_PROJECTION_ENVELOPE_V1`,
+ * octos-one `crates/octos-core/src/ui_protocol.rs:180`). The server's
+ * capability map sets `projection_envelope` only from this exact token
+ * (octos-one `crates/octos-cli/src/api/ui_protocol.rs:1331`) and echoes it
+ * into `supported_features` (`ui_protocol.rs:1401-1403`); unknown tokens
+ * such as the client-side `projection.envelope.v2` are silently ignored.
+ *
+ * The "v2" name on the web side refers to the flattened EnvelopeWire frame
+ * shape the server itself emits (its `EnvelopeNotification` docs name
+ * "the octos-web bridge" as the tolerant top-level decoder) — it is NOT a
+ * server-known capability token. Sending BOTH tokens lets the server's
+ * capability check pass while the bridge keeps gating the v2 render path
+ * on its own token being echoed back.
+ */
+export const PROJECTION_ENVELOPE_V1_FEATURE = "projection.envelope.v1";
+
 export interface ProjectionIngestResult {
   accepted: boolean;
   duplicate: boolean;
