@@ -201,7 +201,7 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
     : isCustom;
   const isJsonCredential = usesJsonCredential(selectedProvider);
   // env_vars values come back masked; a non-empty entry means it's already set.
-  const saAlreadyConfigured = Boolean(
+  const credentialAlreadyConfigured = Boolean(
     selectedProvider?.envKey &&
       profile.config.env_vars?.[selectedProvider.envKey],
   );
@@ -221,7 +221,8 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
     : form.family_id;
   const effectiveModelId = isCustom
     ? form.custom_model_id
-    : form.model_id === "__custom__"
+    : form.model_id === "__custom__" ||
+        (selectedProvider && providerModels.length === 0)
       ? form.custom_model_id
       : form.model_id;
 
@@ -293,7 +294,12 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
 
   /* ── Test Connection ── */
   const handleTestConnection = async () => {
-    if (!effectiveFamilyId || !effectiveModelId) return;
+    if (!effectiveFamilyId) return;
+    if (!effectiveModelId.trim()) {
+      setTestStatus("failed");
+      setTestMessage("Select or enter a model ID before testing.");
+      return;
+    }
     setTestStatus("testing");
     setTestMessage(null);
     try {
@@ -324,9 +330,11 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
         setTestStatus("failed");
         setTestMessage(resp.error || resp.message || "Connection failed");
       }
-    } catch {
+    } catch (err) {
       setTestStatus("failed");
-      setTestMessage("Connection test endpoint unavailable");
+      setTestMessage(
+        formatSettingsError(err, "Connection test endpoint unavailable"),
+      );
     }
     setTimeout(() => {
       setTestStatus("idle");
@@ -505,7 +513,7 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
                   setForm((f) => ({ ...f, sa_json: e.target.value }))
                 }
                 placeholder={
-                  saAlreadyConfigured
+                  credentialAlreadyConfigured
                     ? "Stored in keychain — paste new JSON to replace"
                     : "Paste the full service-account JSON…"
                 }
@@ -514,7 +522,7 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
                 className="w-full resize-y rounded-xl bg-surface-container px-4 py-3 font-mono text-xs text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition"
               />
               <p className="mt-2 flex items-center gap-1.5 text-xs text-muted">
-                {saAlreadyConfigured ? (
+                {credentialAlreadyConfigured ? (
                   <>
                     <CheckCircle2 size={13} className="text-green-400" />
                     Configured (stored in macOS Keychain). Leave blank to keep.
@@ -533,17 +541,34 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
           {/* Env key hint (single-line API-key providers) */}
           {!isJsonCredential && selectedProvider?.envKey && (
             <div className="flex items-start gap-2 rounded-xl bg-surface-dark/50 px-4 py-3">
-              <AlertCircle
-                size={14}
-                className="mt-0.5 shrink-0 text-amber-400"
-              />
-              <span className="text-xs text-muted">
-                Requires{" "}
-                <code className="rounded bg-surface-container px-1.5 py-0.5 font-mono text-[11px] text-text">
-                  {selectedProvider.envKey}
-                </code>{" "}
-                in Environment Variables (see the API Keys tab)
-              </span>
+              {credentialAlreadyConfigured ? (
+                <>
+                  <CheckCircle2
+                    size={14}
+                    className="mt-0.5 shrink-0 text-green-400"
+                  />
+                  <span className="text-xs text-muted">
+                    <code className="rounded bg-surface-container px-1.5 py-0.5 font-mono text-[11px] text-text">
+                      {selectedProvider.envKey}
+                    </code>{" "}
+                    is configured in API Keys.
+                  </span>
+                </>
+              ) : (
+                <>
+                  <AlertCircle
+                    size={14}
+                    className="mt-0.5 shrink-0 text-amber-400"
+                  />
+                  <span className="text-xs text-muted">
+                    Requires{" "}
+                    <code className="rounded bg-surface-container px-1.5 py-0.5 font-mono text-[11px] text-text">
+                      {selectedProvider.envKey}
+                    </code>{" "}
+                    in Environment Variables (see the API Keys tab)
+                  </span>
+                </>
+              )}
             </div>
           )}
 
@@ -553,6 +578,7 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
               <label className={labelClass}>Base URL</label>
               <input
                 type="text"
+                aria-label="Base URL"
                 value={form.base_url}
                 onChange={(e) =>
                   setForm((f) => ({ ...f, base_url: e.target.value }))
@@ -562,6 +588,12 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
                 }
                 className={inputClass}
               />
+              {selectedProvider?.id === "moonshot" && (
+                <p className="mt-2 text-xs text-muted">
+                  China API keys use https://api.moonshot.cn/v1. Global API
+                  keys use https://api.moonshot.ai/v1.
+                </p>
+              )}
             </div>
           )}
 

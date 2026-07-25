@@ -90,7 +90,13 @@ export const LLM_PROVIDERS: LlmProvider[] = [
   },
   { id: "zhipu", name: "Zhipu (GLM)", envKey: "ZHIPU_API_KEY", models: [] },
   { id: "zai", name: "Z.ai (GLM)", envKey: "ZAI_API_KEY", models: [] },
-  { id: "moonshot", name: "Moonshot", envKey: "MOONSHOT_API_KEY", models: [] },
+  {
+    id: "moonshot",
+    name: "Moonshot",
+    envKey: "MOONSHOT_API_KEY",
+    defaultBaseUrl: "https://api.moonshot.cn/v1",
+    models: [],
+  },
   { id: "perplexity", name: "Perplexity", envKey: "PERPLEXITY_API_KEY", models: [] },
   {
     id: "mistral",
@@ -119,6 +125,7 @@ export function showsBaseUrl(provider: LlmProvider): boolean {
   return (
     provider.id === "ollama" ||
     provider.id === "vllm" ||
+    provider.id === "moonshot" ||
     provider.id === "__custom_family__"
   );
 }

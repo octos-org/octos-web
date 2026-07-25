@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildCredentialEnvPatch,
   findProvider,
+  showsBaseUrl,
   usesJsonCredential,
 } from "./llm-providers";
 
@@ -16,6 +17,14 @@ describe("vertex provider entry", () => {
   it("treats normal providers as single-line API keys", () => {
     expect(usesJsonCredential(findProvider("openai"))).toBe(false);
     expect(usesJsonCredential(findProvider("google"))).toBe(false);
+  });
+});
+
+describe("moonshot provider entry", () => {
+  it("defaults to the China endpoint and allows editing the base URL", () => {
+    const moonshot = findProvider("moonshot");
+    expect(moonshot?.defaultBaseUrl).toBe("https://api.moonshot.cn/v1");
+    expect(showsBaseUrl(moonshot!)).toBe(true);
   });
 });
 
