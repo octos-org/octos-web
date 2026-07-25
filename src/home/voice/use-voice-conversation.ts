@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { uploadFiles } from "@/api/chat";
+import { transcribeVoiceCandidate, uploadFiles } from "@/api/chat";
 import {
   interruptActiveTurn,
   sendMessage,
@@ -16,6 +16,7 @@ import { playAudioBlob, stopAudio, unlockAudio } from "./audio-playback";
 import { stripLearningContext } from "@/learning/learning-context";
 
 export type VoiceState = "idle" | "listening" | "thinking" | "speaking" | "error";
+type VoiceCaptureMode = "listening" | "thinking" | "speaking";
 
 export interface VoiceConversation {
   state: VoiceState;
@@ -383,7 +384,10 @@ export function useVoiceConversation(
   // A streamed reply can contain dozens of audio files; keep the `speaking`
   // capture mode across clip boundaries instead of re-running captureStart()
   // for every file.
-  const captureModeRef = useRef<"listening" | "thinking" | "speaking" | null>(null);
+  const captureModeRef = useRef<VoiceCaptureMode | null>(null);
+  // True while an ASR-only candidate check is running. It prevents clip
+  // boundaries from starting a second VAD over the same provisional speech.
+  const candidatePendingRef = useRef(false);
   const replyTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const stateRef = useRef<VoiceState>("idle");
   stateRef.current = state;
@@ -439,7 +443,11 @@ export function useVoiceConversation(
   const beginListeningRef = useRef<() => Promise<void>>(async () => {});
   const beginBargeInRef = useRef<() => Promise<void>>(async () => {});
   const sendUtteranceRef = useRef<
-    (wav: Blob, includeCamera?: boolean) => Promise<void>
+    (
+      wav: Blob,
+      source: VoiceCaptureMode,
+      includeCamera?: boolean,
+    ) => Promise<void>
   >(async () => {});
   const drainQueueRef = useRef<() => Promise<void>>(async () => {});
 
@@ -448,8 +456,12 @@ export function useVoiceConversation(
   }, []);
 
   const requestTurnInterrupt = useCallback(
-    (reason: string): boolean => {
-      const activeClientMessageId = activeTurnIdRef.current;
+    async (
+      reason: string,
+      preferredClientMessageId?: string,
+    ): Promise<boolean> => {
+      const activeClientMessageId =
+        preferredClientMessageId ?? activeTurnIdRef.current;
       const pendingThread =
         (activeClientMessageId
           ? threadsRef.current.find((thread) => thread.id === activeClientMessageId)
@@ -468,27 +480,103 @@ export function useVoiceConversation(
       if (activeTurnIdRef.current === activeClientMessageId) {
         activeTurnIdRef.current = null;
       }
-      void interruptActiveTurn({
-        sessionId,
-        historyTopic,
-        turnId,
-        reason,
-      }).catch(() => {
-        // Best-effort: local state has already moved on.
-      });
-      return true;
+      try {
+        return await interruptActiveTurn({
+          sessionId,
+          historyTopic,
+          turnId,
+          reason,
+        });
+      } catch {
+        // The incumbent may have completed between ASR acceptance and commit.
+        // The accepted candidate is still valid and may proceed as a new turn.
+        return false;
+      }
     },
     [historyTopic, sessionId],
   );
 
   const sendCapturedUtterance = useCallback(
-    async (wav: Blob, includeCamera?: boolean) => {
+    async (
+      wav: Blob,
+      source: VoiceCaptureMode,
+      includeCamera?: boolean,
+    ) => {
+      const file = new File([wav], "utterance.wav", { type: "audio/wav" });
+      let voiceTranscript: string | undefined;
+
+      if (source !== "listening") {
+        candidatePendingRef.current = true;
+        try {
+          const candidate = await transcribeVoiceCandidate(file);
+          voiceTranscript = candidate.accepted
+            ? candidate.transcript.trim()
+            : undefined;
+        } catch (error) {
+          console.warn("[voice] candidate ASR failed; incumbent preserved", error);
+        }
+
+        if (!voiceTranscript) {
+          // Empty ASR / noise / an unavailable ASR service is a rejected
+          // candidate, not an interruption. Keep the incumbent response and
+          // simply re-arm VAD for whatever state it has reached meanwhile.
+          candidatePendingRef.current = false;
+          speechInterruptArmedRef.current = false;
+          captureModeRef.current = null;
+          if (stateRef.current === "thinking") {
+            clearTimeout(replyTimerRef.current);
+            replyTimerRef.current = setTimeout(() => {
+              if (stateRef.current === "thinking") {
+                void beginListeningRef.current();
+              }
+            }, REPLY_TIMEOUT_MS);
+            void beginBargeInRef.current();
+          } else if (
+            stateRef.current === "speaking" &&
+            (playingRef.current || audioQueueRef.current.length > 0)
+          ) {
+            void beginBargeInRef.current();
+          } else if (stateRef.current === "speaking") {
+            void beginListeningRef.current();
+          } else if (stateRef.current === "listening") {
+            void beginListeningRef.current();
+          }
+          return;
+        }
+
+        // Commit point: only meaningful speech may supersede the old turn.
+        // Until here its TTS kept playing and its agent kept running.
+        clearTimeout(replyTimerRef.current);
+        clearTimeout(graceTimerRef.current);
+        const speakingTurnId = speakingTurnIdRef.current;
+        if (speakingTurnId) ignoredTurnIdsRef.current.add(speakingTurnId);
+        audioQueueRef.current = [];
+        audioTurnByPathRef.current.clear();
+        speakingTurnIdRef.current = null;
+        drainGenRef.current++;
+        // A candidate can start while the turn is still thinking and finish
+        // after its first TTS clip has begun. Stop whichever incumbent audio
+        // is live at the commit point, not only audio that was already live
+        // when VAD first fired.
+        if (
+          source === "speaking" ||
+          stateRef.current === "speaking" ||
+          playingRef.current
+        ) {
+          releaseAudio();
+        }
+        await requestTurnInterrupt(
+          "accepted voice barge-in",
+          speakingTurnId ?? undefined,
+        );
+        candidatePendingRef.current = false;
+      }
+
       try {
         const turnId = crypto.randomUUID();
         activeTurnIdRef.current = turnId;
         stateRef.current = "thinking";
         setState("thinking");
-        const file = new File([wav], "utterance.wav", { type: "audio/wav" });
         // When the camera is on, attach the current frame so the turn is a
         // video call (audio + image); the server transcribes the audio and the
         // VLM sees the frame. Degrades to audio-only on a failed grab.
@@ -524,6 +612,7 @@ export function useVoiceConversation(
           // attached (camera on + grab succeeded) — tell the server so it
           // treats the frame as a real-time view, never inferred from media.
           liveVideo: sentFrame !== undefined,
+          voiceTranscript,
           onComplete: () => {
             if (activeTurnIdRef.current === turnId) {
               activeTurnIdRef.current = null;
@@ -539,6 +628,7 @@ export function useVoiceConversation(
           }
         }, REPLY_TIMEOUT_MS);
       } catch (e) {
+        candidatePendingRef.current = false;
         console.error("[voice] upload/send failed", e);
         setState("error");
       }
@@ -547,6 +637,8 @@ export function useVoiceConversation(
       cameraGrab,
       historyTopic,
       options?.buildTurnText,
+      releaseAudio,
+      requestTurnInterrupt,
       sessionId,
       showSentFrame,
     ],
@@ -554,6 +646,7 @@ export function useVoiceConversation(
 
   const beginBargeIn = useCallback(async () => {
     if (stateRef.current !== "thinking" && stateRef.current !== "speaking") return;
+    if (candidatePendingRef.current) return;
     const captureMode = stateRef.current;
     if (captureModeRef.current === captureMode) return;
     captureModeRef.current = captureMode;
@@ -572,7 +665,7 @@ export function useVoiceConversation(
         }
         captureModeRef.current = null;
         void captureStop();
-        void sendUtteranceRef.current(wav);
+        void sendUtteranceRef.current(wav, captureMode);
       },
       {
         ...vadOptions,
@@ -584,26 +677,21 @@ export function useVoiceConversation(
             return;
           }
           speechInterruptArmedRef.current = true;
+          candidatePendingRef.current = true;
+          // Freeze only the state-transition safety timers while speech is
+          // provisional. Audio itself and the incumbent agent keep running.
           clearTimeout(replyTimerRef.current);
           clearTimeout(graceTimerRef.current);
-          if (stateRef.current === "speaking") {
-            const turnId = speakingTurnIdRef.current;
-            if (turnId) ignoredTurnIdsRef.current.add(turnId);
-            drainGenRef.current++;
-            releaseAudio();
-          } else {
-            requestTurnInterrupt("user started speaking while thinking");
-          }
-          audioQueueRef.current = [];
-          audioTurnByPathRef.current.clear();
-          speakingTurnIdRef.current = null;
+          // Provisional only. Do not stop TTS, clear queued clips, or cancel
+          // the thinking turn until candidate ASR returns meaningful text.
         },
         onVADMisfire: () => {
           speechInterruptArmedRef.current = false;
+          candidatePendingRef.current = false;
         },
       },
     );
-  }, [captureStart, captureStop, releaseAudio, requestTurnInterrupt]);
+  }, [captureStart, captureStop]);
 
   // Define beginListening and playReply with useCallback; each calls the other via its ref.
 
@@ -617,7 +705,7 @@ export function useVoiceConversation(
         if (stateRef.current !== "listening") return;
         captureModeRef.current = null;
         void captureStop();
-        void sendUtteranceRef.current(wav);
+        void sendUtteranceRef.current(wav, "listening");
       },
       LISTENING_VAD_OPTIONS,
     );
@@ -730,6 +818,7 @@ export function useVoiceConversation(
     );
     ignoredTurnIdsRef.current = new Set();
     activeTurnIdRef.current = null;
+    candidatePendingRef.current = false;
     captureModeRef.current = null;
     const baseline = options?.showExistingTurns ? 0 : threadsRef.current.length;
     turnBaselineRef.current = baseline;
@@ -788,6 +877,7 @@ export function useVoiceConversation(
     if (startOptions?.initialAudio) {
       await sendCapturedUtterance(
         startOptions.initialAudio,
+        "listening",
         startOptions.includeCamera ?? false,
       );
       return;
@@ -812,6 +902,7 @@ export function useVoiceConversation(
     clearTimeout(replyTimerRef.current);
     clearTimeout(graceTimerRef.current);
     activeTurnIdRef.current = null;
+    candidatePendingRef.current = false;
     speechInterruptArmedRef.current = false;
     captureModeRef.current = null;
     audioQueueRef.current = [];
@@ -877,7 +968,7 @@ export function useVoiceConversation(
       // in the fetch phase) — supersede it the same way.
       drainGenRef.current++;
       speechInterruptArmedRef.current = false;
-      requestTurnInterrupt("user tapped orb while thinking");
+      void requestTurnInterrupt("user tapped orb while thinking");
       captureModeRef.current = null;
       void captureStop();
       void beginListeningRef.current();
@@ -912,7 +1003,9 @@ export function useVoiceConversation(
       playedPathsRef.current.add(path);
       audioTurnByPathRef.current.set(path, renderThreadId);
       audioQueueRef.current.push(path);
-      speechInterruptArmedRef.current = false;
+      if (!candidatePendingRef.current) {
+        speechInterruptArmedRef.current = false;
+      }
       activeTurnIdRef.current = null;
       clearTimeout(replyTimerRef.current);
       clearTimeout(graceTimerRef.current);
@@ -938,7 +1031,9 @@ export function useVoiceConversation(
       ignoredTurnIdsRef.current,
     );
     if (fresh.length === 0) return;
-    speechInterruptArmedRef.current = false;
+    if (!candidatePendingRef.current) {
+      speechInterruptArmedRef.current = false;
+    }
     activeTurnIdRef.current = null;
     clearTimeout(replyTimerRef.current);
     clearTimeout(graceTimerRef.current);
@@ -1146,6 +1241,7 @@ export function useVoiceConversation(
       clearTimeout(replyTimerRef.current);
       clearTimeout(graceTimerRef.current);
       activeTurnIdRef.current = null;
+      candidatePendingRef.current = false;
       speechInterruptArmedRef.current = false;
       audioQueueRef.current = [];
       audioTurnByPathRef.current.clear();
