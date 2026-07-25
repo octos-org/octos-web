@@ -25,21 +25,13 @@ const {
   captureStartMock,
   captureStopMock,
   getActiveBridgeMock,
-  interruptActiveTurnMock,
   sendMessageMock,
-  transcribeVoiceCandidateMock,
   uploadFilesMock,
 } = vi.hoisted(() => ({
   captureStartMock: vi.fn(async () => {}),
   captureStopMock: vi.fn(async () => {}),
   getActiveBridgeMock: vi.fn((): unknown => undefined),
-  interruptActiveTurnMock: vi.fn(async () => true),
   sendMessageMock: vi.fn(),
-  transcribeVoiceCandidateMock: vi.fn(async () => ({
-    accepted: true,
-    transcript: "继续说",
-    language: "Chinese",
-  })),
   uploadFilesMock: vi.fn(async () => [] as string[]),
 }));
 
@@ -124,7 +116,7 @@ vi.mock("@/store/projection-store", () => ({
 }));
 
 vi.mock("@/runtime/ui-protocol-send", () => ({
-  interruptActiveTurn: interruptActiveTurnMock,
+  interruptActiveTurn: vi.fn(async () => true),
   sendMessage: sendMessageMock,
 }));
 
@@ -133,7 +125,6 @@ vi.mock("@/runtime/ui-protocol-runtime", () => ({
 }));
 
 vi.mock("@/api/chat", () => ({
-  transcribeVoiceCandidate: transcribeVoiceCandidateMock,
   uploadFiles: uploadFilesMock,
 }));
 
@@ -688,15 +679,8 @@ describe("interrupt() supersedes the drain loop (stale grace timer)", () => {
     audioMock.stopAudio.mockClear();
     captureStartMock.mockClear();
     captureStopMock.mockClear();
-    interruptActiveTurnMock.mockClear();
     getActiveBridgeMock.mockReset();
     getActiveBridgeMock.mockReturnValue(undefined);
-    transcribeVoiceCandidateMock.mockReset();
-    transcribeVoiceCandidateMock.mockResolvedValue({
-      accepted: true,
-      transcript: "继续说",
-      language: "Chinese",
-    });
   });
 
   const flushMicrotasks = async () => {
@@ -851,172 +835,15 @@ describe("interrupt() supersedes the drain loop (stale grace timer)", () => {
       bargeInOptions.onSpeechConfirmed();
       await flushMicrotasks();
     });
-    expect(audioMock.stopAudio).not.toHaveBeenCalled();
+    expect(audioMock.stopAudio).toHaveBeenCalled();
 
     await act(async () => {
       bargeInUtterance(new Blob(["u2"]));
       await flushMicrotasks();
     });
 
-    expect(transcribeVoiceCandidateMock).toHaveBeenCalledTimes(1);
-    expect(audioMock.stopAudio).toHaveBeenCalled();
-    expect(interruptActiveTurnMock).toHaveBeenCalledTimes(1);
     expect(sendMessageMock).toHaveBeenCalledTimes(sendCountBefore + 2);
-    expect(sendMessageMock.mock.calls.at(-1)?.[0].voiceTranscript).toBe(
-      "继续说",
-    );
     expect(result.current.state).toBe("thinking");
-  });
-
-  it("keeps current and queued TTS when candidate ASR rejects speaker echo", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => ({
-        ok: true,
-        blob: async () => new Blob(["a"]),
-      })),
-    );
-    getActiveBridgeMock.mockReturnValue({
-      getConnectionState: () => "connected",
-    });
-    transcribeVoiceCandidateMock.mockResolvedValueOnce({
-      accepted: false,
-      transcript: "",
-      language: "Chinese",
-    });
-
-    const { result, rerender, unmount } = renderHook(() =>
-      useVoiceConversation("voice-speaker-echo-test"),
-    );
-    await act(async () => {
-      await result.current.start();
-    });
-    const listeningUtterance = captureStartMock.mock.calls[0][0] as (
-      wav: Blob,
-    ) => void;
-    await act(async () => {
-      listeningUtterance(new Blob(["u1"]));
-      await flushMicrotasks();
-    });
-    const sendCount = sendMessageMock.mock.calls.length;
-
-    threadsMock.value = [
-      {
-        id: "turn-multi-echo",
-        userMsg: { text: "tell me more" },
-        pendingAssistant: null,
-        responses: [
-          {
-            role: "assistant",
-            text: "part one. part two.",
-            files: [{ path: "w/e1.wav" }, { path: "w/e2.wav" }],
-          },
-        ],
-      },
-    ];
-    rerender();
-    await act(async () => {
-      await flushMicrotasks();
-    });
-
-    const bargeInCall = captureStartMock.mock.calls.at(-1)!;
-    const candidateUtterance = bargeInCall[0] as (wav: Blob) => void;
-    const candidateOptions = bargeInCall[1] as {
-      onSpeechConfirmed: () => void;
-    };
-    await act(async () => {
-      candidateOptions.onSpeechConfirmed();
-      await flushMicrotasks();
-    });
-    expect(audioMock.stopAudio).not.toHaveBeenCalled();
-
-    await act(async () => {
-      candidateUtterance(new Blob(["speaker echo"]));
-      await flushMicrotasks();
-    });
-    expect(transcribeVoiceCandidateMock).toHaveBeenCalledTimes(1);
-    expect(interruptActiveTurnMock).not.toHaveBeenCalled();
-    expect(audioMock.stopAudio).not.toHaveBeenCalled();
-    expect(sendMessageMock).toHaveBeenCalledTimes(sendCount);
-    expect(result.current.state).toBe("speaking");
-
-    await act(async () => {
-      const finishFirstClip = audioMock.state.onEnded;
-      audioMock.state.onEnded = null;
-      finishFirstClip?.();
-      await flushMicrotasks();
-    });
-    expect(audioMock.playAudioBlob).toHaveBeenCalledTimes(2);
-    unmount();
-  });
-
-  it("commits a thinking-stage candidate even if reply audio arrives before ASR", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => ({
-        ok: true,
-        blob: async () => new Blob(["a"]),
-      })),
-    );
-    getActiveBridgeMock.mockReturnValue({
-      getConnectionState: () => "connected",
-    });
-
-    const { result, rerender, unmount } = renderHook(() =>
-      useVoiceConversation("voice-thinking-race-test"),
-    );
-    await act(async () => {
-      await result.current.start();
-    });
-    const listeningUtterance = captureStartMock.mock.calls[0][0] as (
-      wav: Blob,
-    ) => void;
-    await act(async () => {
-      listeningUtterance(new Blob(["u1"]));
-      await flushMicrotasks();
-    });
-    const sendCount = sendMessageMock.mock.calls.length;
-
-    const thinkingCall = captureStartMock.mock.calls.at(-1)!;
-    const candidateUtterance = thinkingCall[0] as (wav: Blob) => void;
-    const candidateOptions = thinkingCall[1] as {
-      onSpeechConfirmed: () => void;
-    };
-    await act(async () => {
-      candidateOptions.onSpeechConfirmed();
-      await flushMicrotasks();
-    });
-
-    threadsMock.value = [
-      {
-        id: "turn-thinking-race",
-        userMsg: { text: "first turn" },
-        pendingAssistant: null,
-        responses: [
-          {
-            role: "assistant",
-            text: "reply started",
-            files: [{ path: "w/race.wav" }],
-          },
-        ],
-      },
-    ];
-    rerender();
-    await act(async () => {
-      await flushMicrotasks();
-    });
-    expect(result.current.state).toBe("speaking");
-    expect(audioMock.stopAudio).not.toHaveBeenCalled();
-
-    await act(async () => {
-      candidateUtterance(new Blob(["u2"]));
-      await flushMicrotasks();
-    });
-    expect(transcribeVoiceCandidateMock).toHaveBeenCalledTimes(1);
-    expect(audioMock.stopAudio).toHaveBeenCalledTimes(1);
-    expect(interruptActiveTurnMock).toHaveBeenCalledTimes(1);
-    expect(sendMessageMock).toHaveBeenCalledTimes(sendCount + 1);
-    unmount();
   });
 
   it("keeps one speaking VAD active across multiple reply audio clips", async () => {

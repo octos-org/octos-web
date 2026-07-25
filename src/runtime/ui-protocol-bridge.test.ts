@@ -2004,15 +2004,6 @@ describe("notification dispatch", () => {
     expect(req.params?.media).toEqual(["uploads/frame.jpg"]);
   });
 
-  it("sendTurn forwards a prevalidated voice transcript onto the wire", async () => {
-    const { bridge, ws } = await freshConnected();
-    void bridge.sendTurn("turn-voice", [{ kind: "text", text: "" }], {
-      voice_transcript: "  继续说  ",
-    });
-    const req = findRequest(ws, METHODS.TURN_START);
-    expect(req.params?.voice_transcript).toBe("继续说");
-  });
-
   it("sendTurn forwards reasoning_effort onto the wire (thinking parity)", async () => {
     const { bridge, ws } = await freshConnected();
     void bridge.sendTurn("turn-re", [{ kind: "text", text: "hi" }], {

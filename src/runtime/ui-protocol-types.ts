@@ -61,9 +61,6 @@ export interface TurnStartExtras {
   /** Pre-uploaded media references the user attached. Empty / omitted
    *  for text-only sends. */
   media?: TurnStartMediaRef[];
-  /** Transcript returned by the authenticated ASR-only barge-in preflight.
-   *  The server uses it instead of transcribing the attached audio twice. */
-  voice_transcript?: string;
   /** Sub-topic suffix that scopes this send to a per-topic session
    *  bucket (`<session>#<topic>` form). Server folds it into the
    *  resolved `SessionKey` before scope validation. */

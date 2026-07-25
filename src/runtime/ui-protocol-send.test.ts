@@ -96,7 +96,7 @@ describe("buildTurnStartExtras", () => {
     expect(buildTurnStartExtras(base)?.reasoning_effort).toBe("high");
   });
 
-  it("includes media, transcript, topic, rewrite, and live-video fields when supplied", () => {
+  it("includes media, topic, rewrite, and live-video fields when supplied", () => {
     expect(
       buildTurnStartExtras({
         ...base,
@@ -104,7 +104,6 @@ describe("buildTurnStartExtras", () => {
         requestText: "rewritten prompt",
         text: "shown prompt",
         media: ["/tmp/deck.png"],
-        voiceTranscript: "  继续说  ",
         clientMessageId: "cmid-extras",
         liveVideo: true,
       }),
@@ -112,7 +111,6 @@ describe("buildTurnStartExtras", () => {
       topic: "slides",
       rewrite_for: "cmid-extras",
       live_video: true,
-      voice_transcript: "继续说",
       media: [
         {
           path: "/tmp/deck.png",

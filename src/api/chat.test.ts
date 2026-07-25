@@ -21,7 +21,7 @@ import {
   vi,
 } from "vitest";
 
-import { transcribeVoiceCandidate, uploadFiles } from "@/api/chat";
+import { uploadFiles } from "@/api/chat";
 import { TOKEN_KEY, ADMIN_TOKEN_KEY } from "@/lib/constants";
 
 // ---------------------------------------------------------------------------
@@ -151,38 +151,5 @@ describe("uploadFiles — no duplicated 401/403 reaper (M12 Phase D-4 follow-up)
     expect(localStorage.getItem(TOKEN_KEY)).toBe("session-token");
     expect(localStorage.getItem(ADMIN_TOKEN_KEY)).toBe("admin-token");
     expect(hrefWrites.length).toBe(0);
-  });
-});
-
-describe("transcribeVoiceCandidate", () => {
-  it("posts audio to the ASR-only endpoint without creating a turn", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          accepted: true,
-          transcript: "继续说",
-          language: "Chinese",
-        }),
-        {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        },
-      ),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-    const audio = new File(["wav"], "utterance.wav", { type: "audio/wav" });
-
-    await expect(transcribeVoiceCandidate(audio)).resolves.toEqual({
-      accepted: true,
-      transcript: "继续说",
-      language: "Chinese",
-    });
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/api/voice/transcribe"),
-      expect.objectContaining({
-        method: "POST",
-        body: expect.any(FormData),
-      }),
-    );
   });
 });
