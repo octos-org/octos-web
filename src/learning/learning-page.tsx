@@ -23,8 +23,10 @@ import {
   type QueueMode,
 } from "@/runtime/session-context";
 import { unlockAudio } from "@/home/voice/audio-playback";
-import { VoiceView } from "@/home/voice/voice-view";
-import { getMyProfileSkills } from "@/settings/settings-api";
+import {
+  getMyProfileSkills,
+  type SkillInfo,
+} from "@/settings/settings-api";
 import type {
   VoiceConversationOptions,
   VoiceConversationTurn,
@@ -34,8 +36,9 @@ import {
   buildLearningTurnContext,
   stripLearningContext,
 } from "./learning-context";
+import { LearningWorkspace } from "./learning-workspace";
+import type { LearningBoardContext } from "./board/session-board";
 import {
-  cleanupProvisionalLearningSessions,
   createProvisionalLearningSession,
   adoptLearningSession,
   isSubstantiveLearningText,
@@ -55,16 +58,36 @@ import {
 } from "./learning-tab-lease";
 
 const AUTO_CAMERA_KEY = "octos_learning_auto_camera";
-const PROVISIONAL_TIMEOUT_MS = 2 * 60 * 1000;
+const INPUT_MODE_KEY = "octos_learning_input_mode";
+const MINIMUM_WHITEBOARD_SKILL_VERSION = [0, 6, 0] as const;
 const LEARNING_TAB_ID =
   typeof globalThis.crypto?.randomUUID === "function"
     ? globalThis.crypto.randomUUID()
     : `learning-tab-${Math.random().toString(36).slice(2)}`;
 
+function supportsWhiteboardProtocol(skill: SkillInfo): boolean {
+  if (skill.name !== "learning-coach" || !skill.version) return false;
+  const version = skill.version
+    .split("-", 1)[0]
+    .split(".")
+    .map((part) => Number.parseInt(part, 10));
+  if (version.length < 3 || version.some((part) => !Number.isFinite(part))) {
+    return false;
+  }
+  for (let index = 0; index < MINIMUM_WHITEBOARD_SKILL_VERSION.length; index += 1) {
+    if (version[index] > MINIMUM_WHITEBOARD_SKILL_VERSION[index]) return true;
+    if (version[index] < MINIMUM_WHITEBOARD_SKILL_VERSION[index]) return false;
+  }
+  return true;
+}
+
 function LearningPermissionGate({
   onReady,
 }: {
-  onReady: (autoCamera: boolean) => void;
+  onReady: (preferences: {
+    autoCamera: boolean;
+    voiceEnabled: boolean;
+  }) => void;
 }) {
   const [error, setError] = useState<string | null>(null);
 
@@ -77,7 +100,8 @@ function LearningPermissionGate({
       });
       stream.getTracks().forEach((track) => track.stop());
       localStorage.setItem(AUTO_CAMERA_KEY, String(autoCamera));
-      onReady(autoCamera);
+      localStorage.setItem(INPUT_MODE_KEY, "voice");
+      onReady({ autoCamera, voiceEnabled: true });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "设备授权失败");
     }
@@ -89,8 +113,8 @@ function LearningPermissionGate({
         <BookOpen className="mx-auto mb-5 text-cyan-300" size={36} />
         <h1 className="text-2xl font-semibold">启用小章鱼学习助手</h1>
         <p className="mt-3 text-sm leading-6 text-white/60">
-          首次使用需要解锁语音。你也可以允许学习时自动打开摄像头，
-          每次说话只会发送当下的一帧画面。
+          可以启用语音和摄像头，也可以直接用文字试用白板。
+          摄像头模式每次说话只会发送当下的一帧画面。
         </p>
         <button
           type="button"
@@ -105,6 +129,17 @@ function LearningPermissionGate({
           className="mt-3 w-full rounded-full border border-white/15 px-5 py-3 text-white/75"
         >
           仅启用语音
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            localStorage.setItem(AUTO_CAMERA_KEY, "false");
+            localStorage.setItem(INPUT_MODE_KEY, "text");
+            onReady({ autoCamera: false, voiceEnabled: false });
+          }}
+          className="mt-3 w-full rounded-full border border-cyan-200/20 px-5 py-3 text-cyan-100/80"
+        >
+          仅用文字进入白板
         </button>
         {error && <p className="mt-4 text-sm text-red-300">{error}</p>}
       </div>
@@ -163,19 +198,6 @@ function LearningSessionScope({
       <ScopedRuntimeBridge>{children}</ScopedRuntimeBridge>
     </SessionContext.Provider>
   );
-}
-
-function OrphanSessionCleanup({ sessionIds }: { sessionIds: string[] }) {
-  useEffect(() => {
-    if (sessionIds.length === 0) return;
-    const timer = window.setTimeout(() => {
-      for (const sessionId of sessionIds) {
-        void deleteSession(sessionId).catch(() => undefined);
-      }
-    }, 500);
-    return () => window.clearTimeout(timer);
-  }, [sessionIds]);
-  return null;
 }
 
 function sessionTimestamp(sessionId: string): number {
@@ -261,6 +283,12 @@ function LearningServerSync({
 
 export function LearningPage() {
   const navigate = useNavigate();
+  const ollFixture = useMemo<"geometry-v2" | undefined>(() => {
+    const requested = new URLSearchParams(window.location.search).get(
+      "oll-fixture",
+    );
+    return requested === "geometry-v2" ? requested : undefined;
+  }, []);
   const [hasTabLease] = useState(() =>
     acquireLearningTabLease(LEARNING_TAB_ID),
   );
@@ -268,7 +296,6 @@ export function LearningPage() {
   const [initialEntry] = useState(() => {
     if (!hasTabLease) {
       return {
-        orphanedSessionIds: [],
         record: {
           id: "learn-blocked",
           status: "provisional" as const,
@@ -278,7 +305,6 @@ export function LearningPage() {
         },
       };
     }
-    const orphanedSessionIds = cleanupProvisionalLearningSessions();
     const hadResumableSession = listLearningSessions().some(
       (session) => session.status === "active" || session.status === "paused",
     );
@@ -289,22 +315,31 @@ export function LearningPage() {
         : resolved;
     return {
       hadResumableSession,
-      orphanedSessionIds,
       record,
     };
   });
   const [record, setRecord] = useState<LearningSessionRecord>(
     initialEntry.record,
   );
+  const boardContextRef = useRef<LearningBoardContext>({});
   const [sessions, setSessions] = useState(() => listLearningSessions());
-  const [autoCamera, setAutoCamera] = useState<boolean | null>(() => {
-    const stored = localStorage.getItem(AUTO_CAMERA_KEY);
-    return stored === null ? null : stored === "true";
+  const [devicePreferences, setDevicePreferences] = useState<{
+    autoCamera: boolean;
+    voiceEnabled: boolean;
+  } | null>(() => {
+    if (ollFixture) return { autoCamera: false, voiceEnabled: false };
+    const storedCamera = localStorage.getItem(AUTO_CAMERA_KEY);
+    const storedMode = localStorage.getItem(INPUT_MODE_KEY);
+    if (storedCamera === null && storedMode === null) return null;
+    return {
+      autoCamera: storedCamera === "true",
+      voiceEnabled: storedMode !== "text",
+    };
   });
   const [skillState, setSkillState] = useState<
-    "checking" | "ready" | "missing" | "error"
-  >("checking");
-  const [serverSyncReady, setServerSyncReady] = useState(false);
+    "checking" | "ready" | "missing" | "outdated" | "error"
+  >(ollFixture ? "ready" : "checking");
+  const [serverSyncReady, setServerSyncReady] = useState(Boolean(ollFixture));
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const markerSentRef = useRef(false);
   const [wakeSessionId, setWakeSessionId] = useState<string | null>(
@@ -329,6 +364,7 @@ export function LearningPage() {
         const resumed =
           updateLearningSession(latest.id, { status: "active" }) ?? latest;
         markerSentRef.current = false;
+        boardContextRef.current = {};
         setWakeSessionId(wakeAudio ? resumed.id : null);
         setRecord(resumed);
       }
@@ -356,15 +392,18 @@ export function LearningPage() {
   }, [hasTabLease]);
 
   useEffect(() => {
-    if (!hasTabLease) return;
+    if (!hasTabLease || ollFixture) return;
     let cancelled = false;
     getMyProfileSkills()
       .then((skills) => {
         if (cancelled) return;
+        const coach = skills.find((skill) => skill.name === "learning-coach");
         setSkillState(
-          skills.some((skill) => skill.name === "learning-coach")
-            ? "ready"
-            : "missing",
+          !coach
+            ? "missing"
+            : supportsWhiteboardProtocol(coach)
+              ? "ready"
+              : "outdated",
         );
       })
       .catch(() => {
@@ -373,20 +412,19 @@ export function LearningPage() {
     return () => {
       cancelled = true;
     };
-  }, [hasTabLease]);
-
-  useEffect(() => {
-    if (!hasTabLease || record.status !== "provisional") return;
-    const timer = window.setTimeout(() => {
-      removeLearningSession(record.id);
-      void deleteSession(record.id).catch(() => undefined);
-      navigate("/");
-    }, PROVISIONAL_TIMEOUT_MS);
-    return () => window.clearTimeout(timer);
-  }, [hasTabLease, navigate, record.id, record.status]);
+  }, [hasTabLease, ollFixture]);
 
   const buildTurnText = useCallback<NonNullable<VoiceConversationOptions["buildTurnText"]>>(
-    ({ currentFramePath }) => {
+    (context) => {
+      const turnContext = buildLearningTurnContext({
+        sessionId: record.id,
+        turnId: context.turnId,
+        provisional:
+          record.status === "provisional" ? true : undefined,
+        currentFrame: context.currentFramePath,
+        lastAppliedAction: boardContextRef.current.lastAppliedAction,
+        boardSummary: boardContextRef.current.boardSummary,
+      });
       if (!markerSentRef.current) {
         markerSentRef.current = true;
         const sessionContext = buildLearningSessionContext({
@@ -395,42 +433,42 @@ export function LearningPage() {
             wakeSessionId === record.id ? "wake-word" : "direct",
           provisional: record.status === "provisional",
         });
-        return currentFramePath
-          ? `${sessionContext}\n${buildLearningTurnContext({
-              sessionId: record.id,
-              provisional:
-                record.status === "provisional" ? true : undefined,
-              currentFrame: currentFramePath,
-            })}`
-          : sessionContext;
+        return `${sessionContext}\n${turnContext}`;
       }
-      return buildLearningTurnContext({
-        sessionId: record.id,
-        provisional:
-          record.status === "provisional" ? true : undefined,
-        currentFrame: currentFramePath,
-      });
+      return turnContext;
     },
     [record.id, record.status, wakeSessionId],
   );
 
   const conversationOptions = useMemo<VoiceConversationOptions>(
     () => ({
-      autoStartCamera: autoCamera === true,
+      autoStartCamera:
+        devicePreferences?.voiceEnabled === true &&
+        devicePreferences.autoCamera,
       buildTurnText,
       showExistingTurns: true,
     }),
-    [autoCamera, buildTurnText],
+    [buildTurnText, devicePreferences],
   );
 
-  const handleTurnsChange = useCallback(
-    (turns: VoiceConversationTurn[]) => {
+  const handleBoardContextChange = useCallback(
+    (context: LearningBoardContext) => {
+      boardContextRef.current = context;
+    },
+    [],
+  );
+
+  const useTextMode = useCallback(() => {
+    localStorage.setItem(AUTO_CAMERA_KEY, "false");
+    localStorage.setItem(INPUT_MODE_KEY, "text");
+    setDevicePreferences({ autoCamera: false, voiceEnabled: false });
+  }, []);
+
+  const handleLearnerInput = useCallback(
+    (text: string) => {
       if (record.status !== "provisional") return;
-      const substantive = turns.find((turn) =>
-        isSubstantiveLearningText(turn.userText),
-      );
-      if (!substantive) return;
-      const promoted = promoteLearningSession(record.id, substantive.userText);
+      if (!isSubstantiveLearningText(text)) return;
+      const promoted = promoteLearningSession(record.id, text);
       if (!promoted) return;
       setRecord(promoted);
       refreshLocalSessions();
@@ -441,10 +479,20 @@ export function LearningPage() {
     [record.id, record.status, refreshLocalSessions],
   );
 
+  const handleTurnsChange = useCallback(
+    (turns: VoiceConversationTurn[]) => {
+      const substantive = turns.find((turn) =>
+        isSubstantiveLearningText(turn.userText),
+      );
+      if (substantive) handleLearnerInput(substantive.userText);
+    },
+    [handleLearnerInput],
+  );
+
   const leave = useCallback(() => {
     if (record.status === "provisional") {
       void deleteSession(record.id).catch(() => undefined);
-      cleanupProvisionalLearningSessions();
+      removeLearningSession(record.id);
     } else if (record.status === "active") {
       updateLearningSession(record.id, { status: "paused" });
     }
@@ -470,6 +518,7 @@ export function LearningPage() {
         ? next
         : updateLearningSession(next.id, { status: "active" }) ?? next;
     markerSentRef.current = false;
+    boardContextRef.current = {};
     setWakeSessionId(null);
     setRecord(resumed);
     refreshLocalSessions();
@@ -479,12 +528,13 @@ export function LearningPage() {
   const newSession = useCallback(() => {
     if (record.status === "provisional") {
       void deleteSession(record.id).catch(() => undefined);
-      cleanupProvisionalLearningSessions();
+      removeLearningSession(record.id);
     } else if (record.status === "active") {
       updateLearningSession(record.id, { status: "paused" });
     }
     const next = createProvisionalLearningSession();
     markerSentRef.current = false;
+    boardContextRef.current = {};
     setWakeSessionId(null);
     setRecord(next);
     refreshLocalSessions();
@@ -503,6 +553,7 @@ export function LearningPage() {
           if (record.id === session.id) {
             const next = resolveLearningEntrySession();
             markerSentRef.current = false;
+            boardContextRef.current = {};
             setWakeSessionId(null);
             setRecord(next);
           }
@@ -548,12 +599,16 @@ export function LearningPage() {
               ? "正在检查学习教练…"
               : skillState === "missing"
                 ? "需要安装 learning-coach Skill"
-                : "暂时无法确认 learning-coach Skill"}
+                : skillState === "outdated"
+                  ? "learning-coach 版本过旧"
+                  : "暂时无法确认 learning-coach Skill"}
           </h1>
           {skillState !== "checking" && (
             <>
               <p className="mt-3 text-sm leading-6 text-white/55">
-                学习页依赖这套教学与记忆规则；安装后请按提示重启 Gateway。
+                {skillState === "outdated"
+                  ? "连续白板需要 learning-coach 0.6.0 或更高版本；更新后请重启 Gateway。"
+                  : "学习页依赖这套教学与记忆规则；安装后请按提示重启 Gateway。"}
               </p>
               <button
                 type="button"
@@ -569,8 +624,8 @@ export function LearningPage() {
     );
   }
 
-  if (autoCamera === null) {
-    return <LearningPermissionGate onReady={setAutoCamera} />;
+  if (devicePreferences === null) {
+    return <LearningPermissionGate onReady={setDevicePreferences} />;
   }
 
   return (
@@ -580,11 +635,11 @@ export function LearningPage() {
           type="button"
           aria-label="关闭学习会话列表"
           onClick={() => setSidebarOpen(false)}
-          className="fixed inset-0 z-20 bg-black/60 md:hidden"
+          className="fixed inset-0 z-20 bg-black/35 backdrop-blur-[2px]"
         />
       )}
       <aside
-        className={`fixed inset-y-0 left-0 z-30 flex w-72 shrink-0 flex-col border-r border-white/10 bg-zinc-950 p-4 transition-transform md:static md:w-64 md:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-30 flex w-72 shrink-0 flex-col border-r border-white/10 bg-zinc-950 p-4 shadow-2xl transition-transform ${
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
@@ -640,26 +695,28 @@ export function LearningPage() {
           type="button"
           aria-label="打开学习会话列表"
           onClick={() => setSidebarOpen(true)}
-          className="absolute left-[4.25rem] top-5 z-20 flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white/70 md:hidden"
+          className="absolute left-5 top-6 z-20 flex h-10 w-10 items-center justify-center rounded-full border border-black/10 bg-white/80 text-stone-600 shadow-sm backdrop-blur-md hover:text-cyan-800"
         >
           <Menu size={20} />
         </button>
         <LearningSessionScope record={record}>
-          <OrphanSessionCleanup
-            sessionIds={initialEntry.orphanedSessionIds}
-          />
-          <LearningServerSync onDone={handleServerSync} />
+          {!ollFixture && <LearningServerSync onDone={handleServerSync} />}
           {serverSyncReady ? (
-            <VoiceView
+            <LearningWorkspace
               key={record.id}
               sessionId={record.id}
               initialAudio={
                 wakeSessionId === record.id ? wakeAudio : null
               }
               conversationOptions={conversationOptions}
+              voiceEnabled={devicePreferences.voiceEnabled}
+              onUseTextMode={useTextMode}
+              onLearnerInput={handleLearnerInput}
               onTurnsChange={handleTurnsChange}
+              onBoardContextChange={handleBoardContextChange}
               onBack={leave}
               onVoiceExit={finishAndLeave}
+              ollFixture={ollFixture}
             />
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-white/45">

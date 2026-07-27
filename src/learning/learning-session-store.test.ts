@@ -49,6 +49,17 @@ describe("learning session lifecycle", () => {
     expect(resolveLearningEntrySession(500).id).not.toBe(first.id);
   });
 
+  it("preserves the current provisional session across refresh", () => {
+    const provisional = createProvisionalLearningSession(100);
+
+    expect(resolveLearningEntrySession(200)).toEqual(provisional);
+    expect(
+      listLearningSessions({ includeProvisional: true }).map(
+        (record) => record.id,
+      ),
+    ).toEqual([provisional.id]);
+  });
+
   it("cleans orphan provisional sessions after a false wake or crash", () => {
     const provisional = createProvisionalLearningSession(100);
     expect(cleanupProvisionalLearningSessions()).toEqual([provisional.id]);

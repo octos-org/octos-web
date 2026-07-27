@@ -82,7 +82,15 @@ export function resolveLearningEntrySession(
   const records = readRecords();
   const currentId = localStorage.getItem(CURRENT_KEY);
   const current = records.find((record) => record.id === currentId);
-  if (current && (current.status === "active" || current.status === "paused")) {
+  // A provisional session is a real in-progress whiteboard entry, even before
+  // it has enough content to appear in the sidebar. Preserve it across refresh
+  // and React remounts; explicit Back/New/Delete actions own its cleanup.
+  if (
+    current &&
+    (current.status === "provisional" ||
+      current.status === "active" ||
+      current.status === "paused")
+  ) {
     return current;
   }
   if (current?.status === "completed") {

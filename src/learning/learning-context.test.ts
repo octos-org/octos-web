@@ -38,4 +38,21 @@ describe("learning context protocol", () => {
     })}\n帮我看这道题`;
     expect(stripLearningContext(text)).toBe("帮我看这道题");
   });
+
+  it("includes board-addressable turn context without exposing newlines", () => {
+    const context = buildLearningTurnContext({
+      sessionId: "learn-1",
+      turnId: "turn-8",
+      focusedElement: "formula-vertex",
+      lastAppliedAction: "action-17",
+      pendingGoal: "draw-parabola",
+      boardSummary: "已完成配方\n尚未作图",
+    });
+
+    expect(context).toContain("turn_id: turn-8");
+    expect(context).toContain("focused_element: formula-vertex");
+    expect(context).toContain("last_applied_action: action-17");
+    expect(context).toContain("pending_goal: draw-parabola");
+    expect(context).toContain("board_summary: 已完成配方 尚未作图");
+  });
 });

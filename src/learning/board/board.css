@@ -1,0 +1,463 @@
+.learning-board {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  color: #27231e;
+  background-color: #f5f1e8;
+  background-image:
+    radial-gradient(circle at 1px 1px, rgba(70, 61, 49, 0.13) 1px, transparent 1.15px),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.52), transparent 42%);
+  background-size: 24px 24px, 100% 100%;
+  touch-action: none;
+  user-select: none;
+}
+
+.learning-board::before {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  content: "";
+  box-shadow:
+    inset 0 0 80px rgba(88, 73, 53, 0.08),
+    inset 0 1px rgba(255, 255, 255, 0.75);
+}
+
+.learning-board-gesture-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  cursor: grab;
+}
+
+.learning-board-gesture-layer:active {
+  cursor: grabbing;
+}
+
+.learning-board-world {
+  position: absolute;
+  z-index: 2;
+  width: 1800px;
+  height: 1200px;
+  pointer-events: none;
+  transform-origin: 0 0;
+  transition: transform 650ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.learning-board-text,
+.learning-board-formula,
+.learning-board-checkpoint {
+  position: absolute;
+  z-index: 4;
+  width: max-content;
+  max-width: 620px;
+}
+
+.learning-board-text {
+  font-family: "Kaiti SC", "STKaiti", "KaiTi", "PingFang SC", cursive;
+  line-height: 1.5;
+  letter-spacing: 0.035em;
+  white-space: pre-wrap;
+}
+
+.board-text-sm {
+  font-size: 22px;
+}
+
+.board-text-md {
+  font-size: 28px;
+}
+
+.board-text-lg {
+  font-size: 38px;
+  font-weight: 650;
+}
+
+.board-text-xl {
+  font-size: 48px;
+  font-weight: 700;
+}
+
+.learning-board-formula {
+  line-height: 1.2;
+}
+
+.board-formula-md {
+  font-size: 25px;
+}
+
+.board-formula-lg {
+  font-size: 34px;
+}
+
+.board-formula-xl {
+  font-size: 42px;
+}
+
+.board-tone-muted {
+  color: #887f72;
+  font-family: var(--font-label);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.board-tone-accent {
+  color: #155c76;
+}
+
+.board-element-enter {
+  animation: board-write-in 720ms cubic-bezier(0.2, 0.85, 0.25, 1) both;
+}
+
+.learning-board-formula.board-element-enter {
+  clip-path: inset(0 100% 0 0);
+  animation: board-formula-write 1250ms steps(18, end) forwards;
+}
+
+.learning-board-formula.is-highlighted::after,
+.learning-board-text.is-highlighted::after {
+  position: absolute;
+  inset: -8px -13px;
+  z-index: -1;
+  content: "";
+  border-radius: 42% 48% 44% 48%;
+  opacity: 0.54;
+  transform: rotate(-1.2deg);
+  animation: board-highlight 540ms 720ms ease-out both;
+}
+
+.is-highlighted.is-yellow::after {
+  background: #f4d86f;
+}
+
+.is-highlighted.is-blue::after {
+  background: #9bd4df;
+}
+
+.is-highlighted.is-coral::after {
+  background: #f2a68d;
+}
+
+.board-highlight-label {
+  position: absolute;
+  top: calc(100% + 13px);
+  left: 52%;
+  width: max-content;
+  color: #39758a;
+  font-family: "Kaiti SC", "STKaiti", "KaiTi", cursive;
+  font-size: 18px;
+  transform: translateX(-50%) rotate(-2deg);
+}
+
+.learning-board-graph {
+  position: absolute;
+  z-index: 3;
+  overflow: visible;
+  animation: board-write-in 520ms ease-out both;
+}
+
+.board-grid-line {
+  stroke: rgba(77, 68, 56, 0.095);
+  stroke-width: 1;
+}
+
+.board-axis-line {
+  stroke: #544e45;
+  stroke-linecap: round;
+  stroke-width: 2.2;
+}
+
+.board-axis-arrow {
+  fill: #544e45;
+}
+
+.board-axis-label,
+.board-point-label,
+.board-connection-label {
+  fill: #746c61;
+  font-family: var(--font-label);
+  font-size: 13px;
+  text-anchor: middle;
+}
+
+.board-symmetry-line {
+  stroke: #cb7a64;
+  stroke-dasharray: 9 8;
+  stroke-width: 1.7;
+}
+
+.board-curve {
+  fill: none;
+  stroke: #167795;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 4;
+}
+
+.board-draw-stroke {
+  stroke-dasharray: 1800;
+  stroke-dashoffset: 1800;
+  animation: board-draw 1800ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+.board-vertex-point {
+  fill: #df735a;
+  stroke: #fff8e8;
+  stroke-width: 3;
+}
+
+.board-point-label {
+  fill: #a94b39;
+  font-family: "Kaiti SC", "STKaiti", "KaiTi", cursive;
+  font-size: 18px;
+  text-anchor: start;
+}
+
+.board-point-enter {
+  animation: board-point-pop 440ms 900ms cubic-bezier(0.2, 1.6, 0.3, 1) both;
+}
+
+.learning-board-group {
+  position: absolute;
+  z-index: 1;
+  padding: 18px 22px;
+  border: 2px dashed rgba(26, 101, 124, 0.32);
+  border-radius: 28px 35px 31px 26px;
+  background: rgba(255, 255, 255, 0.23);
+}
+
+.learning-board-group strong,
+.learning-board-group span {
+  position: absolute;
+  top: -34px;
+  left: 20px;
+  color: #215f73;
+  font-family: "Kaiti SC", "STKaiti", "KaiTi", cursive;
+  font-size: 22px;
+}
+
+.learning-board-group span {
+  top: auto;
+  bottom: -29px;
+  color: #716a60;
+  font-size: 15px;
+}
+
+.learning-board-connections {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  overflow: visible;
+}
+
+.board-connection {
+  fill: none;
+  stroke: #6c9caf;
+  stroke-linecap: round;
+  stroke-width: 2.5;
+}
+
+.board-connection-label {
+  fill: #4e7c8e;
+  font-size: 14px;
+}
+
+.learning-board-checkpoint {
+  width: 620px;
+  padding: 28px 34px 24px;
+  border: 2px solid rgba(31, 111, 135, 0.32);
+  border-radius: 30px 26px 34px 28px;
+  background: rgba(255, 255, 255, 0.68);
+  box-shadow: 0 18px 50px rgba(60, 53, 41, 0.1);
+  transform: rotate(-0.5deg);
+}
+
+.learning-board-checkpoint span {
+  display: block;
+  margin-bottom: 10px;
+  color: #6b827d;
+  font-family: var(--font-label);
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.learning-board-checkpoint strong {
+  display: block;
+  font-family: "Kaiti SC", "STKaiti", "KaiTi", cursive;
+  font-size: 25px;
+  font-weight: 650;
+}
+
+.board-answer-line {
+  width: 70%;
+  margin-top: 24px;
+  border-bottom: 2px solid rgba(44, 78, 87, 0.3);
+}
+
+.learning-board-controls {
+  position: absolute;
+  bottom: 18px;
+  left: 18px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 42px;
+  padding: 4px;
+  border: 1px solid rgba(70, 61, 49, 0.13);
+  border-radius: 14px;
+  background: rgba(255, 253, 247, 0.86);
+  box-shadow: 0 10px 30px rgba(62, 51, 38, 0.1);
+  backdrop-filter: blur(14px);
+}
+
+.learning-board-controls button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 10px;
+  color: #625a50;
+}
+
+.learning-board-controls button:hover {
+  color: #155c76;
+  background: rgba(22, 111, 141, 0.1);
+}
+
+.learning-board-controls span {
+  min-width: 48px;
+  color: #756c61;
+  font-family: var(--font-label);
+  font-size: 11px;
+  text-align: center;
+}
+
+.learning-board-zoom-hint {
+  position: absolute;
+  right: 18px;
+  bottom: 19px;
+  z-index: 5;
+  color: rgba(70, 61, 49, 0.46);
+  font-family: var(--font-label);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+}
+
+.learning-board-empty {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  color: #8b8277;
+  transform: translate(-50%, -50%);
+}
+
+.learning-board-empty span {
+  font-family: var(--font-label);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.learning-board-empty strong {
+  color: #514a42;
+  font-family: "Kaiti SC", "STKaiti", "KaiTi", cursive;
+  font-size: 24px;
+  font-weight: 500;
+}
+
+.learning-board[data-zoom^="0.1"] .board-semantic-detail,
+.learning-board[data-zoom^="0.2"] .board-semantic-detail,
+.learning-board[data-zoom^="0.3"] .board-semantic-detail {
+  opacity: 0;
+}
+
+.learning-board[data-zoom^="0.1"] .board-semantic-summary,
+.learning-board[data-zoom^="0.2"] .board-semantic-summary {
+  opacity: 0;
+}
+
+.board-semantic-detail,
+.board-semantic-summary,
+.board-semantic-topic {
+  transition: opacity 220ms ease;
+}
+
+@keyframes board-write-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) rotate(-0.8deg);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) rotate(0);
+  }
+}
+
+@keyframes board-formula-write {
+  from {
+    opacity: 0.25;
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+@keyframes board-highlight {
+  from {
+    opacity: 0;
+    transform: scaleX(0.18) rotate(-1.2deg);
+    transform-origin: left;
+  }
+  to {
+    opacity: 0.54;
+    transform: scaleX(1) rotate(-1.2deg);
+  }
+}
+
+@keyframes board-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes board-point-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.35);
+    transform-origin: center;
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .learning-board-world,
+  .board-element-enter,
+  .board-draw-stroke,
+  .board-point-enter,
+  .learning-board-formula.board-element-enter {
+    transition: none;
+    animation-duration: 1ms;
+    animation-delay: 0ms;
+  }
+}
+
+@media (max-width: 720px) {
+  .learning-board-zoom-hint {
+    display: none;
+  }
+}

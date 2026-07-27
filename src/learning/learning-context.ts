@@ -9,8 +9,13 @@ export interface LearningSessionContext {
 
 export interface LearningTurnContext {
   sessionId: string;
+  turnId?: string;
   provisional?: boolean;
   currentFrame?: string;
+  focusedElement?: string;
+  lastAppliedAction?: string;
+  pendingGoal?: string;
+  boardSummary?: string;
 }
 
 const LEARNING_CONTEXT_BLOCK =
@@ -49,11 +54,26 @@ export function buildLearningTurnContext(
     "active: true",
     line("session_id", context.sessionId),
   ];
+  if (context.turnId) {
+    lines.push(line("turn_id", context.turnId));
+  }
   if (context.provisional !== undefined) {
     lines.push(line("provisional", context.provisional));
   }
   if (context.currentFrame) {
     lines.push(line("current_frame", context.currentFrame));
+  }
+  if (context.focusedElement) {
+    lines.push(line("focused_element", context.focusedElement));
+  }
+  if (context.lastAppliedAction) {
+    lines.push(line("last_applied_action", context.lastAppliedAction));
+  }
+  if (context.pendingGoal) {
+    lines.push(line("pending_goal", context.pendingGoal));
+  }
+  if (context.boardSummary) {
+    lines.push(line("board_summary", context.boardSummary));
   }
   lines.push("[[/LEARNING_CONTEXT]]");
   return lines.join("\n");

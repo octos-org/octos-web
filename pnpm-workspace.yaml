@@ -1,3 +1,4 @@
 allowBuilds:
   esbuild: true
+  octos-lesson-language: true
   protobufjs: true
