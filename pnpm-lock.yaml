@@ -45,8 +45,8 @@ importers:
         specifier: ^11.13.0
         version: 11.15.0
       octos-lesson-language:
-        specifier: git+https://github.com/alan0x/octos-lesson-language.git#35fa16ac7a9611dab5f8723e8d959f803afec08d
-        version: git+https://github.com/alan0x/octos-lesson-language.git#35fa16ac7a9611dab5f8723e8d959f803afec08d
+        specifier: git+https://github.com/alan0x/octos-lesson-language.git#b6369a7
+        version: git+https://github.com/alan0x/octos-lesson-language.git#b6369a7
       onnxruntime-web:
         specifier: ^1.26.0
         version: 1.26.0
@@ -3261,8 +3261,8 @@ packages:
   nwsapi@2.2.23:
     resolution: {integrity: sha512-7wfH4sLbt4M0gCDzGE6vzQBo0bfTKjU7Sfpqy/7gs1qBfYz2vEJH6vXcBKpO3+6Yu1telwd0t9HpyOoLEQQbIQ==}
 
-  octos-lesson-language@git+https://github.com/alan0x/octos-lesson-language.git#35fa16ac7a9611dab5f8723e8d959f803afec08d:
-    resolution: {commit: 35fa16ac7a9611dab5f8723e8d959f803afec08d, repo: https://github.com/alan0x/octos-lesson-language.git, type: git}
+  octos-lesson-language@git+https://github.com/alan0x/octos-lesson-language.git#b6369a7:
+    resolution: {commit: b6369a754c530556371996e7ec9e3a1427fba745, repo: https://github.com/alan0x/octos-lesson-language.git, type: git}
     version: 0.1.0-rc.1
     engines: {node: '>=20'}
 
@@ -7380,7 +7380,7 @@ snapshots:
 
   nwsapi@2.2.23: {}
 
-  octos-lesson-language@git+https://github.com/alan0x/octos-lesson-language.git#35fa16ac7a9611dab5f8723e8d959f803afec08d:
+  octos-lesson-language@git+https://github.com/alan0x/octos-lesson-language.git#b6369a7:
     dependencies:
       ajv: 8.20.0
       katex: 0.18.1

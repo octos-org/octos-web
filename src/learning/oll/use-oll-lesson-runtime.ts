@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { SemanticBoardState } from "octos-lesson-language";
+import type { CanonicalEvent, SemanticBoardState } from "octos-lesson-language";
 import type {
+  PlaybackAppendResult,
   PlaybackOperation,
   PlaybackProjection,
   PlaybackStatus,
@@ -21,18 +22,21 @@ export interface OllLessonRuntimeController {
   activeSpeech: string;
   playing: boolean;
   completed: boolean;
+  waiting: boolean;
   board: SemanticBoardState | null;
   currentOperation?: PlaybackOperation;
   play(): void;
   pause(): void;
   restart(): void;
   nextBeat(): void;
+  appendEvents(events: CanonicalEvent[]): PlaybackAppendResult;
 }
 
 interface OllLessonRuntimeOptions {
   source: string | null;
   storageKey: string;
   autoPlay?: boolean;
+  incremental?: boolean;
 }
 
 function beatIds(operations: PlaybackOperation[]): string[] {
@@ -45,6 +49,7 @@ export function useOllLessonRuntime({
   source,
   storageKey,
   autoPlay = false,
+  incremental = false,
 }: OllLessonRuntimeOptions): OllLessonRuntimeController | null {
   const events = useMemo(
     () => (source ? parseCanonicalJsonl(source) : null),
@@ -57,9 +62,10 @@ export function useOllLessonRuntime({
             events,
             new LocalPlaybackStore(),
             storageKey,
+            { incremental },
           )
         : null,
-    [events, storageKey],
+    [events, incremental, storageKey],
   );
   const [, setRevision] = useState(0);
 
@@ -83,6 +89,13 @@ export function useOllLessonRuntime({
     session.play();
   }, [session]);
   const nextBeat = useCallback(() => session?.advanceBeat(), [session]);
+  const appendEvents = useCallback(
+    (nextEvents: CanonicalEvent[]) => {
+      if (!session) throw new Error("OLL Runtime 尚未初始化");
+      return session.appendEvents(nextEvents);
+    },
+    [session],
+  );
 
   if (!events || !session) return null;
   const projection: PlaybackProjection = session.projection;
@@ -100,11 +113,13 @@ export function useOllLessonRuntime({
     activeSpeech: projection.current_narration?.text ?? "",
     playing: session.isPlaying,
     completed: projection.status === "completed",
+    waiting: projection.status === "waiting",
     board: projection.board,
     currentOperation: session.currentOperation,
     play,
     pause,
     restart,
     nextBeat,
+    appendEvents,
   };
 }

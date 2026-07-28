@@ -59,7 +59,7 @@ import {
 
 const AUTO_CAMERA_KEY = "octos_learning_auto_camera";
 const INPUT_MODE_KEY = "octos_learning_input_mode";
-const MINIMUM_WHITEBOARD_SKILL_VERSION = [0, 6, 0] as const;
+const MINIMUM_WHITEBOARD_SKILL_VERSION = [0, 7, 0] as const;
 const LEARNING_TAB_ID =
   typeof globalThis.crypto?.randomUUID === "function"
     ? globalThis.crypto.randomUUID()
@@ -607,7 +607,7 @@ export function LearningPage() {
             <>
               <p className="mt-3 text-sm leading-6 text-white/55">
                 {skillState === "outdated"
-                  ? "连续白板需要 learning-coach 0.6.0 或更高版本；更新后请重启 Gateway。"
+                  ? "OLL 课堂需要 learning-coach 0.7.0 或更高版本；更新后请重启 Gateway。"
                   : "学习页依赖这套教学与记忆规则；安装后请按提示重启 Gateway。"}
               </p>
               <button

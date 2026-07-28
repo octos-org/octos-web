@@ -32,7 +32,7 @@ const profileSkillsMock = vi.hoisted(() => ({
       name: "learning-coach",
       source_repo: "alan0x/learning-coach",
       tool_count: 0,
-      version: "0.6.0",
+      version: "0.7.0",
     },
   ],
 }));
@@ -97,7 +97,7 @@ describe("LearningPage", () => {
         name: "learning-coach",
         source_repo: "alan0x/learning-coach",
         tool_count: 0,
-        version: "0.6.0",
+        version: "0.7.0",
       },
     ];
   });
@@ -121,8 +121,8 @@ describe("LearningPage", () => {
     ).toBeNull();
   });
 
-  it("blocks an installed learning coach that predates the whiteboard protocol", async () => {
-    profileSkillsMock.skills[0].version = "0.5.0";
+  it("blocks an installed learning coach that predates the OLL artifact protocol", async () => {
+    profileSkillsMock.skills[0].version = "0.6.0";
 
     render(<LearningPage />);
 
@@ -131,7 +131,7 @@ describe("LearningPage", () => {
         name: "learning-coach 版本过旧",
       }),
     ).toBeTruthy();
-    expect(screen.getByText(/需要 learning-coach 0.6.0/)).toBeTruthy();
+    expect(screen.getByText(/需要 learning-coach 0.7.0/)).toBeTruthy();
     expect(learningWorkspaceMock.props).toBeNull();
   });
 
