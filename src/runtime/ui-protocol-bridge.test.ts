@@ -828,6 +828,35 @@ describe("type guards (fail-closed)", () => {
 // ---------------------------------------------------------------------------
 
 describe("connection lifecycle", () => {
+  it("rejects duplicate start without replacing the first scope or socket", async () => {
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const firstStart = bridge.start({ sessionId: "sess-first" });
+    const firstSocket = lastInstance();
+
+    await expect(
+      bridge.start({ sessionId: "sess-second" }),
+    ).rejects.toThrow(/already started/);
+    expect(MockWebSocket.instances).toEqual([firstSocket]);
+
+    firstSocket.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(firstSocket, METHODS.SESSION_OPEN);
+    expect(open.params).toEqual({ session_id: "sess-first" });
+    firstSocket.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      result: { opened: { session_id: "sess-first" } },
+    });
+
+    await firstStart;
+    expect(bridge.getConnectionState()).toBe("connected");
+    await expect(
+      bridge.start({ sessionId: "sess-third" }),
+    ).rejects.toThrow(/already started/);
+    expect(MockWebSocket.instances).toEqual([firstSocket]);
+    await bridge.stop();
+  });
+
   it("transitions connecting → connected on session/open ack", async () => {
     const states: ConnectionState[] = [];
     const bridge = createUiProtocolBridge(makeBridgeOpts());

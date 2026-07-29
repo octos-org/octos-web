@@ -2023,6 +2023,19 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     if (!opts || (opts.sessionId !== undefined && !isString(opts.sessionId))) {
       throw new Error("ui-protocol-bridge: sessionId must be a string when provided");
     }
+    // A bridge owns exactly one socket/scope lifecycle at a time. Calling
+    // start() again before stop() used to overwrite the first startup
+    // resolver, scope and socket, leaving the original caller permanently
+    // pending while a detached WebSocket could still finish its handshake.
+    //
+    // Terminal bridges are replaced by the runtime; only an explicit stop()
+    // authorizes reusing this instance (the supported start -> stop -> start
+    // lifecycle below).
+    if (!this.stopped && this.state !== "idle") {
+      throw new Error(
+        `ui-protocol-bridge: already started (state=${this.state}); call stop() before starting this bridge again`,
+      );
+    }
     this.stopped = false;
     this.sessionId = opts.sessionId ?? null;
     this.profileId = opts.profileId ?? this.cfg.getProfileId();
