@@ -201,6 +201,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
   ProjectionStore.__resetProjectionForTests();
 });
 
@@ -910,6 +911,35 @@ describe("connection lifecycle", () => {
     // The first backoff is 1s, so the startup deadline must stop it before
     // another hidden handshake can outlive the failed UI attempt.
     expect(MockWebSocket.instances).toHaveLength(1);
+    await bridge.stop();
+  });
+
+  it("auth probe reuses the bridge bearer before classifying a never-opened close", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValue({ status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+    const bridge = createUiProtocolBridge(
+      makeBridgeOpts({ initialConnectTimeoutMs: 250 }),
+    );
+    const startPromise = bridge.start({ sessionId: "sess-origin-probe" });
+    const observed = startPromise.catch((error: unknown) => error);
+
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerClose(1006, "");
+    await Promise.resolve();
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/auth/me", {
+      credentials: "same-origin",
+      headers: { Authorization: "Bearer test-token" },
+    });
+
+    await vi.advanceTimersByTimeAsync(250);
+    const error = await observed;
+    expect(error).toMatchObject({
+      kind: "timeout",
+      message: expect.stringMatching(/origin is allowed/i),
+    });
     await bridge.stop();
   });
 

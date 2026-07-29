@@ -3208,7 +3208,11 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private async probeAuthAndMaybeExpire(): Promise<void> {
     if (typeof fetch !== "function") return;
     try {
-      const resp = await fetch("/api/auth/me", { credentials: "same-origin" });
+      const token = this.cfg.getToken() || getToken();
+      const resp = await fetch("/api/auth/me", {
+        credentials: "same-origin",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       if (resp.status === 401) {
         this.dispatchAuthExpired("upgrade_401");
         if (this.startupReject) {
