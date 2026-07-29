@@ -228,6 +228,9 @@ describe("startBridgeForSession race safety", () => {
     // Active is still B.
     expect(getActiveBridge("sess-B")).toBe(b.bridge);
     expect(getActiveBridge("sess-A")).toBeNull();
+    expect(createBridgeSpy).toHaveBeenCalledTimes(2);
+    expect(a.startCalls).toBe(1);
+    expect(b.startCalls).toBe(1);
   });
 
   it("an in-flight start that gets stopped recognizes itself as superseded", async () => {
@@ -243,6 +246,30 @@ describe("startBridgeForSession race safety", () => {
     await expect(startA).rejects.toThrow(/superseded/);
     expect(a.stopCalls).toBe(1);
     expect(getActiveBridge("sess-A")).toBeNull();
+  });
+
+  it("does not reuse an in-flight start after stopActiveBridge invalidates it", async () => {
+    const stopped = makeDeferredBridge();
+    const fresh = makeDeferredBridge();
+    createBridgeSpy
+      .mockReturnValueOnce(stopped.bridge)
+      .mockReturnValueOnce(fresh.bridge);
+
+    const staleStart = startBridgeForSession("sess-A");
+    await stopActiveBridge();
+    const freshStart = startBridgeForSession("sess-A");
+
+    expect(createBridgeSpy).toHaveBeenCalledTimes(2);
+    expect(stopped.startCalls).toBe(1);
+    expect(fresh.startCalls).toBe(1);
+
+    stopped.resolveStart();
+    await expect(staleStart).rejects.toThrow(/superseded/);
+    expect(stopped.stopCalls).toBe(1);
+
+    fresh.resolveStart();
+    await expect(freshStart).resolves.toBe(fresh.bridge);
+    expect(getActiveBridge("sess-A")).toBe(fresh.bridge);
   });
 
   it("stops and does not publish a bridge whose initial handshake fails", async () => {
@@ -296,6 +323,25 @@ describe("startBridgeForSession race safety", () => {
     const second = await startBridgeForSession("sess-A");
     expect(second).toBe(a.bridge);
     expect(createBridgeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("coalesces concurrent same-scope starts while only the latest caller claims ownership", async () => {
+    const shared = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(shared.bridge);
+
+    const staleCaller = startBridgeForSession("sess-A", "site-x");
+    const latestCaller = startBridgeForSession("sess-A", " site-x ");
+
+    expect(createBridgeSpy).toHaveBeenCalledTimes(1);
+    expect(shared.startCalls).toBe(1);
+
+    const staleResult = expect(staleCaller).rejects.toThrow(/superseded/);
+    shared.resolveStart();
+
+    await staleResult;
+    await expect(latestCaller).resolves.toBe(shared.bridge);
+    expect(shared.stopCalls).toBe(0);
+    expect(getActiveBridge("sess-A", "site-x")).toBe(shared.bridge);
   });
 
   it("reuses a same-scope bridge during a transient error", async () => {

@@ -66,14 +66,15 @@ ProjectionStore.onRehydrateRequested((storeKey) => {
 }, { persistent: true });
 
 /**
- * Monotonic generation counter. Each `startBridgeForSession` /
+ * Monotonic generation counter. Each owned bridge start /
  * `stopActiveBridge` call increments it; in-flight `start()` resolutions
  * compare their captured generation against the live one before publishing
- * themselves as `active`. A stale start (a newer call ran while we were
- * awaiting the WebSocket handshake) is responsible for stopping its own
- * bridge and discarding the result. Codex review must-fix #4: avoids the
- * pre-fix race where rapid session switches could leak bridges or — worse —
- * have an older `start()` resolution overwrite a newer bridge in `active`.
+ * themselves as `active`. A stale start (a newer, different-scope start ran
+ * while we were awaiting the WebSocket handshake) is responsible for
+ * stopping its own bridge and discarding the result. Codex review must-fix
+ * #4: avoids the pre-fix race where rapid session switches could leak
+ * bridges or — worse — have an older `start()` resolution overwrite a newer
+ * bridge in `active`.
  */
 let generation = 0;
 
@@ -83,23 +84,110 @@ function sameScope(a: ActiveBridge, sessionId: string, topic?: string): boolean 
   return a.sessionId === sessionId && at === t;
 }
 
+interface BridgeStartInFlight {
+  sessionId: string;
+  topic?: string;
+  promise: Promise<UiProtocolBridge>;
+  /** Only the newest same-scope caller may claim ownership. Older provider
+   *  effects must reject instead of stopping the shared bridge in cleanup. */
+  latestCaller: symbol;
+}
+
+let bridgeStartInFlight: BridgeStartInFlight | null = null;
+
+function sameInFlightScope(
+  start: BridgeStartInFlight,
+  sessionId: string,
+  topic?: string,
+): boolean {
+  const t = topic?.trim() || undefined;
+  const startedTopic = start.topic?.trim() || undefined;
+  return start.sessionId === sessionId && startedTopic === t;
+}
+
+function resultForBridgeStartCaller(
+  start: BridgeStartInFlight,
+  caller: symbol,
+): Promise<UiProtocolBridge> {
+  return start.promise.then(
+    (bridge) => {
+      if (start.latestCaller !== caller) {
+        throw new Error(
+          "ui-protocol-runtime: bridge start superseded by a newer same-scope caller",
+        );
+      }
+      return bridge;
+    },
+    (err: unknown) => {
+      if (start.latestCaller !== caller) {
+        throw new Error(
+          "ui-protocol-runtime: bridge start superseded during handshake error",
+        );
+      }
+      throw err;
+    },
+  );
+}
+
 /**
  * Start a v1 bridge for the given session. If a bridge is already running
  * for the same scope, returns the existing one (idempotent across StrictMode
- * remounts). When called for a different scope, the previous bridge is
- * stopped first.
+ * remounts). Concurrent same-scope calls also share one underlying handshake;
+ * only the newest caller resolves, preserving the provider cleanup invariant
+ * while avoiding duplicate sockets. When called for a different scope, the
+ * previous bridge is stopped first.
  *
- * Race-safe: each call captures the current `generation` before awaiting
- * `bridge.start()`. If a newer call (or `stopActiveBridge`) bumped the
- * generation while we were awaiting, this start is stale — we stop the
- * orphaned bridge and ALWAYS THROW, even when a newer same-scope active
- * exists. The throw signals the caller "you did NOT publish this active";
- * callers depending on the published-by-me invariant (e.g. the provider's
- * scope-aware cleanup) can branch on it. Callers wanting "give me the
- * active bridge for this scope, regardless of who published" should use
- * `getActiveBridge(sessionId, topic)` instead.
+ * Race-safe: each owned handshake captures the current `generation` before
+ * awaiting `bridge.start()`. If a different-scope call (or
+ * `stopActiveBridge`) bumped the generation while we were awaiting, this
+ * start is stale — we stop the orphaned bridge and ALWAYS THROW. For
+ * same-scope coalescing, older callers also throw after the shared handshake
+ * settles so only the newest effect can claim cleanup ownership. Callers
+ * wanting "give me the active bridge for this scope, regardless of who
+ * published" should use `getActiveBridge(sessionId, topic)` instead.
  */
-export async function startBridgeForSession(
+export function startBridgeForSession(
+  sessionId: string,
+  topic?: string,
+): Promise<UiProtocolBridge> {
+  if (
+    active &&
+    sameScope(active, sessionId, topic) &&
+    !(typeof active.bridge.isTerminal === "function"
+      ? active.bridge.isTerminal()
+      : active.connectionState === "closed")
+  ) {
+    return Promise.resolve(active.bridge);
+  }
+
+  const caller = Symbol("bridge-start-caller");
+  const shared = bridgeStartInFlight;
+  if (shared && sameInFlightScope(shared, sessionId, topic)) {
+    shared.latestCaller = caller;
+    return resultForBridgeStartCaller(shared, caller);
+  }
+
+  const promise = startOwnedBridgeForSession(sessionId, topic);
+  const owned: BridgeStartInFlight = {
+    sessionId,
+    topic,
+    promise,
+    latestCaller: caller,
+  };
+  bridgeStartInFlight = owned;
+  const clearOwnedStart = () => {
+    if (bridgeStartInFlight === owned) {
+      bridgeStartInFlight = null;
+    }
+  };
+  // Handle both outcomes so this observer never creates an unhandled
+  // rejection; each caller receives the original outcome through its own
+  // wrapper below.
+  void promise.then(clearOwnedStart, clearOwnedStart);
+  return resultForBridgeStartCaller(owned, caller);
+}
+
+async function startOwnedBridgeForSession(
   sessionId: string,
   topic?: string,
 ): Promise<UiProtocolBridge> {
@@ -607,6 +695,13 @@ export async function restartBridgeForSession(
   sessionId: string,
   topic?: string,
 ): Promise<UiProtocolBridge> {
+  if (
+    bridgeStartInFlight &&
+    sameInFlightScope(bridgeStartInFlight, sessionId, topic)
+  ) {
+    generation++;
+    bridgeStartInFlight = null;
+  }
   if (active && sameScope(active, sessionId, topic)) {
     await stopActiveBridge();
   }
@@ -619,6 +714,7 @@ export async function restartBridgeForSession(
  *  orphaned bridge instead of publishing it. */
 export async function stopActiveBridge(): Promise<void> {
   generation++;
+  bridgeStartInFlight = null;
   if (!active) return;
   const handle = active;
   active = null;
@@ -649,6 +745,7 @@ export async function stopActiveBridgeIfScope(
   // Match — bump generation so any in-flight start sees itself as stale,
   // then perform the same stop as `stopActiveBridge`.
   generation++;
+  bridgeStartInFlight = null;
   const handle = active;
   active = null;
   handle.attachment.detach();
@@ -667,6 +764,7 @@ export async function stopActiveBridgeIfScope(
 export function __resetUiProtocolRuntimeForTest(): void {
   active = null;
   generation = 0;
+  bridgeStartInFlight = null;
   if (auxSlot) {
     auxSlot.unsubscribeState();
     // Best-effort async stop; tests inject mocks whose `stop()` resolves
