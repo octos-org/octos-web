@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { VoiceConversation } from "@/home/voice/use-voice-conversation";
 import type { Thread } from "@/store/thread-store";
@@ -8,8 +8,14 @@ const conversationMock = vi.hoisted(() => ({
   turns: [] as VoiceConversation["turns"],
   threads: [] as Thread[],
 }));
+const sessionFilesMock = vi.hoisted(() => ({
+  getSessionFiles: vi.fn(async () => []),
+}));
 
 vi.mock("@/api/chat", () => ({ uploadFiles: vi.fn() }));
+vi.mock("@/api/sessions", () => ({
+  getSessionFiles: sessionFilesMock.getSessionFiles,
+}));
 vi.mock("@/runtime/ui-protocol-send", () => ({ sendMessage: vi.fn() }));
 vi.mock("@/home/voice/audio-playback", () => ({ unlockAudio: vi.fn() }));
 vi.mock("@/store/projection-render-adapter", () => ({
@@ -48,6 +54,8 @@ describe("LearningWorkspace", () => {
     cleanup();
     conversationMock.turns = [];
     conversationMock.threads = [];
+    sessionFilesMock.getSessionFiles.mockReset();
+    sessionFilesMock.getSessionFiles.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -56,7 +64,7 @@ describe("LearningWorkspace", () => {
     vi.unstubAllGlobals();
   });
 
-  it("puts an ordinary assistant explanation on the board and keeps the teacher caption brief", () => {
+  it("does not project ordinary assistant prose onto the OLL whiteboard", () => {
     const longReply =
       "第一步：先看 $x^2 + 6x$。配方公式是 $(x+b)^2=x^2+2bx+b^2$。\n\n所以得到 $y=(x+3)^2-4$。";
     conversationMock.turns = [
@@ -76,15 +84,9 @@ describe("LearningWorkspace", () => {
       />,
     );
 
-    expect(screen.getByText("题目")).toBeTruthy();
-    expect(
-      screen.getAllByText(/把 y = x² \+ 6x \+ 5 配方/).length,
-    ).toBeGreaterThan(0);
-    expect(screen.getByText("我先把题目写在白板上。")).toBeTruthy();
+    expect(screen.getByText("向 Octos 提问，我们从这里开始")).toBeTruthy();
     expect(screen.queryByText(longReply)).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-    expect(screen.getByLabelText("x^2 + 6x")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "下一步" })).toBeNull();
   });
 
   it("feeds the OLL fixture into the real /learn Runtime as incremental events", () => {
@@ -105,6 +107,13 @@ describe("LearningWorkspace", () => {
   });
 
   it("loads a delivered OLL Authoring artifact into the /learn Runtime", async () => {
+    const fallbackReply = "这是主模型额外生成的完整文本讲解，不应显示在教师气泡里。";
+    conversationMock.turns = [{
+      id: "client-turn",
+      userText: "讲解",
+      assistantText: fallbackReply,
+      awaitingTranscript: false,
+    }];
     conversationMock.threads = [{
       id: "client-turn",
       turnId: "server-turn",
@@ -173,6 +182,294 @@ describe("LearningWorkspace", () => {
 
     await waitFor(() => {
       expect(screen.getByText("模型生成的 OLL 课程")).toBeTruthy();
+      expect(screen.getByTestId("oll-controls")).toBeTruthy();
+    });
+    expect(screen.queryByText(fallbackReply)).toBeNull();
+    expect(screen.getByText("课程已经写到白板上，我们开始吧。")).toBeTruthy();
+  });
+
+  it("restores an OLL lesson from durable session files after refresh", async () => {
+    sessionFilesMock.getSessionFiles.mockResolvedValue([
+      {
+        filename: "restored-turn.octos-lesson.json",
+        path: "skill-output/study/oll/restored-turn.octos-lesson.json",
+        size_bytes: 100,
+        modified_at: "2026-07-28T15:45:27.000Z",
+      },
+    ]);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+        dsl: "octos.lesson",
+        version: "0.1",
+        profile: "authoring",
+        lesson: {
+          mode: "explain",
+          language: "zh-CN",
+          title: "刷新后恢复的课程",
+          goals: ["恢复白板"],
+        },
+        steps: [{
+          key: "restore",
+          purpose: "恢复课程",
+          beats: [{
+            key: "restore-board",
+            say: "恢复白板。",
+            actions: [{
+              do: "write",
+              as: "restored-card",
+              kind: "note",
+              role: "conclusion",
+              content: { text: "已恢复" },
+              place: { relation: "new_region" },
+            }],
+          }],
+        }],
+        close: { summary: "恢复完成", focus: ["restored-card"] },
+        }),
+      }));
+
+    render(
+      <LearningWorkspace
+        sessionId="learn-restored"
+        voiceEnabled={false}
+        onBack={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("刷新后恢复的课程")).toBeTruthy();
+    });
+    expect(sessionFilesMock.getSessionFiles).toHaveBeenCalledWith(
+      "learn-restored",
+    );
+  });
+
+  it("refetches durable OLL artifacts when the bridge reconnects", async () => {
+    sessionFilesMock.getSessionFiles
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([
+        {
+          filename: "reconnected-turn.octos-lesson.json",
+          path: "study/oll/reconnected-turn.octos-lesson.json",
+          size_bytes: 100,
+          modified_at: "2026-07-28T15:45:27.000Z",
+        },
+      ]);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        dsl: "octos.lesson",
+        version: "0.1",
+        profile: "authoring",
+        lesson: {
+          mode: "explain",
+          language: "zh-CN",
+          title: "重连后恢复的课程",
+          goals: ["恢复漏掉的白板文件事件"],
+        },
+        steps: [{
+          key: "restore",
+          purpose: "恢复课程",
+          beats: [{
+            key: "restore-board",
+            say: "重新读取白板课程。",
+            actions: [{
+              do: "write",
+              as: "reconnected-card",
+              kind: "note",
+              role: "conclusion",
+              content: { text: "重连恢复成功" },
+              place: { relation: "new_region" },
+            }],
+          }],
+        }],
+        close: { summary: "恢复完成", focus: ["reconnected-card"] },
+      }),
+    }));
+
+    render(
+      <LearningWorkspace
+        sessionId="learn-reconnected"
+        voiceEnabled={false}
+        onBack={vi.fn()}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(sessionFilesMock.getSessionFiles).toHaveBeenCalledTimes(1),
+    );
+    expect(screen.queryByTestId("oll-controls")).toBeNull();
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent("crew:bridge_connected"));
+    });
+
+    await waitFor(() => {
+      expect(sessionFilesMock.getSessionFiles).toHaveBeenCalledTimes(2);
+      expect(screen.getByText("重连后恢复的课程")).toBeTruthy();
+    });
+  });
+
+  it("does not infer an OLL path when the durable file list is empty", async () => {
+    sessionFilesMock.getSessionFiles.mockResolvedValue([]);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <LearningWorkspace
+        sessionId="learn-no-artifact"
+        voiceEnabled={false}
+        onBack={vi.fn()}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(sessionFilesMock.getSessionFiles).toHaveBeenCalledWith(
+        "learn-no-artifact",
+      ),
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("oll-controls")).toBeNull();
+    expect(screen.getByText("向 Octos 提问，我们从这里开始")).toBeTruthy();
+  });
+
+  it("surfaces a durable file-list failure without falling back to prose", async () => {
+    conversationMock.turns = [{
+      id: "turn-with-prose",
+      userText: "讲解负数乘法",
+      assistantText: "这段普通文本不能替代 OLL 课程。",
+      awaitingTranscript: false,
+    }];
+    sessionFilesMock.getSessionFiles.mockRejectedValue(
+      new Error("白板文件列表暂不可用"),
+    );
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <LearningWorkspace
+        sessionId="learn-file-list-error"
+        voiceEnabled={false}
+        onBack={vi.fn()}
+      />,
+    );
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "白板文件列表暂不可用",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.queryByText("这段普通文本不能替代 OLL 课程。")).toBeNull();
+    expect(screen.queryByTestId("oll-controls")).toBeNull();
+  });
+
+  it("keeps loading an OLL artifact while later assistant deltas rerender the thread", async () => {
+    const makeThread = (assistantText: string): Thread => ({
+      id: "client-streaming-turn",
+      turnId: "server-streaming-turn",
+      userMsg: {
+        id: "streaming-user",
+        role: "user",
+        text: "讲解负数乘法",
+        files: [],
+        toolCalls: [],
+        status: "complete",
+        timestamp: 1,
+      },
+      responses: [{
+        id: "artifact-only-assistant",
+        role: "assistant",
+        text: "",
+        files: [{
+          filename: "server-streaming-turn.octos-lesson.json",
+          path: "skill-output/study/oll/server-streaming-turn.octos-lesson.json",
+        }],
+        toolCalls: [],
+        status: "complete",
+        timestamp: 2,
+      }, {
+        id: "streaming-assistant",
+        role: "assistant",
+        text: assistantText,
+        files: [],
+        toolCalls: [],
+        status: "complete",
+        timestamp: 3,
+      }],
+      pendingAssistant: null,
+    });
+    conversationMock.threads = [makeThread("白板已经准备好")];
+
+    let resolveFetch!: (value: {
+      ok: boolean;
+      json: () => Promise<unknown>;
+    }) => void;
+    let requestSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn((_url: string, init?: RequestInit) => {
+      requestSignal = init?.signal ?? undefined;
+      return new Promise((resolve, reject) => {
+        resolveFetch = resolve;
+        requestSignal?.addEventListener("abort", () => {
+          reject(new DOMException("Aborted", "AbortError"));
+        });
+      });
+    }));
+
+    const view = render(
+      <LearningWorkspace
+        sessionId="learn-streaming-artifact-test"
+        voiceEnabled={false}
+        onBack={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(requestSignal).toBeTruthy());
+    conversationMock.threads = [makeThread(
+      "白板已经准备好，下面是模型仍在继续流式输出的长文本。",
+    )];
+    view.rerender(
+      <LearningWorkspace
+        sessionId="learn-streaming-artifact-test"
+        voiceEnabled={false}
+        onBack={vi.fn()}
+      />,
+    );
+
+    expect(requestSignal?.aborted).toBe(false);
+    resolveFetch({
+      ok: true,
+      json: async () => ({
+        dsl: "octos.lesson",
+        version: "0.1",
+        profile: "authoring",
+        lesson: {
+          mode: "explain",
+          language: "zh-CN",
+          title: "流式回复中的 OLL 课程",
+          goals: ["解释负数乘法"],
+        },
+        steps: [{
+          key: "explain",
+          purpose: "写出核心结论",
+          beats: [{
+            key: "write",
+            say: "先看规律。",
+            actions: [{
+              do: "write",
+              as: "answer",
+              kind: "note",
+              role: "conclusion",
+              content: { text: "负负得正" },
+              place: { relation: "new_region", region_role: "lesson_origin" },
+            }],
+          }],
+        }],
+        close: { summary: "完成讲解", focus: ["answer"] },
+      }),
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("流式回复中的 OLL 课程")).toBeTruthy();
       expect(screen.getByTestId("oll-controls")).toBeTruthy();
     });
   });

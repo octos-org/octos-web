@@ -89,4 +89,25 @@ describe("learning session lifecycle", () => {
       }),
     ]);
   });
+
+  it("promotes a matching provisional entry when the server has a transcript", () => {
+    const provisional = createProvisionalLearningSession(900);
+
+    const reconciled = adoptLearningSession({
+      ...provisional,
+      status: "paused",
+      title: "负数乘法",
+      updatedAt: 950,
+    });
+
+    expect(reconciled).toEqual(
+      expect.objectContaining({
+        id: provisional.id,
+        status: "paused",
+        title: "负数乘法",
+        updatedAt: 950,
+      }),
+    );
+    expect(listLearningSessions()).toHaveLength(1);
+  });
 });

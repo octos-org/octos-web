@@ -6,7 +6,7 @@ import {
 } from "./learning-context";
 
 describe("learning context protocol", () => {
-  it("builds the v3 wake-session marker", () => {
+  it("builds the v4 wake-session marker", () => {
     expect(
       buildLearningSessionContext({
         sessionId: "learn-1",
@@ -14,7 +14,7 @@ describe("learning context protocol", () => {
         provisional: true,
       }),
     ).toContain(
-      "version: 3\nsession_id: learn-1\nentry: wake-word\nprovisional: true",
+      "version: 4\nsession_id: learn-1\nentry: wake-word\nprovisional: true",
     );
   });
 
@@ -50,6 +50,9 @@ describe("learning context protocol", () => {
     });
 
     expect(context).toContain("turn_id: turn-8");
+    expect(context).toContain("lesson_artifact_tool: oll_generate_lesson");
+    expect(context).toContain("lesson_artifact_policy: tool_only");
+    expect(context).toContain("direct_oll_json: forbidden");
     expect(context).toContain("focused_element: formula-vertex");
     expect(context).toContain("last_applied_action: action-17");
     expect(context).toContain("pending_goal: draw-parabola");

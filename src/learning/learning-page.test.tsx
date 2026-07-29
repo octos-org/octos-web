@@ -10,8 +10,10 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { LearningWorkspaceProps } from "./learning-workspace";
 import {
+  createProvisionalLearningSession,
   getLearningSession,
   listLearningSessions,
+  promoteLearningSession,
 } from "./learning-session-store";
 import { storeWakeAudio } from "./wake-audio-handoff";
 import { LearningPage } from "./learning-page";
@@ -20,8 +22,15 @@ const navigateMock = vi.hoisted(() => vi.fn());
 const setTitleMock = vi.hoisted(() => vi.fn(async () => ({})));
 const deleteSessionMock = vi.hoisted(() => vi.fn(async () => undefined));
 const sessionApiMock = vi.hoisted(() => ({
-  getMessages: vi.fn(async () => [] as unknown[]),
   listSessions: vi.fn(async () => [] as unknown[]),
+  getSessionFiles: vi.fn(async (sessionId: string) => [
+    {
+      filename: "turn-1.octos-lesson.json",
+      path: `sessions/${sessionId}/turn-1.octos-lesson.json`,
+      size_bytes: 1,
+      modified_at: "2026-07-29T00:00:00Z",
+    },
+  ]),
 }));
 const learningWorkspaceMock = vi.hoisted(() => ({
   props: null as LearningWorkspaceProps | null,
@@ -43,7 +52,7 @@ vi.mock("react-router-dom", () => ({
 
 vi.mock("@/api/sessions", () => ({
   deleteSession: deleteSessionMock,
-  getMessages: sessionApiMock.getMessages,
+  getSessionFiles: sessionApiMock.getSessionFiles,
   listSessions: sessionApiMock.listSessions,
   setSessionTitle: setTitleMock,
 }));
@@ -87,10 +96,17 @@ describe("LearningPage", () => {
     navigateMock.mockReset();
     setTitleMock.mockClear();
     deleteSessionMock.mockClear();
-    sessionApiMock.getMessages.mockReset();
-    sessionApiMock.getMessages.mockResolvedValue([]);
     sessionApiMock.listSessions.mockReset();
     sessionApiMock.listSessions.mockResolvedValue([]);
+    sessionApiMock.getSessionFiles.mockReset();
+    sessionApiMock.getSessionFiles.mockImplementation(async (sessionId) => [
+      {
+        filename: "turn-1.octos-lesson.json",
+        path: `sessions/${sessionId}/turn-1.octos-lesson.json`,
+        size_bytes: 1,
+        modified_at: "2026-07-29T00:00:00Z",
+      },
+    ]);
     learningWorkspaceMock.props = null;
     profileSkillsMock.skills = [
       {
@@ -179,6 +195,14 @@ describe("LearningPage", () => {
       );
     });
     expect(getLearningSession(sessionId)?.status).toBe("active");
+    fireEvent.click(
+      screen.getByRole("button", { name: "打开学习会话列表" }),
+    );
+    expect(
+      screen.getByRole("button", {
+        name: "请在白板上讲解一个新的二次函数问题",
+      }),
+    ).toBeTruthy();
   });
 
   it("does not time out or delete an idle provisional whiteboard", async () => {
@@ -267,15 +291,6 @@ describe("LearningPage", () => {
         title: "几何证明",
       },
     ]);
-    sessionApiMock.getMessages.mockResolvedValue([
-      {
-        role: "user",
-        content:
-          "[[LEARNING_CONTEXT]]\nactive: true\nsession_id: learn-900-server\n[[/LEARNING_CONTEXT]]\n帮我继续几何证明",
-        timestamp: "2026-07-24T12:00:00.000Z",
-      },
-    ]);
-
     render(<LearningPage />);
 
     await waitFor(() =>
@@ -288,6 +303,104 @@ describe("LearningPage", () => {
         title: "几何证明",
       }),
     ]);
+  });
+
+  it("switches between server-backed OLL sessions from the sidebar", async () => {
+    sessionApiMock.listSessions.mockResolvedValue([
+      { id: "learn-200-geometry", message_count: 4, title: "几何课程" },
+      { id: "learn-100-algebra", message_count: 4, title: "代数课程" },
+    ]);
+    render(<LearningPage />);
+
+    await waitFor(() =>
+      expect(learningWorkspaceMock.props?.sessionId).toBe(
+        "learn-200-geometry",
+      ),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "打开学习会话列表" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "代数课程" }));
+
+    await waitFor(() =>
+      expect(learningWorkspaceMock.props?.sessionId).toBe(
+        "learn-100-algebra",
+      ),
+    );
+  });
+
+  it("does not expose a transcript-only learning session without an OLL lesson", async () => {
+    sessionApiMock.listSessions.mockResolvedValue([
+      { id: "learn-903-no-lesson", message_count: 2, title: "失败课程" },
+    ]);
+    sessionApiMock.getSessionFiles.mockResolvedValue([]);
+
+    render(<LearningPage />);
+
+    await waitFor(() => expect(learningWorkspaceMock.props).not.toBeNull());
+    expect(learningWorkspaceMock.props?.sessionId).not.toBe(
+      "learn-903-no-lesson",
+    );
+    expect(getLearningSession("learn-903-no-lesson")).toBeNull();
+  });
+
+  it("repairs a provisional local session from its durable server transcript", async () => {
+    const { id: sessionId } = createProvisionalLearningSession(900);
+    sessionApiMock.listSessions.mockResolvedValue([
+      { id: sessionId, message_count: 2, title: "负数乘法" },
+    ]);
+    render(<LearningPage />);
+
+    await waitFor(() =>
+      expect(getLearningSession(sessionId)).toEqual(
+        expect.objectContaining({
+          status: "active",
+          title: "负数乘法",
+        }),
+      ),
+    );
+    expect(deleteSessionMock).not.toHaveBeenCalledWith(sessionId);
+  });
+
+  it("preserves a local session title while reconciling its server transcript", async () => {
+    const { id: sessionId } = createProvisionalLearningSession(901);
+    promoteLearningSession(sessionId, "已保存课程", 902);
+    sessionApiMock.listSessions.mockResolvedValue([
+      { id: sessionId, message_count: 2, title: "[[LEARNING_SESSION]]" },
+    ]);
+
+    render(<LearningPage />);
+
+    await waitFor(() => expect(learningWorkspaceMock.props).not.toBeNull());
+    expect(getLearningSession(sessionId)).toEqual(
+      expect.objectContaining({ title: "已保存课程" }),
+    );
+    expect(deleteSessionMock).not.toHaveBeenCalledWith(sessionId);
+  });
+
+  it("does not expose a confirmed empty server shell as a learning session", async () => {
+    sessionApiMock.listSessions.mockResolvedValue([
+      { id: "learn-902-empty", message_count: 0, title: null },
+    ]);
+    sessionApiMock.getSessionFiles.mockResolvedValue([]);
+
+    render(<LearningPage />);
+
+    await waitFor(() => expect(learningWorkspaceMock.props).not.toBeNull());
+    expect(getLearningSession("learn-902-empty")).toBeNull();
+    expect(deleteSessionMock).not.toHaveBeenCalledWith("learn-902-empty");
+  });
+
+  it("drops a stale local index after an authoritative server list", async () => {
+    const { id: staleId } = createProvisionalLearningSession(904);
+    promoteLearningSession(staleId, "旧的本地会话", 905);
+    sessionApiMock.listSessions.mockResolvedValue([]);
+
+    render(<LearningPage />);
+
+    await waitFor(() => expect(learningWorkspaceMock.props).not.toBeNull());
+    expect(getLearningSession(staleId)).toBeNull();
+    expect(learningWorkspaceMock.props?.sessionId).not.toBe(staleId);
   });
 
   it("completes the session after a spoken exit review", async () => {

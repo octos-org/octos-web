@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Thread } from "@/store/thread-store";
 import {
+  collectPersistedOllLessonArtifacts,
   collectOllLessonArtifacts,
   composeOllClassroomEvents,
   isOllLessonArtifact,
@@ -63,6 +64,40 @@ const authoringLesson = {
 };
 
 describe("OLL lesson artifacts", () => {
+  it("rebuilds artifact references from durable session files", () => {
+    expect(
+      collectPersistedOllLessonArtifacts([
+        {
+          filename: "turn-2.octos-lesson.json",
+          path: "skill-output/study/oll/turn-2.octos-lesson.json",
+          size_bytes: 200,
+          modified_at: "2026-07-28T12:02:00.000Z",
+        },
+        {
+          filename: "notes.txt",
+          path: "notes.txt",
+          size_bytes: 10,
+          modified_at: "2026-07-28T12:00:00.000Z",
+        },
+        {
+          filename: "turn-1.octos-lesson.json",
+          path: "study/oll/turn-1.octos-lesson.json",
+          size_bytes: 100,
+          modified_at: "2026-07-28T12:01:00.000Z",
+        },
+      ]),
+    ).toEqual([
+      expect.objectContaining({
+        path: "study/oll/turn-1.octos-lesson.json",
+        turnId: "turn-1",
+      }),
+      expect.objectContaining({
+        path: "skill-output/study/oll/turn-2.octos-lesson.json",
+        turnId: "turn-2",
+      }),
+    ]);
+  });
+
   it("recognizes and collects delivered OLL authoring files", () => {
     expect(isOllLessonArtifact({ filename: "turn.OCTOS-LESSON.JSON" })).toBe(true);
     expect(isOllLessonArtifact({ filename: "turn.octos-board.json" })).toBe(false);

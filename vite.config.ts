@@ -4,6 +4,13 @@ import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 
 export default defineConfig({
+  optimizeDeps: {
+    // OLL is intentionally consumed through a local file: dependency while its
+    // Runtime is under active development. Rebuild Vite's compatible dependency
+    // bundle on every server start so OLL changes are not served from a stale
+    // node_modules/.vite snapshot.
+    force: true,
+  },
   base: process.env.BASE_URL || "/",
   plugins: [react(), tailwindcss()],
   resolve: {

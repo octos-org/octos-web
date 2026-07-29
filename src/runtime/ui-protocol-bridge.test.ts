@@ -1054,49 +1054,24 @@ describe("connection lifecycle", () => {
   });
 
 
-  it("auxiliary.rest_to_ws.v1 — appended to ui_feature ONLY when flag is ON", async () => {
-    // Import the flag helper inside the test so we don't pollute the
-    // module-scope cache for other tests in this file.
+  it("auxiliary.rest_to_ws.v1 — always negotiated after REST retirement", async () => {
     const {
       __setAuxRestToWsV1ForTests,
       AUX_REST_TO_WS_V1_FEATURE,
     } = await import("@/lib/feature-flags");
 
-    try {
-      // Flag explicit OFF (emergency-rollback escape hatch) — the aux
-      // capability is NOT advertised. (Phase D-4 flipped the default to
-      // ON; tests still cover the explicit-OFF leg.)
-      __setAuxRestToWsV1ForTests(false);
-      let bridge = createUiProtocolBridge(makeBridgeOpts());
-      void bridge.start({ sessionId: "sess-a" });
-      await Promise.resolve();
-      let ws = lastInstance();
-      expect(ws.url.includes(`ui_feature=${AUX_REST_TO_WS_V1_FEATURE}`)).toBe(
-        false,
-      );
-      await bridge.stop();
-
-      // Flag ON — the aux capability MUST be in the negotiated list, or
-      // the M12 Phase D-1 dispatcher rejects every aux RPC even though
-      // `SessionOpened.capabilities` advertises them (octos #913).
-      __setAuxRestToWsV1ForTests(true);
-      bridge = createUiProtocolBridge(makeBridgeOpts());
-      void bridge.start({ sessionId: "sess-b" });
-      await Promise.resolve();
-      ws = lastInstance();
-      expect(ws.url).toContain(`ui_feature=${AUX_REST_TO_WS_V1_FEATURE}`);
-      // Exact-count assertion: the aux feature MUST appear once, never
-      // duplicated. A double `push` in `getUiProtocolFeatures()` would
-      // pass the `toContain` check above but break the server-side
-      // capability set comparison.
-      const auxOccurrences = new URL(ws.url).searchParams
-        .getAll("ui_feature")
-        .filter((feature) => feature === AUX_REST_TO_WS_V1_FEATURE).length;
-      expect(auxOccurrences).toBe(1);
-      await bridge.stop();
-    } finally {
-      __setAuxRestToWsV1ForTests(false);
-    }
+    // A stale pre-cutover rollback value must not disable the only remaining
+    // transport for session/list and the other auxiliary RPCs.
+    __setAuxRestToWsV1ForTests(false);
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    void bridge.start({ sessionId: "sess-a" });
+    await Promise.resolve();
+    const ws = lastInstance();
+    const auxOccurrences = new URL(ws.url).searchParams
+      .getAll("ui_feature")
+      .filter((feature) => feature === AUX_REST_TO_WS_V1_FEATURE).length;
+    expect(auxOccurrences).toBe(1);
+    await bridge.stop();
   });
 
   it("callMethod() forwards arbitrary JSON-RPC over the open socket", async () => {

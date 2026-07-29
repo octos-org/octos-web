@@ -10,7 +10,7 @@ import { BookOpen, Menu, Pencil, Plus, Trash2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import {
   deleteSession,
-  getMessages,
+  getSessionFiles,
   listSessions,
   setSessionTitle,
 } from "@/api/sessions";
@@ -46,13 +46,14 @@ import {
   promoteLearningSession,
   removeLearningSession,
   resolveLearningEntrySession,
-  titleFromLearningText,
   updateLearningSession,
   type LearningSessionRecord,
 } from "./learning-session-store";
+import { isOllLessonArtifact } from "./oll/oll-artifacts";
 import { consumeWakeAudio } from "./wake-audio-handoff";
 import {
   acquireLearningTabLease,
+  getLearningTabOwner,
   releaseLearningTabLease,
   renewLearningTabLease,
 } from "./learning-tab-lease";
@@ -60,10 +61,7 @@ import {
 const AUTO_CAMERA_KEY = "octos_learning_auto_camera";
 const INPUT_MODE_KEY = "octos_learning_input_mode";
 const MINIMUM_WHITEBOARD_SKILL_VERSION = [0, 7, 0] as const;
-const LEARNING_TAB_ID =
-  typeof globalThis.crypto?.randomUUID === "function"
-    ? globalThis.crypto.randomUUID()
-    : `learning-tab-${Math.random().toString(36).slice(2)}`;
+const LEARNING_TAB_ID = getLearningTabOwner();
 
 function supportsWhiteboardProtocol(skill: SkillInfo): boolean {
   if (skill.name !== "learning-coach" || !skill.version) return false;
@@ -208,7 +206,10 @@ function sessionTimestamp(sessionId: string): number {
 function LearningServerSync({
   onDone,
 }: {
-  onDone: (discovered: LearningSessionRecord[]) => void;
+  onDone: (
+    discovered: LearningSessionRecord[],
+    authoritative: boolean,
+  ) => void;
 }) {
   useEffect(() => {
     let cancelled = false;
@@ -218,56 +219,45 @@ function LearningServerSync({
     const sync = async () => {
       attempts += 1;
       try {
-        const localIds = new Set(
-          listLearningSessions({ includeProvisional: true }).map(
-            (session) => session.id,
-          ),
+        const allServerSessions = await listSessions();
+        const learningSessions = allServerSessions.filter((session) =>
+          session.id.startsWith("learn-"),
         );
-        const serverSessions = (await listSessions()).filter(
-          (session) =>
-            session.id.startsWith("learn-") && !localIds.has(session.id),
+        const validatedSessions = await Promise.all(
+          learningSessions.map(async (session) => ({
+            session,
+            files: await getSessionFiles(session.id),
+          })),
         );
+        const serverSessions = validatedSessions
+          .filter(({ files }) => files.some(isOllLessonArtifact))
+          .map(({ session }) => session);
         const discovered: LearningSessionRecord[] = [];
         for (const session of serverSessions) {
-          const messages = await getMessages(session.id, 100);
-          const firstSubstantive = messages
-            .filter((message) => message.role === "user")
-            .map((message) => ({
-              message,
-              text: stripLearningContext(message.content),
-            }))
-            .find(({ text }) => isSubstantiveLearningText(text));
-          if (!firstSubstantive) {
-            void deleteSession(session.id).catch(() => undefined);
-            continue;
-          }
           const createdAt = sessionTimestamp(session.id);
-          const updatedAt = messages.reduce((latest, message) => {
-            const timestamp = new Date(message.timestamp).getTime();
-            return Number.isFinite(timestamp)
-              ? Math.max(latest, timestamp)
-              : latest;
-          }, createdAt);
           const serverTitle = stripLearningContext(session.title ?? "");
-          const record = adoptLearningSession({
+          const usableServerTitle =
+            serverTitle &&
+            !serverTitle.startsWith("[[LEARNING_") &&
+            isSubstantiveLearningText(serverTitle)
+              ? serverTitle
+              : null;
+          const record: LearningSessionRecord = {
             id: session.id,
             status: "paused",
-            title:
-              serverTitle && isSubstantiveLearningText(serverTitle)
-                ? serverTitle
-                : titleFromLearningText(firstSubstantive.text),
+            title: usableServerTitle ?? "已保存的学习",
             createdAt,
-            updatedAt,
-          });
+            updatedAt: createdAt,
+          };
           discovered.push(record);
         }
-        if (!cancelled) onDone(discovered);
+        if (!cancelled) onDone(discovered, true);
       } catch {
         if (cancelled) return;
         if (attempts < 4) {
           timer = window.setTimeout(() => void sync(), 300);
         } else {
-          onDone([]);
+          onDone([], false);
         }
       }
     };
@@ -321,6 +311,10 @@ export function LearningPage() {
   const [record, setRecord] = useState<LearningSessionRecord>(
     initialEntry.record,
   );
+  const recordRef = useRef(record);
+  useEffect(() => {
+    recordRef.current = record;
+  }, [record]);
   const boardContextRef = useRef<LearningBoardContext>({});
   const [sessions, setSessions] = useState(() => listLearningSessions());
   const [devicePreferences, setDevicePreferences] = useState<{
@@ -351,30 +345,52 @@ export function LearningPage() {
   }, []);
 
   const handleServerSync = useCallback(
-    (discovered: LearningSessionRecord[]) => {
+    (
+      discovered: LearningSessionRecord[],
+      authoritative: boolean,
+    ) => {
+      if (!authoritative) {
+        setServerSyncReady(true);
+        return;
+      }
+
+      const adopted = discovered.map((session) => adoptLearningSession(session));
+      const keepIds = new Set(adopted.map((session) => session.id));
+      for (const local of listLearningSessions()) {
+        if (!keepIds.has(local.id)) removeLearningSession(local.id);
+      }
+
+      const current = recordRef.current;
+      const currentWasRemoved =
+        current.status !== "provisional" && !keepIds.has(current.id);
       if (
-        !initialEntry.hadResumableSession &&
-        record.status === "provisional" &&
-        discovered.length > 0
+        (currentWasRemoved ||
+          (!initialEntry.hadResumableSession && current.status === "provisional")) &&
+        adopted.length > 0
       ) {
-        removeLearningSession(record.id);
-        const latest = [...discovered].sort(
+        const latest = [...adopted].sort(
           (a, b) => b.updatedAt - a.updatedAt,
         )[0];
+        if (current.id !== latest.id) removeLearningSession(current.id);
         const resumed =
-          updateLearningSession(latest.id, { status: "active" }) ?? latest;
+          updateLearningSession(latest.id, { status: "active" }) ??
+          adoptLearningSession({ ...latest, status: "active" });
         markerSentRef.current = false;
         boardContextRef.current = {};
         setWakeSessionId(wakeAudio ? resumed.id : null);
         setRecord(resumed);
+      } else if (currentWasRemoved) {
+        const next = createProvisionalLearningSession();
+        markerSentRef.current = false;
+        boardContextRef.current = {};
+        setWakeSessionId(null);
+        setRecord(next);
       }
       refreshLocalSessions();
       setServerSyncReady(true);
     },
     [
       initialEntry.hadResumableSession,
-      record.id,
-      record.status,
       refreshLocalSessions,
       wakeAudio,
     ],

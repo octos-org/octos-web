@@ -139,7 +139,29 @@ export function adoptLearningSession(
 ): LearningSessionRecord {
   const records = readRecords();
   const existing = records.find((item) => item.id === record.id);
-  if (existing) return existing;
+  if (existing) {
+    // The server transcript is authoritative evidence that a provisional
+    // client entry became a real learning session. This also repairs the
+    // local index after a refresh that happened before the input callback
+    // could promote it.
+    const reconciled: LearningSessionRecord = {
+      ...existing,
+      status:
+        existing.status === "provisional" && record.status !== "provisional"
+          ? record.status
+          : existing.status,
+      title:
+        existing.status === "provisional" || existing.title === "新的学习"
+          ? record.title
+          : existing.title,
+      createdAt: Math.min(existing.createdAt, record.createdAt),
+      updatedAt: Math.max(existing.updatedAt, record.updatedAt),
+    };
+    writeRecords(
+      records.map((item) => (item.id === record.id ? reconciled : item)),
+    );
+    return reconciled;
+  }
   writeRecords([record, ...records]);
   return record;
 }

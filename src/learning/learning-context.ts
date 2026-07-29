@@ -1,4 +1,4 @@
-export const LEARNING_PROTOCOL_VERSION = 3;
+export const LEARNING_PROTOCOL_VERSION = 4;
 
 export interface LearningSessionContext {
   sessionId: string;
@@ -56,6 +56,9 @@ export function buildLearningTurnContext(
   ];
   if (context.turnId) {
     lines.push(line("turn_id", context.turnId));
+    lines.push("lesson_artifact_tool: oll_generate_lesson");
+    lines.push("lesson_artifact_policy: tool_only");
+    lines.push("direct_oll_json: forbidden");
   }
   if (context.provisional !== undefined) {
     lines.push(line("provisional", context.provisional));

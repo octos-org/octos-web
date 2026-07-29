@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CanonicalEvent } from "octos-lesson-language";
 import { parseCanonicalJsonl } from "octos-lesson-language/web-runtime";
 import {
-  ChevronLeft,
   ChevronRight,
   Pause,
   Play,
@@ -10,6 +9,7 @@ import {
   X,
 } from "lucide-react";
 import { uploadFiles } from "@/api/chat";
+import { getSessionFiles } from "@/api/sessions";
 import { sendMessage } from "@/runtime/ui-protocol-send";
 import { unlockAudio } from "@/home/voice/audio-playback";
 import {
@@ -21,21 +21,14 @@ import { useOminixRuntimeSummary } from "@/home/use-ominix-runtime-summary";
 import { useRenderThreads } from "@/store/projection-render-adapter";
 import { InfiniteBoard } from "./board/infinite-board";
 import {
-  collectBoardArtifacts,
-  loadBoardArtifact,
-} from "./board/board-artifacts";
-import { buildAssistantLessonPacket } from "./board/assistant-to-board";
-import {
-  buildLearningBoardContext,
   mergeSessionBoardPackets,
   type LearningBoardContext,
 } from "./board/session-board";
-import { useLessonPlayer } from "./board/use-lesson-player";
-import type { LessonPacketV1 } from "./board/lesson-packet";
 import geometryLessonSource from "./oll/fixtures/geometry-auxiliary-line-v2.canonical.jsonl?raw";
 import { OllLessonBoard } from "./oll/oll-lesson-runtime";
 import {
   collectOllLessonArtifacts,
+  collectPersistedOllLessonArtifacts,
   composeOllClassroomEvents,
   loadOllLessonArtifact,
 } from "./oll/oll-artifacts";
@@ -81,24 +74,65 @@ export function LearningWorkspace({
     onVoiceExit ?? onBack,
     conversationOptions,
   );
-  const [loadedArtifacts, setLoadedArtifacts] = useState<
-    Record<string, LessonPacketV1>
-  >({});
   const [loadedOllArtifacts, setLoadedOllArtifacts] = useState<
     Record<string, CanonicalEvent[]>
   >({});
-  const artifacts = useMemo(
-    () => collectBoardArtifacts(threads),
-    [threads],
-  );
-  const ollArtifacts = useMemo(
-    () => collectOllLessonArtifacts(threads),
-    [threads],
-  );
-  const requestedArtifactsRef = useRef(new Set<string>());
+  const [persistedOllArtifacts, setPersistedOllArtifacts] = useState<
+    ReturnType<typeof collectPersistedOllLessonArtifacts>
+  >([]);
+  const [rejectedOllArtifactPaths, setRejectedOllArtifactPaths] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
+  const ollArtifacts = useMemo(() => {
+    const result = [...persistedOllArtifacts];
+    const seen = new Set(result.map((artifact) => artifact.path));
+    for (const artifact of collectOllLessonArtifacts(threads)) {
+      if (seen.has(artifact.path)) continue;
+      seen.add(artifact.path);
+      result.push(artifact);
+    }
+    return result;
+  }, [persistedOllArtifacts, threads]);
   const requestedOllArtifactsRef = useRef(new Set<string>());
+  const ollArtifactRequestsRef = useRef(new Map<string, AbortController>());
   const [sendError, setSendError] = useState<string | null>(null);
+  const [fileListError, setFileListError] = useState<string | null>(null);
+  const [artifactError, setArtifactError] = useState<string | null>(null);
   const [textTurnPending, setTextTurnPending] = useState(false);
+
+  useEffect(() => {
+    if (ollFixture) return;
+    let cancelled = false;
+    let requestVersion = 0;
+    const loadPersistedArtifacts = async () => {
+      const version = ++requestVersion;
+      try {
+        const files = await getSessionFiles(sessionId);
+        if (cancelled || version !== requestVersion) return;
+        setPersistedOllArtifacts(collectPersistedOllLessonArtifacts(files));
+        setFileListError(null);
+      } catch (cause) {
+        if (cancelled || version !== requestVersion) return;
+        setFileListError(
+          cause instanceof Error
+            ? cause.message
+            : "无法读取已保存的白板课程",
+        );
+      }
+    };
+    const handleBridgeConnected = () => {
+      void loadPersistedArtifacts();
+    };
+    window.addEventListener("crew:bridge_connected", handleBridgeConnected);
+    void loadPersistedArtifacts();
+    return () => {
+      cancelled = true;
+      window.removeEventListener(
+        "crew:bridge_connected",
+        handleBridgeConnected,
+      );
+    };
+  }, [ollFixture, sessionId]);
 
   useEffect(() => {
     if (!voiceEnabled || !runtime.ready) return;
@@ -115,108 +149,65 @@ export function LearningWorkspace({
   }, [conv.turns, onTurnsChange]);
 
   useEffect(() => {
-    const pending = artifacts.filter(
-      (artifact) => !requestedArtifactsRef.current.has(artifact.path),
-    );
-    if (pending.length === 0) return;
-    const controller = new AbortController();
-    pending.forEach((artifact) => {
-      requestedArtifactsRef.current.add(artifact.path);
-      loadBoardArtifact(artifact, sessionId, controller.signal)
-        .then((nextPacket) => {
-          setLoadedArtifacts((current) => ({
-            ...current,
-            [artifact.path]: nextPacket,
-          }));
-          setSendError(null);
-        })
-        .catch((cause) => {
-          if (controller.signal.aborted) return;
-          setSendError(
-            cause instanceof Error
-              ? cause.message
-              : "白板内容读取失败",
-          );
-        });
-    });
-    return () => controller.abort();
-  }, [artifacts, sessionId]);
+    const ollArtifactRequests = ollArtifactRequestsRef.current;
+    return () => {
+      for (const controller of ollArtifactRequests.values()) {
+        controller.abort();
+      }
+      ollArtifactRequests.clear();
+    };
+  }, []);
 
   useEffect(() => {
     const pending = ollArtifacts.filter(
       (artifact) => !requestedOllArtifactsRef.current.has(artifact.path),
     );
     if (pending.length === 0) return;
-    const controller = new AbortController();
     pending.forEach((artifact) => {
+      const controller = new AbortController();
       requestedOllArtifactsRef.current.add(artifact.path);
+      ollArtifactRequestsRef.current.set(artifact.path, controller);
       loadOllLessonArtifact(artifact, sessionId, controller.signal)
         .then((events) => {
           setLoadedOllArtifacts((current) => ({
             ...current,
             [artifact.path]: events,
           }));
-          setSendError(null);
         })
         .catch((cause) => {
           if (controller.signal.aborted) return;
-          setSendError(
+          setRejectedOllArtifactPaths((current) => {
+            const next = new Set(current);
+            next.add(artifact.path);
+            return next;
+          });
+          setArtifactError(
             cause instanceof Error ? cause.message : "OLL 课程读取失败",
           );
+        })
+        .finally(() => {
+          if (ollArtifactRequestsRef.current.get(artifact.path) === controller) {
+            ollArtifactRequestsRef.current.delete(artifact.path);
+          }
         });
     });
-    return () => controller.abort();
   }, [ollArtifacts, sessionId]);
 
-  const artifactByThread = useMemo(() => {
-    const result = new Map<string, LessonPacketV1>();
-    for (const artifact of artifacts) {
-      const loaded = loadedArtifacts[artifact.path];
-      if (loaded) result.set(artifact.threadId, loaded);
-    }
-    return result;
-  }, [artifacts, loadedArtifacts]);
-  const turnPackets = useMemo(
-    () =>
-      conv.turns
-        .map((turn, index) =>
-          artifactByThread.get(turn.id) ??
-          buildAssistantLessonPacket(
-            {
-              id: turn.id,
-              userText: turn.userText,
-              assistantText: turn.assistantText,
-            },
-            {
-              includeProblem: index === 0,
-              origin: {
-                x: 120 + index * 1_800,
-                y: index === 0 ? 80 : 120,
-              },
-            },
-          ),
-        )
-        .filter((value): value is LessonPacketV1 => value !== null),
-    [artifactByThread, conv.turns],
-  );
-  const packet = useMemo(
-    () => mergeSessionBoardPackets(sessionId, turnPackets),
-    [sessionId, turnPackets],
+  const emptyPacket = useMemo(
+    () => mergeSessionBoardPackets(sessionId, []),
+    [sessionId],
   );
   const deliveredOllEvents = useMemo(() => {
     const lessons: CanonicalEvent[][] = [];
     for (const artifact of ollArtifacts) {
       const events = loadedOllArtifacts[artifact.path];
+      if (rejectedOllArtifactPaths.has(artifact.path)) continue;
       if (!events) break;
       lessons.push(events);
     }
     const events = composeOllClassroomEvents(lessons, sessionId);
     return events.length > 0 ? events : null;
-  }, [loadedOllArtifacts, ollArtifacts, sessionId]);
-  const lesson = useLessonPlayer(
-    packet,
-    !ollFixture && ollArtifacts.length === 0,
-  );
+  }, [loadedOllArtifacts, ollArtifacts, rejectedOllArtifactPaths, sessionId]);
   const activeOllEvents = ollFixture === "geometry-v2"
     ? geometryLessonEvents
     : deliveredOllEvents;
@@ -249,11 +240,6 @@ export function LearningWorkspace({
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [activeOllEvents, appendOllEvents]);
-  const boardContext = useMemo(
-    () => buildLearningBoardContext(packet, lesson.segmentIndex),
-    [lesson.segmentIndex, packet],
-  );
-
   useEffect(() => {
     if (ollLesson) {
       onBoardContextChange?.({
@@ -262,8 +248,8 @@ export function LearningWorkspace({
       });
       return;
     }
-    onBoardContextChange?.(boardContext);
-  }, [boardContext, ollLesson, onBoardContextChange]);
+    onBoardContextChange?.({});
+  }, [ollLesson, onBoardContextChange]);
 
   const buildTurnText = useCallback(
     (turnId: string, mediaPaths: string[], visibleText: string) => {
@@ -336,14 +322,12 @@ export function LearningWorkspace({
       if (ollLesson) {
         if (ollLesson.playing) ollLesson.pause();
         else ollLesson.play();
-      } else if (lesson.playing) lesson.pause();
-      else lesson.play();
+      }
       return;
     }
     unlockAudio();
     if (conv.state === "speaking" || conv.state === "thinking") {
       conv.interrupt();
-      lesson.pause();
       ollLesson?.pause();
       return;
     }
@@ -352,23 +336,22 @@ export function LearningWorkspace({
     }
   };
 
-  const latestAssistantText = conv.turns.at(-1)?.assistantText ?? "";
   const teacherSpeech = textTurnPending
     ? "我正在整理这道题，马上写到白板上。"
-    : ollLesson?.activeSpeech
-      ? ollLesson.activeSpeech
-      : lesson.activeSpeech
-        ? lesson.activeSpeech
-        : conv.state === "speaking" && conv.lastAssistantText
-          ? conv.lastAssistantText
-          : latestAssistantText;
+    : ollLesson
+      ? ollLesson.activeSpeech || (ollLesson.completed
+        ? "这节课讲完了，你可以缩放白板回顾刚才的内容。"
+        : "课程已经写到白板上，我们开始吧。")
+      : conv.state === "thinking"
+        ? "我正在准备白板课程。"
+        : "";
 
   return (
     <div className="learning-workspace">
       <header className="learning-workspace-topbar">
         <div>
           <span>Octos Learning Canvas</span>
-          <strong>{ollLesson?.title ?? packet.title}</strong>
+          <strong>{ollLesson?.title ?? emptyPacket.title}</strong>
         </div>
         {ollLesson ? (
           <div className="learning-demo-controls" data-testid="oll-controls">
@@ -396,42 +379,6 @@ export function LearningWorkspace({
               type="button"
               onClick={ollLesson.restart}
               aria-label="重新播放 OLL 课程"
-            >
-              <RotateCcw size={16} />
-            </button>
-          </div>
-        ) : lesson.segmentCount > 0 ? (
-          <div className="learning-demo-controls">
-            <span>
-              讲解 {Math.max(0, lesson.segmentIndex + 1)}/{lesson.segmentCount}
-            </span>
-            <button
-              type="button"
-              onClick={lesson.previous}
-              aria-label="上一步"
-              disabled={lesson.segmentIndex <= 0}
-            >
-              <ChevronLeft size={17} />
-            </button>
-            <button
-              type="button"
-              onClick={lesson.playing ? lesson.pause : lesson.play}
-              aria-label={lesson.playing ? "暂停讲解" : "播放讲解"}
-            >
-              {lesson.playing ? <Pause size={17} /> : <Play size={17} />}
-            </button>
-            <button
-              type="button"
-              onClick={lesson.next}
-              aria-label="下一步"
-              disabled={lesson.segmentIndex >= lesson.segmentCount - 1}
-            >
-              <ChevronRight size={17} />
-            </button>
-            <button
-              type="button"
-              onClick={lesson.restart}
-              aria-label="重新播放讲解"
             >
               <RotateCcw size={16} />
             </button>
@@ -465,8 +412,8 @@ export function LearningWorkspace({
           <OllLessonBoard runtime={ollLesson} />
         ) : (
           <InfiniteBoard
-            packet={packet}
-            segmentIndex={lesson.segmentIndex}
+            packet={emptyPacket}
+            segmentIndex={-1}
           />
         )}
       </main>
@@ -493,9 +440,9 @@ export function LearningWorkspace({
         onSendImage={sendImage}
       />
 
-      {(sendError || conv.error) && (
+      {(sendError || fileListError || artifactError || conv.error) && (
         <div className="learning-error" role="alert">
-          {sendError ?? conv.error}
+          {sendError ?? fileListError ?? artifactError ?? conv.error}
         </div>
       )}
       {voiceEnabled && !runtime.ready && !runtime.loading && (

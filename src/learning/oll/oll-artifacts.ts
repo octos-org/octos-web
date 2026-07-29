@@ -1,5 +1,6 @@
 import { buildApiHeaders } from "@/api/client";
 import { buildFileUrl } from "@/api/files";
+import type { SessionFileInfo } from "@/api/sessions";
 import type { Thread } from "@/store/thread-store";
 import {
   normalizeAuthoringLesson,
@@ -53,6 +54,35 @@ export function collectOllLessonArtifacts(
     }
   }
   return artifacts;
+}
+
+/**
+ * Rebuild OLL artifact references from the durable session workspace.
+ * Live projection file events are intentionally not the source of truth:
+ * they may not be replayed after a browser refresh or a session switch.
+ */
+export function collectPersistedOllLessonArtifacts(
+  files: SessionFileInfo[],
+): OllLessonArtifactRef[] {
+  return files
+    .filter((file) => isOllLessonArtifact(file))
+    .sort((left, right) => {
+      const byTime =
+        Date.parse(left.modified_at) - Date.parse(right.modified_at);
+      return Number.isFinite(byTime) && byTime !== 0
+        ? byTime
+        : left.path.localeCompare(right.path);
+    })
+    .map((file) => {
+      const turnId = file.filename.slice(0, -OLL_ARTIFACT_SUFFIX.length);
+      return {
+        id: `persisted:${file.path}`,
+        filename: file.filename,
+        path: file.path,
+        threadId: turnId,
+        turnId,
+      };
+    });
 }
 
 export async function loadOllLessonArtifact(
