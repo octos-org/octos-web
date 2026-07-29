@@ -364,6 +364,7 @@ const JSON_RPC_VERSION = "2.0";
 const RECONNECT_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000] as const;
 const RECONNECT_BACKOFF_CAP_MS = 30000;
 const DEFAULT_MAX_RECONNECT_ATTEMPTS = 8;
+const DEFAULT_INITIAL_CONNECT_TIMEOUT_MS = 10_000;
 const DEFAULT_RPC_TIMEOUT_MS = 30000;
 const DEFAULT_SEND_QUEUE_LIMIT = 64;
 const DEFAULT_KEEPALIVE_MS = 30000;
@@ -385,6 +386,32 @@ export class BridgeStoppedError extends Error {
   constructor(message = "ui-protocol-bridge stopped") {
     super(message);
     this.name = "BridgeStoppedError";
+  }
+}
+
+export type BridgeStartupFailureKind =
+  | "authentication"
+  | "connection"
+  | "protocol"
+  | "timeout"
+  | "stopped";
+
+/**
+ * Typed failure for the initial UI Protocol connection.
+ *
+ * Browsers deliberately hide HTTP response details for a failed WebSocket
+ * upgrade, so an Origin rejection and an unreachable server can both surface
+ * as close code 1006. The `kind` remains machine-readable while `message`
+ * gives the user a safe, actionable diagnosis without inventing an HTTP
+ * status the browser did not expose.
+ */
+export class BridgeStartupError extends Error {
+  readonly kind: BridgeStartupFailureKind;
+
+  constructor(kind: BridgeStartupFailureKind, message: string) {
+    super(message);
+    this.name = "BridgeStartupError";
+    this.kind = kind;
   }
 }
 
@@ -656,6 +683,12 @@ export interface BridgeConfig {
   sendQueueLimit?: number;
   /** Reconnect attempts before the bridge transitions to `error`. Default 8. */
   maxReconnectAttempts?: number;
+  /**
+   * Maximum time for the initial socket plus session/open handshake.
+   * Reconnects after a previously healthy connection keep their existing
+   * bounded backoff policy. Default 10s.
+   */
+  initialConnectTimeoutMs?: number;
   /** Keepalive interval in `'connected'` state. Default 30s. */
   keepaliveIntervalMs?: number;
   /** Silence threshold before a keepalive triggers reconnect. Default 60s. */
@@ -1630,6 +1663,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       | "rpcTimeoutMs"
       | "sendQueueLimit"
       | "maxReconnectAttempts"
+      | "initialConnectTimeoutMs"
       | "keepaliveIntervalMs"
       | "keepaliveTimeoutMs"
     >
@@ -1713,6 +1747,12 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
    *  call start() → stop() → start() back-to-back. */
   private visibilityListener: (() => void) | null = null;
   private reconnectTimer: unknown = null;
+  /** Initial `start()` readiness gate. Unlike reconnects, callers must know
+   * whether the first socket/session handshake actually became usable before
+   * they render optimistic state or cache this bridge in the runtime. */
+  private startupResolve: (() => void) | null = null;
+  private startupReject: ((error: Error) => void) | null = null;
+  private startupTimer: unknown = null;
   private keepaliveTimer: unknown = null;
   private lastInboundAt = 0;
   /** True once the bridge has reached `connected` at least once in this
@@ -1961,6 +2001,8 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       sendQueueLimit: cfg.sendQueueLimit ?? DEFAULT_SEND_QUEUE_LIMIT,
       maxReconnectAttempts:
         cfg.maxReconnectAttempts ?? DEFAULT_MAX_RECONNECT_ATTEMPTS,
+      initialConnectTimeoutMs:
+        cfg.initialConnectTimeoutMs ?? DEFAULT_INITIAL_CONNECT_TIMEOUT_MS,
       keepaliveIntervalMs: cfg.keepaliveIntervalMs ?? DEFAULT_KEEPALIVE_MS,
       keepaliveTimeoutMs:
         cfg.keepaliveTimeoutMs ?? DEFAULT_KEEPALIVE_TIMEOUT_MS,
@@ -2019,7 +2061,39 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     // replaces on stream change as a second line of defense.
     this.lastCursor = null;
     this.installVisibilityListener();
-    await this.openSocket();
+
+    // `start()` is a readiness contract, not merely "a WebSocket object was
+    // constructed". The old implementation returned immediately after
+    // installing event handlers, so runtime callers published a still-dead
+    // bridge and Chat mounted optimistic rows before the upgrade was accepted.
+    // Settings then queued RPCs behind the same failed handshake and could only
+    // report the later generic "bridge stopped" sweep.
+    const startup = new Promise<void>((resolve, reject) => {
+      this.startupResolve = resolve;
+      this.startupReject = reject;
+    });
+    this.startupTimer = this.cfg.setTimeout(() => {
+      this.failStartup(
+        new BridgeStartupError(
+          "timeout",
+          "Unable to establish the UI Protocol connection. Check that Octos Core is running and that this page origin is allowed, then retry.",
+        ),
+      );
+    }, this.cfg.initialConnectTimeoutMs);
+
+    try {
+      await this.openSocket();
+    } catch (err) {
+      this.failStartup(
+        err instanceof BridgeStartupError
+          ? err
+          : new BridgeStartupError(
+              "connection",
+              "Unable to open the UI Protocol connection. Check that Octos Core is running, then retry.",
+            ),
+      );
+    }
+    return startup;
   }
 
   isTerminal(): boolean {
@@ -2036,6 +2110,9 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     if (this.stopped) return;
     this.stopped = true;
     this.cancelReconnectTimer();
+    this.rejectStartup(
+      new BridgeStartupError("stopped", "UI Protocol startup was cancelled."),
+    );
     this.cancelKeepalive();
     this.removeVisibilityListener();
     this.setState("closed");
@@ -2487,6 +2564,52 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.subState.emit(next);
   }
 
+  private clearStartupTimer(): void {
+    if (this.startupTimer == null) return;
+    this.cfg.clearTimeout(this.startupTimer);
+    this.startupTimer = null;
+  }
+
+  private resolveStartup(): void {
+    const resolve = this.startupResolve;
+    if (!resolve) return;
+    this.clearStartupTimer();
+    this.startupResolve = null;
+    this.startupReject = null;
+    resolve();
+  }
+
+  private rejectStartup(error: Error): void {
+    const reject = this.startupReject;
+    if (!reject) return;
+    this.clearStartupTimer();
+    this.startupResolve = null;
+    this.startupReject = null;
+    reject(error);
+  }
+
+  /**
+   * Make an unusable handshake terminal and reject a pending `start()`.
+   * This also handles a reconnect whose server no longer advertises the
+   * renderer's required protocol capability.
+   */
+  private failStartup(error: BridgeStartupError): void {
+    if (this.reconnectAbandoned && !this.startupReject) return;
+    this.reconnectAbandoned = true;
+    this.latchReason =
+      error.kind === "authentication" ? "auth_rejected" : "attempts_exhausted";
+    this.cancelReconnectTimer();
+    this.cancelKeepalive();
+    this.removeVisibilityListener();
+    const ws = this.ws;
+    this.ws = null;
+    this.detachSocket(ws);
+    this.setState("error");
+    this.rejectAllPending(error);
+    this.sendQueue.length = 0;
+    this.rejectStartup(error);
+  }
+
   private buildUrl(): string {
     const origin =
       this.cfg.origin ??
@@ -2617,6 +2740,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       this.visibilityReconnectInFlight = false;
       this.hasEverOpened = true;
       this.setState("connected");
+      this.resolveStartup();
       this.startKeepalive();
       this.flushSendQueue();
       return;
@@ -2670,7 +2794,17 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
           ProjectionStore.PROJECTION_ENVELOPE_V2_FEATURE,
         );
       this.setProjectionV2Active(negotiatedProjectionV2);
+      if (!negotiatedProjectionV2) {
+        this.failStartup(
+          new BridgeStartupError(
+            "protocol",
+            `Octos Core does not support the required ${ProjectionStore.PROJECTION_ENVELOPE_V2_FEATURE} UI Protocol capability. Update Core, then retry.`,
+          ),
+        );
+        return;
+      }
       this.setState("connected");
+      this.resolveStartup();
       // Surface the `opened` payload (initial + reopen) so the runtime
       // layer can seed server-persisted per-session state — today the
       // thinking-effort selector (`opened.reasoning_effort`).
@@ -2704,6 +2838,15 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       // reconnect cycles.
       if (err instanceof BridgeRpcError && err.code === RPC_ERROR_PERMISSION_DENIED) {
         this.dispatchAuthExpired("permission_denied:session/open");
+        if (this.startupReject) {
+          this.failStartup(
+            new BridgeStartupError(
+              "authentication",
+              "The UI Protocol connection was not authorized. Sign in again, then retry.",
+            ),
+          );
+          return;
+        }
         this.reconnectAbandoned = true;
         // Issue #137: tag as auth-rejected so the visibilitychange-driven
         // reset does NOT retry — the token is dead, retrying is wasted load.
@@ -2965,6 +3108,15 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     if (this.stopped) return;
     this.ws = null;
     if (ev?.code === NORMAL_CLOSURE) {
+      if (this.startupReject) {
+        this.failStartup(
+          new BridgeStartupError(
+            "connection",
+            "Octos Core closed the UI Protocol connection before it became ready. Retry after checking the server.",
+          ),
+        );
+        return;
+      }
       this.setState("closed");
       this.rejectAllPending(new BridgeStoppedError("connection closed"));
       return;
@@ -2979,6 +3131,15 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     // which clears tokens and navigates to /login.
     if (ev?.code === 1008) {
       this.dispatchAuthExpired(ev.reason ?? "policy_violation");
+      if (this.startupReject) {
+        this.failStartup(
+          new BridgeStartupError(
+            "authentication",
+            "The UI Protocol connection was not authorized. Sign in again, then retry.",
+          ),
+        );
+        return;
+      }
       // Stop reconnect attempts — the token is dead, retrying is
       // wasted load on the server and noise on the client.
       this.reconnectAbandoned = true;
@@ -3037,6 +3198,15 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       const resp = await fetch("/api/auth/me", { credentials: "same-origin" });
       if (resp.status === 401) {
         this.dispatchAuthExpired("upgrade_401");
+        if (this.startupReject) {
+          this.failStartup(
+            new BridgeStartupError(
+              "authentication",
+              "The UI Protocol connection was not authorized. Sign in again, then retry.",
+            ),
+          );
+          return;
+        }
         this.reconnectAbandoned = true;
         // Issue #137: probe-driven auth-rejected latch.
         this.latchReason = "auth_rejected";
@@ -3047,8 +3217,20 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   }
 
   private scheduleReconnect(): void {
-    if (this.stopped) return;
+    // A startup deadline or protocol/auth failure may reject the in-flight
+    // session/open request. Its catch path reaches here after terminal teardown;
+    // never resurrect that bridge behind the failed UI attempt.
+    if (this.stopped || this.reconnectAbandoned) return;
     if (this.reconnectAttempts >= this.cfg.maxReconnectAttempts) {
+      if (this.startupReject) {
+        this.failStartup(
+          new BridgeStartupError(
+            "connection",
+            "Unable to establish the UI Protocol connection. Check that Octos Core is running and that this page origin is allowed, then retry.",
+          ),
+        );
+        return;
+      }
       this.reconnectAbandoned = true;
       // Issue #137: attempt-exhaustion latch. Distinct from the
       // auth-rejected latch sites above — the visibilitychange

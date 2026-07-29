@@ -18,6 +18,7 @@ import {
 } from "./projection-envelope-v2";
 import type {
   ConnectionState,
+  SessionOpenedResult,
   UiGoalRecord,
   UiLoopRecord,
 } from "./ui-protocol-types";
@@ -109,7 +110,9 @@ export async function startBridgeForSession(
   if (
     active &&
     sameScope(active, sessionId, topic) &&
-    (active.connectionState === "closed" || active.connectionState === "error")
+    (typeof active.bridge.isTerminal === "function"
+      ? active.bridge.isTerminal()
+      : active.connectionState === "closed")
   ) {
     await stopActiveBridge();
   }
@@ -121,6 +124,45 @@ export async function startBridgeForSession(
   }
   const myGeneration = ++generation;
   const bridge = createUiProtocolBridge();
+  let connectionState: ConnectionState = bridge.getConnectionState();
+  const dispatchBridgeConnected = () => {
+    if (typeof window === "undefined") return;
+    try {
+      window.dispatchEvent(new CustomEvent("crew:bridge_connected"));
+    } catch {
+      // best-effort
+    }
+  };
+  // `start()` resolves after the initial connected transition, so subscribe
+  // before it and delay the DOM wake-up until this bridge is published.
+  const unsubscribeState = bridge.onConnectionStateChange((s) => {
+    connectionState = s;
+    if (active?.bridge !== bridge) return;
+    active.connectionState = s;
+    if (s === "connected") dispatchBridgeConnected();
+  });
+
+  // Capture the initial session/open payload while the bridge is unpublished.
+  // The generation guard below decides whether it is safe to seed state.
+  const scopeHasTopic = Boolean(topic && topic.trim() !== "");
+  const initialOpenedRef: { current: SessionOpenedResult | null } = {
+    current: null,
+  };
+  let unsubscribeSessionOpened: () => void = () => {};
+  if (!scopeHasTopic && typeof bridge.onSessionOpened === "function") {
+    unsubscribeSessionOpened = bridge.onSessionOpened((opened) => {
+      if (myGeneration !== generation) return;
+      if (active?.bridge === bridge) {
+        setThinkingEffort(
+          sessionId,
+          asStoredEffort(opened.reasoning_effort),
+          topic,
+        );
+      } else {
+        initialOpenedRef.current = opened;
+      }
+    });
+  }
   try {
     // Codex BLOCK E: pass `topic` so the bridge can drop cross-topic
     // envelopes client-side. The server-side replay/live scoping by
@@ -128,6 +170,16 @@ export async function startBridgeForSession(
     // meantime.
     await bridge.start({ sessionId, topic });
   } catch (err) {
+    // A failed initial handshake never becomes runtime-owned. Stop the
+    // unpublished bridge so its reconnect timer, socket handlers, and auth
+    // listeners cannot survive behind a failed Chat send.
+    unsubscribeState();
+    unsubscribeSessionOpened();
+    try {
+      await bridge.stop();
+    } catch {
+      // best-effort
+    }
     if (myGeneration === generation) {
       // No newer start raced us; surface the failure.
       throw err;
@@ -143,6 +195,8 @@ export async function startBridgeForSession(
     // stop it and ALWAYS THROW so the caller does not assume ownership
     // of whatever the live `active` slot holds (it belongs to a newer
     // start, not us).
+    unsubscribeState();
+    unsubscribeSessionOpened();
     try {
       await bridge.stop();
     } catch {
@@ -153,34 +207,6 @@ export async function startBridgeForSession(
     );
   }
   const attachment = attachRouter(bridge, { sessionId, topic });
-  // Track live connection state for lifecycle observers. The bridge's send
-  // queue holds turns through the handshake/reconnect window and reports a
-  // terminal transport failure when recovery is exhausted.
-  let connectionState: ConnectionState = "connecting";
-  const unsubscribeState = bridge.onConnectionStateChange((s) => {
-    if (active?.bridge === bridge) {
-      active.connectionState = s;
-    } else {
-      connectionState = s;
-    }
-    // Wake any consumer that gated on `getAnyConnectedBridge()` returning
-    // non-null: the auxiliary REST→WS wrappers (`listSessions`,
-    // `system/status.get`, `content/list`) check that before falling back
-    // to legacy REST. Without this event, the first `refreshSessions()`
-    // call on `/chat` mount races the bridge transition to "connected"
-    // — when it loses, it falls through to `/api/sessions` (a route
-    // retired in M12 Phase D-5 → 404) and the sidebar stays empty until
-    // the 15 s polling interval fires. SessionProvider listens for
-    // `crew:bridge_connected` and re-runs `refreshSessions()` so the
-    // sidebar paints as soon as the bridge handshake completes.
-    if (s === "connected" && typeof window !== "undefined") {
-      try {
-        window.dispatchEvent(new CustomEvent("crew:bridge_connected"));
-      } catch {
-        // best-effort
-      }
-    }
-  });
   // Reload-bug fix (Yue 2026-05-15): subscribe to the bridge's `onReopened`
   // hook BEFORE the initial hydrate kicks off, so a reconnect that races
   // the initial hydrate still gets handled. The bridge guarantees this
@@ -204,33 +230,6 @@ export async function startBridgeForSession(
       runAutonomySnapshotFor(sessionId, topic, bridge, myGeneration);
     });
   }
-  // Thinking-effort parity: seed the per-session selector from the
-  // server-persisted value carried on every `session/open` ack, so a
-  // reload/reconnect restores the user's `/thinking`-equivalent choice.
-  // ROOT scope only (codex #261 P1): the bridge's `session/open` sends
-  // the bare session id, so `opened.reasoning_effort` describes the
-  // ROOT bucket — applying it to a topic key would restore the wrong
-  // value and let the topic's next turn overwrite the root's choice.
-  // Topic scopes are marked seeded-without-value instead (no restore is
-  // possible over the current wire; selector still works live).
-  // Same defensive-typeof guard as `onReopened` for pre-dating mocks —
-  // those are marked seeded too so sends never wait on a seed that
-  // cannot arrive.
-  let unsubscribeSessionOpened: () => void = () => {};
-  const scopeHasTopic = Boolean(topic && topic.trim() !== "");
-  if (!scopeHasTopic && typeof bridge.onSessionOpened === "function") {
-    unsubscribeSessionOpened = bridge.onSessionOpened((opened) => {
-      if (myGeneration !== generation) return;
-      setThinkingEffort(
-        sessionId,
-        asStoredEffort(opened.reasoning_effort),
-        topic,
-      );
-    });
-  } else {
-    markThinkingSeeded(sessionId, topic);
-  }
-
   active = {
     sessionId,
     topic,
@@ -241,6 +240,24 @@ export async function startBridgeForSession(
     unsubscribeReopened,
     unsubscribeSessionOpened,
   };
+
+  // Publish first, then replay the initial connected transition so
+  // SessionProvider can observe the bridge and retry its bridge-gated load.
+  if (connectionState === "connected") dispatchBridgeConnected();
+
+  // The root session/open ack carries the server-persisted thinking effort.
+  // Topic scopes do not have a distinct wire value; older test doubles may
+  // also lack the event hook, so mark those scopes seeded without a value.
+  const initialOpened = initialOpenedRef.current;
+  if (!scopeHasTopic && initialOpened) {
+    setThinkingEffort(
+      sessionId,
+      asStoredEffort(initialOpened.reasoning_effort),
+      topic,
+    );
+  } else {
+    markThinkingSeeded(sessionId, topic);
+  }
 
   // Immediately hydrate the canonical v2 snapshot. The bridge keeps live
   // envelopes buffered atomically while this snapshot is installed.

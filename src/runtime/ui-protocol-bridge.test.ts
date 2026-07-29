@@ -25,6 +25,7 @@ import {
 import {
   UI_PROTOCOL_FEATURES,
   BridgeRpcError,
+  BridgeStartupError,
   BridgeStoppedError,
   BridgeTimeoutError,
   METHODS,
@@ -92,8 +93,40 @@ class MockWebSocket {
   }
 
   triggerMessage(payload: unknown): void {
+    // Most tests model the current Core and only care about fields unrelated
+    // to capability negotiation. Supply its required renderer capability
+    // unless a test explicitly provides `capabilities` (including an empty
+    // list for protocol-mismatch coverage).
+    let normalized = payload;
+    if (typeof payload === "object" && payload !== null) {
+      const message = payload as {
+        result?: { opened?: Record<string, unknown> };
+      };
+      const opened = message.result?.opened;
+      if (
+        opened &&
+        !Object.prototype.hasOwnProperty.call(opened, "capabilities")
+      ) {
+        normalized = {
+          ...payload,
+          result: {
+            ...message.result,
+            opened: {
+              ...opened,
+              capabilities: {
+                supported_features: [
+                  ProjectionStore.PROJECTION_ENVELOPE_V2_FEATURE,
+                ],
+              },
+            },
+          },
+        };
+      }
+    }
     const data =
-      typeof payload === "string" ? payload : JSON.stringify(payload);
+      typeof normalized === "string"
+        ? normalized
+        : JSON.stringify(normalized);
     this.onmessage?.({ data });
   }
 
@@ -800,12 +833,18 @@ describe("connection lifecycle", () => {
     const bridge = createUiProtocolBridge(makeBridgeOpts());
     bridge.onConnectionStateChange((s) => states.push(s));
     const startPromise = bridge.start({ sessionId: "sess-1" });
+    let startSettled = false;
+    void startPromise.then(() => {
+      startSettled = true;
+    });
     // Give the bridge a tick to construct the socket.
     await Promise.resolve();
+    expect(startSettled).toBe(false);
     const ws = lastInstance();
     ws.triggerOpen();
     // The bridge sent session/open immediately after onopen; reply success.
     await Promise.resolve();
+    expect(startSettled).toBe(false);
     const open = findRequest(ws, METHODS.SESSION_OPEN);
     ws.triggerMessage({
       jsonrpc: "2.0",
@@ -813,9 +852,95 @@ describe("connection lifecycle", () => {
       result: { opened: { session_id: "sess-1" } },
     });
     await startPromise;
+    expect(startSettled).toBe(true);
     expect(states).toEqual(["connecting", "connected"]);
   });
 
+
+  it("rejects a never-ready startup with an actionable typed error", async () => {
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(
+      makeBridgeOpts({ initialConnectTimeoutMs: 250 }),
+    );
+    const startPromise = bridge.start({ sessionId: "sess-origin-rejected" });
+    const observed = startPromise.catch((error: unknown) => error);
+
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerClose(1006, "");
+    await vi.advanceTimersByTimeAsync(250);
+
+    const error = await observed;
+    expect(error).toBeInstanceOf(BridgeStartupError);
+    expect(error).toMatchObject({
+      kind: "timeout",
+      message: expect.stringMatching(/origin is allowed/i),
+    });
+    expect(bridge.getConnectionState()).toBe("error");
+    expect(bridge.isTerminal()).toBe(true);
+    // The first backoff is 1s, so the startup deadline must stop it before
+    // another hidden handshake can outlive the failed UI attempt.
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await bridge.stop();
+  });
+
+  it("does not reconnect behind a startup timeout while session/open is pending", async () => {
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(
+      makeBridgeOpts({ initialConnectTimeoutMs: 250 }),
+    );
+    const startPromise = bridge.start({ sessionId: "sess-open-timeout" });
+    const observed = startPromise.catch((error: unknown) => error);
+
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await Promise.resolve();
+    expect(findRequest(ws, METHODS.SESSION_OPEN)).toBeTruthy();
+
+    await vi.advanceTimersByTimeAsync(250);
+    const error = await observed;
+    expect(error).toMatchObject({ kind: "timeout" });
+
+    // Rejecting the pending session/open reaches its catch path. Advancing
+    // beyond the first reconnect backoff must still leave the bridge dead.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(bridge.isTerminal()).toBe(true);
+    await bridge.stop();
+  });
+
+  it("rejects Core without the required canonical projection capability", async () => {
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const startPromise = bridge.start({ sessionId: "sess-old-core" });
+    const observed = startPromise.catch((error: unknown) => error);
+
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(ws, METHODS.SESSION_OPEN);
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      result: {
+        opened: {
+          session_id: "sess-old-core",
+          capabilities: { supported_features: [] },
+        },
+      },
+    });
+
+    const error = await observed;
+    expect(error).toBeInstanceOf(BridgeStartupError);
+    expect(error).toMatchObject({
+      kind: "protocol",
+      message: expect.stringMatching(/projection\.envelope\.v2/i),
+    });
+    expect(bridge.getConnectionState()).toBe("error");
+    expect(bridge.isTerminal()).toBe(true);
+    await bridge.stop();
+  });
 
   it("uses direct canonical v2 ingest only after session/open confirms the capability", async () => {
     const bridge = createUiProtocolBridge(makeBridgeOpts());
@@ -1068,7 +1193,7 @@ describe("connection lifecycle", () => {
       // ON; tests still cover the explicit-OFF leg.)
       __setAuxRestToWsV1ForTests(false);
       let bridge = createUiProtocolBridge(makeBridgeOpts());
-      void bridge.start({ sessionId: "sess-a" });
+      void bridge.start({ sessionId: "sess-a" }).catch(() => {});
       await Promise.resolve();
       let ws = lastInstance();
       expect(ws.url.includes(`ui_feature=${AUX_REST_TO_WS_V1_FEATURE}`)).toBe(
@@ -1081,7 +1206,7 @@ describe("connection lifecycle", () => {
       // `SessionOpened.capabilities` advertises them (octos #913).
       __setAuxRestToWsV1ForTests(true);
       bridge = createUiProtocolBridge(makeBridgeOpts());
-      void bridge.start({ sessionId: "sess-b" });
+      void bridge.start({ sessionId: "sess-b" }).catch(() => {});
       await Promise.resolve();
       ws = lastInstance();
       expect(ws.url).toContain(`ui_feature=${AUX_REST_TO_WS_V1_FEATURE}`);
@@ -1298,7 +1423,7 @@ describe("reconnect with exponential backoff", () => {
     );
     const states: ConnectionState[] = [];
     bridge.onConnectionStateChange((s) => states.push(s));
-    void bridge.start({ sessionId: "sess-1" });
+    void bridge.start({ sessionId: "sess-1" }).catch(() => {});
     await Promise.resolve();
     const ws1 = lastInstance();
     ws1.triggerClose(1006);
@@ -1320,7 +1445,7 @@ describe("reconnect with exponential backoff", () => {
     const bridge = createUiProtocolBridge(
       makeBridgeOpts({ maxReconnectAttempts: 2 }),
     );
-    void bridge.start({ sessionId: "sess-1" });
+    void bridge.start({ sessionId: "sess-1" }).catch(() => {});
     await Promise.resolve();
     const ws1 = lastInstance();
     ws1.triggerClose(1006);
@@ -1683,7 +1808,7 @@ describe("visibility-driven reset of reconnectAbandoned (#137)", () => {
   it("auth-rejected latch (close-code 1008) is NOT recovered by visibilitychange (token still dead)", async () => {
     vi.useFakeTimers();
     const bridge = createUiProtocolBridge(makeBridgeOpts());
-    void bridge.start({ sessionId: "sess-1" });
+    void bridge.start({ sessionId: "sess-1" }).catch(() => {});
     await Promise.resolve();
     const ws1 = lastInstance();
     // Server rejects upgrade with 1008. Bridge latches reconnectAbandoned

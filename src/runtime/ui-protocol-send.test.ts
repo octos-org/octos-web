@@ -13,9 +13,11 @@ import {
   __resetUiProtocolRuntimeForTest,
   __setActiveBridgeForTest,
 } from "./ui-protocol-runtime";
-import type {
-  ProjectionTerminalEvent,
-  UiProtocolBridge,
+import * as UiProtocolRuntime from "./ui-protocol-runtime";
+import {
+  BridgeStartupError,
+  type ProjectionTerminalEvent,
+  type UiProtocolBridge,
 } from "./ui-protocol-bridge";
 
 const SESSION = "sess-send";
@@ -82,6 +84,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   __resetUiProtocolRuntimeForTest();
   __resetSendQueueForTest();
   __resetThinkingStoreForTest();
@@ -127,6 +130,31 @@ describe("buildTurnStartExtras", () => {
 });
 
 describe("sendMessage canonical settlement", () => {
+  it("preserves an actionable typed bridge-start failure for the ghost UI", async () => {
+    const startupError = new BridgeStartupError(
+      "timeout",
+      "Check that Octos Core is running and that this page origin is allowed.",
+    );
+    vi.spyOn(UiProtocolRuntime, "startBridgeForSession").mockRejectedValueOnce(
+      startupError,
+    );
+    const onError = vi.fn();
+    const onComplete = vi.fn();
+
+    sendMessage({
+      sessionId: SESSION,
+      text: "hello",
+      media: [],
+      clientMessageId: "cmid-startup-failure",
+      onError,
+      onComplete,
+    });
+    await flush();
+
+    expect(onError).toHaveBeenCalledWith(startupError);
+    expect(onComplete).toHaveBeenCalledTimes(1);
+  });
+
   it("sends through the bridge and subscribes only to canonical terminals", async () => {
     const bridge = makeBridge();
     const terminals = captureTerminals(bridge);

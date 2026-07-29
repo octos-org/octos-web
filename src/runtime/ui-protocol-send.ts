@@ -23,7 +23,11 @@ import {
 } from "@/store/thinking-store";
 import { getActiveBridge, startBridgeForSession } from "./ui-protocol-runtime";
 import { isRollbackBusy, whenRollbackIdle } from "./session-rollback";
-import { BridgeStoppedError, BridgeTimeoutError } from "./ui-protocol-bridge";
+import {
+  BridgeStartupError,
+  BridgeStoppedError,
+  BridgeTimeoutError,
+} from "./ui-protocol-bridge";
 import type { TurnStartExtras, TurnStartMediaRef } from "./ui-protocol-types";
 import { request } from "@/api/client";
 
@@ -364,7 +368,7 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
         pinnedOpts.sessionId,
         pinnedOpts.historyTopic,
       );
-    } catch {
+    } catch (err) {
       if (typeof console !== "undefined" && console.warn) {
         console.warn(
           "ui-protocol-send: bridge start failed; aborting optimistic projection",
@@ -373,7 +377,9 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
       markSendFailure(
         pinnedOpts,
         clientMessageId,
-        new Error("Unable to connect to the server."),
+        err instanceof BridgeStartupError
+          ? err
+          : new Error("Unable to connect to Octos Core. Please retry."),
       );
       pinnedOpts.onComplete?.();
       release();
