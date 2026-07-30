@@ -44,11 +44,18 @@ export function OllLessonBoard({
   }, []);
 
   useEffect(() => {
-    mountedRef.current?.view.render(
+    const view = mountedRef.current?.view;
+    view?.render(
       runtime.board,
       runtime.currentOperation,
     );
-  }, [runtime.board, runtime.currentOperation, runtime.cursor]);
+    view?.focusTargets(runtime.attentionTargets);
+  }, [
+    runtime.attentionTargets,
+    runtime.board,
+    runtime.currentOperation,
+    runtime.cursor,
+  ]);
 
   useEffect(() => {
     const viewport = viewportRef.current;

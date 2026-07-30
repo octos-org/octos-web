@@ -46,6 +46,39 @@ function ReviewRuntimeProbe() {
   );
 }
 
+function OutlineRuntimeProbe() {
+  const runtime = useOllLessonRuntime({
+    source: geometryLessonSource,
+    storageKey: "oll-outline-runtime-test",
+    startAtEnd: true,
+    topics: [{
+      id: "geometry",
+      title: "几何证明",
+      stepIds: geometryEvents.flatMap((event) =>
+        event.step ? [event.step.id] : [],
+      ),
+    }],
+  });
+  if (!runtime) return null;
+  const firstStep = runtime.outline[0]?.steps[0];
+  return (
+    <div>
+      <span data-testid="outline-progress">
+        {runtime.cursor}/{runtime.totalOperations}
+      </span>
+      <span data-testid="outline-topic">{runtime.outline[0]?.title}</span>
+      <span data-testid="outline-current">{runtime.currentStepId}</span>
+      <button
+        type="button"
+        onClick={() => firstStep && runtime.viewStep(firstStep.id)}
+      >
+        查看第一步
+      </button>
+      <OllLessonBoard runtime={runtime} />
+    </div>
+  );
+}
+
 const geometryEvents = geometryLessonSource
   .split(/\r?\n/)
   .filter(Boolean)
@@ -143,6 +176,28 @@ describe("OLL lesson Runtime integration", () => {
     });
     expect(screen.getByTestId("review-playing").textContent).toBe("false");
     expect(screen.getByText("关键想法")).toBeTruthy();
+  });
+
+  it("groups the outline and seeks backwards to a selected Step", () => {
+    render(<OutlineRuntimeProbe />);
+    const [initialCursor, total] = screen
+      .getByTestId("outline-progress")
+      .textContent!.split("/")
+      .map(Number);
+    expect(initialCursor).toBe(total);
+    expect(screen.getByTestId("outline-topic").textContent).toBe("几何证明");
+
+    fireEvent.click(screen.getByRole("button", { name: "查看第一步" }));
+
+    const [cursorAfterSeek] = screen
+      .getByTestId("outline-progress")
+      .textContent!.split("/")
+      .map(Number);
+    expect(cursorAfterSeek).toBeLessThan(total!);
+    expect(screen.getByTestId("outline-current").textContent).toBe(
+      geometryEvents[1]?.step?.id,
+    );
+    expect(screen.getByText("① 已知与目标")).toBeTruthy();
   });
 
   it("applies each Beat focus even when React batches advanceBeat updates", () => {

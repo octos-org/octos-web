@@ -151,10 +151,32 @@ describe("LearningWorkspace", () => {
       />,
     );
 
-    expect(screen.getByText(/OLL · Beat 0\/0/)).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "打开本课目录" }),
+    ).toBeTruthy();
     act(() => vi.advanceTimersByTime(260));
-    expect(screen.queryByText(/OLL · Beat 0\/0/)).toBeNull();
-    expect(screen.getByText(/OLL · Beat \d+\/\d+/)).toBeTruthy();
+    act(() => {
+      screen.getByRole("button", { name: "打开本课目录" }).click();
+    });
+    expect(screen.getByRole("dialog", { name: "本课目录" })).toBeTruthy();
+    expect(
+      screen.getAllByRole("button", { name: /查看步骤：/ }).length,
+    ).toBeGreaterThan(0);
+    const expandStep = screen.getAllByRole(
+      "button",
+      { name: /展开.+的讲解片段/ },
+    )[0]!;
+    act(() => expandStep.click());
+    expect(
+      screen.getAllByRole("button", { name: /查看讲解片段：/ }).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByRole("button", { name: /从步骤开始播放：/ }).length,
+    ).toBeGreaterThan(0);
+    act(() => {
+      screen.getAllByRole("button", { name: /查看讲解片段：/ })[0]!.click();
+    });
+    expect(screen.queryByRole("dialog", { name: "本课目录" })).toBeNull();
   });
 
   it("loads a delivered OLL Authoring artifact into the /learn Runtime", async () => {

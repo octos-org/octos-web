@@ -6,10 +6,18 @@ import path from "path";
 export default defineConfig({
   optimizeDeps: {
     // OLL is intentionally consumed through a local file: dependency while its
-    // Runtime is under active development. Rebuild Vite's compatible dependency
-    // bundle on every server start so OLL changes are not served from a stale
-    // node_modules/.vite snapshot.
-    force: true,
+    // Runtime is under active development. Serve its ESM output directly so a
+    // browser refresh cannot mix freshly HMR-ed host code with an older
+    // node_modules/.vite snapshot of the Runtime.
+    exclude: [
+      "octos-lesson-language",
+      "octos-lesson-language/player",
+      "octos-lesson-language/web-runtime",
+    ],
+    // OLL's validator uses AJV's CommonJS 2020 entrypoint. Keep that leaf
+    // dependency optimized so the directly served OLL modules receive Vite's
+    // ESM interop wrapper.
+    include: ["octos-lesson-language > ajv/dist/2020.js"],
   },
   base: process.env.BASE_URL || "/",
   plugins: [react(), tailwindcss()],

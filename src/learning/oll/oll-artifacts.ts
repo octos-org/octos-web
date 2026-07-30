@@ -17,6 +17,12 @@ export interface OllLessonArtifactRef {
   turnId: string;
 }
 
+export interface OllLessonTopic {
+  id: string;
+  title: string;
+  stepIds: string[];
+}
+
 const OLL_ARTIFACT_SUFFIX = ".octos-lesson.json";
 
 export function ollArtifactIdentity(
@@ -189,4 +195,21 @@ export function composeOllClassroomEvents(
     }
   }
   return result;
+}
+
+export function buildOllLessonTopics(
+  lessons: CanonicalEvent[][],
+): OllLessonTopic[] {
+  return lessons.flatMap((events, index) => {
+    const open = events.find((event) => event.event === "lesson.open");
+    const stepIds = events.flatMap((event) =>
+      event.event === "lesson.step" && event.step ? [event.step.id] : [],
+    );
+    if (!open || stepIds.length === 0) return [];
+    return [{
+      id: open.board?.region_id ?? open.lesson_id,
+      title: open.lesson?.title ?? `课程主题 ${index + 1}`,
+      stepIds,
+    }];
+  });
 }

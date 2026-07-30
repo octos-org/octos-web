@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Thread } from "@/store/thread-store";
 import {
+  buildOllLessonTopics,
   collectPersistedOllLessonArtifacts,
   collectOllLessonArtifacts,
   composeOllClassroomEvents,
@@ -185,6 +186,18 @@ describe("OLL lesson artifacts", () => {
     expect(new Set(classroom.map((event) => event.lesson_id)).size).toBe(1);
     expect(classroom[1]?.step?.id).not.toBe(classroom[2]?.step?.id);
     expect(classroom.slice(0, firstClassroom.length)).toEqual(firstClassroom);
+    expect(buildOllLessonTopics([first, second])).toEqual([
+      {
+        id: first[0]?.board?.region_id,
+        title: first[0]?.lesson?.title,
+        stepIds: [first[1]?.step?.id],
+      },
+      {
+        id: second[0]?.board?.region_id,
+        title: second[0]?.lesson?.title,
+        stepIds: [second[1]?.step?.id],
+      },
+    ]);
     const createdRegions = classroom.slice(1).map((event) =>
       event.step?.beats
         .flatMap((beat) => Object.values(beat.stage).flat())

@@ -26,8 +26,10 @@ import {
   type LearningBoardContext,
 } from "./board/session-board";
 import geometryLessonSource from "./oll/fixtures/geometry-auxiliary-line-v2.canonical.jsonl?raw";
+import { OllCourseOutline } from "./oll/oll-course-outline";
 import { OllLessonBoard } from "./oll/oll-lesson-runtime";
 import {
+  buildOllLessonTopics,
   collectOllLessonArtifacts,
   collectPersistedOllLessonArtifacts,
   composeOllClassroomEvents,
@@ -206,7 +208,7 @@ export function LearningWorkspace({
     () => mergeSessionBoardPackets(sessionId, []),
     [sessionId],
   );
-  const deliveredOllEvents = useMemo(() => {
+  const deliveredOllLessons = useMemo(() => {
     const lessons: CanonicalEvent[][] = [];
     for (const artifact of ollArtifacts) {
       const artifactIdentity = ollArtifactIdentity(artifact);
@@ -215,12 +217,23 @@ export function LearningWorkspace({
       if (!events) break;
       lessons.push(events);
     }
-    const events = composeOllClassroomEvents(lessons, sessionId);
+    return lessons;
+  }, [loadedOllArtifacts, ollArtifacts, rejectedOllArtifactIds]);
+  const deliveredOllEvents = useMemo(() => {
+    const events = composeOllClassroomEvents(deliveredOllLessons, sessionId);
     return events.length > 0 ? events : null;
-  }, [loadedOllArtifacts, ollArtifacts, rejectedOllArtifactIds, sessionId]);
+  }, [deliveredOllLessons, sessionId]);
   const activeOllEvents = ollFixture === "geometry-v2"
     ? geometryLessonEvents
     : deliveredOllEvents;
+  const activeOllTopics = useMemo(
+    () => buildOllLessonTopics(
+      ollFixture === "geometry-v2"
+        ? [geometryLessonEvents]
+        : deliveredOllLessons,
+    ),
+    [deliveredOllLessons, ollFixture],
+  );
   const ollOpenSource = activeOllEvents?.[0]
     ? JSON.stringify(activeOllEvents[0])
     : null;
@@ -230,6 +243,7 @@ export function LearningWorkspace({
     autoPlay: Boolean(activeOllEvents) && playbackMode === "live",
     incremental: Boolean(activeOllEvents),
     startAtEnd: Boolean(activeOllEvents) && playbackMode === "review",
+    topics: activeOllTopics,
   });
   const appendOllEvents = ollLesson?.appendEvents;
   const appendedOllEventCountRef = useRef(1);
@@ -390,10 +404,6 @@ export function LearningWorkspace({
         </div>
         {ollLesson ? (
           <div className="learning-demo-controls" data-testid="oll-controls">
-            <span>
-              OLL · Beat {Math.max(0, ollLesson.beatIndex + 1)}/
-              {ollLesson.beatCount}
-            </span>
             <button
               type="button"
               onClick={ollLesson.playing ? ollLesson.pause : ollLesson.play}
@@ -481,6 +491,8 @@ export function LearningWorkspace({
         speech={teacherSpeech}
         onClick={handleTeacherClick}
       />
+
+      {ollLesson ? <OllCourseOutline runtime={ollLesson} /> : null}
 
       <StudentInputDock
         voiceState={
