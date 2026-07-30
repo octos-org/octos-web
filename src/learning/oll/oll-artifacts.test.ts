@@ -6,6 +6,7 @@ import {
   composeOllClassroomEvents,
   isOllLessonArtifact,
   loadOllLessonArtifact,
+  mergeOllLessonArtifacts,
   ollArtifactIdentity,
 } from "./oll-artifacts";
 
@@ -62,6 +63,27 @@ const authoringLesson = {
     }],
   }],
   close: { summary: "完成讲解", focus: ["answer"] },
+};
+
+const threeStepAuthoringLesson = {
+  ...authoringLesson,
+  steps: ["first", "second", "third"].map((key) => ({
+    key,
+    purpose: `讲解 ${key}`,
+    beats: [{
+      key: `write-${key}`,
+      say: `讲解 ${key}。`,
+      actions: [{
+        do: "write",
+        as: `answer-${key}`,
+        kind: "note",
+        role: "conclusion",
+        content: { text: `结论 ${key}` },
+        place: { relation: "new_region", region_role: "lesson_origin" },
+      }],
+    }],
+  })),
+  close: { summary: "完成三步讲解", focus: ["answer-third"] },
 };
 
 describe("OLL lesson artifacts", () => {
@@ -127,7 +149,7 @@ describe("OLL lesson artifacts", () => {
       "lesson.close",
     ]);
     expect(events[1]?.step?.beats[0]?.narration?.text).toBe("先写出核心结论。");
-    const artifactIdentity = ollArtifactIdentity(artifact!.path);
+    const artifactIdentity = ollArtifactIdentity(artifact!);
     expect(events[0]?.board?.region_id).toBe(`topic-${artifactIdentity}`);
     const createdNode = events[1]?.step?.beats
       .flatMap((beat) => Object.values(beat.stage).flat())
@@ -145,10 +167,13 @@ describe("OLL lesson artifacts", () => {
       threadWithLesson("study/oll/turn.octos-lesson.json"),
     ]);
     const first = await loadOllLessonArtifact(artifact!, "session-1");
-    const second = await loadOllLessonArtifact(
-      { ...artifact!, path: "study/oll/turn-2.octos-lesson.json", turnId: "server-turn-2" },
-      "session-1",
-    );
+    const secondArtifact = {
+      ...artifact!,
+      filename: "turn-2.octos-lesson.json",
+      path: "study/oll/turn-2.octos-lesson.json",
+      turnId: "server-turn-2",
+    };
+    const second = await loadOllLessonArtifact(secondArtifact, "session-1");
     const firstClassroom = composeOllClassroomEvents([first], "session-1");
     const classroom = composeOllClassroomEvents([first, second], "session-1");
     expect(classroom.map((event) => event.event)).toEqual([
@@ -166,34 +191,109 @@ describe("OLL lesson artifacts", () => {
         .find((action) => action.op === "board.create")?.node?.region_id,
     );
     expect(createdRegions).toEqual([
-      `topic-${ollArtifactIdentity(artifact!.path)}`,
-      `topic-${ollArtifactIdentity("study/oll/turn-2.octos-lesson.json")}`,
+      `topic-${ollArtifactIdentity(artifact!)}`,
+      `topic-${ollArtifactIdentity(secondArtifact)}`,
     ]);
     vi.unstubAllGlobals();
   });
 
-  it("normalizes the same durable artifact identically across live and restored references", async () => {
+  it("normalizes absolute live paths and persisted handles identically", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: true,
       json: async () => authoringLesson,
     }));
-    const path = "study/oll/stable-turn.octos-lesson.json";
+    const filename = "ce3a5e4c-3ae4-4c8b-9c3f-fbe8eb4fc56b.octos-lesson.json";
     const live = await loadOllLessonArtifact({
-      id: `live:${path}`,
-      filename: "stable-turn.octos-lesson.json",
-      path,
+      id: `live:${filename}`,
+      filename,
+      path: `/Users/learner/.octos/profiles/default/data/users/session/workspace/skill-output/study/oll/${filename}`,
       threadId: "client-turn",
       turnId: "server-turn-id",
     }, "session-1");
     const restored = await loadOllLessonArtifact({
-      id: `persisted:${path}`,
-      filename: "stable-turn.octos-lesson.json",
-      path,
-      threadId: "stable-turn",
-      turnId: "stable-turn",
+      id: `persisted:${filename}`,
+      filename,
+      path: `pf/cHJvZmlsZS1yZWxhdGl2ZS1wYXRo/${filename}`,
+      threadId: filename,
+      turnId: filename,
     }, "session-1");
 
     expect(restored).toEqual(live);
+    vi.unstubAllGlobals();
+  });
+
+  it("deduplicates one artifact delivered through live and persisted paths", () => {
+    const filename = "same-turn.octos-lesson.json";
+    const persisted = {
+      id: `persisted:${filename}`,
+      filename,
+      path: `pf/b3BhcXVl/${filename}`,
+      threadId: "same-turn",
+      turnId: "same-turn",
+    };
+    const live = {
+      id: `live:${filename}`,
+      filename,
+      path: `/profile/session/workspace/study/oll/${filename}`,
+      threadId: "client-turn",
+      turnId: "server-turn",
+    };
+
+    expect(mergeOllLessonArtifacts([persisted], [live])).toEqual([persisted]);
+    expect(mergeOllLessonArtifacts([], [live])).toEqual([live]);
+  });
+
+  it("keeps sequence 7 stable when the third lesson changes path source after refresh", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => threeStepAuthoringLesson,
+    }));
+    const ref = (
+      filename: string,
+      path: string,
+    ) => ({
+      id: `${filename}:${path}`,
+      filename,
+      path,
+      threadId: filename,
+      turnId: filename,
+    });
+    const firstRef = ref(
+      "first.octos-lesson.json",
+      "pf/first/first.octos-lesson.json",
+    );
+    const secondRef = ref(
+      "second.octos-lesson.json",
+      "pf/second/second.octos-lesson.json",
+    );
+    const thirdFilename = "third.octos-lesson.json";
+    const thirdLiveRef = ref(
+      thirdFilename,
+      `/profile/session/workspace/skill-output/study/oll/${thirdFilename}`,
+    );
+    const thirdRestoredRef = ref(
+      thirdFilename,
+      `pf/third/${thirdFilename}`,
+    );
+    const [first, second, thirdLive, thirdRestored] = await Promise.all([
+      loadOllLessonArtifact(firstRef, "session-1"),
+      loadOllLessonArtifact(secondRef, "session-1"),
+      loadOllLessonArtifact(thirdLiveRef, "session-1"),
+      loadOllLessonArtifact(thirdRestoredRef, "session-1"),
+    ]);
+
+    const liveClassroom = composeOllClassroomEvents(
+      [first, second, thirdLive],
+      "session-1",
+    );
+    const restoredClassroom = composeOllClassroomEvents(
+      [first, second, thirdRestored],
+      "session-1",
+    );
+
+    expect(liveClassroom[7]?.sequence).toBe(7);
+    expect(restoredClassroom[7]).toEqual(liveClassroom[7]);
+    expect(restoredClassroom).toEqual(liveClassroom);
     vi.unstubAllGlobals();
   });
 });

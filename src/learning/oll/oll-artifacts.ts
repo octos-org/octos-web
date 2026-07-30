@@ -19,8 +19,14 @@ export interface OllLessonArtifactRef {
 
 const OLL_ARTIFACT_SUFFIX = ".octos-lesson.json";
 
-export function ollArtifactIdentity(path: string): string {
-  return encodeURIComponent(path);
+export function ollArtifactIdentity(
+  artifact: Pick<OllLessonArtifactRef, "filename">,
+): string {
+  // The live projection exposes an absolute path while session/files.list
+  // returns an opaque pf/... handle. The turn-scoped filename is the one
+  // durable identifier shared by both representations.
+  const filename = artifact.filename.replaceAll("\\", "/").split("/").at(-1);
+  return encodeURIComponent(filename ?? artifact.filename);
 }
 
 export function isOllLessonArtifact(
@@ -45,16 +51,35 @@ export function collectOllLessonArtifacts(
     ];
     for (const message of messages) {
       for (const file of message.files) {
-        if (!isOllLessonArtifact(file) || seen.has(file.path)) continue;
-        seen.add(file.path);
-        artifacts.push({
+        if (!isOllLessonArtifact(file)) continue;
+        const artifact = {
           id: `${message.id}:${file.path}`,
           filename: file.filename,
           path: file.path,
           threadId: thread.id,
           turnId: thread.turnId ?? thread.id,
-        });
+        };
+        const identity = ollArtifactIdentity(artifact);
+        if (seen.has(identity)) continue;
+        seen.add(identity);
+        artifacts.push(artifact);
       }
+    }
+  }
+  return artifacts;
+}
+
+export function mergeOllLessonArtifacts(
+  ...groups: OllLessonArtifactRef[][]
+): OllLessonArtifactRef[] {
+  const artifacts: OllLessonArtifactRef[] = [];
+  const seen = new Set<string>();
+  for (const group of groups) {
+    for (const artifact of group) {
+      const identity = ollArtifactIdentity(artifact);
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      artifacts.push(artifact);
     }
   }
   return artifacts;
@@ -103,7 +128,7 @@ export async function loadOllLessonArtifact(
   }
   const authoring = (await response.json()) as AuthoringLesson;
   try {
-    const artifactIdentity = ollArtifactIdentity(artifact.path);
+    const artifactIdentity = ollArtifactIdentity(artifact);
     const events = normalizeAuthoringLesson(authoring, {
       lessonId: `learn-${sessionId}-${artifactIdentity}`,
       boardId: `learning-board-${sessionId}`,

@@ -32,6 +32,8 @@ import {
   collectPersistedOllLessonArtifacts,
   composeOllClassroomEvents,
   loadOllLessonArtifact,
+  mergeOllLessonArtifacts,
+  ollArtifactIdentity,
 } from "./oll/oll-artifacts";
 import { ollPlaybackStorageKey } from "./oll/oll-playback-storage";
 import { useOllLessonRuntime } from "./oll/use-oll-lesson-runtime";
@@ -86,19 +88,16 @@ export function LearningWorkspace({
   const [persistedOllArtifacts, setPersistedOllArtifacts] = useState<
     ReturnType<typeof collectPersistedOllLessonArtifacts>
   >([]);
-  const [rejectedOllArtifactPaths, setRejectedOllArtifactPaths] = useState<
+  const [rejectedOllArtifactIds, setRejectedOllArtifactIds] = useState<
     ReadonlySet<string>
   >(() => new Set());
-  const ollArtifacts = useMemo(() => {
-    const result = [...persistedOllArtifacts];
-    const seen = new Set(result.map((artifact) => artifact.path));
-    for (const artifact of collectOllLessonArtifacts(threads)) {
-      if (seen.has(artifact.path)) continue;
-      seen.add(artifact.path);
-      result.push(artifact);
-    }
-    return result;
-  }, [persistedOllArtifacts, threads]);
+  const ollArtifacts = useMemo(
+    () => mergeOllLessonArtifacts(
+      persistedOllArtifacts,
+      collectOllLessonArtifacts(threads),
+    ),
+    [persistedOllArtifacts, threads],
+  );
   const requestedOllArtifactsRef = useRef(new Set<string>());
   const ollArtifactRequestsRef = useRef(new Map<string, AbortController>());
   const [sendError, setSendError] = useState<string | null>(null);
@@ -166,25 +165,27 @@ export function LearningWorkspace({
 
   useEffect(() => {
     const pending = ollArtifacts.filter(
-      (artifact) => !requestedOllArtifactsRef.current.has(artifact.path),
+      (artifact) =>
+        !requestedOllArtifactsRef.current.has(ollArtifactIdentity(artifact)),
     );
     if (pending.length === 0) return;
     pending.forEach((artifact) => {
+      const artifactIdentity = ollArtifactIdentity(artifact);
       const controller = new AbortController();
-      requestedOllArtifactsRef.current.add(artifact.path);
-      ollArtifactRequestsRef.current.set(artifact.path, controller);
+      requestedOllArtifactsRef.current.add(artifactIdentity);
+      ollArtifactRequestsRef.current.set(artifactIdentity, controller);
       loadOllLessonArtifact(artifact, sessionId, controller.signal)
         .then((events) => {
           setLoadedOllArtifacts((current) => ({
             ...current,
-            [artifact.path]: events,
+            [artifactIdentity]: events,
           }));
         })
         .catch((cause) => {
           if (controller.signal.aborted) return;
-          setRejectedOllArtifactPaths((current) => {
+          setRejectedOllArtifactIds((current) => {
             const next = new Set(current);
-            next.add(artifact.path);
+            next.add(artifactIdentity);
             return next;
           });
           setArtifactError(
@@ -192,8 +193,10 @@ export function LearningWorkspace({
           );
         })
         .finally(() => {
-          if (ollArtifactRequestsRef.current.get(artifact.path) === controller) {
-            ollArtifactRequestsRef.current.delete(artifact.path);
+          if (
+            ollArtifactRequestsRef.current.get(artifactIdentity) === controller
+          ) {
+            ollArtifactRequestsRef.current.delete(artifactIdentity);
           }
         });
     });
@@ -206,14 +209,15 @@ export function LearningWorkspace({
   const deliveredOllEvents = useMemo(() => {
     const lessons: CanonicalEvent[][] = [];
     for (const artifact of ollArtifacts) {
-      const events = loadedOllArtifacts[artifact.path];
-      if (rejectedOllArtifactPaths.has(artifact.path)) continue;
+      const artifactIdentity = ollArtifactIdentity(artifact);
+      const events = loadedOllArtifacts[artifactIdentity];
+      if (rejectedOllArtifactIds.has(artifactIdentity)) continue;
       if (!events) break;
       lessons.push(events);
     }
     const events = composeOllClassroomEvents(lessons, sessionId);
     return events.length > 0 ? events : null;
-  }, [loadedOllArtifacts, ollArtifacts, rejectedOllArtifactPaths, sessionId]);
+  }, [loadedOllArtifacts, ollArtifacts, rejectedOllArtifactIds, sessionId]);
   const activeOllEvents = ollFixture === "geometry-v2"
     ? geometryLessonEvents
     : deliveredOllEvents;
