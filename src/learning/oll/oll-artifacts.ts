@@ -19,6 +19,10 @@ export interface OllLessonArtifactRef {
 
 const OLL_ARTIFACT_SUFFIX = ".octos-lesson.json";
 
+export function ollArtifactIdentity(path: string): string {
+  return encodeURIComponent(path);
+}
+
 export function isOllLessonArtifact(
   file: { filename?: string; path?: string },
 ): boolean {
@@ -99,12 +103,13 @@ export async function loadOllLessonArtifact(
   }
   const authoring = (await response.json()) as AuthoringLesson;
   try {
+    const artifactIdentity = ollArtifactIdentity(artifact.path);
     const events = normalizeAuthoringLesson(authoring, {
-      lessonId: `learn-${sessionId}-${artifact.turnId}`,
+      lessonId: `learn-${sessionId}-${artifactIdentity}`,
       boardId: `learning-board-${sessionId}`,
       baseRevision: 0,
       regionIntent: "new_topic",
-      regionId: `topic-${artifact.turnId}`,
+      regionId: `topic-${artifactIdentity}`,
     });
     reduceCanonicalEvents(events);
     return events;

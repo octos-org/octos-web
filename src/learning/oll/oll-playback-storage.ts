@@ -1,4 +1,4 @@
-const OLL_PLAYBACK_STORAGE_VERSION = "v2";
+const OLL_PLAYBACK_STORAGE_VERSION = "v3";
 
 export function ollPlaybackStorageKey(
   sessionId: string,

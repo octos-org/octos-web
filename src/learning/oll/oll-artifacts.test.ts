@@ -6,6 +6,7 @@ import {
   composeOllClassroomEvents,
   isOllLessonArtifact,
   loadOllLessonArtifact,
+  ollArtifactIdentity,
 } from "./oll-artifacts";
 
 function threadWithLesson(path: string): Thread {
@@ -126,11 +127,12 @@ describe("OLL lesson artifacts", () => {
       "lesson.close",
     ]);
     expect(events[1]?.step?.beats[0]?.narration?.text).toBe("先写出核心结论。");
-    expect(events[0]?.board?.region_id).toBe("topic-server-turn-1");
+    const artifactIdentity = ollArtifactIdentity(artifact!.path);
+    expect(events[0]?.board?.region_id).toBe(`topic-${artifactIdentity}`);
     const createdNode = events[1]?.step?.beats
       .flatMap((beat) => Object.values(beat.stage).flat())
       .find((action) => action.op === "board.create")?.node;
-    expect(createdNode?.region_id).toBe("topic-server-turn-1");
+    expect(createdNode?.region_id).toBe(`topic-${artifactIdentity}`);
     vi.unstubAllGlobals();
   });
 
@@ -147,6 +149,7 @@ describe("OLL lesson artifacts", () => {
       { ...artifact!, path: "study/oll/turn-2.octos-lesson.json", turnId: "server-turn-2" },
       "session-1",
     );
+    const firstClassroom = composeOllClassroomEvents([first], "session-1");
     const classroom = composeOllClassroomEvents([first, second], "session-1");
     expect(classroom.map((event) => event.event)).toEqual([
       "lesson.open",
@@ -156,15 +159,41 @@ describe("OLL lesson artifacts", () => {
     expect(classroom.map((event) => event.sequence)).toEqual([0, 1, 2]);
     expect(new Set(classroom.map((event) => event.lesson_id)).size).toBe(1);
     expect(classroom[1]?.step?.id).not.toBe(classroom[2]?.step?.id);
+    expect(classroom.slice(0, firstClassroom.length)).toEqual(firstClassroom);
     const createdRegions = classroom.slice(1).map((event) =>
       event.step?.beats
         .flatMap((beat) => Object.values(beat.stage).flat())
         .find((action) => action.op === "board.create")?.node?.region_id,
     );
     expect(createdRegions).toEqual([
-      "topic-server-turn-1",
-      "topic-server-turn-2",
+      `topic-${ollArtifactIdentity(artifact!.path)}`,
+      `topic-${ollArtifactIdentity("study/oll/turn-2.octos-lesson.json")}`,
     ]);
+    vi.unstubAllGlobals();
+  });
+
+  it("normalizes the same durable artifact identically across live and restored references", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => authoringLesson,
+    }));
+    const path = "study/oll/stable-turn.octos-lesson.json";
+    const live = await loadOllLessonArtifact({
+      id: `live:${path}`,
+      filename: "stable-turn.octos-lesson.json",
+      path,
+      threadId: "client-turn",
+      turnId: "server-turn-id",
+    }, "session-1");
+    const restored = await loadOllLessonArtifact({
+      id: `persisted:${path}`,
+      filename: "stable-turn.octos-lesson.json",
+      path,
+      threadId: "stable-turn",
+      turnId: "stable-turn",
+    }, "session-1");
+
+    expect(restored).toEqual(live);
     vi.unstubAllGlobals();
   });
 });

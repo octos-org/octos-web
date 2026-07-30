@@ -4,10 +4,10 @@ import { ollPlaybackStorageKey } from "./oll-playback-storage";
 describe("OLL playback storage", () => {
   it("versions checkpoints when canonical event semantics change", () => {
     expect(ollPlaybackStorageKey("learn-1", undefined)).toBe(
-      "octos-learning-oll:v2:learn-1:none",
+      "octos-learning-oll:v3:learn-1:none",
     );
     expect(ollPlaybackStorageKey("learn-1", "geometry-v2")).toBe(
-      "octos-learning-oll:v2:learn-1:geometry-v2",
+      "octos-learning-oll:v3:learn-1:geometry-v2",
     );
   });
 });
