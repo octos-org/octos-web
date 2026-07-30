@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import geometryLessonSource from "./fixtures/geometry-auxiliary-line-v2.canonical.jsonl?raw";
 import type { CanonicalEvent } from "octos-lesson-language";
@@ -22,6 +28,24 @@ function RuntimeProbe() {
   );
 }
 
+function ReviewRuntimeProbe() {
+  const runtime = useOllLessonRuntime({
+    source: geometryLessonSource,
+    storageKey: "oll-review-runtime-test",
+    startAtEnd: true,
+  });
+  if (!runtime) return null;
+  return (
+    <div>
+      <span data-testid="review-progress">
+        {runtime.cursor}/{runtime.totalOperations}
+      </span>
+      <span data-testid="review-playing">{String(runtime.playing)}</span>
+      <OllLessonBoard runtime={runtime} />
+    </div>
+  );
+}
+
 const geometryEvents = geometryLessonSource
   .split(/\r?\n/)
   .filter(Boolean)
@@ -40,6 +64,34 @@ function IncrementalRuntimeProbe() {
       <span data-testid="stream-total">{runtime.totalOperations}</span>
       <button type="button" onClick={runtime.nextBeat}>推进增量课程</button>
       <button type="button" onClick={() => runtime.appendEvents([geometryEvents[1]!])}>追加课程步骤</button>
+      <OllLessonBoard runtime={runtime} />
+    </div>
+  );
+}
+
+function IncrementalReviewRuntimeProbe() {
+  const runtime = useOllLessonRuntime({
+    source: JSON.stringify(geometryEvents[0]),
+    storageKey: "oll-incremental-review-runtime-test",
+    incremental: true,
+    startAtEnd: true,
+  });
+  if (!runtime) return null;
+  return (
+    <div>
+      <span data-testid="incremental-review-status">{runtime.status}</span>
+      <span data-testid="incremental-review-progress">
+        {runtime.cursor}/{runtime.totalOperations}
+      </span>
+      <span data-testid="incremental-review-playing">
+        {String(runtime.playing)}
+      </span>
+      <button
+        type="button"
+        onClick={() => runtime.appendEvents(geometryEvents.slice(1, -1))}
+      >
+        恢复历史课程
+      </button>
       <OllLessonBoard runtime={runtime} />
     </div>
   );
@@ -76,6 +128,21 @@ describe("OLL lesson Runtime integration", () => {
       )?.dataset.instanceId,
     ).toBe(instanceId);
     expect(screen.getByText("② 连接 AD")).toBeTruthy();
+  });
+
+  it("opens a historical lesson at its final board state without playing", async () => {
+    render(<ReviewRuntimeProbe />);
+
+    await waitFor(() => {
+      const [cursor, total] = screen
+        .getByTestId("review-progress")
+        .textContent!.split("/")
+        .map(Number);
+      expect(cursor).toBe(total);
+      expect(total).toBeGreaterThan(0);
+    });
+    expect(screen.getByTestId("review-playing").textContent).toBe("false");
+    expect(screen.getByText("关键想法")).toBeTruthy();
   });
 
   it("applies each Beat focus even when React batches advanceBeat updates", () => {
@@ -118,5 +185,26 @@ describe("OLL lesson Runtime integration", () => {
     expect(Number(screen.getByTestId("stream-total").textContent)).toBeGreaterThan(totalBefore);
     fireEvent.click(screen.getByRole("button", { name: "推进增量课程" }));
     expect(screen.getByText("① 已知与目标")).toBeTruthy();
+  });
+
+  it("applies an incrementally restored history directly to its available end", async () => {
+    render(<IncrementalReviewRuntimeProbe />);
+    fireEvent.click(screen.getByRole("button", { name: "恢复历史课程" }));
+
+    await waitFor(() => {
+      const [cursor, total] = screen
+        .getByTestId("incremental-review-progress")
+        .textContent!.split("/")
+        .map(Number);
+      expect(cursor).toBe(total);
+      expect(total).toBeGreaterThan(0);
+    });
+    expect(screen.getByTestId("incremental-review-status").textContent).toBe(
+      "waiting",
+    );
+    expect(screen.getByTestId("incremental-review-playing").textContent).toBe(
+      "false",
+    );
+    expect(screen.getByText("关键想法")).toBeTruthy();
   });
 });

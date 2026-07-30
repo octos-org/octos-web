@@ -51,7 +51,7 @@ const cameraMock = vi.hoisted(() => ({
   active: false,
   stream: null,
   error: null,
-  start: vi.fn(async () => {}),
+  start: vi.fn(async () => true),
   stop: vi.fn(),
   grabFrame: vi.fn(async () => null),
 }));
@@ -571,6 +571,7 @@ describe("start() cancellation (post-unmount mic re-acquire)", () => {
     uploadFilesMock.mockResolvedValue([]);
     cameraMock.active = false;
     cameraMock.start.mockClear();
+    cameraMock.start.mockResolvedValue(true);
     cameraMock.grabFrame.mockClear();
     getActiveBridgeMock.mockReset();
     getActiveBridgeMock.mockReturnValue(undefined);
@@ -618,6 +619,40 @@ describe("start() cancellation (post-unmount mic re-acquire)", () => {
       await result.current.start();
     });
 
+    expect(captureStartMock).toHaveBeenCalledTimes(1);
+    unmount();
+  });
+
+  it("waits for the auto-start camera attempt before accepting the first utterance", async () => {
+    getActiveBridgeMock.mockReturnValue({
+      getConnectionState: () => "connected",
+    });
+    let finishCamera!: (ready: boolean) => void;
+    cameraMock.start.mockImplementationOnce(
+      () => new Promise<boolean>((resolve) => {
+        finishCamera = resolve;
+      }),
+    );
+    const { result, unmount } = renderHook(() =>
+      useVoiceConversation("learn-camera-ready-test", undefined, undefined, {
+        autoStartCamera: true,
+      }),
+    );
+
+    let startPromise!: Promise<void>;
+    act(() => {
+      startPromise = result.current.start();
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(captureStartMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      finishCamera(true);
+      await startPromise;
+    });
     expect(captureStartMock).toHaveBeenCalledTimes(1);
     unmount();
   });

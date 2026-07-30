@@ -205,6 +205,54 @@ describe("LearningPage", () => {
     ).toBeTruthy();
   });
 
+  it("can enable voice and camera from an existing text-only lesson", async () => {
+    localStorage.setItem("octos_learning_auto_camera", "false");
+    localStorage.setItem("octos_learning_input_mode", "text");
+    const stopTrack = vi.fn();
+    const getUserMedia = vi.fn(async () => ({
+      getTracks: () => [{ stop: stopTrack }],
+    }));
+    const originalMediaDevices = Object.getOwnPropertyDescriptor(
+      navigator,
+      "mediaDevices",
+    );
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia },
+    });
+
+    try {
+      render(<LearningPage />);
+      await waitFor(() =>
+        expect(learningWorkspaceMock.props?.voiceEnabled).toBe(false),
+      );
+      await act(async () => {
+        await learningWorkspaceMock.props?.onUseVoiceMode?.();
+      });
+
+      await waitFor(() =>
+        expect(learningWorkspaceMock.props?.voiceEnabled).toBe(true),
+      );
+      expect(getUserMedia).toHaveBeenCalledWith({
+        audio: true,
+        video: true,
+      });
+      expect(stopTrack).toHaveBeenCalledTimes(1);
+      expect(localStorage.getItem("octos_learning_input_mode")).toBe("voice");
+      expect(localStorage.getItem("octos_learning_auto_camera")).toBe("true");
+    } finally {
+      if (originalMediaDevices) {
+        Object.defineProperty(
+          navigator,
+          "mediaDevices",
+          originalMediaDevices,
+        );
+      } else {
+        Reflect.deleteProperty(navigator, "mediaDevices");
+      }
+    }
+  });
+
   it("does not time out or delete an idle provisional whiteboard", async () => {
     vi.useFakeTimers();
     try {
@@ -317,6 +365,7 @@ describe("LearningPage", () => {
         "learn-200-geometry",
       ),
     );
+    expect(learningWorkspaceMock.props?.playbackMode).toBe("review");
     fireEvent.click(
       screen.getByRole("button", { name: "打开学习会话列表" }),
     );
@@ -326,6 +375,14 @@ describe("LearningPage", () => {
       expect(learningWorkspaceMock.props?.sessionId).toBe(
         "learn-100-algebra",
       ),
+    );
+    expect(learningWorkspaceMock.props?.playbackMode).toBe("review");
+
+    act(() => {
+      learningWorkspaceMock.props?.onLearnerInput?.("继续讲一道相似题");
+    });
+    await waitFor(() =>
+      expect(learningWorkspaceMock.props?.playbackMode).toBe("live"),
     );
   });
 

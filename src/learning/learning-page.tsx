@@ -63,6 +63,21 @@ const INPUT_MODE_KEY = "octos_learning_input_mode";
 const MINIMUM_WHITEBOARD_SKILL_VERSION = [0, 7, 0] as const;
 const LEARNING_TAB_ID = getLearningTabOwner();
 
+async function requestLearningDevices(autoCamera: boolean): Promise<{
+  autoCamera: boolean;
+  voiceEnabled: boolean;
+}> {
+  unlockAudio();
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: true,
+    video: autoCamera,
+  });
+  stream.getTracks().forEach((track) => track.stop());
+  localStorage.setItem(AUTO_CAMERA_KEY, String(autoCamera));
+  localStorage.setItem(INPUT_MODE_KEY, "voice");
+  return { autoCamera, voiceEnabled: true };
+}
+
 function supportsWhiteboardProtocol(skill: SkillInfo): boolean {
   if (skill.name !== "learning-coach" || !skill.version) return false;
   const version = skill.version
@@ -91,15 +106,7 @@ function LearningPermissionGate({
 
   const activate = async (autoCamera: boolean) => {
     try {
-      unlockAudio();
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: autoCamera,
-      });
-      stream.getTracks().forEach((track) => track.stop());
-      localStorage.setItem(AUTO_CAMERA_KEY, String(autoCamera));
-      localStorage.setItem(INPUT_MODE_KEY, "voice");
-      onReady({ autoCamera, voiceEnabled: true });
+      onReady(await requestLearningDevices(autoCamera));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "设备授权失败");
     }
@@ -311,6 +318,11 @@ export function LearningPage() {
   const [record, setRecord] = useState<LearningSessionRecord>(
     initialEntry.record,
   );
+  const [reviewSessionId, setReviewSessionId] = useState<string | null>(() =>
+    initialEntry.record.status === "provisional"
+      ? null
+      : initialEntry.record.id,
+  );
   const recordRef = useRef(record);
   useEffect(() => {
     recordRef.current = record;
@@ -377,12 +389,14 @@ export function LearningPage() {
           adoptLearningSession({ ...latest, status: "active" });
         markerSentRef.current = false;
         boardContextRef.current = {};
+        setReviewSessionId(resumed.id);
         setWakeSessionId(wakeAudio ? resumed.id : null);
         setRecord(resumed);
       } else if (currentWasRemoved) {
         const next = createProvisionalLearningSession();
         markerSentRef.current = false;
         boardContextRef.current = {};
+        setReviewSessionId(null);
         setWakeSessionId(null);
         setRecord(next);
       }
@@ -480,8 +494,16 @@ export function LearningPage() {
     setDevicePreferences({ autoCamera: false, voiceEnabled: false });
   }, []);
 
+  const useVoiceAndCameraMode = useCallback(async () => {
+    const preferences = await requestLearningDevices(true);
+    setDevicePreferences(preferences);
+  }, []);
+
   const handleLearnerInput = useCallback(
     (text: string) => {
+      setReviewSessionId((current) =>
+        current === record.id ? null : current,
+      );
       if (record.status !== "provisional") return;
       if (!isSubstantiveLearningText(text)) return;
       const promoted = promoteLearningSession(record.id, text);
@@ -535,6 +557,7 @@ export function LearningPage() {
         : updateLearningSession(next.id, { status: "active" }) ?? next;
     markerSentRef.current = false;
     boardContextRef.current = {};
+    setReviewSessionId(next.id);
     setWakeSessionId(null);
     setRecord(resumed);
     refreshLocalSessions();
@@ -551,6 +574,7 @@ export function LearningPage() {
     const next = createProvisionalLearningSession();
     markerSentRef.current = false;
     boardContextRef.current = {};
+    setReviewSessionId(null);
     setWakeSessionId(null);
     setRecord(next);
     refreshLocalSessions();
@@ -570,6 +594,9 @@ export function LearningPage() {
             const next = resolveLearningEntrySession();
             markerSentRef.current = false;
             boardContextRef.current = {};
+            setReviewSessionId(
+              next.status === "provisional" ? null : next.id,
+            );
             setWakeSessionId(null);
             setRecord(next);
           }
@@ -711,7 +738,7 @@ export function LearningPage() {
           type="button"
           aria-label="打开学习会话列表"
           onClick={() => setSidebarOpen(true)}
-          className="absolute left-5 top-6 z-20 flex h-10 w-10 items-center justify-center rounded-full border border-black/10 bg-white/80 text-stone-600 shadow-sm backdrop-blur-md hover:text-cyan-800"
+          className="learning-sidebar-toggle absolute left-5 top-6 z-20 flex h-10 w-10 items-center justify-center rounded-full border border-black/10 bg-white/80 text-stone-600 shadow-sm backdrop-blur-md hover:text-cyan-800"
         >
           <Menu size={20} />
         </button>
@@ -721,12 +748,16 @@ export function LearningPage() {
             <LearningWorkspace
               key={record.id}
               sessionId={record.id}
+              playbackMode={
+                reviewSessionId === record.id ? "review" : "live"
+              }
               initialAudio={
                 wakeSessionId === record.id ? wakeAudio : null
               }
               conversationOptions={conversationOptions}
               voiceEnabled={devicePreferences.voiceEnabled}
               onUseTextMode={useTextMode}
+              onUseVoiceMode={useVoiceAndCameraMode}
               onLearnerInput={handleLearnerInput}
               onTurnsChange={handleTurnsChange}
               onBoardContextChange={handleBoardContextChange}

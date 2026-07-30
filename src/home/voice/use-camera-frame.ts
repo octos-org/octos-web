@@ -8,7 +8,7 @@ export interface CameraFrame {
   /** Last error (permission denied / no device / capture failure). */
   error: string | null;
   /** Request camera access and start the stream. */
-  start: () => Promise<void>;
+  start: () => Promise<boolean>;
   /** Stop the stream and release the device. */
   stop: () => void;
   /** Capture the current frame as a downscaled JPEG `File`, or `null` if the
@@ -81,6 +81,7 @@ export function useCameraFrame(): CameraFrame {
   }, []);
 
   const start = useCallback(async () => {
+    if (streamRef.current) return true;
     setError(null);
     try {
       const md = navigator.mediaDevices;
@@ -99,6 +100,7 @@ export function useCameraFrame(): CameraFrame {
       videoRef.current = video;
       setStream(stream);
       setActive(true);
+      return true;
     } catch (e) {
       console.error("[camera] start failed", e);
       setError(e instanceof Error ? e.message : "camera unavailable");
@@ -106,6 +108,7 @@ export function useCameraFrame(): CameraFrame {
       streamRef.current = null;
       videoRef.current = null;
       setStream(null);
+      return false;
     }
   }, []);
 

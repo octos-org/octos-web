@@ -61,9 +61,11 @@ describe("useCameraFrame", () => {
     getUserMedia.mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] });
     const { result } = renderHook(() => useCameraFrame());
 
+    let started = false;
     await act(async () => {
-      await result.current.start();
+      started = await result.current.start();
     });
+    expect(started).toBe(true);
     expect(result.current.active).toBe(true);
 
     const frame = await result.current.grabFrame();
@@ -75,10 +77,12 @@ describe("useCameraFrame", () => {
     getUserMedia.mockRejectedValue(new Error("Permission denied"));
     const { result } = renderHook(() => useCameraFrame());
 
+    let started = true;
     await act(async () => {
-      await result.current.start();
+      started = await result.current.start();
     });
 
+    expect(started).toBe(false);
     expect(result.current.active).toBe(false);
     expect(result.current.error).toContain("Permission denied");
   });
@@ -114,5 +118,18 @@ describe("useCameraFrame", () => {
       result.current.stop();
     });
     expect(result.current.stream).toBeNull();
+  });
+
+  it("reuses an active stream instead of requesting the camera twice", async () => {
+    const fakeStream = { getTracks: () => [{ stop: vi.fn() }] };
+    getUserMedia.mockResolvedValue(fakeStream);
+    const { result } = renderHook(() => useCameraFrame());
+
+    await act(async () => {
+      expect(await result.current.start()).toBe(true);
+      expect(await result.current.start()).toBe(true);
+    });
+
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
   });
 });

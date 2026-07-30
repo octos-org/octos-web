@@ -37,6 +37,7 @@ interface OllLessonRuntimeOptions {
   storageKey: string;
   autoPlay?: boolean;
   incremental?: boolean;
+  startAtEnd?: boolean;
 }
 
 function beatIds(operations: PlaybackOperation[]): string[] {
@@ -45,11 +46,25 @@ function beatIds(operations: PlaybackOperation[]): string[] {
     .map((operation) => operation.beat_id as string);
 }
 
+function advanceToAvailableEnd(session: BrowserLessonSession): void {
+  session.pause();
+  let remaining = session.operations.length + 1;
+  while (
+    remaining > 0 &&
+    session.status !== "completed" &&
+    session.status !== "waiting"
+  ) {
+    if (!session.advance()) break;
+    remaining -= 1;
+  }
+}
+
 export function useOllLessonRuntime({
   source,
   storageKey,
   autoPlay = false,
   incremental = false,
+  startAtEnd = false,
 }: OllLessonRuntimeOptions): OllLessonRuntimeController | null {
   const events = useMemo(
     () => (source ? parseCanonicalJsonl(source) : null),
@@ -74,12 +89,13 @@ export function useOllLessonRuntime({
     const unsubscribe = session.subscribe(() => {
       setRevision((revision) => revision + 1);
     });
-    if (autoPlay && session.status !== "completed") session.play();
+    if (startAtEnd) advanceToAvailableEnd(session);
+    else if (autoPlay && session.status !== "completed") session.play();
     return () => {
       unsubscribe();
       session.pause();
     };
-  }, [autoPlay, session]);
+  }, [autoPlay, session, startAtEnd]);
 
   const play = useCallback(() => session?.play(), [session]);
   const pause = useCallback(() => session?.pause(), [session]);
@@ -92,9 +108,13 @@ export function useOllLessonRuntime({
   const appendEvents = useCallback(
     (nextEvents: CanonicalEvent[]) => {
       if (!session) throw new Error("OLL Runtime 尚未初始化");
-      return session.appendEvents(nextEvents);
+      const result = session.appendEvents(nextEvents);
+      if (startAtEnd && result.accepted > 0) {
+        advanceToAvailableEnd(session);
+      }
+      return result;
     },
-    [session],
+    [session, startAtEnd],
   );
 
   if (!events || !session) return null;

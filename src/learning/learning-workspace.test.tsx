@@ -7,6 +7,10 @@ import { LearningWorkspace } from "./learning-workspace";
 const conversationMock = vi.hoisted(() => ({
   turns: [] as VoiceConversation["turns"],
   threads: [] as Thread[],
+  start: vi.fn(async () => undefined),
+  cameraActive: false,
+  cameraStream: null as MediaStream | null,
+  lastSentFrameUrl: null as string | null,
 }));
 const sessionFilesMock = vi.hoisted(() => ({
   getSessionFiles: vi.fn(async () => []),
@@ -34,12 +38,12 @@ vi.mock("@/home/voice/use-voice-conversation", () => ({
     lastAssistantText: conversationMock.turns.at(-1)?.assistantText ?? "",
     turns: conversationMock.turns,
     error: null,
-    start: vi.fn(),
+    start: conversationMock.start,
     stop: vi.fn(),
     interrupt: vi.fn(),
-    cameraActive: false,
-    cameraStream: null,
-    lastSentFrameUrl: null,
+    cameraActive: conversationMock.cameraActive,
+    cameraStream: conversationMock.cameraStream,
+    lastSentFrameUrl: conversationMock.lastSentFrameUrl,
     cameraError: null,
     toggleCamera: vi.fn(),
     generating: false,
@@ -54,6 +58,10 @@ describe("LearningWorkspace", () => {
     cleanup();
     conversationMock.turns = [];
     conversationMock.threads = [];
+    conversationMock.start.mockClear();
+    conversationMock.cameraActive = false;
+    conversationMock.cameraStream = null;
+    conversationMock.lastSentFrameUrl = null;
     sessionFilesMock.getSessionFiles.mockReset();
     sessionFilesMock.getSessionFiles.mockResolvedValue([]);
   });
@@ -62,6 +70,49 @@ describe("LearningWorkspace", () => {
     vi.useRealTimers();
     localStorage.clear();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("shows the live camera and the exact frame sent with the voice turn", () => {
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue();
+    conversationMock.cameraActive = true;
+    conversationMock.cameraStream = {
+      getTracks: () => [],
+    } as unknown as MediaStream;
+    conversationMock.lastSentFrameUrl = "blob:sent-frame";
+
+    render(
+      <LearningWorkspace
+        sessionId="learn-camera-feedback"
+        voiceEnabled
+        onBack={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("camera-preview")).toBeTruthy();
+    expect(screen.getByText("台灯画面")).toBeTruthy();
+    expect(
+      screen.getByAltText("本轮已发送给老师的画面").getAttribute("src"),
+    ).toBe("blob:sent-frame");
+    expect(screen.getByText("本轮已发送")).toBeTruthy();
+  });
+
+  it("lets text mode request voice and camera without leaving the lesson", async () => {
+    const onUseVoiceMode = vi.fn(async () => undefined);
+    render(
+      <LearningWorkspace
+        sessionId="learn-enable-voice"
+        voiceEnabled={false}
+        onUseVoiceMode={onUseVoiceMode}
+        onBack={vi.fn()}
+      />,
+    );
+
+    await act(async () => {
+      screen.getByRole("button", { name: "启用语音和摄像头" }).click();
+      await Promise.resolve();
+    });
+    expect(onUseVoiceMode).toHaveBeenCalledTimes(1);
   });
 
   it("does not project ordinary assistant prose onto the OLL whiteboard", () => {
@@ -185,7 +236,9 @@ describe("LearningWorkspace", () => {
       expect(screen.getByTestId("oll-controls")).toBeTruthy();
     });
     expect(screen.queryByText(fallbackReply)).toBeNull();
-    expect(screen.getByText("课程已经写到白板上，我们开始吧。")).toBeTruthy();
+    expect(
+      screen.queryByText("课程已经写到白板上，我们开始吧。"),
+    ).toBeNull();
   });
 
   it("restores an OLL lesson from durable session files after refresh", async () => {

@@ -12,6 +12,7 @@ import { uploadFiles } from "@/api/chat";
 import { getSessionFiles } from "@/api/sessions";
 import { sendMessage } from "@/runtime/ui-protocol-send";
 import { unlockAudio } from "@/home/voice/audio-playback";
+import { CameraPreview } from "@/home/voice/camera-preview";
 import {
   useVoiceConversation,
   type VoiceConversationOptions,
@@ -41,8 +42,10 @@ const geometryLessonEvents = parseCanonicalJsonl(geometryLessonSource);
 
 export interface LearningWorkspaceProps {
   sessionId: string;
+  playbackMode?: "live" | "review";
   voiceEnabled?: boolean;
   onUseTextMode?: () => void;
+  onUseVoiceMode?: () => Promise<void> | void;
   onLearnerInput?: (text: string) => void;
   initialAudio?: Blob | null;
   conversationOptions?: VoiceConversationOptions;
@@ -55,8 +58,10 @@ export interface LearningWorkspaceProps {
 
 export function LearningWorkspace({
   sessionId,
+  playbackMode = "live",
   voiceEnabled = true,
   onUseTextMode,
+  onUseVoiceMode,
   onLearnerInput,
   initialAudio,
   conversationOptions,
@@ -217,20 +222,32 @@ export function LearningWorkspace({
   const ollLesson = useOllLessonRuntime({
     source: ollOpenSource,
     storageKey: `octos-learning-oll:${sessionId}:${ollFixture ?? "none"}`,
-    autoPlay: Boolean(activeOllEvents),
+    autoPlay: Boolean(activeOllEvents) && playbackMode === "live",
     incremental: Boolean(activeOllEvents),
+    startAtEnd: Boolean(activeOllEvents) && playbackMode === "review",
   });
   const appendOllEvents = ollLesson?.appendEvents;
+  const appendedOllEventCountRef = useRef(1);
 
   useEffect(() => {
     if (!activeOllEvents || !appendOllEvents) return;
-    let eventIndex = 1;
+    if (appendedOllEventCountRef.current > activeOllEvents.length) {
+      appendedOllEventCountRef.current = 1;
+    }
+    if (playbackMode === "review") {
+      const pending = activeOllEvents.slice(appendedOllEventCountRef.current);
+      if (pending.length > 0) appendOllEvents(pending);
+      appendedOllEventCountRef.current = activeOllEvents.length;
+      return;
+    }
+    let eventIndex = appendedOllEventCountRef.current;
     let timer: number | undefined;
     const appendNext = () => {
       const event = activeOllEvents[eventIndex] as CanonicalEvent | undefined;
       if (!event) return;
       appendOllEvents([event]);
       eventIndex += 1;
+      appendedOllEventCountRef.current = eventIndex;
       if (eventIndex < activeOllEvents.length) {
         timer = window.setTimeout(appendNext, 240);
       }
@@ -239,7 +256,7 @@ export function LearningWorkspace({
     return () => {
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [activeOllEvents, appendOllEvents]);
+  }, [activeOllEvents, appendOllEvents, playbackMode]);
   useEffect(() => {
     if (ollLesson) {
       onBoardContextChange?.({
@@ -336,12 +353,25 @@ export function LearningWorkspace({
     }
   };
 
+  const handleUseVoiceMode = async () => {
+    setSendError(null);
+    try {
+      await onUseVoiceMode?.();
+    } catch (cause) {
+      setSendError(
+        cause instanceof Error
+          ? cause.message
+          : "无法启用麦克风和摄像头",
+      );
+    }
+  };
+
   const teacherSpeech = textTurnPending
     ? "我正在整理这道题，马上写到白板上。"
     : ollLesson
       ? ollLesson.activeSpeech || (ollLesson.completed
         ? "这节课讲完了，你可以缩放白板回顾刚才的内容。"
-        : "课程已经写到白板上，我们开始吧。")
+        : "")
       : conv.state === "thinking"
         ? "我正在准备白板课程。"
         : "";
@@ -394,7 +424,13 @@ export function LearningWorkspace({
               切换到文字
             </button>
           ) : (
-            <span className="learning-mode-label">文字模式</span>
+            <button
+              type="button"
+              className="learning-mode-button"
+              onClick={() => void handleUseVoiceMode()}
+            >
+              启用语音和摄像头
+            </button>
           )}
           <button
             type="button"
@@ -417,6 +453,23 @@ export function LearningWorkspace({
           />
         )}
       </main>
+
+      {voiceEnabled && (conv.cameraStream || conv.lastSentFrameUrl) && (
+        <div className="learning-camera-monitor" aria-label="摄像头画面">
+          {conv.cameraStream && (
+            <div className="learning-camera-frame">
+              <CameraPreview stream={conv.cameraStream} />
+              <span>台灯画面</span>
+            </div>
+          )}
+          {conv.lastSentFrameUrl && (
+            <div className="learning-camera-frame is-sent">
+              <img src={conv.lastSentFrameUrl} alt="本轮已发送给老师的画面" />
+              <span>本轮已发送</span>
+            </div>
+          )}
+        </div>
+      )}
 
       <OctosTeacher
         state={runtime.ready ? conv.state : "error"}

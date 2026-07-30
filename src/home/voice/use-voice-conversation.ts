@@ -307,6 +307,7 @@ export function useVoiceConversation(
   onExit?: () => void,
   options?: VoiceConversationOptions,
 ): VoiceConversation {
+  const buildTurnText = options?.buildTurnText;
   const threads = useRenderThreads(sessionId, historyTopic);
   const capture = useVoiceCapture();
   // Destructure the STABLE function refs (useVoiceCapture returns a fresh
@@ -505,7 +506,7 @@ export function useVoiceConversation(
         const currentFramePath =
           sentFrameIndex >= 0 ? paths[sentFrameIndex] : undefined;
         const text =
-          options?.buildTurnText?.({
+          buildTurnText?.({
             sessionId,
             turnId,
             mediaPaths: paths,
@@ -546,7 +547,7 @@ export function useVoiceConversation(
     [
       cameraGrab,
       historyTopic,
-      options?.buildTurnText,
+      buildTurnText,
       sessionId,
       showSentFrame,
     ],
@@ -781,9 +782,15 @@ export function useVoiceConversation(
     await Promise.resolve();
     if (startGenRef.current !== gen) return;
     if (options?.autoStartCamera) {
-      // Do not block the greeting on camera startup. The wake turn explicitly
-      // passes includeCamera=false; subsequent VAD turns use the live state.
-      void cameraStart();
+      // A Learn turn must know whether a camera frame is available before it
+      // begins accepting the learner's first utterance. Otherwise a fast first
+      // question races camera startup and silently degrades to audio-only.
+      const cameraReady = await cameraStart();
+      cameraActiveRef.current = cameraReady;
+      if (startGenRef.current !== gen) {
+        if (cameraReady) cameraStop();
+        return;
+      }
     }
     if (startOptions?.initialAudio) {
       await sendCapturedUtterance(
@@ -796,6 +803,7 @@ export function useVoiceConversation(
   }, [
     beginListening,
     cameraStart,
+    cameraStop,
     historyTopic,
     options?.autoStartCamera,
     options?.showExistingTurns,
