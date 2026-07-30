@@ -126,6 +126,11 @@ describe("OLL lesson artifacts", () => {
       "lesson.close",
     ]);
     expect(events[1]?.step?.beats[0]?.narration?.text).toBe("先写出核心结论。");
+    expect(events[0]?.board?.region_id).toBe("topic-server-turn-1");
+    const createdNode = events[1]?.step?.beats
+      .flatMap((beat) => Object.values(beat.stage).flat())
+      .find((action) => action.op === "board.create")?.node;
+    expect(createdNode?.region_id).toBe("topic-server-turn-1");
     vi.unstubAllGlobals();
   });
 
@@ -151,6 +156,15 @@ describe("OLL lesson artifacts", () => {
     expect(classroom.map((event) => event.sequence)).toEqual([0, 1, 2]);
     expect(new Set(classroom.map((event) => event.lesson_id)).size).toBe(1);
     expect(classroom[1]?.step?.id).not.toBe(classroom[2]?.step?.id);
+    const createdRegions = classroom.slice(1).map((event) =>
+      event.step?.beats
+        .flatMap((beat) => Object.values(beat.stage).flat())
+        .find((action) => action.op === "board.create")?.node?.region_id,
+    );
+    expect(createdRegions).toEqual([
+      "topic-server-turn-1",
+      "topic-server-turn-2",
+    ]);
     vi.unstubAllGlobals();
   });
 });

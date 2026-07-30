@@ -104,6 +104,7 @@ export async function loadOllLessonArtifact(
       boardId: `learning-board-${sessionId}`,
       baseRevision: 0,
       regionIntent: "new_topic",
+      regionId: `topic-${artifact.turnId}`,
     });
     reduceCanonicalEvents(events);
     return events;
@@ -130,14 +131,31 @@ export function composeOllClassroomEvents(
       region_intent: "new_topic",
     },
   }];
+  let activeRegionId = firstOpen.board?.region_id ?? firstOpen.lesson_id;
   for (const lesson of lessons) {
+    const open = lesson.find((event) => event.event === "lesson.open");
+    if (open?.board?.region_intent === "new_topic") {
+      activeRegionId = open.board.region_id ?? open.lesson_id;
+    } else if (open?.board?.region_id) {
+      activeRegionId = open.board.region_id;
+    }
     for (const event of lesson) {
       if (event.event !== "lesson.step") continue;
-      result.push({
+      const stepEvent = {
         ...structuredClone(event),
         lesson_id: lessonId,
         sequence: result.length,
-      });
+      };
+      for (const beat of stepEvent.step?.beats ?? []) {
+        for (const stage of Object.values(beat.stage)) {
+          for (const action of stage) {
+            if (action.op === "board.create" && action.node) {
+              action.node.region_id ??= activeRegionId;
+            }
+          }
+        }
+      }
+      result.push(stepEvent);
     }
   }
   return result;

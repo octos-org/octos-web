@@ -2,9 +2,20 @@ import { useEffect, useLayoutEffect, useRef } from "react";
 import {
   mountInfiniteBoard,
   type MountedInfiniteBoard,
+  type ViewportInsets,
 } from "octos-lesson-language/web-runtime";
 import type { OllLessonRuntimeController } from "./use-oll-lesson-runtime";
 import "octos-lesson-language/web-runtime/styles.css";
+
+function learningBoardInsets(viewport: HTMLElement): ViewportInsets {
+  const compact = viewport.clientWidth <= 900;
+  return {
+    top: compact ? 78 : 92,
+    right: compact ? 18 : 28,
+    bottom: compact ? 180 : 190,
+    left: compact ? 18 : 28,
+  };
+}
 
 export function OllLessonBoard({
   runtime,
@@ -18,6 +29,7 @@ export function OllLessonBoard({
     const viewport = viewportRef.current;
     if (!viewport) return;
     const mounted = mountInfiniteBoard(viewport);
+    mounted.view.setViewportInsets(learningBoardInsets(viewport));
     mountedRef.current = mounted;
     return () => {
       mountedRef.current = null;
@@ -35,7 +47,9 @@ export function OllLessonBoard({
   useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => mountedRef.current?.view.fit());
+    const observer = new ResizeObserver(() => {
+      mountedRef.current?.view.setViewportInsets(learningBoardInsets(viewport));
+    });
     observer.observe(viewport);
     return () => observer.disconnect();
   }, []);
