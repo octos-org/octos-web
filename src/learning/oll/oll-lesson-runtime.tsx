@@ -29,8 +29,14 @@ export function OllLessonBoard({
     const viewport = viewportRef.current;
     if (!viewport) return;
     const mounted = mountInfiniteBoard(viewport);
-    mounted.view.setViewportInsets(learningBoardInsets(viewport));
     mountedRef.current = mounted;
+    try {
+      mounted.view.setViewportInsets(learningBoardInsets(viewport));
+    } catch (cause) {
+      mountedRef.current = null;
+      mounted.destroy();
+      throw cause;
+    }
     return () => {
       mountedRef.current = null;
       mounted.destroy();
@@ -48,7 +54,10 @@ export function OllLessonBoard({
     const viewport = viewportRef.current;
     if (!viewport || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
-      mountedRef.current?.view.setViewportInsets(learningBoardInsets(viewport));
+      const mounted = mountedRef.current;
+      if (mounted) {
+        mounted.view.setViewportInsets(learningBoardInsets(viewport));
+      }
     });
     observer.observe(viewport);
     return () => observer.disconnect();

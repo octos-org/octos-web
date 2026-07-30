@@ -33,6 +33,7 @@ import {
   composeOllClassroomEvents,
   loadOllLessonArtifact,
 } from "./oll/oll-artifacts";
+import { ollPlaybackStorageKey } from "./oll/oll-playback-storage";
 import { useOllLessonRuntime } from "./oll/use-oll-lesson-runtime";
 import { OctosTeacher } from "./octos-teacher";
 import { StudentInputDock } from "./student-input-dock";
@@ -221,7 +222,7 @@ export function LearningWorkspace({
     : null;
   const ollLesson = useOllLessonRuntime({
     source: ollOpenSource,
-    storageKey: `octos-learning-oll:${sessionId}:${ollFixture ?? "none"}`,
+    storageKey: ollPlaybackStorageKey(sessionId, ollFixture),
     autoPlay: Boolean(activeOllEvents) && playbackMode === "live",
     incremental: Boolean(activeOllEvents),
     startAtEnd: Boolean(activeOllEvents) && playbackMode === "review",
