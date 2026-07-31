@@ -81,11 +81,19 @@ export function LearningWorkspace({
 }: LearningWorkspaceProps) {
   const runtime = useOminixRuntimeSummary();
   const threads = useRenderThreads(sessionId);
+  const [narrationSpeechActive, setNarrationSpeechActive] = useState(false);
+  const voiceConversationOptions = useMemo(
+    () => ({
+      ...conversationOptions,
+      externalSpeechActive: voiceEnabled && narrationSpeechActive,
+    }),
+    [conversationOptions, narrationSpeechActive, voiceEnabled],
+  );
   const conv = useVoiceConversation(
     sessionId,
     undefined,
     onVoiceExit ?? onBack,
-    conversationOptions,
+    voiceConversationOptions,
   );
   const [loadedOllArtifacts, setLoadedOllArtifacts] = useState<
     Record<string, CanonicalEvent[]>
@@ -146,7 +154,11 @@ export function LearningWorkspace({
   }, [ollFixture, sessionId]);
 
   useEffect(() => {
-    if (!voiceEnabled || !runtime.ready) return;
+    if (!voiceEnabled) {
+      conv.stop();
+      return;
+    }
+    if (!runtime.ready) return;
     unlockAudio();
     void conv.start(
       initialAudio ? { initialAudio, includeCamera: false } : undefined,
@@ -293,13 +305,12 @@ export function LearningWorkspace({
 
   const ollNarrationTts = useOllNarrationTts({
     enabled:
-      !voiceEnabled &&
       narrationAudioEnabled &&
       playbackMode === "live" &&
       Boolean(ollLesson),
     playing: ollLesson?.playing ?? false,
     text: ollLesson?.activeSpeech ?? "",
-    language: ollLesson?.language ?? "zh-CN",
+    onSpeakingChange: setNarrationSpeechActive,
   });
 
   const buildTurnText = useCallback(
@@ -371,6 +382,7 @@ export function LearningWorkspace({
   );
 
   const handleTeacherClick = () => {
+    unlockAudio();
     if (!voiceEnabled) {
       if (ollLesson) {
         if (ollLesson.playing) ollLesson.pause();
@@ -378,7 +390,6 @@ export function LearningWorkspace({
       }
       return;
     }
-    unlockAudio();
     if (conv.state === "speaking" || conv.state === "thinking") {
       conv.interrupt();
       ollLesson?.pause();
@@ -423,7 +434,11 @@ export function LearningWorkspace({
           <div className="learning-demo-controls" data-testid="oll-controls">
             <button
               type="button"
-              onClick={ollLesson.playing ? ollLesson.pause : ollLesson.play}
+              onClick={() => {
+                unlockAudio();
+                if (ollLesson.playing) ollLesson.pause();
+                else ollLesson.play();
+              }}
               aria-label={ollLesson.playing ? "暂停 OLL 课程" : "播放 OLL 课程"}
               disabled={ollLesson.completed}
             >
@@ -431,7 +446,10 @@ export function LearningWorkspace({
             </button>
             <button
               type="button"
-              onClick={ollLesson.nextBeat}
+              onClick={() => {
+                unlockAudio();
+                ollLesson.nextBeat();
+              }}
               aria-label="下一 OLL Beat"
               disabled={ollLesson.completed}
             >
@@ -439,29 +457,31 @@ export function LearningWorkspace({
             </button>
             <button
               type="button"
-              onClick={ollLesson.restart}
+              onClick={() => {
+                unlockAudio();
+                ollLesson.restart();
+              }}
               aria-label="重新播放 OLL 课程"
             >
               <RotateCcw size={16} />
             </button>
-            {!voiceEnabled ? (
-              <button
-                type="button"
-                onClick={() =>
-                  setNarrationAudioEnabled((enabled) => !enabled)
-                }
-                aria-label={
-                  narrationAudioEnabled
-                    ? "关闭课程旁白语音"
-                    : "开启课程旁白语音"
-                }
-                aria-pressed={narrationAudioEnabled}
-              >
-                {narrationAudioEnabled
-                  ? <Volume2 size={16} />
-                  : <VolumeX size={16} />}
-              </button>
-            ) : null}
+            <button
+              type="button"
+              onClick={() => {
+                unlockAudio();
+                setNarrationAudioEnabled((enabled) => !enabled)
+              }}
+              aria-label={
+                narrationAudioEnabled
+                  ? "关闭课程旁白语音"
+                  : "开启课程旁白语音"
+              }
+              aria-pressed={narrationAudioEnabled}
+            >
+              {narrationAudioEnabled
+                ? <Volume2 size={16} />
+                : <VolumeX size={16} />}
+            </button>
           </div>
         ) : null}
         <div className="learning-workspace-actions">

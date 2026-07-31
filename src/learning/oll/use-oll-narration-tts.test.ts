@@ -1,89 +1,126 @@
-import { act, renderHook } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useOllNarrationTts } from "./use-oll-narration-tts";
 
-class FakeUtterance {
-  text: string;
-  lang = "";
-  onend: (() => void) | null = null;
-  onerror: (() => void) | null = null;
+const mocks = vi.hoisted(() => ({
+  synthesizeSpeech: vi.fn(),
+  playAudioBlob: vi.fn(),
+  stopAudio: vi.fn(),
+}));
 
-  constructor(text: string) {
-    this.text = text;
-  }
-}
+vi.mock("@/api/voice", () => ({
+  synthesizeSpeech: mocks.synthesizeSpeech,
+}));
+vi.mock("@/home/voice/audio-playback", () => ({
+  playAudioBlob: mocks.playAudioBlob,
+  stopAudio: mocks.stopAudio,
+}));
 
 describe("useOllNarrationTts", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
+  beforeEach(() => {
+    mocks.synthesizeSpeech.mockReset();
+    mocks.playAudioBlob.mockReset();
+    mocks.stopAudio.mockReset();
+    mocks.synthesizeSpeech.mockResolvedValue(
+      new Blob(["audio"], { type: "audio/wav" }),
+    );
+    mocks.playAudioBlob.mockResolvedValue(true);
   });
 
-  it("OLL-TCH-002 speaks the active narration in text mode", () => {
-    const speak = vi.fn();
-    const cancel = vi.fn();
-    vi.stubGlobal("SpeechSynthesisUtterance", FakeUtterance);
-    vi.stubGlobal("speechSynthesis", { speak, cancel });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
-    const { rerender, unmount } = renderHook(
-      (props) => useOllNarrationTts(props),
-      {
-        initialProps: {
-          enabled: true,
-          playing: true,
-          text: "先从三出发。",
-          language: "zh-CN",
-        },
-      },
+  it("OLL-TCH-002 uses the profile-backed speech synthesis path", async () => {
+    const onSpeakingChange = vi.fn();
+    renderHook(() =>
+      useOllNarrationTts({
+        enabled: true,
+        playing: true,
+        text: "先从三出发。",
+        onSpeakingChange,
+      }),
     );
 
-    expect(speak).toHaveBeenCalledTimes(1);
-    const utterance = speak.mock.calls[0]![0] as FakeUtterance;
-    expect(utterance.text).toBe("先从三出发。");
-    expect(utterance.lang).toBe("zh-CN");
-
-    rerender({
-      enabled: true,
-      playing: true,
-      text: "",
-      language: "zh-CN",
-    });
-    expect(cancel).toHaveBeenCalled();
-    unmount();
+    await waitFor(() =>
+      expect(mocks.synthesizeSpeech).toHaveBeenCalledWith(
+        "先从三出发。",
+        expect.any(AbortSignal),
+      ),
+    );
+    await waitFor(() =>
+      expect(mocks.playAudioBlob).toHaveBeenCalledTimes(1),
+    );
+    expect(onSpeakingChange).toHaveBeenLastCalledWith(true);
+    const onEnded = mocks.playAudioBlob.mock.calls[0]?.[1] as
+      | (() => void)
+      | undefined;
+    act(() => onEnded?.());
+    expect(onSpeakingChange).toHaveBeenLastCalledWith(false);
   });
 
-  it("R-007 keeps narration playback independent when synthesis fails", () => {
-    const speak = vi.fn();
-    vi.stubGlobal("SpeechSynthesisUtterance", FakeUtterance);
-    vi.stubGlobal("speechSynthesis", { speak, cancel: vi.fn() });
+  it("cancels stale synthesis and playback when the Beat changes", async () => {
+    let firstSignal: AbortSignal | undefined;
+    mocks.synthesizeSpeech.mockImplementation(
+      (_text: string, signal: AbortSignal) => {
+        firstSignal ??= signal;
+        return Promise.resolve(new Blob(["audio"]));
+      },
+    );
+    const { rerender } = renderHook(
+      ({ text }) =>
+        useOllNarrationTts({
+          enabled: true,
+          playing: true,
+          text,
+        }),
+      { initialProps: { text: "第一段。" } },
+    );
 
+    rerender({ text: "第二段。" });
+
+    expect(firstSignal?.aborted).toBe(true);
+    expect(mocks.stopAudio).toHaveBeenCalled();
+    await waitFor(() =>
+      expect(mocks.synthesizeSpeech).toHaveBeenLastCalledWith(
+        "第二段。",
+        expect.any(AbortSignal),
+      ),
+    );
+  });
+
+  it("R-007 keeps visible narration independent when provider synthesis fails", async () => {
+    mocks.synthesizeSpeech.mockRejectedValue(new Error("provider down"));
     const { result } = renderHook(() =>
       useOllNarrationTts({
         enabled: true,
         playing: true,
         text: "旁白仍然可见。",
-        language: "zh-CN",
       }),
     );
-    const utterance = speak.mock.calls[0]![0] as FakeUtterance;
-    act(() => utterance.onerror?.());
-    expect(result.current.error).toBe(
-      "课程语音暂时不可用，旁白仍会显示。",
+
+    await waitFor(() =>
+      expect(result.current.error).toBe(
+        "课程语音暂时不可用，旁白仍会显示。",
+      ),
     );
+    expect(mocks.playAudioBlob).not.toHaveBeenCalled();
   });
 
-  it("does not speak while disabled or paused", () => {
-    const speak = vi.fn();
-    vi.stubGlobal("SpeechSynthesisUtterance", FakeUtterance);
-    vi.stubGlobal("speechSynthesis", { speak, cancel: vi.fn() });
-
-    renderHook(() =>
-      useOllNarrationTts({
-        enabled: false,
-        playing: true,
-        text: "不应朗读。",
-        language: "zh-CN",
-      }),
+  it("stops audio while disabled or paused", () => {
+    const { rerender } = renderHook(
+      ({ enabled, playing }) =>
+        useOllNarrationTts({
+          enabled,
+          playing,
+          text: "不应朗读。",
+        }),
+      { initialProps: { enabled: false, playing: true } },
     );
-    expect(speak).not.toHaveBeenCalled();
+    expect(mocks.synthesizeSpeech).not.toHaveBeenCalled();
+
+    act(() => rerender({ enabled: true, playing: false }));
+    expect(mocks.synthesizeSpeech).not.toHaveBeenCalled();
+    expect(mocks.stopAudio).toHaveBeenCalled();
   });
 });

@@ -26,6 +26,7 @@ import {
   extractProfileIdFromPayload,
   publicRequest,
   request,
+  requestBlob,
   getToken,
   setToken,
 } from "@/api/client";
@@ -138,6 +139,36 @@ beforeEach(() => {
   localStorage.setItem(TOKEN_KEY, "session-token");
   localStorage.setItem(ADMIN_TOKEN_KEY, "admin-token");
   installLocationStub("/app/dashboard");
+});
+
+describe("client.requestBlob", () => {
+  it("returns binary data with the caller's auth and profile scope", async () => {
+    localStorage.setItem("selected_profile", "learner-profile");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(new Blob(["audio"], { type: "audio/wav" }), {
+        status: 200,
+        headers: { "content-type": "audio/wav" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const audio = await requestBlob("/api/voice/synthesize", {
+      method: "POST",
+      body: JSON.stringify({ text: "你好。" }),
+    });
+
+    expect(audio.size).toBeGreaterThan(0);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/voice/synthesize",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: "Bearer session-token",
+          "X-Profile-Id": "learner-profile",
+        }),
+      }),
+    );
+  });
 });
 
 afterEach(() => {

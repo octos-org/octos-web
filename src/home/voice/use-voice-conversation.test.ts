@@ -664,11 +664,15 @@ describe("start() cancellation (post-unmount mic re-acquire)", () => {
     cameraMock.active = true;
     uploadFilesMock.mockResolvedValueOnce(["uploads/wake.wav"]);
     const buildTurnText = vi.fn(() => "[[LEARNING_SESSION]]");
-    const { result, unmount } = renderHook(() =>
-      useVoiceConversation("learn-wake-test", undefined, undefined, {
-        autoStartCamera: true,
-        buildTurnText,
-      }),
+    const { result, rerender, unmount } = renderHook(
+      ({ externalSpeechActive }) =>
+        useVoiceConversation("learn-wake-test", undefined, undefined, {
+          autoStartCamera: true,
+          buildTurnText,
+          playReplyAudio: false,
+          externalSpeechActive,
+        }),
+      { initialProps: { externalSpeechActive: false } },
     );
 
     await act(async () => {
@@ -694,6 +698,29 @@ describe("start() cancellation (post-unmount mic re-acquire)", () => {
         liveVideo: false,
       }),
     );
+    expect(sendMessageMock.mock.calls.at(-1)?.[0]).not.toHaveProperty(
+      "suppressReplyAudio",
+    );
+    const complete = sendMessageMock.mock.calls.at(-1)?.[0]?.onComplete as
+      | (() => void)
+      | undefined;
+    await act(async () => {
+      rerender({ externalSpeechActive: true });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      complete?.();
+      await Promise.resolve();
+    });
+    expect(captureStartMock).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      rerender({ externalSpeechActive: false });
+      await Promise.resolve();
+    });
+    expect(captureStartMock).toHaveBeenCalledTimes(2);
+    audioMock.stopAudio.mockClear();
+    act(() => result.current.stop());
+    expect(audioMock.stopAudio).not.toHaveBeenCalled();
     unmount();
   });
 });

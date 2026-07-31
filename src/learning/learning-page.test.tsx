@@ -163,6 +163,9 @@ describe("LearningPage", () => {
     expect(
       learningWorkspaceMock.props?.conversationOptions?.autoStartCamera,
     ).toBe(true);
+    expect(
+      learningWorkspaceMock.props?.conversationOptions?.playReplyAudio,
+    ).toBe(false);
     expect(listLearningSessions()).toEqual([]);
     expect(
       learningWorkspaceMock.props?.conversationOptions?.buildTurnText?.({

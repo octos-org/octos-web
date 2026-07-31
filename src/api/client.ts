@@ -255,6 +255,27 @@ export async function request<T>(
   return JSON.parse(text) as T;
 }
 
+/** Authenticated REST request whose successful response is binary data. */
+export async function requestBlob(
+  path: string,
+  options: RequestInit = {},
+): Promise<Blob> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(options.headers as Record<string, string>),
+  };
+  Object.assign(headers, buildApiHeaders());
+  const resp = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers,
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(text || `HTTP ${resp.status}`);
+  }
+  return resp.blob();
+}
+
 /**
  * Like {@link request} but WITHOUT the `/api/auth/*` 401/403 token reaper, and
  * without attaching the session token / profile headers. Used for pre-auth,

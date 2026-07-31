@@ -8,12 +8,16 @@ const conversationMock = vi.hoisted(() => ({
   turns: [] as VoiceConversation["turns"],
   threads: [] as Thread[],
   start: vi.fn(async () => undefined),
+  stop: vi.fn(),
   cameraActive: false,
   cameraStream: null as MediaStream | null,
   lastSentFrameUrl: null as string | null,
 }));
 const sessionFilesMock = vi.hoisted(() => ({
   getSessionFiles: vi.fn(async () => []),
+}));
+const narrationTtsMock = vi.hoisted(() => ({
+  useOllNarrationTts: vi.fn(() => ({ error: null })),
 }));
 
 vi.mock("@/api/chat", () => ({ uploadFiles: vi.fn() }));
@@ -22,6 +26,9 @@ vi.mock("@/api/sessions", () => ({
 }));
 vi.mock("@/runtime/ui-protocol-send", () => ({ sendMessage: vi.fn() }));
 vi.mock("@/home/voice/audio-playback", () => ({ unlockAudio: vi.fn() }));
+vi.mock("./oll/use-oll-narration-tts", () => ({
+  useOllNarrationTts: narrationTtsMock.useOllNarrationTts,
+}));
 vi.mock("@/store/projection-render-adapter", () => ({
   useRenderThreads: () => conversationMock.threads,
 }));
@@ -39,7 +46,7 @@ vi.mock("@/home/voice/use-voice-conversation", () => ({
     turns: conversationMock.turns,
     error: null,
     start: conversationMock.start,
-    stop: vi.fn(),
+    stop: conversationMock.stop,
     interrupt: vi.fn(),
     cameraActive: conversationMock.cameraActive,
     cameraStream: conversationMock.cameraStream,
@@ -59,9 +66,11 @@ describe("LearningWorkspace", () => {
     conversationMock.turns = [];
     conversationMock.threads = [];
     conversationMock.start.mockClear();
+    conversationMock.stop.mockClear();
     conversationMock.cameraActive = false;
     conversationMock.cameraStream = null;
     conversationMock.lastSentFrameUrl = null;
+    narrationTtsMock.useOllNarrationTts.mockClear();
     sessionFilesMock.getSessionFiles.mockReset();
     sessionFilesMock.getSessionFiles.mockResolvedValue([]);
   });
@@ -113,6 +122,27 @@ describe("LearningWorkspace", () => {
       await Promise.resolve();
     });
     expect(onUseVoiceMode).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases microphone capture when switching from voice to text mode", () => {
+    const { rerender } = render(
+      <LearningWorkspace
+        sessionId="learn-switch-to-text"
+        voiceEnabled
+        onBack={vi.fn()}
+      />,
+    );
+    expect(conversationMock.start).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <LearningWorkspace
+        sessionId="learn-switch-to-text"
+        voiceEnabled={false}
+        onBack={vi.fn()}
+      />,
+    );
+
+    expect(conversationMock.stop).toHaveBeenCalledTimes(1);
   });
 
   it("does not project ordinary assistant prose onto the OLL whiteboard", () => {
@@ -178,6 +208,30 @@ describe("LearningWorkspace", () => {
     });
     expect(screen.queryByRole("dialog", { name: "本课目录" })).toBeNull();
   });
+
+  it.each([
+    ["text", false],
+    ["voice", true],
+  ] as const)(
+    "enables the shared OLL narration path in %s input mode",
+    (_mode, voiceEnabled) => {
+      render(
+        <LearningWorkspace
+          sessionId={`learn-narration-${_mode}`}
+          voiceEnabled={voiceEnabled}
+          ollFixture="geometry-v2"
+          onBack={vi.fn()}
+        />,
+      );
+
+      expect(narrationTtsMock.useOllNarrationTts).toHaveBeenCalledWith(
+        expect.objectContaining({
+          enabled: true,
+          onSpeakingChange: expect.any(Function),
+        }),
+      );
+    },
+  );
 
   it("loads a delivered OLL Authoring artifact into the /learn Runtime", async () => {
     const fallbackReply = "这是主模型额外生成的完整文本讲解，不应显示在教师气泡里。";

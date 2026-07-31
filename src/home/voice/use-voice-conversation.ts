@@ -70,6 +70,16 @@ export interface VoiceConversationOptions {
   autoStartCamera?: boolean;
   /** Learning sessions show their recent hydrated history when resumed. */
   showExistingTurns?: boolean;
+  /**
+   * Whether this controller consumes assistant-reply audio attachments.
+   * Disable it when another playback surface owns the audible response.
+   */
+  playReplyAudio?: boolean;
+  /**
+   * Another audio surface currently owns speaker playback. Microphone capture
+   * pauses until that playback ends so the assistant cannot hear itself.
+   */
+  externalSpeechActive?: boolean;
 }
 
 export interface VoiceConversationTurn {
@@ -308,6 +318,8 @@ export function useVoiceConversation(
   options?: VoiceConversationOptions,
 ): VoiceConversation {
   const buildTurnText = options?.buildTurnText;
+  const playReplyAudio = options?.playReplyAudio !== false;
+  const externalSpeechActive = options?.externalSpeechActive === true;
   const threads = useRenderThreads(sessionId, historyTopic);
   const capture = useVoiceCapture();
   // Destructure the STABLE function refs (useVoiceCapture returns a fresh
@@ -388,6 +400,8 @@ export function useVoiceConversation(
   const replyTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const stateRef = useRef<VoiceState>("idle");
   stateRef.current = state;
+  const externalSpeechActiveRef = useRef(externalSpeechActive);
+  const previousExternalSpeechActiveRef = useRef(false);
   // Latest threads, for reading inside stable callbacks without churning deps.
   const threadsRef = useRef(threads);
   threadsRef.current = threads;
@@ -529,6 +543,11 @@ export function useVoiceConversation(
             if (activeTurnIdRef.current === turnId) {
               activeTurnIdRef.current = null;
             }
+            // When reply audio is owned elsewhere, there is no local playback
+            // queue to drive the usual queue-drained listening transition.
+            if (!playReplyAudio && stateRef.current === "thinking") {
+              void beginListeningRef.current();
+            }
           },
         });
         void beginBargeInRef.current();
@@ -548,12 +567,14 @@ export function useVoiceConversation(
       cameraGrab,
       historyTopic,
       buildTurnText,
+      playReplyAudio,
       sessionId,
       showSentFrame,
     ],
   );
 
   const beginBargeIn = useCallback(async () => {
+    if (externalSpeechActiveRef.current) return;
     if (stateRef.current !== "thinking" && stateRef.current !== "speaking") return;
     const captureMode = stateRef.current;
     if (captureModeRef.current === captureMode) return;
@@ -609,6 +630,11 @@ export function useVoiceConversation(
   // Define beginListening and playReply with useCallback; each calls the other via its ref.
 
   const beginListening = useCallback(async () => {
+    if (externalSpeechActiveRef.current) {
+      stateRef.current = "thinking";
+      setState("thinking");
+      return;
+    }
     stateRef.current = "listening";
     setState("listening");
     captureModeRef.current = "listening";
@@ -707,6 +733,29 @@ export function useVoiceConversation(
   beginBargeInRef.current = beginBargeIn;
   sendUtteranceRef.current = sendCapturedUtterance;
   drainQueueRef.current = drainQueue;
+
+  useEffect(() => {
+    const wasActive = previousExternalSpeechActiveRef.current;
+    externalSpeechActiveRef.current = externalSpeechActive;
+    previousExternalSpeechActiveRef.current = externalSpeechActive;
+    if (externalSpeechActive) {
+      speechInterruptArmedRef.current = false;
+      captureModeRef.current = null;
+      void captureStop();
+      if (stateRef.current === "listening") {
+        stateRef.current = "thinking";
+        setState("thinking");
+      }
+      return;
+    }
+    if (
+      wasActive &&
+      stateRef.current === "thinking" &&
+      activeTurnIdRef.current === null
+    ) {
+      void beginListeningRef.current();
+    }
+  }, [captureStop, externalSpeechActive]);
 
   const start = useCallback(async (
     startOptions?: VoiceConversationStartOptions,
@@ -834,10 +883,16 @@ export function useVoiceConversation(
     void captureStop();
     cameraStop();
     clearSentFrame();
-    releaseAudio();
+    if (playReplyAudio) releaseAudio();
     stateRef.current = "idle";
     setState("idle");
-  }, [captureStop, cameraStop, clearSentFrame, releaseAudio]);
+  }, [
+    captureStop,
+    cameraStop,
+    clearSentFrame,
+    playReplyAudio,
+    releaseAudio,
+  ]);
 
   // Leave the voice screen: one-shot. Tears down capture/audio/camera, then
   // invokes the navigation callback (e.g. navigate('/')). Called from the exit
@@ -862,6 +917,10 @@ export function useVoiceConversation(
   }, [cameraStart, cameraStop]);
 
   const interrupt = useCallback(() => {
+    if (externalSpeechActiveRef.current) {
+      releaseAudio();
+      return;
+    }
     if (stateRef.current === "speaking") {
       const turnId = speakingTurnIdRef.current;
       if (turnId) ignoredTurnIdsRef.current.add(turnId);
@@ -898,6 +957,7 @@ export function useVoiceConversation(
       historyTopic,
     );
     return ProjectionStore.onEnvelopeAdmitted((storeKey, envelope) => {
+      if (!playReplyAudio) return;
       if (
         storeKey !== projectionKey ||
         envelope.payload.type !== "file_attached" ||
@@ -926,7 +986,7 @@ export function useVoiceConversation(
       clearTimeout(graceTimerRef.current);
       void drainQueueRef.current();
     });
-  }, [historyTopic, sessionId]);
+  }, [historyTopic, playReplyAudio, sessionId]);
 
   useEffect(() => {
     if (captureError) {
@@ -939,6 +999,7 @@ export function useVoiceConversation(
   // from turn/completed timing (TTS is produced post-reply and can arrive
   // seconds after the turn completes). Only acts while "thinking".
   useEffect(() => {
+    if (!playReplyAudio) return;
     if (state !== "thinking" && state !== "speaking") return;
     const fresh = collectFreshAudioWithTurnIds(
       threads,
@@ -962,7 +1023,7 @@ export function useVoiceConversation(
     // interrupt by speaking. drainQueue is guarded by playingRef against
     // concurrent runs.
     void drainQueueRef.current();
-  }, [threads, state]);
+  }, [playReplyAudio, threads, state]);
 
   // Rich output: surface visual artifacts as they land (decoupled from turn
   // timing — HTML authoring / image gen can finish seconds after the reply).

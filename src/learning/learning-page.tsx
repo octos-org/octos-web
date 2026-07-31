@@ -476,6 +476,7 @@ export function LearningPage() {
         devicePreferences?.voiceEnabled === true &&
         devicePreferences.autoCamera,
       buildTurnText,
+      playReplyAudio: false,
       showExistingTurns: true,
     }),
     [buildTurnText, devicePreferences],

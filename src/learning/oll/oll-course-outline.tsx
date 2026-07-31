@@ -7,6 +7,7 @@ import {
   Play,
 } from "lucide-react";
 import type { PlaybackOutlineBeat, PlaybackOutlineStep } from "octos-lesson-language/player";
+import { unlockAudio } from "@/home/voice/audio-playback";
 import type { OllLessonRuntimeController } from "./use-oll-lesson-runtime";
 
 function itemState(
@@ -59,6 +60,7 @@ export function OllCourseOutline({
   };
 
   const select = (action: () => void) => {
+    unlockAudio();
     action();
     setOpen(false);
   };
