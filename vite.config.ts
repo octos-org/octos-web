@@ -5,10 +5,9 @@ import path from "path";
 
 export default defineConfig({
   optimizeDeps: {
-    // OLL is intentionally consumed through a local file: dependency while its
-    // Runtime is under active development. Serve its ESM output directly so a
-    // browser refresh cannot mix freshly HMR-ed host code with an older
-    // node_modules/.vite snapshot of the Runtime.
+    // OLL is pinned to an exact repository revision. Serve its ESM output
+    // directly so a browser refresh cannot mix freshly HMR-ed host code with
+    // an older node_modules/.vite snapshot of the Runtime.
     exclude: [
       "octos-lesson-language",
       "octos-lesson-language/player",

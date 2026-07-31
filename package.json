@@ -2,6 +2,7 @@
   "name": "octos-web",
   "private": true,
   "version": "0.0.0",
+  "packageManager": "pnpm@11.5.2",
   "type": "module",
   "scripts": {
     "copy-vad-assets": "node scripts/copy-vad-assets.mjs",
@@ -33,7 +34,7 @@
     "katex": "^0.16.38",
     "lucide-react": "^0.577.0",
     "mermaid": "^11.13.0",
-    "octos-lesson-language": "file:../octos-lesson-language",
+    "octos-lesson-language": "git+https://github.com/alan0x/octos-lesson-language.git#91087b9c8bbecf166a0c09b5006e7e224650ac99",
     "onnxruntime-web": "^1.26.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
