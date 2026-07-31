@@ -112,7 +112,10 @@ type UiSmokeMessage = {
 
 async function installWorkbenchMocks(
   page: Page,
-  options: { messages?: UiSmokeMessage[] } = {},
+  options: {
+    messages?: UiSmokeMessage[];
+    onSmartHomeCommand?: (method: string, params: unknown) => void;
+  } = {},
 ) {
   const messages = options.messages ?? [];
   const contentEntry = {
@@ -309,47 +312,18 @@ async function installWorkbenchMocks(
     await fulfillJson(route, { ok: true });
   });
 
-  await page.route((url) => url.pathname.startsWith("/smart-home-api/"), async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === "/smart-home-api/health") {
-      await fulfillJson(route, {
-        ok: true,
-        devices: mockSmartHomeDevices.length,
-        home_assistant: "connected",
-      });
-      return;
-    }
-    if (path === "/smart-home-api/devices") {
-      await fulfillJson(route, {
-        source: "home_assistant",
-        devices: mockSmartHomeDevices,
-      });
-      return;
-    }
-    if (path.startsWith("/smart-home-api/devices/")) {
-      await fulfillJson(route, { ok: true, source: "home_assistant" });
-      return;
-    }
-    if (path.startsWith("/smart-home-api/cameras/")) {
-      await fulfillJson(route, {
-        ok: true,
-        protocol: "rtc",
-        playback_url: "http://127.0.0.1:1984/stream.html?src=wangwang",
-      });
-      return;
-    }
-    await fulfillJson(route, { ok: true });
-  });
-
   await page.routeWebSocket(/\/api\/ui-protocol\/ws/, (ws) => {
     ws.onMessage((raw) => {
-      let message: { id?: string; method?: string };
+      let message: { id?: string; method?: string; params?: unknown };
       try {
         message = JSON.parse(raw.toString());
       } catch {
         return;
       }
       if (!message.id) return;
+      if (message.method?.startsWith("smart_home/")) {
+        options.onSmartHomeCommand?.(message.method, message.params);
+      }
       const result =
         message.method === "session/list"
           ? { sessions: [{ id: "web-ui-smoke", title: "Visual review", message_count: messages.length }] }
@@ -367,7 +341,21 @@ async function installWorkbenchMocks(
                       ? { files: [sessionFile] }
                       : message.method === "content/list"
                         ? { entries: [contentEntry], total: 1 }
-                        : { ok: true, replayed_envelopes: [] };
+                        : message.method === "smart_home/device.list"
+                          ? { devices: { source: "home_assistant", devices: mockSmartHomeDevices, ok: true } }
+                          : message.method === "smart_home/device.command"
+                            ? {}
+                            : message.method === "smart_home/camera.stream_start"
+                              ? {
+                                  stream: {
+                                    ok: true,
+                                    protocol: "rtc",
+                                    playback_url: "http://127.0.0.1:1984/stream.html?src=wangwang",
+                                  },
+                                }
+                              : message.method === "smart_home/camera.stream_stop"
+                                ? {}
+                                : { ok: true, replayed_envelopes: [] };
       ws.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
     });
   });
@@ -381,8 +369,13 @@ async function expectNoHorizontalOverflow(page: Page) {
 }
 
 test.describe("UI redesign shell smoke", () => {
+  let smartHomeCommands: Array<{ method: string; params: unknown }> = [];
+
   test.beforeEach(async ({ page }) => {
-    await installWorkbenchMocks(page);
+    smartHomeCommands = [];
+    await installWorkbenchMocks(page, {
+      onSmartHomeCommand: (method, params) => smartHomeCommands.push({ method, params }),
+    });
   });
 
   for (const viewport of [
@@ -630,16 +623,19 @@ test.describe("UI redesign shell smoke", () => {
     await expect(panel).toContainText("HDMI 1");
     await expect(panel.getByRole("button", { name: "Living Room TV Vol +" })).toBeVisible();
     await expect(panel.getByRole("button", { name: "Living Room TV Home" })).toBeVisible();
-    const tvVolumeAction = page.waitForRequest((request) => {
-      const url = new URL(request.url());
-      return (
-        request.method() === "POST" &&
-        url.pathname === "/smart-home-api/devices/real_tv" &&
-        request.postData()?.includes("action=volume_up") === true
-      );
-    });
     await panel.getByRole("button", { name: "Living Room TV Vol +" }).click();
-    await tvVolumeAction;
+    await expect
+      .poll(() =>
+        smartHomeCommands.some((cmd) => {
+          const params = cmd.params as { device_id?: string; params?: { action?: string } } | undefined;
+          return (
+            cmd.method === "smart_home/device.command" &&
+            params?.device_id === "real_tv" &&
+            params?.params?.action === "volume_up"
+          );
+        }),
+      )
+      .toBe(true);
 
     await panel.getByRole("button", { name: "Living Room TV close controls" }).click();
     await page.getByRole("button", { name: "Bedroom AC controls" }).click();

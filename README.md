@@ -386,11 +386,13 @@ The protocol contract lives in the octos repo (`crates/octos-core/src/ui_protoco
 | `BASE_URL` | Vite base path for subpath deploys (e.g. `/octos-web/`) |
 | `VITE_SKIP_AUTH` | Build-time: skip the auth guard — static/demo builds only |
 | `VITE_WEBHOOK_ORIGIN` / `VITE_PUBLIC_API_ORIGIN` | Origin used when displaying channel webhook URLs in settings (fallback order) |
-| `VITE_SMART_HOME_API_BASE` | Smart-home widget backend (dev proxy: `/smart-home-api` → `:8787`) |
 
 API and WebSocket traffic is always **same-origin** (`/api/...`) — serve the
 bundle behind the same host as `octos serve` (or a reverse proxy to it);
-there is no env var that repoints the API.
+there is no env var that repoints the API. The smart-home widget rides the
+same `/api/ui-protocol/ws` connection as everything else (`smart_home/*`
+methods) — the profile's bridge URL/token are configured server-side and
+never reach the browser.
 
 ## Deploying
 

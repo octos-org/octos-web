@@ -39,11 +39,6 @@ export default defineConfig({
           });
         },
       },
-      "/smart-home-api": {
-        target: "http://localhost:8787",
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/smart-home-api/, "/api"),
-      },
     },
   },
   build: {

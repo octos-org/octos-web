@@ -189,6 +189,20 @@ export const METHODS = {
   MEMORY_ENTITY: "memory/entity",
   CRON_LIST: "cron/list",
   CRON_TOGGLE: "cron/toggle",
+  // Smart-home bridge integration: device control/state now lives
+  // server-side (a per-profile Home Assistant-style bridge) instead of the
+  // browser talking to it directly. Camera video stays a direct
+  // browser-to-bridge stream; these methods only return the playback URL,
+  // never bridge credentials. Unlike the auxiliary group above, these were
+  // never a REST route (no `/api/my/smart-home*` ever existed), so they're
+  // gated on their own `smart_home.v1` capability rather than
+  // `auxiliary.rest_to_ws.v1` — see `UI_PROTOCOL_FEATURES` below. Mirrors
+  // `crates/octos-core/src/ui_protocol.rs::methods`.
+  SMART_HOME_STATUS_GET: "smart_home/status.get",
+  SMART_HOME_DEVICE_LIST: "smart_home/device.list",
+  SMART_HOME_DEVICE_COMMAND: "smart_home/device.command",
+  SMART_HOME_CAMERA_STREAM_START: "smart_home/camera.stream_start",
+  SMART_HOME_CAMERA_STREAM_STOP: "smart_home/camera.stream_stop",
   // server → client
   // Bridge hygiene (parity audit P3): `user_question/requested` is a
   // NOTIFICATION the server pushes; it was mislisted in the
@@ -311,6 +325,14 @@ export const UI_PROTOCOL_FEATURES = [
   "coding.autonomy.v1",
   "coding.loop_runtime.v1",
   "coding.goal_runtime.v1",
+  // Smart-home bridge integration (octos smart-home backend migration):
+  // gates `smart_home/status.get`, `smart_home/device.list`,
+  // `smart_home/device.command`, `smart_home/camera.stream_start`,
+  // `smart_home/camera.stream_stop`. Always negotiated like the other
+  // narrow capabilities above — unlike `auxiliary.rest_to_ws.v1` this
+  // isn't a staged REST-to-WS migration with a client-side kill switch,
+  // it's a new capability with no prior REST route to fall back to.
+  "smart_home.v1",
 ] as const;
 
 /**
