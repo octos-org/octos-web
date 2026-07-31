@@ -27,6 +27,7 @@ export interface OllLessonOutlineTopic {
 
 export interface OllLessonRuntimeController {
   title: string;
+  language: string;
   status: PlaybackStatus;
   cursor: number;
   totalOperations: number;
@@ -192,6 +193,7 @@ export function useOllLessonRuntime({
 
   return {
     title: events[0]?.lesson?.title ?? events[0]?.lesson_id ?? "OLL 课程",
+    language: events[0]?.lesson?.language ?? "zh-CN",
     status: session.status,
     cursor: projection.cursor,
     totalOperations: projection.total_operations,

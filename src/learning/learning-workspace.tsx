@@ -6,6 +6,8 @@ import {
   Pause,
   Play,
   RotateCcw,
+  Volume2,
+  VolumeX,
   X,
 } from "lucide-react";
 import { uploadFiles } from "@/api/chat";
@@ -28,6 +30,7 @@ import {
 import geometryLessonSource from "./oll/fixtures/geometry-auxiliary-line-v2.canonical.jsonl?raw";
 import { OllCourseOutline } from "./oll/oll-course-outline";
 import { OllLessonBoard } from "./oll/oll-lesson-runtime";
+import { useOllNarrationTts } from "./oll/use-oll-narration-tts";
 import {
   buildOllLessonTopics,
   collectOllLessonArtifacts,
@@ -106,6 +109,7 @@ export function LearningWorkspace({
   const [fileListError, setFileListError] = useState<string | null>(null);
   const [artifactError, setArtifactError] = useState<string | null>(null);
   const [textTurnPending, setTextTurnPending] = useState(false);
+  const [narrationAudioEnabled, setNarrationAudioEnabled] = useState(true);
 
   useEffect(() => {
     if (ollFixture) return;
@@ -287,6 +291,17 @@ export function LearningWorkspace({
     onBoardContextChange?.({});
   }, [ollLesson, onBoardContextChange]);
 
+  const ollNarrationTts = useOllNarrationTts({
+    enabled:
+      !voiceEnabled &&
+      narrationAudioEnabled &&
+      playbackMode === "live" &&
+      Boolean(ollLesson),
+    playing: ollLesson?.playing ?? false,
+    text: ollLesson?.activeSpeech ?? "",
+    language: ollLesson?.language ?? "zh-CN",
+  });
+
   const buildTurnText = useCallback(
     (turnId: string, mediaPaths: string[], visibleText: string) => {
       const context =
@@ -302,6 +317,7 @@ export function LearningWorkspace({
 
   const sendText = useCallback(
     async (text: string) => {
+      unlockAudio();
       setSendError(null);
       setTextTurnPending(true);
       onLearnerInput?.(text);
@@ -323,6 +339,7 @@ export function LearningWorkspace({
 
   const sendImage = useCallback(
     async (file: File) => {
+      unlockAudio();
       setSendError(null);
       try {
         setTextTurnPending(true);
@@ -427,6 +444,24 @@ export function LearningWorkspace({
             >
               <RotateCcw size={16} />
             </button>
+            {!voiceEnabled ? (
+              <button
+                type="button"
+                onClick={() =>
+                  setNarrationAudioEnabled((enabled) => !enabled)
+                }
+                aria-label={
+                  narrationAudioEnabled
+                    ? "关闭课程旁白语音"
+                    : "开启课程旁白语音"
+                }
+                aria-pressed={narrationAudioEnabled}
+              >
+                {narrationAudioEnabled
+                  ? <Volume2 size={16} />
+                  : <VolumeX size={16} />}
+              </button>
+            ) : null}
           </div>
         ) : null}
         <div className="learning-workspace-actions">
@@ -510,9 +545,17 @@ export function LearningWorkspace({
         onSendImage={sendImage}
       />
 
-      {(sendError || fileListError || artifactError || conv.error) && (
+      {(sendError ||
+        fileListError ||
+        artifactError ||
+        conv.error ||
+        ollNarrationTts.error) && (
         <div className="learning-error" role="alert">
-          {sendError ?? fileListError ?? artifactError ?? conv.error}
+          {sendError ??
+            fileListError ??
+            artifactError ??
+            conv.error ??
+            ollNarrationTts.error}
         </div>
       )}
       {voiceEnabled && !runtime.ready && !runtime.loading && (
