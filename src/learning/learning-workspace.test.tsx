@@ -1,6 +1,9 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { VoiceConversation } from "@/home/voice/use-voice-conversation";
+import type {
+  VoiceConversation,
+  VoiceConversationOptions,
+} from "@/home/voice/use-voice-conversation";
 import type { Thread } from "@/store/thread-store";
 import { LearningWorkspace } from "./learning-workspace";
 
@@ -9,9 +12,22 @@ const conversationMock = vi.hoisted(() => ({
   threads: [] as Thread[],
   start: vi.fn(async () => undefined),
   stop: vi.fn(),
+  startCamera: vi.fn(async () => true),
+  stopCamera: vi.fn(),
   cameraActive: false,
   cameraStream: null as MediaStream | null,
   lastSentFrameUrl: null as string | null,
+  cameraSettings: {
+    rotation: 0 as const,
+    mirror: false,
+    zoom: 1,
+    offsetX: 0,
+    offsetY: 0,
+    documentMode: true,
+  },
+  updateCameraSettings: vi.fn(),
+  resetCameraSettings: vi.fn(),
+  options: null as VoiceConversationOptions | null,
 }));
 const sessionFilesMock = vi.hoisted(() => ({
   getSessionFiles: vi.fn(async () => []),
@@ -26,6 +42,9 @@ vi.mock("@/api/sessions", () => ({
 }));
 vi.mock("@/runtime/ui-protocol-send", () => ({ sendMessage: vi.fn() }));
 vi.mock("@/home/voice/audio-playback", () => ({ unlockAudio: vi.fn() }));
+vi.mock("@/home/voice/camera-preview", () => ({
+  CameraPreview: () => <canvas data-testid="camera-preview" />,
+}));
 vi.mock("./oll/use-oll-narration-tts", () => ({
   useOllNarrationTts: narrationTtsMock.useOllNarrationTts,
 }));
@@ -39,7 +58,14 @@ vi.mock("@/home/use-ominix-runtime-summary", () => ({
   }),
 }));
 vi.mock("@/home/voice/use-voice-conversation", () => ({
-  useVoiceConversation: () => ({
+  useVoiceConversation: (
+    _sessionId: string,
+    _historyTopic: string | undefined,
+    _onExit: (() => void) | undefined,
+    options: VoiceConversationOptions,
+  ) => {
+    conversationMock.options = options;
+    return {
     state: "idle",
     lastUserText: "",
     lastAssistantText: conversationMock.turns.at(-1)?.assistantText ?? "",
@@ -52,12 +78,18 @@ vi.mock("@/home/voice/use-voice-conversation", () => ({
     cameraStream: conversationMock.cameraStream,
     lastSentFrameUrl: conversationMock.lastSentFrameUrl,
     cameraError: null,
+    cameraSettings: conversationMock.cameraSettings,
+    updateCameraSettings: conversationMock.updateCameraSettings,
+    resetCameraSettings: conversationMock.resetCameraSettings,
+    startCamera: conversationMock.startCamera,
+    stopCamera: conversationMock.stopCamera,
     toggleCamera: vi.fn(),
     generating: false,
     exiting: false,
     visual: null,
     dismissVisual: vi.fn(),
-  }),
+    };
+  },
 }));
 
 describe("LearningWorkspace", () => {
@@ -67,9 +99,22 @@ describe("LearningWorkspace", () => {
     conversationMock.threads = [];
     conversationMock.start.mockClear();
     conversationMock.stop.mockClear();
+    conversationMock.startCamera.mockClear();
+    conversationMock.stopCamera.mockClear();
     conversationMock.cameraActive = false;
     conversationMock.cameraStream = null;
     conversationMock.lastSentFrameUrl = null;
+    conversationMock.cameraSettings = {
+      rotation: 0,
+      mirror: false,
+      zoom: 1,
+      offsetX: 0,
+      offsetY: 0,
+      documentMode: true,
+    };
+    conversationMock.updateCameraSettings.mockClear();
+    conversationMock.resetCameraSettings.mockClear();
+    conversationMock.options = null;
     narrationTtsMock.useOllNarrationTts.mockClear();
     sessionFilesMock.getSessionFiles.mockReset();
     sessionFilesMock.getSessionFiles.mockResolvedValue([]);
@@ -99,11 +144,38 @@ describe("LearningWorkspace", () => {
     );
 
     expect(screen.getByTestId("camera-preview")).toBeTruthy();
-    expect(screen.getByText("台灯画面")).toBeTruthy();
+    expect(screen.getByText("老师看到的画面")).toBeTruthy();
     expect(
       screen.getByAltText("本轮已发送给老师的画面").getAttribute("src"),
     ).toBe("blob:sent-frame");
     expect(screen.getByText("本轮已发送")).toBeTruthy();
+  });
+
+  it("lets the learner calibrate the exact camera frame sent to the teacher", async () => {
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue();
+    conversationMock.cameraActive = true;
+    conversationMock.cameraStream = {
+      getTracks: () => [],
+    } as unknown as MediaStream;
+
+    render(
+      <LearningWorkspace
+        sessionId="learn-camera-calibration"
+        voiceEnabled
+        onBack={vi.fn()}
+      />,
+    );
+
+    await act(async () => {
+      screen.getByRole("button", { name: "调整摄像头画面" }).click();
+    });
+    screen.getByRole("button", { name: "向右旋转摄像头画面" }).click();
+    expect(conversationMock.updateCameraSettings).toHaveBeenCalledWith({
+      rotation: 90,
+    });
+    expect(
+      screen.getByRole("button", { name: /试卷清晰模式/ }).getAttribute("aria-pressed"),
+    ).toBe("true");
   });
 
   it("lets text mode request voice and camera without leaving the lesson", async () => {
@@ -122,6 +194,28 @@ describe("LearningWorkspace", () => {
       await Promise.resolve();
     });
     expect(onUseVoiceMode).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps camera calibration available in text mode and releases its temporary preview", async () => {
+    render(
+      <LearningWorkspace
+        sessionId="learn-camera-settings-in-text-mode"
+        voiceEnabled={false}
+        onBack={vi.fn()}
+      />,
+    );
+
+    const adjustButton = screen.getByRole("button", { name: "调整摄像头画面" });
+    expect(adjustButton).toBeTruthy();
+    await act(async () => {
+      adjustButton.click();
+      await Promise.resolve();
+    });
+
+    expect(conversationMock.startCamera).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("dialog", { name: "调整老师看到的画面" })).toBeTruthy();
+    screen.getByRole("button", { name: "关闭摄像头画面设置" }).click();
+    expect(conversationMock.stopCamera).toHaveBeenCalledTimes(1);
   });
 
   it("releases microphone capture when switching from voice to text mode", () => {
@@ -168,6 +262,47 @@ describe("LearningWorkspace", () => {
     expect(screen.getByText("向 Octos 提问，我们从这里开始")).toBeTruthy();
     expect(screen.queryByText(longReply)).toBeNull();
     expect(screen.queryByRole("button", { name: "下一步" })).toBeNull();
+  });
+
+  it("speaks a completed plain reply and marks the old board as unchanged", async () => {
+    vi.useFakeTimers();
+    conversationMock.turns = [{
+      id: "camera-clarification",
+      userText: "这道题怎么写",
+      assistantText: "画面有些模糊，请把试卷转正并移近一点。",
+      awaitingTranscript: false,
+    }];
+    const view = render(
+      <LearningWorkspace
+        sessionId="learn-camera-clarification"
+        voiceEnabled
+        onBack={vi.fn()}
+      />,
+    );
+
+    act(() => {
+      conversationMock.options?.onTurnComplete?.("camera-clarification");
+      view.rerender(
+        <LearningWorkspace
+          sessionId="learn-camera-clarification"
+          voiceEnabled
+          onBack={vi.fn()}
+        />,
+      );
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2_600);
+    });
+
+    expect(narrationTtsMock.useOllNarrationTts).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        enabled: true,
+        playing: true,
+        text: "画面有些模糊，请把试卷转正并移近一点。",
+        narrationId: "plain-reply:camera-clarification",
+      }),
+    );
+    expect(screen.getByRole("status").textContent).toContain("本轮没有更新白板");
   });
 
   it("feeds the OLL fixture into the real /learn Runtime as incremental events", () => {
@@ -232,6 +367,21 @@ describe("LearningWorkspace", () => {
       );
     },
   );
+
+  it("uses the shared TTS path when replaying a saved lesson", () => {
+    render(
+      <LearningWorkspace
+        sessionId="learn-narration-review"
+        playbackMode="review"
+        ollFixture="geometry-v2"
+        onBack={vi.fn()}
+      />,
+    );
+
+    expect(narrationTtsMock.useOllNarrationTts).toHaveBeenCalledWith(
+      expect.objectContaining({ enabled: true }),
+    );
+  });
 
   it("loads a delivered OLL Authoring artifact into the /learn Runtime", async () => {
     const fallbackReply = "这是主模型额外生成的完整文本讲解，不应显示在教师气泡里。";

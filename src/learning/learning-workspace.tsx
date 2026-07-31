@@ -6,6 +6,7 @@ import {
   Pause,
   Play,
   RotateCcw,
+  Settings2,
   Volume2,
   VolumeX,
   X,
@@ -16,6 +17,9 @@ import { sendMessage } from "@/runtime/ui-protocol-send";
 import { unlockAudio } from "@/home/voice/audio-playback";
 import { CameraPreview } from "@/home/voice/camera-preview";
 import {
+  DEFAULT_CAMERA_FRAME_SETTINGS,
+} from "@/home/voice/use-camera-frame";
+import {
   useVoiceConversation,
   type VoiceConversationOptions,
   type VoiceConversationTurn,
@@ -23,6 +27,7 @@ import {
 import { useOminixRuntimeSummary } from "@/home/use-ominix-runtime-summary";
 import { useRenderThreads } from "@/store/projection-render-adapter";
 import { InfiniteBoard } from "./board/infinite-board";
+import { CameraSettingsDialog } from "./camera-settings-dialog";
 import {
   mergeSessionBoardPackets,
   type LearningBoardContext,
@@ -82,12 +87,25 @@ export function LearningWorkspace({
   const runtime = useOminixRuntimeSummary();
   const threads = useRenderThreads(sessionId);
   const [narrationSpeechActive, setNarrationSpeechActive] = useState(false);
+  const [completedTurnId, setCompletedTurnId] = useState<string | null>(null);
+  const [plainReply, setPlainReply] = useState<{
+    turnId: string;
+    text: string;
+  } | null>(null);
+  const [plainReplySpoken, setPlainReplySpoken] = useState(false);
+  const handleTurnComplete = useCallback((turnId: string) => {
+    setPlainReply(null);
+    setPlainReplySpoken(false);
+    setCompletedTurnId(turnId);
+    conversationOptions?.onTurnComplete?.(turnId);
+  }, [conversationOptions]);
   const voiceConversationOptions = useMemo(
     () => ({
       ...conversationOptions,
       externalSpeechActive: voiceEnabled && narrationSpeechActive,
+      onTurnComplete: handleTurnComplete,
     }),
-    [conversationOptions, narrationSpeechActive, voiceEnabled],
+    [conversationOptions, handleTurnComplete, narrationSpeechActive, voiceEnabled],
   );
   const conv = useVoiceConversation(
     sessionId,
@@ -118,6 +136,49 @@ export function LearningWorkspace({
   const [artifactError, setArtifactError] = useState<string | null>(null);
   const [textTurnPending, setTextTurnPending] = useState(false);
   const [narrationAudioEnabled, setNarrationAudioEnabled] = useState(true);
+  const [cameraSettingsOpen, setCameraSettingsOpen] = useState(false);
+  const [temporaryCameraPreview, setTemporaryCameraPreview] = useState(false);
+  const temporaryCameraPreviewRef = useRef(false);
+  const cameraPreviewRequestRef = useRef(0);
+  const cameraSettings = conv.cameraSettings ?? DEFAULT_CAMERA_FRAME_SETTINGS;
+  const startCamera = conv.startCamera;
+  const stopCamera = conv.stopCamera;
+  const completedArtifactFilename = completedTurnId
+    ? `${completedTurnId}.octos-lesson.json`
+    : null;
+  const completedTurnHasArtifact = Boolean(
+    completedArtifactFilename && ollArtifacts.some((artifact) =>
+      artifact.filename.replaceAll("\\", "/").split("/").at(-1) === completedArtifactFilename
+    ),
+  );
+  const completedAssistantText = completedTurnId
+    ? conv.turns.find((candidate) => candidate.id === completedTurnId)?.assistantText.trim() ?? ""
+    : "";
+
+  useEffect(() => {
+    if (!completedTurnId) return;
+    if (completedTurnHasArtifact || !completedAssistantText) return;
+    const timer = window.setTimeout(() => {
+      setPlainReply({ turnId: completedTurnId, text: completedAssistantText });
+      setCompletedTurnId(null);
+    }, 2_500);
+    return () => window.clearTimeout(timer);
+  }, [completedAssistantText, completedTurnHasArtifact, completedTurnId]);
+
+  useEffect(() => {
+    if (!plainReply) return;
+    const artifactFilename = `${plainReply.turnId}.octos-lesson.json`;
+    if (ollArtifacts.some((artifact) =>
+      artifact.filename.replaceAll("\\", "/").split("/").at(-1) === artifactFilename
+    )) {
+      const timer = window.setTimeout(() => {
+        setPlainReply(null);
+        setPlainReplySpoken(false);
+      }, 0);
+      return () => window.clearTimeout(timer);
+    }
+    return undefined;
+  }, [ollArtifacts, plainReply]);
 
   useEffect(() => {
     if (ollFixture) return;
@@ -258,6 +319,7 @@ export function LearningWorkspace({
     storageKey: ollPlaybackStorageKey(sessionId, ollFixture),
     autoPlay: Boolean(activeOllEvents) && playbackMode === "live",
     incremental: Boolean(activeOllEvents),
+    narrationTiming: "external",
     startAtEnd: Boolean(activeOllEvents) && playbackMode === "review",
     topics: activeOllTopics,
   });
@@ -303,14 +365,31 @@ export function LearningWorkspace({
     onBoardContextChange?.({});
   }, [ollLesson, onBoardContextChange]);
 
+  const ollNarrationActive = Boolean(
+    ollLesson?.playing && ollLesson.activeSpeech.trim(),
+  );
+  const plainReplyNarrationId = plainReply && !plainReplySpoken
+    ? `plain-reply:${plainReply.turnId}`
+    : undefined;
+  const completeOllNarration = ollLesson?.completeNarration;
+  const handleNarrationComplete = useCallback((narrationId: string) => {
+    if (narrationId.startsWith("plain-reply:")) {
+      setPlainReplySpoken(true);
+      return;
+    }
+    completeOllNarration?.(narrationId);
+  }, [completeOllNarration]);
   const ollNarrationTts = useOllNarrationTts({
-    enabled:
-      narrationAudioEnabled &&
-      playbackMode === "live" &&
-      Boolean(ollLesson),
-    playing: ollLesson?.playing ?? false,
-    text: ollLesson?.activeSpeech ?? "",
+    enabled: narrationAudioEnabled && (Boolean(ollLesson) || Boolean(plainReply)),
+    playing: ollNarrationActive || Boolean(plainReplyNarrationId),
+    text: ollNarrationActive
+      ? ollLesson?.activeSpeech ?? ""
+      : plainReply?.text ?? "",
+    narrationId: ollNarrationActive
+      ? ollLesson?.currentBeatId
+      : plainReplyNarrationId,
     onSpeakingChange: setNarrationSpeechActive,
+    onPlaybackComplete: handleNarrationComplete,
   });
 
   const buildTurnText = useCallback(
@@ -338,14 +417,17 @@ export function LearningWorkspace({
         text: buildTurnText(turnId, [], text),
         media: [],
         clientMessageId: turnId,
-        onComplete: () => setTextTurnPending(false),
+        onComplete: () => {
+          setTextTurnPending(false);
+          handleTurnComplete(turnId);
+        },
         onError: (error) => {
           setTextTurnPending(false);
           setSendError(error.message || "发送失败");
         },
       });
     },
-    [buildTurnText, onLearnerInput, sessionId],
+    [buildTurnText, handleTurnComplete, onLearnerInput, sessionId],
   );
 
   const sendImage = useCallback(
@@ -367,7 +449,10 @@ export function LearningWorkspace({
           ),
           media: paths,
           clientMessageId: turnId,
-          onComplete: () => setTextTurnPending(false),
+          onComplete: () => {
+            setTextTurnPending(false);
+            handleTurnComplete(turnId);
+          },
           onError: (error) => {
             setTextTurnPending(false);
             setSendError(error.message || "图片发送失败");
@@ -378,7 +463,7 @@ export function LearningWorkspace({
         setSendError(cause instanceof Error ? cause.message : "图片发送失败");
       }
     },
-    [buildTurnText, onLearnerInput, sessionId],
+    [buildTurnText, handleTurnComplete, onLearnerInput, sessionId],
   );
 
   const handleTeacherClick = () => {
@@ -413,7 +498,49 @@ export function LearningWorkspace({
     }
   };
 
-  const teacherSpeech = textTurnPending
+  const closeCameraSettings = useCallback(() => {
+    cameraPreviewRequestRef.current += 1;
+    setCameraSettingsOpen(false);
+    if (temporaryCameraPreviewRef.current) {
+      temporaryCameraPreviewRef.current = false;
+      setTemporaryCameraPreview(false);
+      stopCamera();
+    }
+  }, [stopCamera]);
+
+  const openCameraSettings = useCallback(async () => {
+    setCameraSettingsOpen(true);
+    if (conv.cameraActive || conv.cameraStream) return;
+    const request = ++cameraPreviewRequestRef.current;
+    const started = await startCamera();
+    if (cameraPreviewRequestRef.current !== request) {
+      if (started) stopCamera();
+      return;
+    }
+    temporaryCameraPreviewRef.current = started;
+    setTemporaryCameraPreview(started);
+  }, [conv.cameraActive, conv.cameraStream, startCamera, stopCamera]);
+
+  useEffect(() => {
+    if (!cameraSettingsOpen) return;
+    const priorOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeCameraSettings();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = priorOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [cameraSettingsOpen, closeCameraSettings]);
+
+  useEffect(() => () => {
+    cameraPreviewRequestRef.current += 1;
+    if (temporaryCameraPreviewRef.current) stopCamera();
+  }, [stopCamera]);
+
+  const teacherSpeech = plainReply?.text ?? (textTurnPending
     ? "我正在整理这道题，马上写到白板上。"
     : ollLesson
       ? ollLesson.activeSpeech || (ollLesson.completed
@@ -421,7 +548,7 @@ export function LearningWorkspace({
         : "")
       : conv.state === "thinking"
         ? "我正在准备白板课程。"
-        : "";
+        : "");
 
   return (
     <div className="learning-workspace">
@@ -504,6 +631,16 @@ export function LearningWorkspace({
           )}
           <button
             type="button"
+            className="learning-camera-calibration-button"
+            onClick={() => void openCameraSettings()}
+            aria-label="调整摄像头画面"
+            aria-expanded={cameraSettingsOpen}
+          >
+            <Settings2 size={16} />
+            <span>调整画面</span>
+          </button>
+          <button
+            type="button"
             className="learning-exit-button"
             onClick={onBack}
             aria-label="退出学习"
@@ -528,8 +665,11 @@ export function LearningWorkspace({
         <div className="learning-camera-monitor" aria-label="摄像头画面">
           {conv.cameraStream && (
             <div className="learning-camera-frame">
-              <CameraPreview stream={conv.cameraStream} />
-              <span>台灯画面</span>
+              <CameraPreview
+                stream={conv.cameraStream}
+                settings={cameraSettings}
+              />
+              <span>老师看到的画面</span>
             </div>
           )}
           {conv.lastSentFrameUrl && (
@@ -541,11 +681,36 @@ export function LearningWorkspace({
         </div>
       )}
 
+      {cameraSettingsOpen && (
+        <CameraSettingsDialog
+          stream={conv.cameraStream}
+          settings={cameraSettings}
+          error={conv.cameraError}
+          temporaryPreview={temporaryCameraPreview}
+          onChange={conv.updateCameraSettings}
+          onReset={conv.resetCameraSettings}
+          onClose={closeCameraSettings}
+        />
+      )}
+
       <OctosTeacher
         state={runtime.ready ? conv.state : "error"}
         speech={teacherSpeech}
         onClick={handleTeacherClick}
       />
+
+      {plainReply && (
+        <div className="learning-turn-notice" role="status">
+          本轮没有更新白板，当前画面仍是上一节课程。
+        </div>
+      )}
+      {!plainReply && !completedTurnHasArtifact && (
+        textTurnPending || conv.state === "thinking" || Boolean(completedTurnId)
+      ) && (
+        <div className="learning-turn-notice" role="status">
+          正在处理本轮问题，白板暂未更新。
+        </div>
+      )}
 
       {ollLesson ? <OllCourseOutline runtime={ollLesson} /> : null}
 

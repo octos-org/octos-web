@@ -9,7 +9,9 @@ export interface OllNarrationTtsOptions {
   enabled: boolean;
   playing: boolean;
   text: string;
+  narrationId?: string;
   onSpeakingChange?: (speaking: boolean) => void;
+  onPlaybackComplete?: (narrationId: string) => void;
 }
 
 export interface OllNarrationTtsState {
@@ -26,7 +28,9 @@ export function useOllNarrationTts({
   enabled,
   playing,
   text,
+  narrationId,
   onSpeakingChange,
+  onPlaybackComplete,
 }: OllNarrationTtsOptions): OllNarrationTtsState {
   const normalizedText = text.trim();
   const [failure, setFailure] = useState<{
@@ -37,10 +41,17 @@ export function useOllNarrationTts({
   useEffect(() => {
     const request = new AbortController();
     let current = true;
+    let completed = false;
+    const completePlayback = () => {
+      if (!current || completed || !narrationId) return;
+      completed = true;
+      onPlaybackComplete?.(narrationId);
+    };
 
     if (!enabled || !playing || !normalizedText) {
       onSpeakingChange?.(false);
       stopAudio();
+      if (!enabled && playing && normalizedText) completePlayback();
       return () => {
         current = false;
         request.abort();
@@ -55,12 +66,15 @@ export function useOllNarrationTts({
         const started = await playAudioBlob(
           audio,
           () => {
-            if (current) onSpeakingChange?.(false);
+            if (!current) return;
+            onSpeakingChange?.(false);
+            completePlayback();
           },
           request.signal,
         );
         if (!started && current) {
           onSpeakingChange?.(false);
+          completePlayback();
           setFailure({
             text: normalizedText,
             message: "当前设备无法播放课程语音，旁白仍会显示。",
@@ -76,6 +90,7 @@ export function useOllNarrationTts({
           return;
         }
         onSpeakingChange?.(false);
+        completePlayback();
         setFailure({
           text: normalizedText,
           message: "课程语音暂时不可用，旁白仍会显示。",
@@ -88,7 +103,14 @@ export function useOllNarrationTts({
       onSpeakingChange?.(false);
       stopAudio();
     };
-  }, [enabled, normalizedText, onSpeakingChange, playing]);
+  }, [
+    enabled,
+    narrationId,
+    normalizedText,
+    onPlaybackComplete,
+    onSpeakingChange,
+    playing,
+  ]);
 
   return {
     error:

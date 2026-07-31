@@ -51,6 +51,7 @@ export interface OllLessonRuntimeController {
   playStep(stepId: string): void;
   viewBeat(beatId: string): void;
   playBeat(beatId: string): void;
+  completeNarration(beatId: string): void;
   appendEvents(events: CanonicalEvent[]): PlaybackAppendResult;
 }
 
@@ -59,6 +60,7 @@ interface OllLessonRuntimeOptions {
   storageKey: string;
   autoPlay?: boolean;
   incremental?: boolean;
+  narrationTiming?: "estimated" | "external";
   startAtEnd?: boolean;
   topics?: OllLessonTopicDefinition[];
 }
@@ -87,6 +89,7 @@ export function useOllLessonRuntime({
   storageKey,
   autoPlay = false,
   incremental = false,
+  narrationTiming = "estimated",
   startAtEnd = false,
   topics = [],
 }: OllLessonRuntimeOptions): OllLessonRuntimeController | null {
@@ -101,10 +104,10 @@ export function useOllLessonRuntime({
             events,
             new LocalPlaybackStore(),
             storageKey,
-            { incremental },
+            { incremental, narrationTiming },
           )
         : null,
-    [events, incremental, storageKey],
+    [events, incremental, narrationTiming, storageKey],
   );
   const [, setRevision] = useState(0);
 
@@ -147,6 +150,10 @@ export function useOllLessonRuntime({
     session.seekToBeat(beatId, "start");
     session.play();
   }, [session]);
+  const completeNarration = useCallback(
+    (beatId: string) => session?.completeNarration(beatId),
+    [session],
+  );
   const appendEvents = useCallback(
     (nextEvents: CanonicalEvent[]) => {
       if (!session) throw new Error("OLL Runtime 尚未初始化");
@@ -217,6 +224,7 @@ export function useOllLessonRuntime({
     playStep,
     viewBeat,
     playBeat,
+    completeNarration,
     appendEvents,
   };
 }

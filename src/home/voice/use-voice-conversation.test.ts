@@ -54,6 +54,16 @@ const cameraMock = vi.hoisted(() => ({
   start: vi.fn(async () => true),
   stop: vi.fn(),
   grabFrame: vi.fn(async () => null),
+  settings: {
+    rotation: 0,
+    mirror: false,
+    zoom: 1,
+    offsetX: 0,
+    offsetY: 0,
+    documentMode: true,
+  },
+  updateSettings: vi.fn(),
+  resetSettings: vi.fn(),
 }));
 
 vi.mock("./use-camera-frame", () => ({
@@ -664,6 +674,7 @@ describe("start() cancellation (post-unmount mic re-acquire)", () => {
     cameraMock.active = true;
     uploadFilesMock.mockResolvedValueOnce(["uploads/wake.wav"]);
     const buildTurnText = vi.fn(() => "[[LEARNING_SESSION]]");
+    const onTurnComplete = vi.fn();
     const { result, rerender, unmount } = renderHook(
       ({ externalSpeechActive }) =>
         useVoiceConversation("learn-wake-test", undefined, undefined, {
@@ -671,6 +682,7 @@ describe("start() cancellation (post-unmount mic re-acquire)", () => {
           buildTurnText,
           playReplyAudio: false,
           externalSpeechActive,
+          onTurnComplete,
         }),
       { initialProps: { externalSpeechActive: false } },
     );
@@ -712,6 +724,7 @@ describe("start() cancellation (post-unmount mic re-acquire)", () => {
       complete?.();
       await Promise.resolve();
     });
+    expect(onTurnComplete).toHaveBeenCalledTimes(1);
     expect(captureStartMock).toHaveBeenCalledTimes(1);
     await act(async () => {
       rerender({ externalSpeechActive: false });

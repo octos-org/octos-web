@@ -11,7 +11,10 @@ import * as ProjectionStore from "@/store/projection-store";
 import { buildFileUrl } from "@/api/files";
 import { buildApiHeaders } from "@/api/client";
 import { useVoiceCapture } from "./use-voice-capture";
-import { useCameraFrame } from "./use-camera-frame";
+import {
+  useCameraFrame,
+  type CameraFrameSettings,
+} from "./use-camera-frame";
 import { playAudioBlob, stopAudio, unlockAudio } from "./audio-playback";
 import { stripLearningContext } from "@/learning/learning-context";
 
@@ -36,6 +39,13 @@ export interface VoiceConversation {
   lastSentFrameUrl: string | null;
   /** Last camera error (permission denied / no device). */
   cameraError: string | null;
+  cameraSettings: CameraFrameSettings;
+  updateCameraSettings: (patch: Partial<CameraFrameSettings>) => void;
+  resetCameraSettings: () => void;
+  /** Start only the camera, without changing microphone/conversation state. */
+  startCamera: () => Promise<boolean>;
+  /** Stop only the camera stream. */
+  stopCamera: () => void;
   /** Toggle the camera on/off. */
   toggleCamera: () => void;
   /** The latest rich-output artifact (image/HTML) to render, or null. */
@@ -80,6 +90,8 @@ export interface VoiceConversationOptions {
    * pauses until that playback ends so the assistant cannot hear itself.
    */
   externalSpeechActive?: boolean;
+  /** Reports the exact client turn after the assistant has finished replying. */
+  onTurnComplete?: (turnId: string) => void;
 }
 
 export interface VoiceConversationTurn {
@@ -320,6 +332,7 @@ export function useVoiceConversation(
   const buildTurnText = options?.buildTurnText;
   const playReplyAudio = options?.playReplyAudio !== false;
   const externalSpeechActive = options?.externalSpeechActive === true;
+  const onTurnComplete = options?.onTurnComplete;
   const threads = useRenderThreads(sessionId, historyTopic);
   const capture = useVoiceCapture();
   // Destructure the STABLE function refs (useVoiceCapture returns a fresh
@@ -337,6 +350,9 @@ export function useVoiceConversation(
   const cameraActive = camera.active;
   const cameraStream = camera.stream;
   const cameraError = camera.error;
+  const cameraSettings = camera.settings;
+  const updateCameraSettings = camera.updateSettings;
+  const resetCameraSettings = camera.resetSettings;
   const [state, setState] = useState<VoiceState>("idle");
   const [lastAssistantText, setLastAssistantText] = useState("");
   const [liveTranscripts, setLiveTranscripts] = useState<
@@ -548,6 +564,7 @@ export function useVoiceConversation(
             if (!playReplyAudio && stateRef.current === "thinking") {
               void beginListeningRef.current();
             }
+            onTurnComplete?.(turnId);
           },
         });
         void beginBargeInRef.current();
@@ -567,6 +584,7 @@ export function useVoiceConversation(
       cameraGrab,
       historyTopic,
       buildTurnText,
+      onTurnComplete,
       playReplyAudio,
       sessionId,
       showSentFrame,
@@ -1262,6 +1280,11 @@ export function useVoiceConversation(
     cameraStream,
     lastSentFrameUrl,
     cameraError,
+    cameraSettings,
+    updateCameraSettings,
+    resetCameraSettings,
+    startCamera: cameraStart,
+    stopCamera: cameraStop,
     toggleCamera,
     visual,
     generating,

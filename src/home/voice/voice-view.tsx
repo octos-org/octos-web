@@ -119,7 +119,10 @@ export function VoiceView({
         {conv.cameraActive && conv.cameraStream && (
           <div className="absolute left-1/2 top-5 flex -translate-x-1/2 flex-col items-center gap-1">
             <div className="relative">
-              <CameraPreview stream={conv.cameraStream} />
+              <CameraPreview
+                stream={conv.cameraStream}
+                settings={conv.cameraSettings}
+              />
               {/* One-shot border flash each time a frame is sent (keyed by URL). */}
               {conv.lastSentFrameUrl && (
                 <span

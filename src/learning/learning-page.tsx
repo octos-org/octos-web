@@ -60,7 +60,9 @@ import {
 
 const AUTO_CAMERA_KEY = "octos_learning_auto_camera";
 const INPUT_MODE_KEY = "octos_learning_input_mode";
-const MINIMUM_WHITEBOARD_SKILL_VERSION = [0, 7, 0] as const;
+// 0.8.4 isolates standalone, current-image, and explicit board-follow-up
+// requests so prior board content cannot fill a different or ambiguous task.
+const MINIMUM_WHITEBOARD_SKILL_VERSION = [0, 8, 4] as const;
 const LEARNING_TAB_ID = getLearningTabOwner();
 
 async function requestLearningDevices(autoCamera: boolean): Promise<{
@@ -651,7 +653,7 @@ export function LearningPage() {
             <>
               <p className="mt-3 text-sm leading-6 text-white/55">
                 {skillState === "outdated"
-                  ? "OLL 课堂需要 learning-coach 0.7.0 或更高版本；更新后请重启 Gateway。"
+                  ? "学习课堂需要 learning-coach 0.8.4 或更高版本；更新后请重启 Gateway。"
                   : "学习页依赖这套教学与记忆规则；安装后请按提示重启 Gateway。"}
               </p>
               <button
