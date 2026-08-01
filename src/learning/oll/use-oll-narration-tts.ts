@@ -33,10 +33,7 @@ export function useOllNarrationTts({
   onPlaybackComplete,
 }: OllNarrationTtsOptions): OllNarrationTtsState {
   const normalizedText = text.trim();
-  const [failure, setFailure] = useState<{
-    text: string;
-    message: string;
-  } | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
 
   useEffect(() => {
     const request = new AbortController();
@@ -74,11 +71,8 @@ export function useOllNarrationTts({
         );
         if (!started && current) {
           onSpeakingChange?.(false);
+          setFailure("当前设备无法播放课程语音，旁白仍会显示。");
           completePlayback();
-          setFailure({
-            text: normalizedText,
-            message: "当前设备无法播放课程语音，旁白仍会显示。",
-          });
         }
       })
       .catch((cause: unknown) => {
@@ -90,11 +84,8 @@ export function useOllNarrationTts({
           return;
         }
         onSpeakingChange?.(false);
+        setFailure("课程语音暂时不可用，旁白仍会显示。");
         completePlayback();
-        setFailure({
-          text: normalizedText,
-          message: "课程语音暂时不可用，旁白仍会显示。",
-        });
       });
 
     return () => {
@@ -113,9 +104,6 @@ export function useOllNarrationTts({
   ]);
 
   return {
-    error:
-      enabled && playing && failure?.text === normalizedText
-        ? failure.message
-        : null,
+    error: enabled ? failure : null,
   };
 }

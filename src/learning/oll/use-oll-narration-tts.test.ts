@@ -106,14 +106,21 @@ describe("useOllNarrationTts", () => {
   it("R-007 keeps visible narration independent when provider synthesis fails", async () => {
     mocks.synthesizeSpeech.mockRejectedValue(new Error("provider down"));
     const onPlaybackComplete = vi.fn();
-    const { result } = renderHook(() =>
-      useOllNarrationTts({
+    const { result, rerender } = renderHook(
+      ({ playing, text, narrationId }) => useOllNarrationTts({
         enabled: true,
-        playing: true,
-        text: "旁白仍然可见。",
-        narrationId: "beat-failed",
+        playing,
+        text,
+        narrationId,
         onPlaybackComplete,
       }),
+      {
+        initialProps: {
+          playing: true,
+          text: "旁白仍然可见。",
+          narrationId: "beat-failed" as string | undefined,
+        },
+      },
     );
 
     await waitFor(() =>
@@ -123,6 +130,21 @@ describe("useOllNarrationTts", () => {
     );
     expect(mocks.playAudioBlob).not.toHaveBeenCalled();
     expect(onPlaybackComplete).toHaveBeenCalledWith("beat-failed");
+
+    rerender({ playing: false, text: "", narrationId: undefined });
+    expect(result.current.error).toBe(
+      "课程语音暂时不可用，旁白仍会显示。",
+    );
+
+    mocks.synthesizeSpeech.mockResolvedValue(
+      new Blob(["audio"], { type: "audio/wav" }),
+    );
+    rerender({
+      playing: true,
+      text: "下一段恢复语音。",
+      narrationId: "beat-recovered",
+    });
+    await waitFor(() => expect(result.current.error).toBeNull());
   });
 
   it("releases disabled narration but keeps paused narration pending", () => {
