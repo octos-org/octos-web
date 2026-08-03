@@ -28,6 +28,7 @@ const conversationMock = vi.hoisted(() => ({
   updateCameraSettings: vi.fn(),
   resetCameraSettings: vi.fn(),
   options: null as VoiceConversationOptions | null,
+  optionsHistory: [] as VoiceConversationOptions[],
 }));
 const sessionFilesMock = vi.hoisted(() => ({
   getSessionFiles: vi.fn(async () => []),
@@ -65,6 +66,7 @@ vi.mock("@/home/voice/use-voice-conversation", () => ({
     options: VoiceConversationOptions,
   ) => {
     conversationMock.options = options;
+    conversationMock.optionsHistory.push(options);
     return {
     state: "idle",
     lastUserText: "",
@@ -115,6 +117,7 @@ describe("LearningWorkspace", () => {
     conversationMock.updateCameraSettings.mockClear();
     conversationMock.resetCameraSettings.mockClear();
     conversationMock.options = null;
+    conversationMock.optionsHistory = [];
     narrationTtsMock.useOllNarrationTts.mockClear();
     sessionFilesMock.getSessionFiles.mockReset();
     sessionFilesMock.getSessionFiles.mockResolvedValue([]);
@@ -343,7 +346,65 @@ describe("LearningWorkspace", () => {
     expect(screen.queryByText(/本轮没有更新白板/)).toBeNull();
   });
 
-  it("suspends voice capture for the whole OLL playback, including beat gaps", async () => {
+  it("waits for a delayed transcript before classifying the completed reply", async () => {
+    vi.useFakeTimers();
+    const assistantReply = "我们先把根式里面的十八分解成九乘二。";
+    conversationMock.turns = [{
+      id: "late-transcript-turn",
+      userText: "",
+      assistantText: assistantReply,
+      awaitingTranscript: true,
+    }];
+    const view = render(
+      <LearningWorkspace
+        sessionId="learn-late-transcript"
+        voiceEnabled
+        onBack={vi.fn()}
+      />,
+    );
+
+    act(() => {
+      conversationMock.options?.onTurnComplete?.("late-transcript-turn");
+      view.rerender(
+        <LearningWorkspace
+          sessionId="learn-late-transcript"
+          voiceEnabled
+          onBack={vi.fn()}
+        />,
+      );
+      vi.advanceTimersByTime(5_000);
+    });
+    expect(narrationTtsMock.useOllNarrationTts).not.toHaveBeenCalledWith(
+      expect.objectContaining({ text: assistantReply }),
+    );
+
+    conversationMock.turns = [{
+      id: "late-transcript-turn",
+      userText: "根号十八减根号二怎么算",
+      assistantText: assistantReply,
+      awaitingTranscript: false,
+    }];
+    view.rerender(
+      <LearningWorkspace
+        sessionId="learn-late-transcript"
+        voiceEnabled
+        onBack={vi.fn()}
+      />,
+    );
+    await act(async () => {
+      vi.advanceTimersByTime(2_600);
+    });
+
+    expect(narrationTtsMock.useOllNarrationTts).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        playing: true,
+        text: assistantReply,
+        narrationId: "plain-reply:late-transcript-turn",
+      }),
+    );
+  });
+
+  it("suspends voice capture in the render that starts OLL playback", () => {
     render(
       <LearningWorkspace
         sessionId="learn-voice-playback-ownership"
@@ -353,9 +414,12 @@ describe("LearningWorkspace", () => {
       />,
     );
 
-    await waitFor(() => {
-      expect(conversationMock.options?.externalSpeechActive).toBe(true);
-    });
+    expect(conversationMock.options?.externalSpeechActive).toBe(true);
+    expect(
+      conversationMock.optionsHistory.every(
+        (options) => options.externalSpeechActive === true,
+      ),
+    ).toBe(true);
   });
 
   it("feeds the OLL fixture into the real /learn Runtime as incremental events", () => {

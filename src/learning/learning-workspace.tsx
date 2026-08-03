@@ -99,40 +99,13 @@ export function LearningWorkspace({
   const runtime = useOminixRuntimeSummary();
   const threads = useRenderThreads(sessionId);
   const [narrationSpeechActive, setNarrationSpeechActive] = useState(false);
-  const [lessonPlaybackActive, setLessonPlaybackActive] = useState(false);
   const [completedTurnId, setCompletedTurnId] = useState<string | null>(null);
   const [plainReply, setPlainReply] = useState<{
     turnId: string;
     text: string;
   } | null>(null);
   const [plainReplySpoken, setPlainReplySpoken] = useState(false);
-  const handleTurnComplete = useCallback((turnId: string) => {
-    setPlainReply(null);
-    setPlainReplySpoken(false);
-    setCompletedTurnId(turnId);
-    conversationOptions?.onTurnComplete?.(turnId);
-  }, [conversationOptions]);
-  const voiceConversationOptions = useMemo(
-    () => ({
-      ...conversationOptions,
-      externalSpeechActive:
-        voiceEnabled && (lessonPlaybackActive || narrationSpeechActive),
-      onTurnComplete: handleTurnComplete,
-    }),
-    [
-      conversationOptions,
-      handleTurnComplete,
-      lessonPlaybackActive,
-      narrationSpeechActive,
-      voiceEnabled,
-    ],
-  );
-  const conv = useVoiceConversation(
-    sessionId,
-    undefined,
-    onVoiceExit ?? onBack,
-    voiceConversationOptions,
-  );
+  const [pausedLessonSource, setPausedLessonSource] = useState<string | null>(null);
   const [loadedOllArtifacts, setLoadedOllArtifacts] = useState<
     Record<string, CanonicalEvent[]>
   >({});
@@ -151,6 +124,111 @@ export function LearningWorkspace({
   );
   const requestedOllArtifactsRef = useRef(new Set<string>());
   const ollArtifactRequestsRef = useRef(new Map<string, AbortController>());
+  const deliveredOllLessons = useMemo(() => {
+    const lessons: CanonicalEvent[][] = [];
+    for (const artifact of ollArtifacts) {
+      const artifactIdentity = ollArtifactIdentity(artifact);
+      const events = loadedOllArtifacts[artifactIdentity];
+      if (rejectedOllArtifactIds.has(artifactIdentity)) continue;
+      if (!events) break;
+      lessons.push(events);
+    }
+    return lessons;
+  }, [loadedOllArtifacts, ollArtifacts, rejectedOllArtifactIds]);
+  const deliveredOllEvents = useMemo(() => {
+    const events = composeOllClassroomEvents(deliveredOllLessons, sessionId);
+    return events.length > 0 ? events : null;
+  }, [deliveredOllLessons, sessionId]);
+  const activeOllEvents = ollFixture === "geometry-v2"
+    ? geometryLessonEvents
+    : deliveredOllEvents;
+  const activeOllTopics = useMemo(
+    () => buildOllLessonTopics(
+      ollFixture === "geometry-v2"
+        ? [geometryLessonEvents]
+        : deliveredOllLessons,
+    ),
+    [deliveredOllLessons, ollFixture],
+  );
+  const ollOpenSource = activeOllEvents?.[0]
+    ? JSON.stringify(activeOllEvents[0])
+    : null;
+  const ollLesson = useOllLessonRuntime({
+    source: ollOpenSource,
+    storageKey: ollPlaybackStorageKey(sessionId, ollFixture),
+    autoPlay: Boolean(activeOllEvents) && playbackMode === "live",
+    incremental: Boolean(activeOllEvents),
+    narrationTiming: "external",
+    startAtEnd: Boolean(activeOllEvents) && playbackMode === "review",
+    topics: activeOllTopics,
+  });
+  // Audio ownership follows playback intent, not the current speech sample.
+  // A live lesson claims the microphone on its first render and keeps it
+  // through Beat/event gaps; only an explicit pause or completion releases it.
+  const lessonOwnsNarration =
+    playbackMode === "live" &&
+    Boolean(ollLesson) &&
+    !ollLesson?.completed &&
+    pausedLessonSource !== ollOpenSource;
+  const handleTurnComplete = useCallback((turnId: string) => {
+    setPlainReply(null);
+    setPlainReplySpoken(false);
+    setCompletedTurnId(turnId);
+    conversationOptions?.onTurnComplete?.(turnId);
+  }, [conversationOptions]);
+  const voiceConversationOptions = useMemo(
+    () => ({
+      ...conversationOptions,
+      externalSpeechActive:
+        voiceEnabled && (lessonOwnsNarration || narrationSpeechActive),
+      onTurnComplete: handleTurnComplete,
+    }),
+    [
+      conversationOptions,
+      handleTurnComplete,
+      lessonOwnsNarration,
+      narrationSpeechActive,
+      voiceEnabled,
+    ],
+  );
+  const conv = useVoiceConversation(
+    sessionId,
+    undefined,
+    onVoiceExit ?? onBack,
+    voiceConversationOptions,
+  );
+  const controlledOllLesson = useMemo(() => {
+    if (!ollLesson) return null;
+    const claim = () => setPausedLessonSource(null);
+    const release = () => setPausedLessonSource(ollOpenSource);
+    return {
+      ...ollLesson,
+      play: () => {
+        claim();
+        ollLesson.play();
+      },
+      pause: () => {
+        release();
+        ollLesson.pause();
+      },
+      restart: () => {
+        claim();
+        ollLesson.restart();
+      },
+      nextBeat: () => {
+        claim();
+        ollLesson.nextBeat();
+      },
+      playStep: (stepId: string) => {
+        claim();
+        ollLesson.playStep(stepId);
+      },
+      playBeat: (beatId: string) => {
+        claim();
+        ollLesson.playBeat(beatId);
+      },
+    };
+  }, [ollLesson, ollOpenSource]);
   const [sendError, setSendError] = useState<string | null>(null);
   const [fileListError, setFileListError] = useState<string | null>(null);
   const [artifactError, setArtifactError] = useState<string | null>(null);
@@ -183,10 +261,11 @@ export function LearningWorkspace({
 
   useEffect(() => {
     if (!completedTurnId) return;
-    // A voice turn can carry the camera/context even when ASR found no learner
-    // speech. If that empty turn reaches the model, never promote its generic
-    // response into lesson narration. The student did not ask a new question.
-    if (completedTurn && !completedTurn.userText.trim()) {
+    // Assistant completion and the voice transcript are independent events.
+    // Never classify an audio turn while its transcript is still pending: a
+    // late transcript must be allowed to turn this into a real learner turn.
+    if (!completedTurn || completedTurn.awaitingTranscript) return;
+    if (!completedTurn.userText.trim()) {
       const timer = window.setTimeout(() => {
         setPlainReply(null);
         setPlainReplySpoken(false);
@@ -328,51 +407,6 @@ export function LearningWorkspace({
     () => mergeSessionBoardPackets(sessionId, []),
     [sessionId],
   );
-  const deliveredOllLessons = useMemo(() => {
-    const lessons: CanonicalEvent[][] = [];
-    for (const artifact of ollArtifacts) {
-      const artifactIdentity = ollArtifactIdentity(artifact);
-      const events = loadedOllArtifacts[artifactIdentity];
-      if (rejectedOllArtifactIds.has(artifactIdentity)) continue;
-      if (!events) break;
-      lessons.push(events);
-    }
-    return lessons;
-  }, [loadedOllArtifacts, ollArtifacts, rejectedOllArtifactIds]);
-  const deliveredOllEvents = useMemo(() => {
-    const events = composeOllClassroomEvents(deliveredOllLessons, sessionId);
-    return events.length > 0 ? events : null;
-  }, [deliveredOllLessons, sessionId]);
-  const activeOllEvents = ollFixture === "geometry-v2"
-    ? geometryLessonEvents
-    : deliveredOllEvents;
-  const activeOllTopics = useMemo(
-    () => buildOllLessonTopics(
-      ollFixture === "geometry-v2"
-        ? [geometryLessonEvents]
-        : deliveredOllLessons,
-    ),
-    [deliveredOllLessons, ollFixture],
-  );
-  const ollOpenSource = activeOllEvents?.[0]
-    ? JSON.stringify(activeOllEvents[0])
-    : null;
-  const ollLesson = useOllLessonRuntime({
-    source: ollOpenSource,
-    storageKey: ollPlaybackStorageKey(sessionId, ollFixture),
-    autoPlay: Boolean(activeOllEvents) && playbackMode === "live",
-    incremental: Boolean(activeOllEvents),
-    narrationTiming: "external",
-    startAtEnd: Boolean(activeOllEvents) && playbackMode === "review",
-    topics: activeOllTopics,
-  });
-  const lessonOwnsNarration = playbackMode === "live" && Boolean(ollLesson?.playing);
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      setLessonPlaybackActive(lessonOwnsNarration);
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [lessonOwnsNarration]);
   const appendOllEvents = ollLesson?.appendEvents;
   const appendedOllEventCountRef = useRef(1);
 
@@ -521,15 +555,15 @@ export function LearningWorkspace({
   const handleTeacherClick = () => {
     unlockAudio();
     if (!voiceEnabled) {
-      if (ollLesson) {
-        if (ollLesson.playing) ollLesson.pause();
-        else ollLesson.play();
+      if (controlledOllLesson) {
+        if (controlledOllLesson.playing) controlledOllLesson.pause();
+        else controlledOllLesson.play();
       }
       return;
     }
     if (conv.state === "speaking" || conv.state === "thinking") {
       conv.interrupt();
-      ollLesson?.pause();
+      controlledOllLesson?.pause();
       return;
     }
     if (conv.state === "idle" || conv.state === "error") {
@@ -619,8 +653,8 @@ export function LearningWorkspace({
               type="button"
               onClick={() => {
                 unlockAudio();
-                if (ollLesson.playing) ollLesson.pause();
-                else ollLesson.play();
+                if (controlledOllLesson?.playing) controlledOllLesson.pause();
+                else controlledOllLesson?.play();
               }}
               aria-label={ollLesson.playing ? "暂停 OLL 课程" : "播放 OLL 课程"}
               disabled={ollLesson.completed}
@@ -631,7 +665,7 @@ export function LearningWorkspace({
               type="button"
               onClick={() => {
                 unlockAudio();
-                ollLesson.nextBeat();
+                controlledOllLesson?.nextBeat();
               }}
               aria-label="下一 OLL Beat"
               disabled={ollLesson.completed}
@@ -642,7 +676,7 @@ export function LearningWorkspace({
               type="button"
               onClick={() => {
                 unlockAudio();
-                ollLesson.restart();
+                controlledOllLesson?.restart();
               }}
               aria-label="重新播放 OLL 课程"
             >
@@ -768,7 +802,9 @@ export function LearningWorkspace({
         </div>
       )}
 
-      {ollLesson ? <OllCourseOutline runtime={ollLesson} /> : null}
+      {controlledOllLesson
+        ? <OllCourseOutline runtime={controlledOllLesson} />
+        : null}
 
       <StudentInputDock
         voiceState={
