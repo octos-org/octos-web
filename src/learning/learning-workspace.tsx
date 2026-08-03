@@ -26,6 +26,7 @@ import {
 } from "@/home/voice/use-voice-conversation";
 import { useOminixRuntimeSummary } from "@/home/use-ominix-runtime-summary";
 import { useRenderThreads } from "@/store/projection-render-adapter";
+import type { Thread } from "@/store/thread-store";
 import { InfiniteBoard } from "./board/infinite-board";
 import { CameraSettingsDialog } from "./camera-settings-dialog";
 import {
@@ -52,6 +53,17 @@ import { StudentInputDock } from "./student-input-dock";
 import "./learning-workspace.css";
 
 const geometryLessonEvents = parseCanonicalJsonl(geometryLessonSource);
+
+function threadHasOllArtifact(threads: Thread[], turnId: string): boolean {
+  const thread = threads.find((candidate) => candidate.id === turnId);
+  if (!thread) return false;
+  return [
+    ...thread.responses,
+    ...(thread.pendingAssistant ? [thread.pendingAssistant] : []),
+  ].some((message) => message.files.some((file) =>
+    file.path.toLowerCase().endsWith(".octos-lesson.json")
+  ));
+}
 
 export interface LearningWorkspaceProps {
   sessionId: string;
@@ -87,6 +99,7 @@ export function LearningWorkspace({
   const runtime = useOminixRuntimeSummary();
   const threads = useRenderThreads(sessionId);
   const [narrationSpeechActive, setNarrationSpeechActive] = useState(false);
+  const [lessonPlaybackActive, setLessonPlaybackActive] = useState(false);
   const [completedTurnId, setCompletedTurnId] = useState<string | null>(null);
   const [plainReply, setPlainReply] = useState<{
     turnId: string;
@@ -102,10 +115,17 @@ export function LearningWorkspace({
   const voiceConversationOptions = useMemo(
     () => ({
       ...conversationOptions,
-      externalSpeechActive: voiceEnabled && narrationSpeechActive,
+      externalSpeechActive:
+        voiceEnabled && (lessonPlaybackActive || narrationSpeechActive),
       onTurnComplete: handleTurnComplete,
     }),
-    [conversationOptions, handleTurnComplete, narrationSpeechActive, voiceEnabled],
+    [
+      conversationOptions,
+      handleTurnComplete,
+      lessonPlaybackActive,
+      narrationSpeechActive,
+      voiceEnabled,
+    ],
   );
   const conv = useVoiceConversation(
     sessionId,
@@ -146,29 +166,52 @@ export function LearningWorkspace({
   const completedArtifactFilename = completedTurnId
     ? `${completedTurnId}.octos-lesson.json`
     : null;
+  const completedThreadHasArtifact = Boolean(
+    completedTurnId && threadHasOllArtifact(threads, completedTurnId),
+  );
   const completedTurnHasArtifact = Boolean(
-    completedArtifactFilename && ollArtifacts.some((artifact) =>
-      artifact.filename.replaceAll("\\", "/").split("/").at(-1) === completedArtifactFilename
+    completedThreadHasArtifact || (
+      completedArtifactFilename && ollArtifacts.some((artifact) =>
+        artifact.filename.replaceAll("\\", "/").split("/").at(-1) === completedArtifactFilename
+      )
     ),
   );
-  const completedAssistantText = completedTurnId
-    ? conv.turns.find((candidate) => candidate.id === completedTurnId)?.assistantText.trim() ?? ""
-    : "";
+  const completedTurn = completedTurnId
+    ? conv.turns.find((candidate) => candidate.id === completedTurnId)
+    : undefined;
+  const completedAssistantText = completedTurn?.assistantText.trim() ?? "";
 
   useEffect(() => {
     if (!completedTurnId) return;
+    // A voice turn can carry the camera/context even when ASR found no learner
+    // speech. If that empty turn reaches the model, never promote its generic
+    // response into lesson narration. The student did not ask a new question.
+    if (completedTurn && !completedTurn.userText.trim()) {
+      const timer = window.setTimeout(() => {
+        setPlainReply(null);
+        setPlainReplySpoken(false);
+        setCompletedTurnId(null);
+      }, 0);
+      return () => window.clearTimeout(timer);
+    }
     if (completedTurnHasArtifact || !completedAssistantText) return;
     const timer = window.setTimeout(() => {
       setPlainReply({ turnId: completedTurnId, text: completedAssistantText });
       setCompletedTurnId(null);
     }, 2_500);
     return () => window.clearTimeout(timer);
-  }, [completedAssistantText, completedTurnHasArtifact, completedTurnId]);
+  }, [
+    completedAssistantText,
+    completedTurn,
+    completedTurnHasArtifact,
+    completedTurnId,
+  ]);
 
   useEffect(() => {
     if (!plainReply) return;
     const artifactFilename = `${plainReply.turnId}.octos-lesson.json`;
-    if (ollArtifacts.some((artifact) =>
+    const threadHasArtifact = threadHasOllArtifact(threads, plainReply.turnId);
+    if (threadHasArtifact || ollArtifacts.some((artifact) =>
       artifact.filename.replaceAll("\\", "/").split("/").at(-1) === artifactFilename
     )) {
       const timer = window.setTimeout(() => {
@@ -178,7 +221,7 @@ export function LearningWorkspace({
       return () => window.clearTimeout(timer);
     }
     return undefined;
-  }, [ollArtifacts, plainReply]);
+  }, [ollArtifacts, plainReply, threads]);
 
   useEffect(() => {
     if (ollFixture) return;
@@ -323,6 +366,13 @@ export function LearningWorkspace({
     startAtEnd: Boolean(activeOllEvents) && playbackMode === "review",
     topics: activeOllTopics,
   });
+  const lessonOwnsNarration = playbackMode === "live" && Boolean(ollLesson?.playing);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setLessonPlaybackActive(lessonOwnsNarration);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [lessonOwnsNarration]);
   const appendOllEvents = ollLesson?.appendEvents;
   const appendedOllEventCountRef = useRef(1);
 
@@ -368,7 +418,7 @@ export function LearningWorkspace({
   const ollNarrationActive = Boolean(
     ollLesson?.playing && ollLesson.activeSpeech.trim(),
   );
-  const plainReplyNarrationId = plainReply && !plainReplySpoken
+  const plainReplyNarrationId = plainReply && !plainReplySpoken && !lessonOwnsNarration
     ? `plain-reply:${plainReply.turnId}`
     : undefined;
   const completeOllNarration = ollLesson?.completeNarration;
@@ -381,11 +431,13 @@ export function LearningWorkspace({
   }, [completeOllNarration]);
   const ollNarrationTts = useOllNarrationTts({
     enabled: narrationAudioEnabled && (Boolean(ollLesson) || Boolean(plainReply)),
-    playing: ollNarrationActive || Boolean(plainReplyNarrationId),
-    text: ollNarrationActive
+    playing: lessonOwnsNarration
+      ? ollNarrationActive
+      : Boolean(plainReplyNarrationId),
+    text: lessonOwnsNarration
       ? ollLesson?.activeSpeech ?? ""
       : plainReply?.text ?? "",
-    narrationId: ollNarrationActive
+    narrationId: lessonOwnsNarration
       ? ollLesson?.currentBeatId
       : plainReplyNarrationId,
     onSpeakingChange: setNarrationSpeechActive,
@@ -540,15 +592,19 @@ export function LearningWorkspace({
     if (temporaryCameraPreviewRef.current) stopCamera();
   }, [stopCamera]);
 
-  const teacherSpeech = plainReply?.text ?? (textTurnPending
-    ? "我正在整理这道题，马上写到白板上。"
-    : ollLesson
-      ? ollLesson.activeSpeech || (ollLesson.completed
-        ? "这节课讲完了，你可以缩放白板回顾刚才的内容。"
-        : "")
-      : conv.state === "thinking"
-        ? "我正在准备白板课程。"
-        : "");
+  const teacherSpeech = lessonOwnsNarration
+    ? ollLesson?.activeSpeech ?? ""
+    : plainReply?.text ??
+      (textTurnPending
+        ? "我正在整理这道题，马上写到白板上。"
+        : ollLesson
+          ? ollLesson.activeSpeech ||
+            (ollLesson.completed
+              ? "这节课讲完了，你可以缩放白板回顾刚才的内容。"
+              : "")
+          : conv.state === "thinking"
+            ? "我正在准备白板课程。"
+            : "");
 
   return (
     <div className="learning-workspace">

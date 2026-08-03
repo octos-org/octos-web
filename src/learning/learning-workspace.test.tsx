@@ -305,6 +305,59 @@ describe("LearningWorkspace", () => {
     expect(screen.getByRole("status").textContent).toContain("本轮没有更新白板");
   });
 
+  it("does not speak a generic reply for a voice turn with no learner transcript", async () => {
+    vi.useFakeTimers();
+    const genericReply = "好的，你看看还有其他题目需要讲解吗？";
+    conversationMock.turns = [{
+      id: "empty-voice-turn",
+      userText: "",
+      assistantText: genericReply,
+      awaitingTranscript: true,
+    }];
+    const view = render(
+      <LearningWorkspace
+        sessionId="learn-empty-voice-turn"
+        voiceEnabled
+        onBack={vi.fn()}
+      />,
+    );
+
+    act(() => {
+      conversationMock.options?.onTurnComplete?.("empty-voice-turn");
+      view.rerender(
+        <LearningWorkspace
+          sessionId="learn-empty-voice-turn"
+          voiceEnabled
+          onBack={vi.fn()}
+        />,
+      );
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2_600);
+    });
+
+    expect(screen.queryByText(genericReply)).toBeNull();
+    expect(narrationTtsMock.useOllNarrationTts).not.toHaveBeenCalledWith(
+      expect.objectContaining({ text: genericReply }),
+    );
+    expect(screen.queryByText(/本轮没有更新白板/)).toBeNull();
+  });
+
+  it("suspends voice capture for the whole OLL playback, including beat gaps", async () => {
+    render(
+      <LearningWorkspace
+        sessionId="learn-voice-playback-ownership"
+        voiceEnabled
+        ollFixture="geometry-v2"
+        onBack={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(conversationMock.options?.externalSpeechActive).toBe(true);
+    });
+  });
+
   it("feeds the OLL fixture into the real /learn Runtime as incremental events", () => {
     vi.useFakeTimers();
     render(
@@ -461,7 +514,13 @@ describe("LearningWorkspace", () => {
       expect(screen.getByText("模型生成的 OLL 课程")).toBeTruthy();
       expect(screen.getByTestId("oll-controls")).toBeTruthy();
     });
+    act(() => {
+      conversationMock.options?.onTurnComplete?.("client-turn");
+    });
     expect(screen.queryByText(fallbackReply)).toBeNull();
+    expect(narrationTtsMock.useOllNarrationTts).not.toHaveBeenCalledWith(
+      expect.objectContaining({ text: fallbackReply }),
+    );
     expect(
       screen.queryByText("课程已经写到白板上，我们开始吧。"),
     ).toBeNull();
