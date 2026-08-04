@@ -240,7 +240,7 @@ export async function request<T>(
       }
     }
     const text = await resp.text();
-    throw new Error(text || `HTTP ${resp.status}`);
+    throw new ApiError(resp.status, errorBodyMessage(resp.status, text));
   }
 
   if (resp.status === 204) {
@@ -271,9 +271,46 @@ export async function requestBlob(
   });
   if (!resp.ok) {
     const text = await resp.text();
-    throw new Error(text || `HTTP ${resp.status}`);
+    throw new ApiError(resp.status, errorBodyMessage(resp.status, text));
   }
   return resp.blob();
+}
+
+/**
+ * Error thrown by API requests. Carries the HTTP `status` so callers can
+ * branch structurally (`err instanceof ApiError && err.status === 404`)
+ * instead of matching on message text — the message is the human-readable
+ * body and is NOT a stable machine signal (a proxy can rewrite it, which
+ * previously broke the solo first-run fallthrough).
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+/** Pull a displayable message out of an error response body: prefers the
+ *  `{error}` / `{message}` fields of a JSON body; falls back to raw text,
+ *  then to a bare `HTTP <status>`. */
+function errorBodyMessage(status: number, text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed) as {
+        error?: unknown;
+        message?: unknown;
+        detail?: unknown;
+      };
+      const msg = parsed.error ?? parsed.message ?? parsed.detail;
+      if (typeof msg === "string" && msg.trim()) return msg;
+    } catch {
+      // not actually JSON — fall through to raw text
+    }
+  }
+  return trimmed || `HTTP ${status}`;
 }
 
 /**
@@ -283,7 +320,7 @@ export async function requestBlob(
  * 403 is a POLICY denial (not opted in, proxied, non-loopback), NOT proof that
  * an existing session token is dead. Routing those through `request()` would
  * clear the user's tokens and bounce them to `/login` (see solo-login codex
- * review). 404 (no solo profile yet) and 403 simply throw, like `request`.
+ * review). 404 (no solo profile yet) and 403 throw an {@link ApiError}.
  */
 export async function publicRequest<T>(
   path: string,
@@ -296,7 +333,7 @@ export async function publicRequest<T>(
   const resp = await fetch(`${API_BASE}${path}`, { ...options, headers });
   if (!resp.ok) {
     const text = await resp.text();
-    throw new Error(text || `HTTP ${resp.status}`);
+    throw new ApiError(resp.status, errorBodyMessage(resp.status, text));
   }
   if (resp.status === 204) {
     return undefined as T;

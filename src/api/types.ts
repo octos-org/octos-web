@@ -124,6 +124,10 @@ export interface AuthStatusResponse {
    *  without a password". The server still enforces a loopback,
    *  non-proxied request at call time — see the backend `api::solo_auth`. */
   local_solo_enabled?: boolean;
+  /** Present only when `local_solo_enabled` — whether a solo owner has
+   *  already onboarded. `false` means the login page should show the
+   *  first-run create form directly (no doomed solo-login round trip). */
+  solo_profile_exists?: boolean | null;
   scoped_profile?: ScopedAuthTarget | null;
 }
 

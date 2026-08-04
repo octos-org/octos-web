@@ -244,6 +244,7 @@ type LauncherTab = "all" | "shared" | "archive";
 
 function WarmWorkbenchHomePage() {
   const navigate = useNavigate();
+  const { authStatus } = useAuth();
   const { projects, toggleFavorite, setArchived } = useProjects();
   const { create: createDeck } = useSlidesProjects();
   const [chooserOpen, setChooserOpen] = useState(false);
@@ -253,6 +254,10 @@ function WarmWorkbenchHomePage() {
   const recentProjects = projects.filter((p) => !p.archived).slice(0, 12);
   const archivedProjects = projects.filter((p) => p.archived).slice(0, 12);
   const favoriteProjects = projects.filter((p) => p.favorite && !p.archived);
+  // Solo is single-user by definition — "Shared with Me" can never have
+  // content there, so don't offer the dead tab.
+  const isSolo = authStatus?.local_solo_enabled ?? false;
+  const isFirstRun = projects.length === 0;
 
   const startStudioSession = () => {
     const id = `web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -337,11 +342,12 @@ function WarmWorkbenchHomePage() {
         <main className="mx-auto flex w-full max-w-[1024px] flex-col gap-16 px-10 py-14 max-sm:px-4">
           <header className="flex flex-col items-center gap-3 text-center">
             <h1 className="studio-display text-5xl max-sm:text-4xl">
-              Octos Home
+              {isFirstRun ? "Welcome to Octos" : "Octos Home"}
             </h1>
             <p className="max-w-2xl text-lg text-muted">
-              Your digital sanctuary for deep work. Organize, collaborate, and
-              launch your next big idea.
+              {isFirstRun
+                ? "Your AI workbench is ready. Pick a starting point below — or just open Chat and ask for anything."
+                : "Your digital sanctuary for deep work. Organize, collaborate, and launch your next big idea."}
             </p>
           </header>
 
@@ -359,7 +365,7 @@ function WarmWorkbenchHomePage() {
                 Create new project
               </span>
               <span className="block text-sm text-muted">
-                Start with a blank canvas or choose a template.
+                Three ways to start — pick whichever fits.
               </span>
             </button>
             {chooserOpen && (
@@ -368,6 +374,8 @@ function WarmWorkbenchHomePage() {
                   type="button"
                   onClick={startStudioSession}
                   className="studio-skill-tile"
+                  aria-label="Studio session"
+                  aria-describedby="tile-desc-studio"
                 >
                   <span className="studio-skill-tile-icon">
                     <Sparkles size={18} aria-hidden="true" />
@@ -375,26 +383,49 @@ function WarmWorkbenchHomePage() {
                   <span className="studio-skill-tile-label">
                     Studio session
                   </span>
+                  <span
+                    id="tile-desc-studio"
+                    className="mt-1 block text-xs font-normal normal-case tracking-normal text-muted"
+                  >
+                    A full AI workspace for open-ended work — chat, files, and
+                    artifacts side by side.
+                  </span>
                 </button>
                 <button
                   type="button"
                   onClick={startSlideDeck}
                   className="studio-skill-tile"
+                  aria-label="Slide deck"
+                  aria-describedby="tile-desc-slides"
                 >
                   <span className="studio-skill-tile-icon">
                     <Presentation size={18} aria-hidden="true" />
                   </span>
                   <span className="studio-skill-tile-label">Slide deck</span>
+                  <span
+                    id="tile-desc-slides"
+                    className="mt-1 block text-xs font-normal normal-case tracking-normal text-muted"
+                  >
+                    Build a presentation with AI, then edit and present it.
+                  </span>
                 </button>
                 <button
                   type="button"
                   onClick={() => navigate("/sites")}
                   className="studio-skill-tile"
+                  aria-label="Site"
+                  aria-describedby="tile-desc-site"
                 >
                   <span className="studio-skill-tile-icon">
                     <Globe size={18} aria-hidden="true" />
                   </span>
                   <span className="studio-skill-tile-label">Site</span>
+                  <span
+                    id="tile-desc-site"
+                    className="mt-1 block text-xs font-normal normal-case tracking-normal text-muted"
+                  >
+                    Create a website or landing page from a prompt.
+                  </span>
                 </button>
               </div>
             )}
@@ -411,15 +442,17 @@ function WarmWorkbenchHomePage() {
               >
                 All Projects
               </button>
-              <button
-                type="button"
-                className="studio-tab"
-                data-active={tab === "shared"}
-                aria-pressed={tab === "shared"}
-                onClick={() => setTab("shared")}
-              >
-                Shared with Me
-              </button>
+              {!isSolo && (
+                <button
+                  type="button"
+                  className="studio-tab"
+                  data-active={tab === "shared"}
+                  aria-pressed={tab === "shared"}
+                  onClick={() => setTab("shared")}
+                >
+                  Shared with Me
+                </button>
+              )}
               <button
                 type="button"
                 className="studio-tab"

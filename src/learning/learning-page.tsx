@@ -6,7 +6,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { BookOpen, Menu, Pencil, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, BookOpen, Menu, Pencil, Plus, Trash2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import {
   deleteSession,
@@ -347,6 +347,9 @@ export function LearningPage() {
   const [skillState, setSkillState] = useState<
     "checking" | "ready" | "missing" | "outdated" | "error"
   >(ollFixture ? "ready" : "checking");
+  // Bumped by the gate's "重新检查" button to re-run the skill probe without
+  // a full page reload.
+  const [skillCheckTick, setSkillCheckTick] = useState(0);
   const [serverSyncReady, setServerSyncReady] = useState(Boolean(ollFixture));
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const markerSentRef = useRef(false);
@@ -444,7 +447,12 @@ export function LearningPage() {
     return () => {
       cancelled = true;
     };
-  }, [hasTabLease, ollFixture]);
+  }, [hasTabLease, ollFixture, skillCheckTick]);
+
+  const recheckSkill = useCallback(() => {
+    setSkillState("checking");
+    setSkillCheckTick((tick) => tick + 1);
+  }, []);
 
   const buildTurnText = useCallback<NonNullable<VoiceConversationOptions["buildTurnText"]>>(
     (context) => {
@@ -624,7 +632,15 @@ export function LearningPage() {
 
   if (!hasTabLease) {
     return (
-      <div className="flex h-screen w-screen items-center justify-center bg-black px-6 text-white">
+      <div className="relative flex h-screen w-screen items-center justify-center bg-black px-6 text-white">
+        <button
+          type="button"
+          onClick={() => navigate("/")}
+          className="absolute left-5 top-6 flex items-center gap-2 rounded-full border border-white/15 px-4 py-2 text-sm text-white/60 transition hover:border-white/30 hover:text-white"
+        >
+          <ArrowLeft size={16} />
+          返回首页
+        </button>
         <div className="max-w-md text-center">
           <h1 className="text-xl font-semibold">学习助手已在另一个标签页中使用</h1>
           <p className="mt-3 text-sm leading-6 text-white/55">
@@ -637,7 +653,15 @@ export function LearningPage() {
 
   if (skillState !== "ready") {
     return (
-      <div className="flex h-screen w-screen items-center justify-center bg-black px-6 text-white">
+      <div className="relative flex h-screen w-screen items-center justify-center bg-black px-6 text-white">
+        <button
+          type="button"
+          onClick={() => navigate("/")}
+          className="absolute left-5 top-6 flex items-center gap-2 rounded-full border border-white/15 px-4 py-2 text-sm text-white/60 transition hover:border-white/30 hover:text-white"
+        >
+          <ArrowLeft size={16} />
+          返回首页
+        </button>
         <div className="w-full max-w-md text-center">
           <BookOpen className="mx-auto mb-5 text-cyan-300" size={36} />
           <h1 className="text-xl font-semibold">
@@ -653,16 +677,29 @@ export function LearningPage() {
             <>
               <p className="mt-3 text-sm leading-6 text-white/55">
                 {skillState === "outdated"
-                  ? "学习课堂需要 learning-coach 0.8.4 或更高版本；更新后请重启 Gateway。"
-                  : "学习页依赖这套教学与记忆规则；安装后请按提示重启 Gateway。"}
+                  ? "学习课堂需要 learning-coach 0.8.4 或更高版本。更新后回到这里重新检查；如提示需重启 Gateway，按提示操作即可。"
+                  : skillState === "missing"
+                    ? "学习课堂由 learning-coach 教学技能驱动。前往 设置 → Skills 安装后回到这里重新检查；如提示需重启 Gateway，按提示操作即可。"
+                    : "可能是网络或服务暂时不可用，请稍后重新检查。"}
               </p>
-              <button
-                type="button"
-                onClick={() => navigate("/settings?tab=skills")}
-                className="mt-6 rounded-full bg-white px-5 py-3 text-sm font-medium text-black"
-              >
-                打开 Skill 设置
-              </button>
+              <div className="mt-6 flex items-center justify-center gap-3">
+                {(skillState === "missing" || skillState === "outdated") && (
+                  <button
+                    type="button"
+                    onClick={() => navigate("/settings?tab=skills")}
+                    className="rounded-full bg-white px-5 py-3 text-sm font-medium text-black"
+                  >
+                    打开 Skill 设置
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={recheckSkill}
+                  className="rounded-full border border-white/20 px-5 py-3 text-sm font-medium text-white/80 transition hover:border-white/40 hover:text-white"
+                >
+                  重新检查
+                </button>
+              </div>
             </>
           )}
         </div>

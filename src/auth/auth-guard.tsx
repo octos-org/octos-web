@@ -10,9 +10,17 @@ export function AuthGuard() {
   if (skipAuth) return <Outlet />;
 
   if (loading) {
+    // Branded splash while the stored token is validated against /me —
+    // replaces the old bare "Loading..." on a hard-coded dark background
+    // (which also ignored the user's theme).
     return (
-      <div className="flex h-screen items-center justify-center bg-surface-dark">
-        <div className="text-muted">Loading...</div>
+      <div className="workbench-shell flex h-screen flex-col items-center justify-center gap-4 px-4">
+        <img
+          src="/images/octos-logo-color.svg"
+          alt="Octos"
+          className="h-10 w-auto animate-pulse select-none"
+        />
+        <span className="text-sm text-muted">Loading…</span>
       </div>
     );
   }

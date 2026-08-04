@@ -130,8 +130,11 @@ export function WorkbenchUserActions() {
 
   return (
     <div className="flex min-w-0 items-center gap-2">
+      {/* Prefer the display name the user gave at onboarding; fall back to
+          email (which for derived solo credentials is a `*.solo.local`
+          placeholder nobody wants to read). */}
       <span className="max-w-[18rem] truncate text-sm text-muted max-xl:hidden">
-        {user.email}
+        {user.name?.trim() || user.email}
       </span>
       <button
         type="button"
