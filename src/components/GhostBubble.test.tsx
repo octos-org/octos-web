@@ -194,10 +194,19 @@ describe("GhostBubble", () => {
     act(() => {
       vi.advanceTimersByTime(GHOST_SETTLE_TIMEOUT_MS + 1);
     });
+    const row = harness.container.querySelector(
+      '[data-testid="ghost-bubble-error"]',
+    );
+    // Honest about the likely cause (stuck model/API key) and actionable…
+    expect(row?.textContent).toContain("No response within 30s");
+    expect(row?.textContent).toContain("model/API key");
+    // …with a settings deep link, because a bare Retry just re-hangs.
     expect(
-      harness.container.querySelector('[data-testid="ghost-bubble-error"]')
-        ?.textContent,
-    ).toContain("Send not confirmed");
+      row
+        ?.querySelector('[data-testid="ghost-bubble-setup-link"]')
+        ?.getAttribute("href"),
+    ).toBe("/settings?tab=llm");
+    expect(row?.textContent).toContain("Check model settings");
     harness.unmount();
   });
 

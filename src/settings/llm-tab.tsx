@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   Cpu,
   Save,
@@ -565,7 +566,14 @@ export function LlmTab({ profile, onProfileUpdated }: LlmTabProps) {
                     <code className="rounded bg-surface-container px-1.5 py-0.5 font-mono text-[11px] text-text">
                       {selectedProvider.envKey}
                     </code>{" "}
-                    in Environment Variables (see the API Keys tab)
+                    — add it in the{" "}
+                    <Link
+                      to="/settings?tab=api-keys"
+                      className="text-link underline underline-offset-2"
+                    >
+                      API Keys tab
+                    </Link>
+                    , then come back to test the connection.
                   </span>
                 </>
               )}

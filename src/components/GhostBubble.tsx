@@ -237,24 +237,36 @@ export function GhostBubble({
 
   const rawFailure = failure ?? (timedOut ? "Send not confirmed within 30s." : null);
   const modelMissing = rawFailure ? MODEL_NOT_CONFIGURED.test(rawFailure) : false;
+  // A settle timeout with no RPC error usually means the backend is stuck
+  // on the model (e.g. a saved-but-invalid API key retrying with backoff —
+  // no terminal error ever arrives). Say so and offer the settings path;
+  // a bare "not confirmed" + Retry just burns another 30s.
+  const isTimeout = !failure && timedOut;
   const failureMessage = rawFailure
     ? modelMissing
       ? "No model is set up for this profile yet — add a provider and API key to start chatting."
-      : displayFailureMessage(rawFailure)
+      : isTimeout
+        ? "No response within 30s — the server may be busy, or the saved model/API key may not be working."
+        : displayFailureMessage(rawFailure)
     : null;
+  const setupLink = modelMissing
+    ? { href: LLM_SETTINGS_HREF, label: "Set up a model" }
+    : isTimeout
+      ? { href: LLM_SETTINGS_HREF, label: "Check model settings" }
+      : null;
 
-  // "Set up a model" is the primary action when configuration is the
-  // problem; Retry stays (it works once a key is saved) but steps back to
-  // a quieter outline so it no longer invites a guaranteed re-failure.
+  // A settings link is the primary action when configuration is the likely
+  // problem; Retry stays but steps back to a quieter outline so it no
+  // longer invites a guaranteed re-failure.
   const errorActions = (
     <>
-      {modelMissing && (
+      {setupLink && (
         <a
           data-testid="ghost-bubble-setup-link"
-          href={LLM_SETTINGS_HREF}
+          href={setupLink.href}
           className="shrink-0 rounded-md bg-red-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-red-700"
         >
-          Set up a model
+          {setupLink.label}
         </a>
       )}
       {onRetry && (
@@ -263,7 +275,7 @@ export function GhostBubble({
           type="button"
           onClick={handleRetry}
           className={
-            modelMissing
+            setupLink
               ? "shrink-0 rounded-md border border-red-500/40 px-2 py-0.5 text-[11px] font-medium hover:bg-red-500/10"
               : "shrink-0 rounded-md bg-red-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-red-700"
           }
