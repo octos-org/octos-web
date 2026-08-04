@@ -854,6 +854,15 @@ describe("connection lifecycle", () => {
     // Well past any reconnect backoff: still exactly ONE socket — no storm.
     await vi.advanceTimersByTimeAsync(60_000);
     expect(MockWebSocket.instances).toHaveLength(1);
+
+    // A send against the parked bridge fast-rejects with the server's
+    // bootstrap failure, NOT "please refresh the page" — a refresh only
+    // re-runs the same doomed handshake.
+    await expect(
+      bridge.sendTurn("turn-no-key", [{ kind: "text", text: "hi" }]),
+    ).rejects.toThrow(
+      /The server couldn't start this chat — failed to bootstrap ProfileRuntime/,
+    );
     await bridge.stop();
   });
 

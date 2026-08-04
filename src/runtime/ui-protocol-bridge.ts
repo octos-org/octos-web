@@ -1694,6 +1694,13 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     | "auth_rejected"
     | "runtime_unavailable"
     | null = null;
+  /** When the park reason carries a server-side explanation (today:
+   *  `runtime_unavailable` bootstrap failures on `session/open`), keep
+   *  the server's message so the send fast-reject can say WHY the chat
+   *  can't run instead of the generic "refresh the page" — refreshing
+   *  only re-runs the same doomed handshake. Cleared in lockstep with
+   *  `latchReason`. */
+  private terminalDetail: string | null = null;
   /** Issue #137: idempotency guard for the visibilitychange handler.
    *  Mobile browsers can fire `visibilitychange` multiple times in
    *  quick succession during app-switches; once we have already
@@ -2008,6 +2015,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     this.reconnectAttempts = 0;
     this.reconnectAbandoned = false;
     this.latchReason = null;
+    this.terminalDetail = null;
     this.visibilityReconnectInFlight = false;
     this.hasEverOpened = false;
     this.authExpiredDispatched = false;
@@ -2613,6 +2621,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       this.reconnectAttempts = 0;
       this.reconnectAbandoned = false;
       this.latchReason = null;
+      this.terminalDetail = null;
       this.visibilityReconnectInFlight = false;
       this.hasEverOpened = true;
       this.setState("connected");
@@ -2653,6 +2662,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
       // Issue #137: a successful (re)open clears the latch reason and
       // releases the visibility-reconnect idempotency flag.
       this.latchReason = null;
+      this.terminalDetail = null;
       this.visibilityReconnectInFlight = false;
       // Snapshot whether this is a reopen BEFORE flipping `hasEverOpened`,
       // so the emit below only fires after a reconnect (subsequent
@@ -2730,6 +2740,13 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
         // Same treatment as `auth_rejected`: the visibilitychange reset
         // must not auto-retry — the config error outlives any app-switch.
         this.latchReason = "runtime_unavailable";
+        // Keep the server's bootstrap failure ("failed to create LLM
+        // provider…", "failed to open episode store…") so a later send
+        // can fast-reject with the actual cause instead of telling the
+        // user to refresh a page that will only fail the same way. The
+        // BridgeRpcError "rpc-error[code]" prefix is transport noise —
+        // strip it like the smart-home surface does.
+        this.terminalDetail = err.message.replace(/^rpc-error\[[^\]]+\]\s*/, "");
         this.setState("error");
         this.rejectAllPending(
           new BridgeStoppedError("session runtime unavailable"),
@@ -3193,6 +3210,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     // immediately re-latch.
     this.reconnectAbandoned = false;
     this.latchReason = null;
+    this.terminalDetail = null;
     this.reconnectAttempts = 0;
     // Start ONE reconnect attempt through the existing flow so
     // `onWsOpen` fires `subReopened` (the hydrate hook) on success.
@@ -3276,7 +3294,12 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     ) {
       return Promise.reject(
         new BridgeStoppedError(
-          "WebSocket connection is closed; please refresh the page",
+          // A `runtime_unavailable` park carries the server's bootstrap
+          // failure — surface it. "Please refresh the page" would be a
+          // lie there: a refresh re-runs the same doomed handshake.
+          this.terminalDetail
+            ? `The server couldn't start this chat — ${this.terminalDetail}`
+            : "WebSocket connection is closed; please refresh the page",
         ),
       );
     }
