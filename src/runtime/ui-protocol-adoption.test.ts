@@ -74,14 +74,14 @@ describe("UI Protocol v1 production adoption", () => {
     expectNoLegacyChatTransport("src/runtime/task-watcher.ts");
   });
 
-  it("keeps approval, task-output, committed-result, and diff hooks in the bridge contract", () => {
+  it("keeps approval, task-output, projection, and diff hooks in the bridge contract", () => {
     const bridge = source("src/runtime/ui-protocol-bridge.ts");
     for (const methodOrEvent of [
       'APPROVAL_REQUESTED: "approval/requested"',
       'APPROVAL_RESPOND: "approval/respond"',
       'TASK_OUTPUT_DELTA: "task/output/delta"',
       'TASK_UPDATED: "task/updated"',
-      'MESSAGE_PERSISTED: "message/persisted"',
+      "ProjectionStore.PROJECTION_ENVELOPE_V2_FEATURE",
       'DIFF_PREVIEW_GET: "diff/preview/get"',
     ]) {
       expect(bridge).toContain(methodOrEvent);

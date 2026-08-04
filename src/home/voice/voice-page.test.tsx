@@ -2,8 +2,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import { VoicePage } from "./voice-page";
 
-const loadHistoryMock = vi.fn();
-
 vi.mock("react-router-dom", () => ({
   useNavigate: () => vi.fn(),
 }));
@@ -17,10 +15,6 @@ vi.mock("@/runtime/session-context", () => ({
     Provider: ({ children }: { children: React.ReactNode }) => children,
   },
   useModeState: () => ({ queueMode: null, adaptiveMode: null }),
-}));
-
-vi.mock("@/store/thread-store", () => ({
-  loadHistory: (...args: unknown[]) => loadHistoryMock(...args),
 }));
 
 vi.mock("@/components/ui-protocol-question-host", () => ({
@@ -37,7 +31,6 @@ describe("VoicePage", () => {
   beforeEach(() => {
     cleanup();
     localStorage.clear();
-    loadHistoryMock.mockClear();
   });
 
   it("creates a fresh voice session every time the route mounts", () => {
@@ -54,7 +47,5 @@ describe("VoicePage", () => {
     expect(secondSessionId).toMatch(/^voice-/);
     expect(firstSessionId).not.toBe("voice-stale");
     expect(secondSessionId).not.toBe(firstSessionId);
-    expect(loadHistoryMock).toHaveBeenCalledWith(firstSessionId);
-    expect(loadHistoryMock).toHaveBeenCalledWith(secondSessionId);
   });
 });

@@ -1,7 +1,12 @@
 import { useEffect, type CSSProperties } from "react";
 import { Camera, CameraOff, Settings, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { useVoiceConversation, type VoiceState } from "./use-voice-conversation";
+import {
+  useVoiceConversation,
+  type VoiceConversationOptions,
+  type VoiceConversationTurn,
+  type VoiceState,
+} from "./use-voice-conversation";
 import { VoiceOrb } from "./voice-orb";
 import { CameraPreview } from "./camera-preview";
 import { VisualPanel } from "./visual-panel";
@@ -17,17 +22,35 @@ const STATE_WORD: Record<VoiceState, string> = {
   error: "出错了，点光球重试",
 };
 
-interface VoiceViewProps {
+export interface VoiceViewProps {
   sessionId: string;
   historyTopic?: string;
   onBack: () => void;
+  /** Spoken exit after the farewell/review may complete a product-specific flow. */
+  onVoiceExit?: () => void;
+  initialAudio?: Blob | null;
+  conversationOptions?: VoiceConversationOptions;
+  onTurnsChange?: (turns: VoiceConversationTurn[]) => void;
 }
 
-export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
+export function VoiceView({
+  sessionId,
+  historyTopic,
+  onBack,
+  onVoiceExit,
+  initialAudio,
+  conversationOptions,
+  onTurnsChange,
+}: VoiceViewProps) {
   // UPCR-2026-025: a spoken exit intent ("再见 / 退出 / 静音") leaves the voice
   // screen via the same destination as the manual X button — the hook fires it
   // only AFTER the farewell audio finishes.
-  const conv = useVoiceConversation(sessionId, historyTopic, onBack);
+  const conv = useVoiceConversation(
+    sessionId,
+    historyTopic,
+    onVoiceExit ?? onBack,
+    conversationOptions,
+  );
   const navigate = useNavigate();
   const runtime = useOminixRuntimeSummary();
 
@@ -39,10 +62,18 @@ export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
   useEffect(() => {
     if (runtime.ready) {
       unlockAudio();
-      void conv.start();
+      void conv.start(
+        initialAudio
+          ? { initialAudio, includeCamera: false }
+          : undefined,
+      );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runtime.ready]);
+
+  useEffect(() => {
+    onTurnsChange?.(conv.turns);
+  }, [conv.turns, onTurnsChange]);
 
   const openOminixSettings = () => {
     navigate("/settings?tab=ominix");
@@ -88,7 +119,10 @@ export function VoiceView({ sessionId, historyTopic, onBack }: VoiceViewProps) {
         {conv.cameraActive && conv.cameraStream && (
           <div className="absolute left-1/2 top-5 flex -translate-x-1/2 flex-col items-center gap-1">
             <div className="relative">
-              <CameraPreview stream={conv.cameraStream} />
+              <CameraPreview
+                stream={conv.cameraStream}
+                settings={conv.cameraSettings}
+              />
               {/* One-shot border flash each time a frame is sent (keyed by URL). */}
               {conv.lastSentFrameUrl && (
                 <span

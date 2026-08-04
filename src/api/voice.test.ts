@@ -1,14 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/api/client", () => ({ request: vi.fn() }));
+vi.mock("@/api/client", () => ({
+  request: vi.fn(),
+  requestBlob: vi.fn(),
+}));
 
-import { request } from "@/api/client";
-import { getVoices, setVoice } from "@/api/voice";
+import { request, requestBlob } from "@/api/client";
+import { getVoices, setVoice, synthesizeSpeech } from "@/api/voice";
 
 const mockRequest = request as unknown as ReturnType<typeof vi.fn>;
+const mockRequestBlob = requestBlob as unknown as ReturnType<typeof vi.fn>;
 
 describe("voice api", () => {
-  beforeEach(() => mockRequest.mockReset());
+  beforeEach(() => {
+    mockRequest.mockReset();
+    mockRequestBlob.mockReset();
+  });
 
   it("getVoices GETs /api/voices", async () => {
     mockRequest.mockResolvedValue({
@@ -29,5 +36,20 @@ describe("voice api", () => {
       body: JSON.stringify({ voice: "yangmi" }),
     });
     expect(res.voice).toBe("yangmi");
+  });
+
+  it("synthesizes text through the authenticated profile TTS route", async () => {
+    const audio = new Blob(["audio"], { type: "audio/wav" });
+    const controller = new AbortController();
+    mockRequestBlob.mockResolvedValue(audio);
+
+    await expect(
+      synthesizeSpeech("先看这个圆。", controller.signal),
+    ).resolves.toBe(audio);
+    expect(mockRequestBlob).toHaveBeenCalledWith("/api/voice/synthesize", {
+      method: "POST",
+      body: JSON.stringify({ text: "先看这个圆。" }),
+      signal: controller.signal,
+    });
   });
 });

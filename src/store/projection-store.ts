@@ -1,10 +1,9 @@
 /**
  * Canonical v2 projection store.
  *
- * This is the only store that accepts `projection.envelope.v2` frames. It is
- * deliberately independent from ThreadStore: legacy reducers remain a
- * fallback for servers that do not negotiate v2, but they never dual-write
- * into this state.
+ * This is the only store that accepts `projection.envelope.v2` frames and the
+ * only source for chat rendering. It is deliberately independent from
+ * ThreadStore, which remains limited to non-render compatibility bookkeeping.
  */
 
 import {
@@ -19,11 +18,6 @@ import type {
 
 export const PROJECTION_ENVELOPE_V2_FEATURE = "projection.envelope.v2";
 
-/** `pending` is the pre-negotiation state. It deliberately renders neither
- * store so a new server cannot flash a legacy history before it confirms
- * `projection.envelope.v2`; an old server switches to `legacy` on its ack. */
-export type ProjectionMode = "pending" | "legacy" | "v2";
-
 export interface ProjectionIngestResult {
   accepted: boolean;
   duplicate: boolean;
@@ -31,7 +25,6 @@ export interface ProjectionIngestResult {
 }
 
 interface ProjectionState {
-  mode: ProjectionMode;
   threadOrder: string[];
   appliedByThread: Map<string, Map<number, ProjectionEnvelopeV2>>;
   expectedByThread: Map<string, number>;
@@ -73,10 +66,6 @@ const persistentRehydrateListeners = new Set<
 
 function freshState(): ProjectionState {
   return {
-    // Bare render fixtures and non-bridge embeddings retain the historic
-    // fallback. RuntimeWithSession moves real mounted scopes to `pending`
-    // synchronously before passive history effects can load legacy content.
-    mode: "legacy",
     threadOrder: [],
     appliedByThread: new Map(),
     expectedByThread: new Map(),
@@ -346,58 +335,20 @@ function resetCanonical(state: ProjectionState): void {
   state.rehydrateNeeded = false;
 }
 
-/** Enter the pre-negotiation state for a newly started bridge. Reconnects do
- * not call this: they retain the previously confirmed render mode while the
- * new socket waits for its own `session/open` acknowledgement. */
-export function setProjectionV2Pending(
+/** Reset one canonical scope before a fresh bridge lifecycle starts.
+ * Reconnects retain their existing projection while a new `session/open`
+ * acknowledgement is in flight. */
+export function resetProjectionScope(
   sessionId: string,
   topic?: string,
 ): void {
   const state = stateFor(projectionStoreKey(sessionId, topic));
-  if (state.mode === "pending") return;
   resetCanonical(state);
   state.hydrating = false;
   state.hydrationWatermark = null;
   state.bufferedLive = [];
-  state.mode = "pending";
   touch(state);
   notify();
-}
-
-/** Server capability—not local storage—selects the final render path for a
- * scope after `session/open` has acknowledged it. */
-export function setProjectionV2Enabled(
-  sessionId: string,
-  topic: string | undefined,
-  enabled: boolean,
-): void {
-  const state = stateFor(projectionStoreKey(sessionId, topic));
-  const next: ProjectionMode = enabled ? "v2" : "legacy";
-  if (state.mode === next) return;
-  // A later connection can negotiate an older server for the same scope.
-  // Never retain a hidden canonical ledger across that boundary: should v2
-  // be negotiated again, its hydrate is the only authoritative seed.
-  if (next === "legacy") {
-    resetCanonical(state);
-    state.hydrating = false;
-    state.hydrationWatermark = null;
-    state.bufferedLive = [];
-  }
-  state.mode = next;
-  touch(state);
-  notify();
-}
-
-export function projectionMode(sessionId: string, topic?: string): ProjectionMode {
-  return stateFor(projectionStoreKey(sessionId, topic)).mode;
-}
-
-export function isProjectionV2Enabled(sessionId: string, topic?: string): boolean {
-  return projectionMode(sessionId, topic) === "v2";
-}
-
-export function isLegacyProjectionEnabled(sessionId: string, topic?: string): boolean {
-  return projectionMode(sessionId, topic) === "legacy";
 }
 
 /** Canonical append. Identity is `(thread_id, seq)` and seq one is the
@@ -607,7 +558,7 @@ export function onRehydrateRequested(
   return () => target.delete(listener);
 }
 
-/** Clear canonical content for one scope but retain negotiated mode. */
+/** Clear canonical content for one scope. */
 export function clearProjection(sessionId: string, topic?: string): void {
   const targets = topic?.trim()
     ? [projectionStoreKey(sessionId, topic)]

@@ -16,8 +16,6 @@ import {
 } from "@/runtime/session-context";
 import { loadSessionFiles } from "@/store/file-store";
 import { recordProjectOpened } from "@/store/project-store";
-import * as ThreadStore from "@/store/thread-store";
-import { useProjectionMode } from "@/store/projection-render-adapter";
 
 import { mergeSourceMedia, type SourceRow } from "./source-media";
 import { StudioRail } from "./studio-rail";
@@ -107,7 +105,6 @@ export function StudioPage() {
 }
 
 function StudioWorkspace({ projectId }: { projectId: string }) {
-  const projectionMode = useProjectionMode(projectId);
   const [title, setTitle] = useState(() => readStoredTitle(projectId));
   const [panes, setPanes] = useState<PaneState>(loadPaneState);
 
@@ -172,25 +169,6 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
     };
   }, [projectId]);
 
-  // History hydration — mirrors slides-chat (Issue #112.2 / #110.2):
-  // `loadHistory` mount-races the bridge handshake and throws before
-  // `connectionState === "connected"`; the swallowed throw cleared the
-  // dedup set but the effect deps never changed, so the thread stayed
-  // blank. Re-issue with `force: true` on every `crew:bridge_connected`
-  // (dispatched by `runtime/ui-protocol-runtime.ts` each time the
-  // bridge reaches `connected`).
-  useEffect(() => {
-    if (projectionMode !== "legacy") return;
-    void ThreadStore.loadHistory(projectId, undefined);
-    const onBridgeReady = () => {
-      void ThreadStore.loadHistory(projectId, undefined, { force: true });
-    };
-    window.addEventListener("crew:bridge_connected", onBridgeReady);
-    return () => {
-      window.removeEventListener("crew:bridge_connected", onBridgeReady);
-    };
-  }, [projectId, projectionMode]);
-
   const toggleSource = useCallback((path: string) => {
     setSelectedSources((prev) =>
       prev.includes(path) ? prev.filter((p) => p !== path) : [...prev, path],
@@ -221,7 +199,6 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
       historyTopic: undefined,
       currentSessionTitle: title,
       currentSessionStats: null,
-      initialMessages: [] as never[],
       activeTaskOnServer: false,
       queueMode,
       adaptiveMode,

@@ -9,18 +9,16 @@
  *
  * M9-α-5/α-6 (ADR PR #830 / audit issue #845) deleted the SSE
  * `/api/sessions/{id}/events/stream` stream that previously served as
- * the primary truth path; the WS bridge owns live `task/updated`,
- * `message/persisted`, and per-turn lifecycle notifications now, so
- * the polling fallback is sufficient for the background-only signal
- * this watcher needs (the foreground chat thread never reaches this
- * module).
+ * the primary truth path; canonical projection envelopes own foreground chat
+ * rendering while the WS bridge owns live task and lifecycle notifications.
+ * The polling fallback is therefore sufficient for the background-only
+ * signal this watcher needs.
  */
 
 import {
   getSessionTasks,
   getMessages as fetchSessionMessages,
 } from "@/api/sessions";
-import * as ThreadStore from "@/store/thread-store";
 import * as TaskStore from "@/store/task-store";
 import * as FileStore from "@/store/file-store";
 import { displayFilenameFromPath } from "@/lib/utils";
@@ -100,10 +98,7 @@ function persistWatchedSessions(): void {
     const next: PersistedWatchedSession[] = [...watchedSessions.values()].map((entry) => ({
       sessionId: entry.sessionId,
       topic: entry.topic,
-      lastCommittedSeq: Math.max(
-        entry.lastCommittedSeq,
-        ThreadStore.getMaxHistorySeq(entry.sessionId, entry.topic),
-      ),
+      lastCommittedSeq: entry.lastCommittedSeq,
       updatedAt: Date.now(),
     }));
     if (next.length === 0) {
@@ -125,17 +120,12 @@ function seedWatchedSession(entry: {
   if (watchedSessions.has(key)) return;
 
   const topic = entry.topic?.trim() || undefined;
-  const knownPaths = new Set(
-    ThreadStore.getKnownFilePaths(entry.sessionId, topic),
-  );
+  const knownPaths = new Set<string>();
 
   watchedSessions.set(key, {
     sessionId: entry.sessionId,
     topic,
-    lastCommittedSeq: Math.max(
-      entry.lastCommittedSeq,
-      ThreadStore.getMaxHistorySeq(entry.sessionId, topic),
-    ),
+    lastCommittedSeq: entry.lastCommittedSeq,
     knownPaths,
     activeIds: new Set(),
     replayComplete: false,
@@ -212,12 +202,9 @@ function applyCommittedMessages(
   messages: MessageInfo[],
 ): void {
   if (messages.length === 0) return;
-  for (const m of messages) {
-    ThreadStore.appendPersistedMessage(sessionId, entry.topic, m);
-  }
   entry.lastCommittedSeq = Math.max(
     entry.lastCommittedSeq,
-    ThreadStore.getMaxHistorySeq(sessionId, entry.topic),
+    ...messages.map((message) => message.seq ?? -1),
   );
   emitNewFileEvents(sessionId, entry.topic, messages, entry.knownPaths);
   void FileStore.loadSessionFiles(sessionId);
@@ -234,10 +221,6 @@ export function watchSession(sessionId: string, topic?: string): void {
 
   if (watchedSessions.has(key)) {
     const entry = watchedSessions.get(key)!;
-    entry.lastCommittedSeq = Math.max(
-      entry.lastCommittedSeq,
-      ThreadStore.getMaxHistorySeq(sessionId, currentTopic),
-    );
     entry.terminalSince = null;
     persistWatchedSessions();
     ensurePolling();
@@ -247,7 +230,7 @@ export function watchSession(sessionId: string, topic?: string): void {
   seedWatchedSession({
     sessionId,
     topic: currentTopic,
-    lastCommittedSeq: ThreadStore.getMaxHistorySeq(sessionId, currentTopic),
+    lastCommittedSeq: -1,
   });
   persistWatchedSessions();
   ensurePolling();

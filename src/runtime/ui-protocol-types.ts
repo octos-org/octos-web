@@ -250,86 +250,6 @@ export interface MessageDeltaEvent {
   message_id?: string;
 }
 
-export interface PersistedMessageFile {
-  path: string;
-  size?: number;
-  mime?: string;
-}
-
-export interface PersistedMessage {
-  id: string;
-  thread_id: string;
-  role: "assistant" | "user" | "tool";
-  content: string;
-  files?: PersistedMessageFile[];
-  history_seq?: number;
-  intra_thread_seq?: number;
-  client_message_id?: string;
-  response_to_client_message_id?: string;
-  source_tool_call_id?: string;
-  tool_calls?: Array<unknown>;
-  timestamp?: string;
-}
-
-/**
- * `message/persisted` notification per `UPCR-2026-012`. Server emits a
- * flat payload — text content travels via `message/delta` for live
- * foreground turns, this notification confirms the durable commit and
- * (since the server's P1.3 fix in PR #767) carries the persisted row's
- * `media` attachments.
- *
- * Wire-content field (added in PR fixing "summary missing in chat"
- * regression, 2026-05-19): the server now ALSO carries the row's
- * `content` string on this event when non-empty. This lets the client
- * surface assistant captions that accompany a media delivery —
- * `send_file` with a caption, mofa_slides "Generated 12 slides..."
- * summary, fm_tts narration summary — instead of dropping them to
- * `""` on the client side. The field is optional/omitted-when-empty
- * so legacy text-only delta rows still arrive in their old shape; the
- * primary consumer is the late-artifact path in `eventToMessageInfo`
- * (no live `pendingAssistant` to merge into).
- *
- * For the live foreground turn case the streamed `message/delta` text
- * is still authoritative — the bubble already contains the text by the
- * time `message/persisted` fires. The wire `content` is mainly useful
- * when there is no pending to promote (late artifact, replay,
- * background spawn_only delivery).
- */
-export interface MessagePersistedEvent {
-  session_id: string;
-  /** Optional per UPCR-2026-012; absent on legacy rows that pre-date the
-   *  typed-binding refactor. */
-  turn_id?: string;
-  /** Optional per UPCR-2026-012; same enforcement story as `turn_id`. */
-  thread_id?: string;
-  /** Strictly monotonic per session — assigned by `add_message_with_seq`. */
-  seq: number;
-  /** Open snake_case enum, matching `octos-core::MessageRole`. */
-  role: "system" | "user" | "assistant" | "tool";
-  /** Server-assigned UUID for the row. Stable across replays. */
-  message_id: string;
-  /** Present for `source = user` rows where the client supplied a cmid;
-   *  absent on legacy rows. */
-  client_message_id?: string;
-  /** Open snake_case enum identifying the WRITE PATH that committed the row. */
-  source: "user" | "assistant" | "tool" | "background" | "recovery";
-  /** Durable cursor pointing at this commit. */
-  cursor: { stream: string; seq: number };
-  /** RFC 3339 wall-clock time the row was committed. */
-  persisted_at: string;
-  /** File attachments persisted with this row — typically a single
-   *  `.md` / `.mp3` / `.pptx` artefact emitted by `spawn_only` background
-   *  tools (`deep_search`, `mofa_*`, `fm_tts`) or an explicit
-   *  `send_file` call. Absent or empty for ordinary text rows. */
-  media?: string[];
-  /** Optional text content of the persisted row. Carried when non-empty
-   *  so the client can render captions / summaries alongside `media`
-   *  on the late-artifact path. Omitted (= undefined) on the wire for
-   *  empty/whitespace rows so legacy text-only delta-streamed rows
-   *  arrive in their pre-fix shape. */
-  content?: string;
-}
-
 /**
  * `turn/spawn_complete` notification per M10 Phase 1 (server PR #772).
  *
@@ -339,26 +259,11 @@ export interface MessagePersistedEvent {
  * splice-merging late content into an existing bubble (the bug class M10
  * eliminates: sticky-map drift, phantom-chunk drop, etc.).
  *
- * Capability gated: server only emits when the client has negotiated
- * `event.spawn_complete.v1` at session/open. Older clients without the
- * capability continue to receive the legacy `message/persisted` row for
- * backward compatibility.
+ * `task_id` is required because every spawn completion has an originating
+ * `spawn_only` task. `content` carries the full completion text inline.
  *
- * Wire shape mirrors `MessagePersistedEvent` with two distinguishing
- * additions:
- *   - `task_id` is REQUIRED (every spawn_complete has an originating
- *     `spawn_only` task; a row without one is a server bug).
- *   - `content` is REQUIRED (carries the full assistant text inline so the
- *     client renders the new bubble atomically without a follow-up fetch).
- *     This is what distinguishes the envelope from a spawn-ack persisted
- *     row, whose content is a short ack message.
- *
- * Note on `response_to_client_message_id`: Phase 1 server populates this
- * from the same identifier that `message/persisted.thread_id` carries on
- * the same persisted row. Phase 4 will introduce a typed
- * `originating_client_message_id` to remove the semantic ambiguity. Until
- * then, the SPA reducer keys placement off `thread_id` (server-carried
- * since PR #680) and treats `response_to_client_message_id` as advisory.
+ * The SPA treats `response_to_client_message_id` as advisory placement
+ * metadata and keys the completion by `thread_id`.
  */
 export interface TurnSpawnCompleteEvent {
   session_id: string;
@@ -382,8 +287,7 @@ export interface TurnSpawnCompleteEvent {
    *  as advisory placement only. Phase 4 will populate this with the real
    *  user-prompt cmid. */
   response_to_client_message_id?: string;
-  /** Per-session committed-row index (matches `MessagePersistedEvent.seq`
-   *  for the same row). Strictly monotonic. */
+  /** Per-session committed-row index. Strictly monotonic. */
   seq: number;
   /** Server-assigned message id reused from the persisted row (since
    *  Phase 1 codex round 3 fix). Stable across replays. */
@@ -396,13 +300,10 @@ export interface TurnSpawnCompleteEvent {
   cursor: UiCursor;
   /** RFC 3339 wall-clock time the row was committed. */
   persisted_at: string;
-  /** REQUIRED. Full assistant text for the completion bubble. Distinct
-   *  from `MessagePersistedEvent` (where `content` lives only in the
-   *  session ledger), this event carries the text inline. */
+  /** REQUIRED. Full assistant text for the completion bubble. */
   content: string;
   /** File attachments persisted with this completion (e.g.
-   *  `_report.md`, `output.mp3`, `.pptx`). Same convention as
-   *  `MessagePersistedEvent.media`. */
+   *  `_report.md`, `output.mp3`, `.pptx`). */
   media?: string[];
 }
 
@@ -413,14 +314,11 @@ export interface TurnSpawnCompleteEvent {
  * Capability-gated on `event.file_attached.v1`. Servers that negotiate
  * the feature emit ONE envelope per unique path across the background
  * payload's persist-media + envelope-only-media lists, deduplicated
- * server-side. The envelope rides on the same per-session WS broadcast
- * as `message/persisted` / `turn/spawn_complete` and is filtered out
- * for clients that didn't negotiate the capability.
+ * server-side. The envelope rides on the per-session WS broadcast and is
+ * filtered out for clients that did not negotiate the capability.
  *
- * Coexistence: `file/attached` is REDUNDANT with the `media` arrays
- * already carried on `message/persisted` and `turn/spawn_complete`.
- * SPA reducers MUST treat the envelope as a placement-tolerant safety
- * net — appending the file to the host bubble identified by
+ * The SPA treats this as a placement-tolerant delivery signal, appending
+ * the file to the host bubble identified by
  * `tool_call_id` (preferred) or `turn_id` (fallback), and silently
  * dropping when the host can't be located rather than minting an
  * orphan bubble. Mirrors the server's slides soak motivation: when
@@ -950,66 +848,11 @@ export interface RpcErrorPayload {
   data?: unknown;
 }
 
-/**
- * `session/hydrate` row shape per server PR #791 (M10 Phase 6.2 / Bug C).
- *
- * Mirrors `octos_core::ui_protocol::HydratedMessage`. The two fields the
- * SPA cares about for hydrate-time dedup of legacy `Background`-source
- * rows are:
- *
- *   - `message_id`: stable per-row identity, agrees with
- *     `MessagePersistedEvent.message_id` and
- *     `TurnSpawnCompleteEvent.message_id` for the same row. The server
- *     populates this only when the connection negotiated
- *     `event.spawn_complete.v1`.
- *   - `source`: snake_case wire form of `MessagePersistedSource`
- *     (`"user" | "assistant" | "tool" | "background" | "recovery"`).
- *     Used to identify the per-file `send_file` companion rows the live
- *     wire suppresses for negotiated clients.
- *
- * Both are `Option<String>` on the wire; legacy clients that pre-date
- * negotiation see them omitted (back-compat). Treat both as optional.
- */
-export interface HydratedMessage {
-  seq: number;
-  role: "system" | "user" | "assistant" | "tool";
-  content: string;
-  turn_id?: string;
-  thread_id?: string;
-  client_message_id?: string;
-  persisted_at: string;
-  message_id?: string;
-  source?: string;
-  media?: string[];
-}
-
-/**
- * `session/hydrate` result shape per server PR #791. The `messages`
- * field is omitted when the request didn't include `"messages"`; the
- * `replayed_envelopes` field is omitted when the connection didn't
- * negotiate `event.spawn_complete.v1` OR `messages` wasn't requested.
- *
- * The negotiated dedup contract on a fresh page reload is:
- *
- *   1. For each `replayed_envelopes[i]`, find the row in `messages`
- *      whose `message_id` matches: that's the spawn-ack the live wire
- *      replaced with the envelope. Drop the row, render the envelope.
- *   2. For each Background companion row in the same thread that
- *      precedes the spawn-ack and does NOT match any envelope's
- *      `message_id`: drop it (the envelope's `media` already covers
- *      it).
- *   3. All other rows replay verbatim.
- */
+/** Canonical `session/hydrate` result for the v2 projection snapshot. */
 export interface SessionHydrateResult {
   session_id: string;
   cursor: UiCursor;
-  messages?: HydratedMessage[];
-  threads?: unknown[];
-  turns?: unknown[];
-  pending_approvals?: unknown[];
-  replayed_envelopes?: TurnSpawnCompleteEvent[];
-  replayed_tool_envelopes?: Envelope[];
-  /** Optional canonical snapshot carrier. Older servers omit it. */
+  /** Canonical snapshot carrier. */
   projection_envelopes?: unknown[];
   projection_snapshot?: {
     envelopes?: unknown[];

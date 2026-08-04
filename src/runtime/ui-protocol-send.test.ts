@@ -1,1224 +1,297 @@
-/**
- * ui-protocol-send unit tests.
- *
- * M9-α-5/α-6 (ADR PR #830 / audit issue #845): the legacy SSE bridge has
- * been deleted; `/api/ui-protocol/ws` is the sole chat transport.
- *
- * M9-β-1 (UPCR-2026-015 / server PR #860): the WS turn/start envelope
- * gained three optional fields (`media`, `topic`, `rewrite_for`). The
- * tests below assert the bridge dispatches them through unchanged for
- * each variant.
- *
- * Coverage:
- *   - active bridge: dispatches via `bridge.sendTurn` and mirrors the
- *     user message into the thread store
- *   - no active bridge: surfaces an error on the assistant bubble (no
- *     legacy fallback exists anymore)
- *   - β-1 media-bearing sends: `bridge.sendTurn` called with `extras.media`
- *     populated (`FileRef`-shaped entries)
- *   - β-1 topic-scoped sends: `bridge.sendTurn` called with `extras.topic`
- *   - β-1 /queue rewrites: `bridge.sendTurn` called with `extras.rewrite_for`
- *     carrying the original `client_message_id`
- *   - per-session FIFO turn queue contract from M10 follow-up Bug B
- *     (rapid sends serialise behind `turn/completed`/`turn/error`)
- */
-
-import {
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
-
-// Codex NIT H rewrite: the "failed-start / no-orphan" contract test
-// needs `createUiProtocolBridge().start()` to reject. Hoist a per-test
-// override slot so individual tests can install a failing factory
-// while every other test sees the unmocked production export.
-const { __bridgeFactoryOverride } = vi.hoisted(() => ({
-  __bridgeFactoryOverride: { current: null as null | (() => unknown) },
-}));
-
-vi.mock("./ui-protocol-bridge", async () => {
-  const actual =
-    await vi.importActual<typeof import("./ui-protocol-bridge")>(
-      "./ui-protocol-bridge",
-    );
-  return {
-    ...actual,
-    createUiProtocolBridge: (
-      ...args: Parameters<typeof actual.createUiProtocolBridge>
-    ) => {
-      if (__bridgeFactoryOverride.current) {
-        return __bridgeFactoryOverride.current() as ReturnType<
-          typeof actual.createUiProtocolBridge
-        >;
-      }
-      return actual.createUiProtocolBridge(...args);
-    },
-  };
-});
-
-import * as ThreadStore from "@/store/thread-store";
-import * as ProjectionStore from "@/store/projection-store";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __resetThinkingStoreForTest,
   setThinkingEffort,
 } from "@/store/thinking-store";
 import {
+  __resetSendQueueForTest,
   buildTurnStartExtras,
   interruptActiveTurn,
   sendMessage,
-  __resetSendQueueForTest,
 } from "./ui-protocol-send";
 import {
   __resetUiProtocolRuntimeForTest,
   __setActiveBridgeForTest,
 } from "./ui-protocol-runtime";
-import { BridgeTimeoutError } from "./ui-protocol-bridge";
-import type { UiProtocolBridge } from "./ui-protocol-bridge";
+import type {
+  ProjectionTerminalEvent,
+  UiProtocolBridge,
+} from "./ui-protocol-bridge";
 
 const SESSION = "sess-send";
 
-function makeBridge(): UiProtocolBridge & {
+type TerminalHandler = Parameters<UiProtocolBridge["onProjectionTerminal"]>[0];
+
+type TestBridge = UiProtocolBridge & {
   sendTurn: ReturnType<typeof vi.fn>;
+  interruptTurn: ReturnType<typeof vi.fn>;
+  onProjectionTerminal: ReturnType<typeof vi.fn>;
   onTurnLifecycle: ReturnType<typeof vi.fn>;
-} {
+  onConnectionStateChange: ReturnType<typeof vi.fn>;
+};
+
+function makeBridge(): TestBridge {
   return {
     start: vi.fn(async () => {}),
     stop: vi.fn(async () => {}),
     sendTurn: vi.fn(async () => ({ accepted: true })),
     interruptTurn: vi.fn(async () => ({ interrupted: true })),
-    respondToApproval: vi.fn(async () => ({
-      approval_id: "x",
-      accepted: true,
-      status: "ok",
-    })),
-    onMessageDelta: vi.fn(() => () => {}),
-    onMessagePersisted: vi.fn(() => () => {}),
-    onTaskUpdated: vi.fn(() => () => {}),
-    onTaskOutputDelta: vi.fn(() => () => {}),
-    onTurnLifecycle: vi.fn(() => () => {}),
     onProjectionTerminal: vi.fn(() => () => {}),
-    onApprovalRequested: vi.fn(() => () => {}),
-    onApprovalAutoResolved: vi.fn(() => () => {}),
-    onUserQuestionRequested: vi.fn(() => () => {}),
-    onRouterStatus: vi.fn(() => () => {}),
-    onRouterFailover: vi.fn(() => () => {}),
-    onQueueState: vi.fn(() => () => {}),
+    onTurnLifecycle: vi.fn(() => () => {}),
     onConnectionStateChange: vi.fn(() => () => {}),
     getConnectionState: vi.fn(() => "connected"),
-    onWarning: vi.fn(() => () => {}),
-  } as unknown as UiProtocolBridge & {
-    sendTurn: ReturnType<typeof vi.fn>;
-    onTurnLifecycle: ReturnType<typeof vi.fn>;
+  } as unknown as TestBridge;
+}
+
+function captureTerminals(bridge: TestBridge): TerminalHandler[] {
+  const handlers: TerminalHandler[] = [];
+  bridge.onProjectionTerminal.mockImplementation((handler: TerminalHandler) => {
+    handlers.push(handler);
+    return () => {};
+  });
+  return handlers;
+}
+
+function terminal(
+  clientMessageId: string,
+  outcome: ProjectionTerminalEvent["outcome"] = "completed",
+): ProjectionTerminalEvent {
+  return {
+    session_id: SESSION,
+    thread_id: `thread-${clientMessageId}`,
+    turn_id: clientMessageId,
+    client_message_id: clientMessageId,
+    outcome,
+    ...(outcome === "errored"
+      ? { error: { code: "provider_error", message: "Provider stopped." } }
+      : {}),
   };
+}
+
+async function flush(): Promise<void> {
+  for (let index = 0; index < 12; index += 1) {
+    await Promise.resolve();
+  }
 }
 
 beforeEach(() => {
   __resetUiProtocolRuntimeForTest();
   __resetSendQueueForTest();
-  ThreadStore.__resetForTests();
-  ProjectionStore.__resetProjectionForTests();
+  __resetThinkingStoreForTest();
   window.localStorage.clear();
-  __bridgeFactoryOverride.current = null;
 });
 
 afterEach(() => {
-  window.localStorage.clear();
   __resetUiProtocolRuntimeForTest();
   __resetSendQueueForTest();
-  ProjectionStore.__resetProjectionForTests();
-  __bridgeFactoryOverride.current = null;
+  __resetThinkingStoreForTest();
+  window.localStorage.clear();
 });
 
-describe("buildTurnStartExtras reasoning_effort (thinking parity)", () => {
+describe("buildTurnStartExtras", () => {
   const base = { sessionId: SESSION, text: "", media: [] as string[] };
 
-  afterEach(() => {
-    __resetThinkingStoreForTest();
-  });
-
-  it("attaches the session's stored thinking effort to the envelope", () => {
+  it("includes stored thinking effort in the canonical turn request", () => {
     setThinkingEffort(SESSION, "high");
-    expect(buildTurnStartExtras({ ...base })?.reasoning_effort).toBe("high");
+    expect(buildTurnStartExtras(base)?.reasoning_effort).toBe("high");
   });
 
-  it("scopes the lookup by (session, topic)", () => {
-    setThinkingEffort(SESSION, "low", "slides");
-    // Default-topic send: no override stored for the bare session.
-    expect(buildTurnStartExtras({ ...base })).toBeUndefined();
-    // Topic-scoped send picks up the topic's value.
+  it("includes media, topic, rewrite, and live-video fields when supplied", () => {
     expect(
-      buildTurnStartExtras({ ...base, historyTopic: "slides" })
-        ?.reasoning_effort,
-    ).toBe("low");
+      buildTurnStartExtras({
+        ...base,
+        historyTopic: "slides",
+        requestText: "rewritten prompt",
+        text: "shown prompt",
+        media: ["/tmp/deck.png"],
+        clientMessageId: "cmid-extras",
+        liveVideo: true,
+      }),
+    ).toMatchObject({
+      topic: "slides",
+      rewrite_for: "cmid-extras",
+      live_video: true,
+      media: [
+        {
+          path: "/tmp/deck.png",
+          mime: "application/octet-stream",
+          size_bytes: 0,
+        },
+      ],
+    });
   });
 
-  it("omits the field entirely for default (omission clears the server override)", () => {
-    // No store entry → envelope stays undefined so the wire bytes are
-    // identical to a plain text send.
-    expect(buildTurnStartExtras({ ...base })).toBeUndefined();
+  it("omits an extras envelope for a plain send", () => {
+    expect(buildTurnStartExtras(base)).toBeUndefined();
   });
 });
 
-describe("buildTurnStartExtras live_video (#1478)", () => {
-  const base = { sessionId: SESSION, text: "", media: [] as string[] };
-
-  it("sets live_video only when the camera flag is on", () => {
-    expect(buildTurnStartExtras({ ...base, liveVideo: true })?.live_video).toBe(
-      true,
-    );
-  });
-
-  it("omits live_video (and the whole envelope) for an ordinary send", () => {
-    // No media / topic / rewrite / liveVideo → byte-identical to a plain send.
-    expect(buildTurnStartExtras({ ...base })).toBeUndefined();
-    expect(
-      buildTurnStartExtras({ ...base, liveVideo: false }),
-    ).toBeUndefined();
-  });
-});
-
-describe("sendMessage", () => {
-  // Codex NIT H rewrite: this test now exercises the actual #109.1
-  // contract — when `startBridgeForSession`'s underlying bridge start
-  // REJECTS, no optimistic user row is mirrored AND `onComplete`
-  // still fires so the chat input lock releases. Pre-fix the happy
-  // path duplicated coverage from "dispatches via bridge.sendTurn and
-  // mirrors the user message" below and the failure path was
-  // exercised nowhere directly.
-  it("issue #109.1: a failed bridge start does NOT orphan a user bubble and fires onComplete", async () => {
-    // Install a factory that returns a bridge whose `start()` rejects.
-    // No `__setActiveBridgeForTest` here so `enqueueSendV1` hits
-    // `startBridgeForSession` → `createUiProtocolBridge().start()` →
-    // rejected promise → catch branch in `enqueueSendV1`.
-    __bridgeFactoryOverride.current = () => ({
-      start: vi.fn(async () => {
-        throw new Error("bridge start refused");
-      }),
-      stop: vi.fn(async () => {}),
-      sendTurn: vi.fn(async () => {
-        throw new Error("should not be called");
-      }),
-      interruptTurn: vi.fn(),
-      respondToApproval: vi.fn(),
-      hydrateSession: vi.fn(async () => null),
-      callMethod: vi.fn(),
-      onMessageDelta: vi.fn(() => () => {}),
-      onMessagePersisted: vi.fn(() => () => {}),
-      onSpawnComplete: vi.fn(() => () => {}),
-      onFileAttached: vi.fn(() => () => {}),
-      onTaskUpdated: vi.fn(() => () => {}),
-      onTaskOutputDelta: vi.fn(() => () => {}),
-      onTurnLifecycle: vi.fn(() => () => {}),
-      onApprovalRequested: vi.fn(() => () => {}),
-    onApprovalAutoResolved: vi.fn(() => () => {}),
-    onUserQuestionRequested: vi.fn(() => () => {}),
-      onRouterStatus: vi.fn(() => () => {}),
-      onRouterFailover: vi.fn(() => () => {}),
-      onQueueState: vi.fn(() => () => {}),
-      onConnectionStateChange: vi.fn(() => () => {}),
-      getConnectionState: vi.fn(() => "connected"),
-      onWarning: vi.fn(() => () => {}),
-      onSessionTitleUpdated: vi.fn(() => () => {}),
-    });
-    const onComplete = vi.fn();
-
-    sendMessage({
-      sessionId: SESSION,
-      text: "hello-109-1",
-      media: [],
-      clientMessageId: "cmid-109-1",
-      onComplete,
-    });
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-
-    // No optimistic row materialised — failed start MUST NOT orphan a
-    // bubble.
-    expect(ThreadStore.getThreads(SESSION)).toHaveLength(0);
-    // `onComplete` fired so the composer's sending-lock can release.
-    expect(onComplete).toHaveBeenCalledTimes(1);
-  });
-
-  it("dispatches via bridge.sendTurn and mirrors the user message", async () => {
+describe("sendMessage canonical settlement", () => {
+  it("sends through the bridge and subscribes only to canonical terminals", async () => {
     const bridge = makeBridge();
+    const terminals = captureTerminals(bridge);
     __setActiveBridgeForTest(SESSION, bridge);
+
     sendMessage({
       sessionId: SESSION,
       text: "hello",
       media: [],
-      clientMessageId: "cmid-on",
+      clientMessageId: "cmid-send",
     });
-    for (let i = 0; i < 12; i++) await Promise.resolve();
+    await flush();
+
     expect(bridge.sendTurn).toHaveBeenCalledWith(
-      "cmid-on",
+      "cmid-send",
       [{ kind: "text", text: "hello" }],
       undefined,
     );
-    const threads = ThreadStore.getThreads(SESSION);
-    expect(threads).toHaveLength(1);
-    expect(threads[0].userMsg.text).toBe("hello");
-    expect(threads[0].id).toBe("cmid-on");
+    expect(bridge.onProjectionTerminal).toHaveBeenCalledTimes(1);
+    expect(bridge.onTurnLifecycle).not.toHaveBeenCalled();
+
+    terminals[0]?.(terminal("cmid-send"));
   });
 
-  // M9-γ-4 (issue #841): when `skipOptimisticUserMessage` is set,
-  // `enqueueSendV1` MUST NOT call `addUserMessage`. The Composer renders
-  // a `<GhostBubble>` overlay instead, so the durable thread reducer
-  // stays free of an optimistic row. The send itself still goes through
-  // bridge.sendTurn so the server produces real envelopes.
-  it("flag ON (skipOptimisticUserMessage): does NOT mirror into ThreadStore", async () => {
+  it("surfaces an errored canonical terminal through the ghost callback", async () => {
     const bridge = makeBridge();
+    const terminals = captureTerminals(bridge);
     __setActiveBridgeForTest(SESSION, bridge);
-    sendMessage({
-      sessionId: SESSION,
-      text: "ghost",
-      media: [],
-      clientMessageId: "cmid-ghost",
-      skipOptimisticUserMessage: true,
-    });
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(bridge.sendTurn).toHaveBeenCalledWith(
-      "cmid-ghost",
-      [{ kind: "text", text: "ghost" }],
-      undefined,
-    );
-    expect(ThreadStore.getThreads(SESSION)).toHaveLength(0);
-  });
-
-  it("flag OFF (default): mirrors into ThreadStore", async () => {
-    const bridge = makeBridge();
-    __setActiveBridgeForTest(SESSION, bridge);
-    sendMessage({
-      sessionId: SESSION,
-      text: "default",
-      media: [],
-      clientMessageId: "cmid-default",
-    });
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-    const threads = ThreadStore.getThreads(SESSION);
-    expect(threads).toHaveLength(1);
-    expect(threads[0].id).toBe("cmid-default");
-  });
-
-  it("surfaces an errored canonical terminal through the ghost error callback", async () => {
-    const bridge = makeBridge();
-    __setActiveBridgeForTest(SESSION, bridge);
-    ProjectionStore.setProjectionV2Enabled(SESSION, undefined, true);
-    let terminalHandler:
-      | Parameters<UiProtocolBridge["onProjectionTerminal"]>[0]
-      | undefined;
-    (bridge.onProjectionTerminal as ReturnType<typeof vi.fn>).mockImplementation(
-      (handler: Parameters<UiProtocolBridge["onProjectionTerminal"]>[0]) => {
-        terminalHandler = handler;
-        return () => {
-          terminalHandler = undefined;
-        };
-      },
-    );
     const onError = vi.fn();
+    const onComplete = vi.fn();
 
     sendMessage({
       sessionId: SESSION,
       text: "canonical failure",
       media: [],
-      clientMessageId: "cmid-terminal-error",
-      skipOptimisticUserMessage: true,
+      clientMessageId: "cmid-error",
       onError,
-    });
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-
-    terminalHandler?.({
-      session_id: SESSION,
-      thread_id: "thread-terminal-error",
-      turn_id: "cmid-terminal-error",
-      client_message_id: "cmid-terminal-error",
-      outcome: "errored",
-      error: { code: "provider_error", message: "Provider stopped." },
-    });
-
-    expect(onError).toHaveBeenCalledWith(expect.objectContaining({
-      message: "Provider stopped.",
-    }));
-    expect(ThreadStore.getThreads(SESSION)).toEqual([]);
-  });
-
-  it("waits for the canonical terminal instead of a compatibility lifecycle event in v2", async () => {
-    const bridge = makeBridge();
-    __setActiveBridgeForTest(SESSION, bridge);
-    ProjectionStore.setProjectionV2Enabled(SESSION, undefined, true);
-    let lifecycleHandler:
-      | ((e: { turn_id: string; reason?: string; error?: unknown }) => void)
-      | undefined;
-    let terminalHandler:
-      | Parameters<UiProtocolBridge["onProjectionTerminal"]>[0]
-      | undefined;
-    (bridge.onTurnLifecycle as ReturnType<typeof vi.fn>).mockImplementation(
-      (handler: (e: { turn_id: string; reason?: string; error?: unknown }) => void) => {
-        lifecycleHandler = handler;
-        return () => {
-          lifecycleHandler = undefined;
-        };
-      },
-    );
-    (bridge.onProjectionTerminal as ReturnType<typeof vi.fn>).mockImplementation(
-      (handler: Parameters<UiProtocolBridge["onProjectionTerminal"]>[0]) => {
-        terminalHandler = handler;
-        return () => {
-          terminalHandler = undefined;
-        };
-      },
-    );
-    const onComplete = vi.fn();
-    const onError = vi.fn();
-
-    sendMessage({
-      sessionId: SESSION,
-      text: "canonical only",
-      media: [],
-      clientMessageId: "cmid-canonical-only",
-      skipOptimisticUserMessage: true,
       onComplete,
-      onError,
     });
-    for (let i = 0; i < 12; i += 1) await Promise.resolve();
+    await flush();
+    terminals[0]?.(terminal("cmid-error", "errored"));
 
-    lifecycleHandler?.({
-      turn_id: "cmid-canonical-only",
-      error: { code: "legacy_error" },
-    });
-    expect(onComplete).not.toHaveBeenCalled();
-    expect(onError).not.toHaveBeenCalled();
-
-    terminalHandler?.({
-      session_id: SESSION,
-      thread_id: "thread-canonical-only",
-      turn_id: "cmid-canonical-only",
-      client_message_id: "cmid-canonical-only",
-      outcome: "errored",
-      error: { code: "canonical_error", message: "Canonical failure." },
-    });
     expect(onError).toHaveBeenCalledWith(
-      expect.objectContaining({ message: "Canonical failure." }),
+      expect.objectContaining({ message: "Provider stopped." }),
     );
     expect(onComplete).toHaveBeenCalledTimes(1);
   });
 
-  it("subscribes to turn lifecycle so onComplete fires on turn/completed", async () => {
+  it("settles once when a canonical terminal arrives before turn/start resolves", async () => {
     const bridge = makeBridge();
+    const terminals = captureTerminals(bridge);
     __setActiveBridgeForTest(SESSION, bridge);
     const onComplete = vi.fn();
-
-    let lifecycleHandler:
-      | ((
-          e: { turn_id: string; reason?: string; error?: unknown },
-        ) => void)
-      | undefined;
-    (bridge.onTurnLifecycle as ReturnType<typeof vi.fn>).mockImplementation(
-      (h: (e: { turn_id: string; reason?: string; error?: unknown }) => void) => {
-        lifecycleHandler = h;
-        return () => {
-          lifecycleHandler = undefined;
-        };
-      },
-    );
-
-    sendMessage({
-      sessionId: SESSION,
-      text: "hello",
-      media: [],
-      clientMessageId: "cmid-complete",
-      onComplete,
-    });
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-
-    expect(lifecycleHandler).toBeDefined();
-    // A different turn's completion must not fire onComplete.
-    lifecycleHandler?.({ turn_id: "other", reason: "stop" });
-    expect(onComplete).not.toHaveBeenCalled();
-
-    lifecycleHandler?.({ turn_id: "cmid-complete", reason: "stop" });
-    expect(onComplete).toHaveBeenCalledTimes(1);
-  });
-
-  // M9-β-1 (UPCR-2026-015): media-bearing turns now ride the WS path.
-  // The bridge is called with `extras.media` populated as
-  // `FileRef`-shaped entries; the user bubble carries the local files.
-  it("forwards media on bridge.sendTurn extras when media is present", async () => {
-    const bridge = makeBridge();
-    __setActiveBridgeForTest(SESSION, bridge);
-    sendMessage({
-      sessionId: SESSION,
-      text: "with image",
-      media: ["/tmp/foo.png", "/tmp/bar.mp3"],
-      clientMessageId: "cmid-media",
-    });
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
-    const call = bridge.sendTurn.mock.calls[0];
-    expect(call[0]).toBe("cmid-media");
-    expect(call[1]).toEqual([{ kind: "text", text: "with image" }]);
-    const extras = call[2];
-    expect(extras).toBeDefined();
-    expect(extras.media).toHaveLength(2);
-    expect(extras.media[0]).toMatchObject({ path: "/tmp/foo.png" });
-    expect(extras.media[1]).toMatchObject({ path: "/tmp/bar.mp3" });
-    // No error finalisation — the optimistic user bubble is still
-    // pending an assistant response.
-    const threads = ThreadStore.getThreads(SESSION);
-    expect(threads[0].responses[0]?.status).not.toBe("error");
-  });
-
-  // M9-β-1: `/queue` rewrites carry the original cmid via
-  // `extras.rewrite_for` so the server can replace the queued user
-  // message in place rather than appending.
-  it("forwards rewrite_for on bridge.sendTurn extras when requestText differs from text", async () => {
-    const bridge = makeBridge();
-    __setActiveBridgeForTest(SESSION, bridge);
-    sendMessage({
-      sessionId: SESSION,
-      text: "/queue interrupt",
-      requestText: "rewritten request",
-      media: [],
-      clientMessageId: "cmid-rewrite",
-    });
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
-    const call = bridge.sendTurn.mock.calls[0];
-    expect(call[0]).toBe("cmid-rewrite");
-    const extras = call[2];
-    expect(extras).toBeDefined();
-    expect(extras.rewrite_for).toBe("cmid-rewrite");
-    expect(extras.media).toBeUndefined();
-    expect(extras.topic).toBeUndefined();
-  });
-
-  // M9-β-1: topic-scoped sends carry `extras.topic` so the server
-  // folds it into the resolved SessionKey before scope validation.
-  // The active bridge is registered against the same `(sessionId,
-  // topic)` scope the SPA's runtime would publish — `getActiveBridge`
-  // gates by scope, so the test mirrors production wiring.
-  it("forwards topic on bridge.sendTurn extras when historyTopic is set", async () => {
-    const bridge = makeBridge();
-    __setActiveBridgeForTest(SESSION, bridge, "slides");
-    sendMessage({
-      sessionId: SESSION,
-      historyTopic: "slides",
-      text: "make a deck",
-      media: [],
-      clientMessageId: "cmid-topic",
-    });
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
-    const call = bridge.sendTurn.mock.calls[0];
-    expect(call[0]).toBe("cmid-topic");
-    const extras = call[2];
-    expect(extras).toBeDefined();
-    expect(extras.topic).toBe("slides");
-    expect(extras.media).toBeUndefined();
-    expect(extras.rewrite_for).toBeUndefined();
-  });
-
-  // M9-β-1: text-only sends produce NO extras envelope so the on-wire
-  // shape stays byte-identical to a pre-β-1 build (back-compat).
-  it("omits the extras envelope for plain text-only sends", async () => {
-    const bridge = makeBridge();
-    __setActiveBridgeForTest(SESSION, bridge);
-    sendMessage({
-      sessionId: SESSION,
-      text: "plain text",
-      media: [],
-      clientMessageId: "cmid-plain",
-    });
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
-    const call = bridge.sendTurn.mock.calls[0];
-    expect(call[2]).toBeUndefined();
-  });
-
-  // M9-β-1: when all three β-1 surfaces are populated together (a
-  // /queue rewrite under a topic-scoped session that swaps in new
-  // media), every extra rides through.
-  it("forwards all three β-1 extras when populated together", async () => {
-    const bridge = makeBridge();
-    __setActiveBridgeForTest(SESSION, bridge, "research");
-    sendMessage({
-      sessionId: SESSION,
-      historyTopic: "research",
-      text: "redo with this image",
-      requestText: "edited prompt",
-      media: ["/tmp/replacement.png"],
-      clientMessageId: "cmid-all",
-    });
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
-    const extras = bridge.sendTurn.mock.calls[0][2];
-    expect(extras).toBeDefined();
-    expect(extras.media).toHaveLength(1);
-    expect(extras.media[0]).toMatchObject({ path: "/tmp/replacement.png" });
-    expect(extras.topic).toBe("research");
-    expect(extras.rewrite_for).toBe("cmid-all");
-  });
-
-  // Codex review must-fix #5B: the lifecycle subscription must be
-  // installed BEFORE `sendTurn` resolves. A fast turn/completed firing
-  // between the RPC ack and the awaited resolution would otherwise leave
-  // `sendingRef.current` stuck-true (chat input lock).
-  it("onComplete fires even when turn/completed arrives before sendTurn resolves", async () => {
-    const bridge = makeBridge();
-    __setActiveBridgeForTest(SESSION, bridge);
-    const onComplete = vi.fn();
-
-    let lifecycleHandler:
-      | ((e: { turn_id: string; reason?: string; error?: unknown }) => void)
-      | undefined;
-    (bridge.onTurnLifecycle as ReturnType<typeof vi.fn>).mockImplementation(
-      (h: (e: { turn_id: string; reason?: string; error?: unknown }) => void) => {
-        lifecycleHandler = h;
-        return () => {
-          lifecycleHandler = undefined;
-        };
-      },
-    );
-
-    let resolveSendTurn: (() => void) | null = null;
-    (bridge.sendTurn as ReturnType<typeof vi.fn>).mockImplementation(
+    let resolveTurn: (() => void) | undefined;
+    bridge.sendTurn.mockImplementation(
       () =>
-        new Promise<{ accepted: true }>((res) => {
-          resolveSendTurn = () => res({ accepted: true });
+        new Promise<{ accepted: true }>((resolve) => {
+          resolveTurn = () => resolve({ accepted: true });
         }),
     );
 
     sendMessage({
       sessionId: SESSION,
-      text: "fast",
+      text: "fast terminal",
       media: [],
       clientMessageId: "cmid-fast",
       onComplete,
     });
-
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(lifecycleHandler).toBeDefined();
-
-    // Fire turn/completed BEFORE sendTurn resolves.
-    lifecycleHandler?.({ turn_id: "cmid-fast", reason: "stop" });
+    await flush();
+    terminals[0]?.(terminal("cmid-fast"));
     expect(onComplete).toHaveBeenCalledTimes(1);
 
-    // Now let sendTurn resolve. onComplete must NOT fire a second time.
-    resolveSendTurn?.();
-    for (let i = 0; i < 8; i++) await Promise.resolve();
+    resolveTurn?.();
+    await flush();
     expect(onComplete).toHaveBeenCalledTimes(1);
   });
 
-  // Codex review must-fix #5B: an RPC failure must also fire onComplete.
-  it("onComplete fires when bridge.sendTurn rejects", async () => {
+  it("serializes queued sends until each canonical terminal", async () => {
     const bridge = makeBridge();
-    __setActiveBridgeForTest(SESSION, bridge);
-    const onComplete = vi.fn();
-
-    (bridge.sendTurn as ReturnType<typeof vi.fn>).mockImplementation(() =>
-      Promise.reject(new Error("rpc-broken")),
-    );
-
-    sendMessage({
-      sessionId: SESSION,
-      text: "boom",
-      media: [],
-      clientMessageId: "cmid-rpcfail",
-      onComplete,
-    });
-
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(onComplete).toHaveBeenCalledTimes(1);
-    const threads = ThreadStore.getThreads(SESSION);
-    expect(threads).toHaveLength(1);
-    expect(threads[0].pendingAssistant).toBeNull();
-    expect(threads[0].responses[0]?.status).toBe("error");
-  });
-
-  // WS blip false-error: a `BridgeTimeoutError` on the turn/start RPC
-  // (response frame lost mid-blip) must NOT finalize the bubble as error
-  // when `turn/started` was ALREADY observed — the server is still
-  // running the turn, and the live lifecycle stream is the source of
-  // truth. Pre-fix, only `BridgeStoppedError` honoured `turnStartedSeen`;
-  // the timeout path finalized-as-error and released the send queue early.
-  it("BridgeTimeoutError after turn/started does NOT finalize the turn as error", async () => {
-    const bridge = makeBridge();
-    __setActiveBridgeForTest(SESSION, bridge);
-    const onComplete = vi.fn();
-
-    let lifecycleHandler:
-      | ((e: { turn_id: string; reason?: string; error?: unknown }) => void)
-      | undefined;
-    (bridge.onTurnLifecycle as ReturnType<typeof vi.fn>).mockImplementation(
-      (h: (e: { turn_id: string; reason?: string; error?: unknown }) => void) => {
-        lifecycleHandler = h;
-        return () => {
-          lifecycleHandler = undefined;
-        };
-      },
-    );
-
-    let rejectSendTurn: ((err: unknown) => void) | null = null;
-    (bridge.sendTurn as ReturnType<typeof vi.fn>).mockImplementation(
-      () =>
-        new Promise((_res, rej) => {
-          rejectSendTurn = rej;
-        }),
-    );
-
-    sendMessage({
-      sessionId: SESSION,
-      text: "long turn",
-      media: [],
-      clientMessageId: "cmid-blip",
-      onComplete,
-    });
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(lifecycleHandler).toBeDefined();
-
-    // Server accepted the turn: bare `turn/started` (no reason/error keys).
-    lifecycleHandler?.({ turn_id: "cmid-blip" });
-
-    // WS blip: the RPC reply is lost; the per-RPC timeout rejects sendTurn.
-    rejectSendTurn?.(new BridgeTimeoutError("turn/start", 30000));
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-
-    // The still-running turn is NOT finalized as error, and the per-session
-    // queue gate stays held for the live lifecycle stream.
-    const threads = ThreadStore.getThreads(SESSION);
-    expect(threads[0].responses[0]?.status).not.toBe("error");
-    expect(onComplete).not.toHaveBeenCalled();
-
-    // The live event stream drives the bubble to completion.
-    lifecycleHandler?.({ turn_id: "cmid-blip", reason: "stop" });
-    expect(onComplete).toHaveBeenCalledTimes(1);
-  });
-
-  // Counterpart guard: with NO `turn/started` observed, an RPC timeout has
-  // no evidence the server ever accepted the turn — it must keep finalizing
-  // as error immediately (the pre-existing behaviour).
-  it("BridgeTimeoutError with no turn/started still finalizes as error", async () => {
-    const bridge = makeBridge();
-    __setActiveBridgeForTest(SESSION, bridge);
-    const onComplete = vi.fn();
-
-    let rejectSendTurn: ((err: unknown) => void) | null = null;
-    (bridge.sendTurn as ReturnType<typeof vi.fn>).mockImplementation(
-      () =>
-        new Promise((_res, rej) => {
-          rejectSendTurn = rej;
-        }),
-    );
-
-    sendMessage({
-      sessionId: SESSION,
-      text: "never started",
-      media: [],
-      clientMessageId: "cmid-timeout-dead",
-      onComplete,
-    });
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-
-    rejectSendTurn?.(new BridgeTimeoutError("turn/start", 30000));
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-
-    const threads = ThreadStore.getThreads(SESSION);
-    expect(threads[0].responses[0]?.status).toBe("error");
-    expect(onComplete).toHaveBeenCalledTimes(1);
-  });
-
-  // M10 follow-up Bug B: 3 rapid sends serialise behind the prior turn's
-  // lifecycle event before the next `bridge.sendTurn` issues.
-  it("serialises 3 rapid sends per session, awaiting prior turn lifecycle", async () => {
-    const bridge = makeBridge();
+    const terminals = captureTerminals(bridge);
     __setActiveBridgeForTest(SESSION, bridge);
 
-    let lifecycleHandler:
-      | ((e: { turn_id: string; reason?: string; error?: unknown }) => void)
-      | undefined;
-    (bridge.onTurnLifecycle as ReturnType<typeof vi.fn>).mockImplementation(
-      (h: (e: { turn_id: string; reason?: string; error?: unknown }) => void) => {
-        lifecycleHandler = h;
-        return () => {
-          lifecycleHandler = undefined;
-        };
-      },
-    );
-
-    sendMessage({
-      sessionId: SESSION,
-      text: "Q1",
-      media: [],
-      clientMessageId: "cmid-Q1",
-    });
-    sendMessage({
-      sessionId: SESSION,
-      text: "Q2",
-      media: [],
-      clientMessageId: "cmid-Q2",
-    });
-    sendMessage({
-      sessionId: SESSION,
-      text: "Q3",
-      media: [],
-      clientMessageId: "cmid-Q3",
-    });
-
-    for (let i = 0; i < 12; i++) await Promise.resolve();
+    for (const clientMessageId of ["cmid-Q1", "cmid-Q2", "cmid-Q3"]) {
+      sendMessage({
+        sessionId: SESSION,
+        text: clientMessageId,
+        media: [],
+        clientMessageId,
+      });
+    }
+    await flush();
     expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
     expect(bridge.sendTurn).toHaveBeenLastCalledWith(
       "cmid-Q1",
-      [{ kind: "text", text: "Q1" }],
+      [{ kind: "text", text: "cmid-Q1" }],
       undefined,
     );
 
-    lifecycleHandler?.({ turn_id: "cmid-Q1", reason: "stop" });
-    for (let i = 0; i < 12; i++) await Promise.resolve();
+    terminals[0]?.(terminal("cmid-Q1"));
+    await flush();
     expect(bridge.sendTurn).toHaveBeenCalledTimes(2);
-    expect(bridge.sendTurn).toHaveBeenLastCalledWith(
-      "cmid-Q2",
-      [{ kind: "text", text: "Q2" }],
-      undefined,
-    );
 
-    lifecycleHandler?.({ turn_id: "cmid-Q2", reason: "stop" });
-    for (let i = 0; i < 12; i++) await Promise.resolve();
+    terminals[1]?.(terminal("cmid-Q2"));
+    await flush();
     expect(bridge.sendTurn).toHaveBeenCalledTimes(3);
-    expect(bridge.sendTurn).toHaveBeenLastCalledWith(
-      "cmid-Q3",
-      [{ kind: "text", text: "Q3" }],
-      undefined,
-    );
+
+    terminals[2]?.(terminal("cmid-Q3"));
   });
 
-  // Codex P2 round 7 (M10 follow-up Bug B): a `bridge.sendTurn`
-  // resolution of `{ accepted: false }` finalises the bubble inline so
-  // the chain advances immediately and the next send proceeds.
-  it("releases the queue when bridge.sendTurn resolves accepted: false", async () => {
+  it("releases the queue and reports a rejected turn/start", async () => {
     const bridge = makeBridge();
+    const terminals = captureTerminals(bridge);
     __setActiveBridgeForTest(SESSION, bridge);
-
-    (bridge.sendTurn as ReturnType<typeof vi.fn>).mockImplementation(() =>
-      Promise.resolve({ accepted: false }),
-    );
-
-    const onComplete1 = vi.fn();
-    const onComplete2 = vi.fn();
+    bridge.sendTurn
+      .mockResolvedValueOnce({ accepted: false })
+      .mockResolvedValueOnce({ accepted: true });
+    const onError = vi.fn();
 
     sendMessage({
       sessionId: SESSION,
-      text: "Q1 server-rejects",
+      text: "rejected",
       media: [],
       clientMessageId: "cmid-rejected",
-      onComplete: onComplete1,
+      onError,
     });
     sendMessage({
       sessionId: SESSION,
-      text: "Q2 follow-up",
+      text: "followup",
       media: [],
       clientMessageId: "cmid-followup",
-      onComplete: onComplete2,
     });
+    await flush();
 
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(onComplete1).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "The server rejected this turn." }),
+    );
     expect(bridge.sendTurn).toHaveBeenCalledTimes(2);
-    const threads = ThreadStore.getThreads(SESSION);
-    expect(threads.find((t) => t.id === "cmid-rejected")?.responses[0].status).toBe(
-      "error",
-    );
+    terminals[1]?.(terminal("cmid-followup"));
   });
 
-  // Codex P2 round 4 (M10 follow-up Bug B): the user message must be
-  // mirrored before subsequent sends process. Issue #109.1 reordered the
-  // no-active-bridge path to run AFTER `startBridgeForSession` resolves
-  // (so a failed start cannot orphan a bubble); once a same-scope bridge
-  // is already active, queued follow-ups can mirror immediately while
-  // `sendTurn` remains serialized behind the prior lifecycle gate.
-  it("mirrors queued v1 user messages once the bridge has confirmed start", async () => {
+  it("releases a queued replacement after an interrupt", async () => {
     const bridge = makeBridge();
-    __setActiveBridgeForTest(SESSION, bridge);
-
-    let lifecycleHandler:
-      | ((e: { turn_id: string; reason?: string; error?: unknown }) => void)
-      | undefined;
-    (bridge.onTurnLifecycle as ReturnType<typeof vi.fn>).mockImplementation(
-      (h: (e: { turn_id: string; reason?: string; error?: unknown }) => void) => {
-        lifecycleHandler = h;
-        return () => {
-          lifecycleHandler = undefined;
-        };
-      },
-    );
-
-    sendMessage({
-      sessionId: SESSION,
-      text: "Q1",
-      media: [],
-      clientMessageId: "cmid-Q1",
-    });
-    sendMessage({
-      sessionId: SESSION,
-      text: "Q2",
-      media: [],
-      clientMessageId: "cmid-Q2",
-    });
-
-    // Both user bubbles render promptly because the same-scope bridge
-    // is already active. Only Q1 has reached sendTurn; Q2 is still
-    // parked behind Q1's lifecycle gate.
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-    let threads = ThreadStore.getThreads(SESSION);
-    expect(threads.map((t) => t.id)).toEqual(["cmid-Q1", "cmid-Q2"]);
-    expect(threads[0].userMsg.text).toBe("Q1");
-    expect(threads[1].userMsg.text).toBe("Q2");
-    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
-    expect(bridge.sendTurn).toHaveBeenLastCalledWith(
-      "cmid-Q1",
-      [{ kind: "text", text: "Q1" }],
-      undefined,
-    );
-
-    lifecycleHandler?.({ turn_id: "cmid-Q1", reason: "stop" });
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(bridge.sendTurn).toHaveBeenCalledTimes(2);
-    threads = ThreadStore.getThreads(SESSION);
-    expect(threads.map((t) => t.id)).toEqual(["cmid-Q1", "cmid-Q2"]);
-  });
-
-  // Codex P2 round 3 (M10 follow-up Bug B): a throwing `onComplete`
-  // callback must NOT wedge the per-session queue.
-  it("releases the queue even when the onComplete callback throws", async () => {
-    const bridge = makeBridge();
-    __setActiveBridgeForTest(SESSION, bridge);
-
-    let lifecycleHandler:
-      | ((e: { turn_id: string; reason?: string; error?: unknown }) => void)
-      | undefined;
-    (bridge.onTurnLifecycle as ReturnType<typeof vi.fn>).mockImplementation(
-      (h: (e: { turn_id: string; reason?: string; error?: unknown }) => void) => {
-        lifecycleHandler = h;
-        return () => {
-          lifecycleHandler = undefined;
-        };
-      },
-    );
-
-    const onCompleteThrowing = vi.fn(() => {
-      throw new Error("subscriber blew up");
-    });
-    const onCompleteFollowup = vi.fn();
-
-    sendMessage({
-      sessionId: SESSION,
-      text: "Q1",
-      media: [],
-      clientMessageId: "cmid-Q1",
-      onComplete: onCompleteThrowing,
-    });
-    sendMessage({
-      sessionId: SESSION,
-      text: "Q2",
-      media: [],
-      clientMessageId: "cmid-Q2",
-      onComplete: onCompleteFollowup,
-    });
-
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
-
-    expect(() =>
-      lifecycleHandler?.({ turn_id: "cmid-Q1", reason: "stop" }),
-    ).toThrow("subscriber blew up");
-    expect(onCompleteThrowing).toHaveBeenCalledTimes(1);
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(bridge.sendTurn).toHaveBeenCalledTimes(2);
-    expect(bridge.sendTurn).toHaveBeenLastCalledWith(
-      "cmid-Q2",
-      [{ kind: "text", text: "Q2" }],
-      undefined,
-    );
-  });
-
-  // Codex NIT I rewrite: when the bridge transitions to `closed`
-  // mid-Q1, Q1's lifecycle gate must release immediately so the chain
-  // can advance. The pre-fix test then asserted Q2 reused the SAME
-  // closed mock bridge to re-issue `sendTurn` — that's only possible
-  // because `__setActiveBridgeForTest` keeps the runtime registry's
-  // `connectionState` stuck at "connected" regardless of what the
-  // bridge's own state subscriber sees. Production runs a different
-  // path: `getActiveBridge` reflects the live `connectionState`, and
-  // `startBridgeForSession` tears down a same-scope bridge whose
-  // state has gone terminal (issue #109.4). So Q2 either:
-  //   (a) finalizes immediately because the bridge is gone, or
-  //   (b) reaches `sendTurn` on a FRESH bridge (a `restartBridge`-
-  //       equivalent path), not on the closed one.
-  //
-  // To make this assertable in the harness, switch the runtime
-  // registry into `connectionState: "closed"` right after the
-  // state-transition. Then Q2's `startBridgeForSession` call sees
-  // the terminal state and would normally tear down + start fresh —
-  // since there's no real WS in the harness, the second start path
-  // surfaces as a `bridge start failed` warning, `onComplete2` fires,
-  // and the original mock bridge's `sendTurn` is NOT called a second
-  // time. Assert that contract.
-  it("on bridge `closed`: Q1's gate releases and Q2 does NOT reuse the closed bridge", async () => {
-    const bridge = makeBridge();
-    __setActiveBridgeForTest(SESSION, bridge);
-
-    let stateHandler: ((s: string) => void) | undefined;
-    (bridge.onConnectionStateChange as ReturnType<typeof vi.fn>).mockImplementation(
-      (h: (s: string) => void) => {
-        stateHandler = h;
-        return () => {
-          stateHandler = undefined;
-        };
-      },
-    );
-
-    const onComplete1 = vi.fn();
-    const onComplete2 = vi.fn();
-
-    sendMessage({
-      sessionId: SESSION,
-      text: "Q1",
-      media: [],
-      clientMessageId: "cmid-Q1",
-      onComplete: onComplete1,
-    });
-    sendMessage({
-      sessionId: SESSION,
-      text: "Q2",
-      media: [],
-      clientMessageId: "cmid-Q2",
-      onComplete: onComplete2,
-    });
-
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
-    expect(stateHandler).toBeDefined();
-
-    // Bridge teardown: connection state goes to `closed`. The Q1
-    // lifecycle gate must release WITHOUT waiting for `turn/completed`
-    // (codex P2 round 2 contract).
-    stateHandler?.("closed");
-    expect(onComplete1).toHaveBeenCalledTimes(1);
-
-    // Reflect the same closed state into the runtime registry — this
-    // is what production wires up automatically through the runtime's
-    // own `onConnectionStateChange` subscriber. The test harness's
-    // `__setActiveBridgeForTest` doesn't, so we drive it explicitly to
-    // exercise the post-closed `startBridgeForSession` path.
-    __setActiveBridgeForTest(SESSION, bridge, undefined, "closed");
-
-    // The post-closed `startBridgeForSession` tears down the active
-    // bridge and creates a fresh one via `createUiProtocolBridge`. In
-    // production that's a real bridge against a real WS; in this
-    // harness we install a factory that rejects `start()` so the
-    // bridge-start branch in `enqueueSendV1` finalises Q2 immediately
-    // and onComplete2 fires. (Without the override the fresh real
-    // bridge would block on a never-resolving WS in jsdom.)
-    __bridgeFactoryOverride.current = () => ({
-      start: vi.fn(async () => {
-        throw new Error("fresh bridge: jsdom has no live WS");
-      }),
-      stop: vi.fn(async () => {}),
-      sendTurn: vi.fn(),
-      interruptTurn: vi.fn(),
-      respondToApproval: vi.fn(),
-      hydrateSession: vi.fn(async () => null),
-      callMethod: vi.fn(),
-      onMessageDelta: vi.fn(() => () => {}),
-      onMessagePersisted: vi.fn(() => () => {}),
-      onSpawnComplete: vi.fn(() => () => {}),
-      onFileAttached: vi.fn(() => () => {}),
-      onTaskUpdated: vi.fn(() => () => {}),
-      onTaskOutputDelta: vi.fn(() => () => {}),
-      onTurnLifecycle: vi.fn(() => () => {}),
-      onApprovalRequested: vi.fn(() => () => {}),
-    onApprovalAutoResolved: vi.fn(() => () => {}),
-    onUserQuestionRequested: vi.fn(() => () => {}),
-      onRouterStatus: vi.fn(() => () => {}),
-      onRouterFailover: vi.fn(() => () => {}),
-      onQueueState: vi.fn(() => () => {}),
-      onConnectionStateChange: vi.fn(() => () => {}),
-      getConnectionState: vi.fn(() => "connected"),
-      onWarning: vi.fn(() => () => {}),
-      onSessionTitleUpdated: vi.fn(() => () => {}),
-    });
-
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-
-    // Production contract: Q2 must complete (so the composer's
-    // sending lock clears) but the closed bridge MUST NOT see a
-    // second `sendTurn`. With the harness driven into the closed
-    // state, the bridge-start path tears down + restarts a fresh
-    // bridge — and the fresh bridge's start-fail surfaces through
-    // `enqueueSendV1`'s catch branch.
-    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
-    expect(onComplete2).toHaveBeenCalledTimes(1);
-  });
-
-  it("interruptActiveTurn releases the FIFO so a replacement turn can start", async () => {
-    const bridge = makeBridge();
+    const terminals = captureTerminals(bridge);
     __setActiveBridgeForTest(SESSION, bridge);
 
     sendMessage({
       sessionId: SESSION,
-      text: "Q1",
+      text: "first",
       media: [],
-      clientMessageId: "cmid-Q1",
+      clientMessageId: "cmid-first",
     });
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
-
     sendMessage({
       sessionId: SESSION,
-      text: "Q2",
+      text: "replacement",
       media: [],
-      clientMessageId: "cmid-Q2",
+      clientMessageId: "cmid-replacement",
     });
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-    expect(bridge.sendTurn).toHaveBeenCalledTimes(1);
+    await flush();
 
     await expect(
-      interruptActiveTurn({
-        sessionId: SESSION,
-        turnId: "cmid-Q1",
-        reason: "voice replacement",
-      }),
+      interruptActiveTurn({ sessionId: SESSION, turnId: "cmid-first" }),
     ).resolves.toBe(true);
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-
-    expect(bridge.interruptTurn).toHaveBeenCalledWith(
-      "cmid-Q1",
-      "voice replacement",
-    );
+    await flush();
     expect(bridge.sendTurn).toHaveBeenCalledTimes(2);
-    expect(bridge.sendTurn).toHaveBeenLastCalledWith(
-      "cmid-Q2",
-      [{ kind: "text", text: "Q2" }],
-      undefined,
-    );
-  });
-});
 
-// ---------------------------------------------------------------------------
-// Wave4-A: per-session queue depth surfaces via `crew:queue_state`
-// ---------------------------------------------------------------------------
-//
-// The send path mirrors push / drain transitions onto a window
-// CustomEvent so `session-context.tsx`'s toolbar pill can render the
-// live depth without consulting the runtime internals. See
-// `incrementQueueDepth` / `decrementQueueDepth` in `ui-protocol-send.ts`.
-
-describe("Wave4-A: client-side queue/state DOM dispatch", () => {
-  it("a single in-flight send dispatches pendingCount=0 (no backlog) then 0 on drain", async () => {
-    // Codex Wave4-A P2 review fix: a lone send must NOT render as "1
-    // queued". `pendingCount` is the backlog behind the in-flight
-    // turn — the in-flight turn itself isn't counted.
-    const bridge = makeBridge();
-    __setActiveBridgeForTest(SESSION, bridge);
-
-    let lifecycleHandler:
-      | ((e: { turn_id: string; reason?: string; error?: unknown }) => void)
-      | undefined;
-    (bridge.onTurnLifecycle as ReturnType<typeof vi.fn>).mockImplementation(
-      (h: (e: { turn_id: string; reason?: string; error?: unknown }) => void) => {
-        lifecycleHandler = h;
-        return () => {
-          lifecycleHandler = undefined;
-        };
-      },
-    );
-
-    const events: Array<{ pendingCount: number; head: string | null }> = [];
-    function onEvent(e: Event) {
-      const detail = (e as CustomEvent).detail;
-      if (detail.sessionId !== SESSION) return;
-      events.push({ pendingCount: detail.pendingCount, head: detail.head });
-    }
-    window.addEventListener("crew:queue_state", onEvent);
-    try {
-      sendMessage({
-        sessionId: SESSION,
-        text: "hi",
-        media: [],
-        clientMessageId: "cmid-Q1",
-      });
-      // Synchronous push fires before any await. `pendingCount` is 0
-      // (the in-flight turn isn't counted) but `head` carries its cmid.
-      expect(events).toHaveLength(1);
-      expect(events[0].pendingCount).toBe(0);
-      expect(events[0].head).toBe("cmid-Q1");
-
-      for (let i = 0; i < 12; i++) await Promise.resolve();
-      lifecycleHandler?.({ turn_id: "cmid-Q1", reason: "stop" });
-      for (let i = 0; i < 12; i++) await Promise.resolve();
-
-      // Drain dispatch follows the lifecycle release; pendingCount=0, head=null.
-      const last = events[events.length - 1];
-      expect(last.pendingCount).toBe(0);
-      expect(last.head).toBeNull();
-    } finally {
-      window.removeEventListener("crew:queue_state", onEvent);
-    }
-  });
-
-  it("a second send while the first is mid-turn dispatches pendingCount=1", async () => {
-    const bridge = makeBridge();
-    __setActiveBridgeForTest(SESSION, bridge);
-
-    let lifecycleHandler:
-      | ((e: { turn_id: string; reason?: string; error?: unknown }) => void)
-      | undefined;
-    (bridge.onTurnLifecycle as ReturnType<typeof vi.fn>).mockImplementation(
-      (h: (e: { turn_id: string; reason?: string; error?: unknown }) => void) => {
-        lifecycleHandler = h;
-        return () => {
-          lifecycleHandler = undefined;
-        };
-      },
-    );
-
-    const events: Array<{ pendingCount: number; head: string | null }> = [];
-    function onEvent(e: Event) {
-      const detail = (e as CustomEvent).detail;
-      if (detail.sessionId !== SESSION) return;
-      events.push({ pendingCount: detail.pendingCount, head: detail.head });
-    }
-    window.addEventListener("crew:queue_state", onEvent);
-    try {
-      sendMessage({
-        sessionId: SESSION,
-        text: "first",
-        media: [],
-        clientMessageId: "cmid-A",
-      });
-      sendMessage({
-        sessionId: SESSION,
-        text: "second",
-        media: [],
-        clientMessageId: "cmid-B",
-      });
-      // Both pushes have fired synchronously. The latest dispatch
-      // shows pendingCount=1 (one entry parked behind the in-flight).
-      const afterPush = events[events.length - 1];
-      expect(afterPush.pendingCount).toBe(1);
-      expect(afterPush.head).toBe("cmid-A");
-
-      // Resolve the first turn → second turn becomes in-flight,
-      // backlog drops to 0.
-      for (let i = 0; i < 12; i++) await Promise.resolve();
-      lifecycleHandler?.({ turn_id: "cmid-A", reason: "stop" });
-      for (let i = 0; i < 12; i++) await Promise.resolve();
-
-      const last = events[events.length - 1];
-      expect(last.pendingCount).toBe(0);
-    } finally {
-      window.removeEventListener("crew:queue_state", onEvent);
-    }
+    terminals[1]?.(terminal("cmid-replacement"));
   });
 });

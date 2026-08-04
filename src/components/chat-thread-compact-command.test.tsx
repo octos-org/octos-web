@@ -49,7 +49,6 @@ function makeSessionCtx(topic?: string): SessionContextValue {
     historyTopic: topic,
     currentSessionTitle: "",
     currentSessionStats: null,
-    initialMessages: [],
     activeTaskOnServer: false,
     queueMode: null,
     adaptiveMode: null,

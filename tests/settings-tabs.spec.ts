@@ -11,6 +11,7 @@ const TIMEOUT = 10_000;
 
 interface SettingsMockOptions {
   profile?: typeof mockProfile;
+  providerModels?: string[];
   profileUpdateError?: { status: number; body: unknown };
   allowedEmailDeleteError?: { status: number; body: unknown };
   operatorTasksError?: { status: number; body: unknown };
@@ -581,7 +582,9 @@ async function installServerSettingsMocks(
     providerModelsBody = route.request().postDataJSON();
     await route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify(["gpt-5.4", "gpt-5.5-live"]),
+      body: JSON.stringify(
+        options.providerModels ?? ["gpt-5.4", "gpt-5.5-live"],
+      ),
     });
   });
 
@@ -911,6 +914,52 @@ test.describe("Settings page — tab smoke tests", () => {
       page.locator("h3", { hasText: "Fallback Models" }),
     ).toBeVisible({ timeout: TIMEOUT });
     await expect(page.locator('option[value="gpt-5.5-live"]')).toHaveCount(1);
+  });
+
+  test("LLM tab recognizes a provider key saved in API Keys", async ({ page }) => {
+    const profileWithMoonshotKey = {
+      ...mockProfile,
+      config: {
+        ...mockProfile.config,
+        env_vars: { MOONSHOT_API_KEY: "sk-m***key" },
+      },
+    };
+    const mocks = await installServerSettingsMocks(page, {
+      profile: profileWithMoonshotKey,
+      providerModels: [],
+    });
+    await seedAdminSession(page);
+
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: TIMEOUT });
+    await clickTab(page, "LLM");
+    await page.locator("select").first().selectOption("moonshot");
+
+    await expect(page.getByText("is configured in API Keys.")).toBeVisible({
+      timeout: TIMEOUT,
+    });
+    await expect(page.getByLabel("Base URL")).toHaveValue(
+      "https://api.moonshot.cn/v1",
+    );
+    await expect(
+      page.getByText("Requires MOONSHOT_API_KEY in Environment Variables"),
+    ).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Test Connection" }).click();
+    await expect(
+      page.getByText("Select or enter a model ID before testing."),
+    ).toBeVisible({ timeout: TIMEOUT });
+    expect(mocks.getTestProviderBody()).toBeNull();
+
+    await page.getByPlaceholder("e.g. my-model-v2").fill("kimi-k2.6");
+    await page.getByRole("button", { name: "Test Connection" }).click();
+    await expect.poll(() => mocks.getTestProviderBody()).toEqual({
+      provider: "moonshot",
+      model: "kimi-k2.6",
+      api_key_env: "MOONSHOT_API_KEY",
+      base_url: "https://api.moonshot.cn/v1",
+      profile_id: "admin",
+    });
   });
 
   test("LLM tab tests provider with selected model and route data", async ({

@@ -1,8 +1,8 @@
 /**
  * UI Protocol v1 send-path entry point for /chat.
  *
- * The user message is mirrored into the thread store and the turn is
- * dispatched through `bridge.sendTurn(...)` over the WS UI Protocol.
+ * The composer ghost is the temporary local overlay; durable rows arrive only
+ * through canonical projection envelopes after `bridge.sendTurn(...)`.
  *
  * M9-α-5/α-6 (ADR PR #830 / audit issue #845): the legacy SSE bridge
  * (`sse-bridge.ts`) has been deleted along with the server-side SSE
@@ -17,21 +17,17 @@
  * a pre-β-1 build for text-only sends.
  */
 
-import * as ThreadStore from "@/store/thread-store";
-import * as ProjectionStore from "@/store/projection-store";
 import {
   getThinkingEffort,
   whenThinkingSeeded,
 } from "@/store/thinking-store";
-import { displayFilenameFromPath } from "@/lib/utils";
 import { getActiveBridge, startBridgeForSession } from "./ui-protocol-runtime";
 import { isRollbackBusy, whenRollbackIdle } from "./session-rollback";
 import { BridgeStoppedError, BridgeTimeoutError } from "./ui-protocol-bridge";
 import type { TurnStartExtras, TurnStartMediaRef } from "./ui-protocol-types";
 import { request } from "@/api/client";
 
-/** Per-turn send options. The legacy SSE bridge previously re-exported
- *  this type; with that file deleted, the canonical home is here. */
+/** Per-turn send options for the canonical WS turn/start path. */
 export interface SendOptions {
   sessionId: string;
   /** Sub-topic suffix (`/new <slug>` surfaces, slides/sites scoping).
@@ -60,9 +56,6 @@ export interface SendOptions {
   liveVideo?: boolean;
   /** Recording vs upload (audio surface). Unused on the WS path today. */
   audioUploadMode?: "recording" | "upload";
-  /** M9-γ-4: Composer renders a `<GhostBubble>` overlay; skip the
-   *  optimistic ThreadStore mutation. */
-  skipOptimisticUserMessage?: boolean;
   onSessionActive?: (firstMessage: string) => void;
   onComplete?: () => void;
   /** Explicit optimistic-overlay failure; v2 never silently removes a
@@ -100,17 +93,10 @@ export function sendMessage(opts: SendOptions): void {
 
 function markSendFailure(
   opts: SendOptions,
-  clientMessageId: string,
+  _clientMessageId: string,
   error: Error,
 ): void {
-  if (
-    opts.skipOptimisticUserMessage ||
-    ProjectionStore.isProjectionV2Enabled(opts.sessionId, opts.historyTopic)
-  ) {
-    opts.onError?.(error);
-    return;
-  }
-  ThreadStore.finalizeAssistant(clientMessageId, { status: "error" });
+  opts.onError?.(error);
 }
 
 /** UPCR-2026-015 (M9-β-1): build the `TurnStartParams` extras envelope
@@ -124,13 +110,11 @@ export function buildTurnStartExtras(
 
   if (opts.media.length > 0) {
     // The `/api/upload` endpoint returns paths only — `mime` and
-    // `size_bytes` are not propagated through `SendOptions.media`
-    // (the legacy SSE path also had this limitation). Surface what
-    // we know and let the server resolve metadata at consume time.
+    // `size_bytes` are not propagated through `SendOptions.media`. Surface
+    // what we know and let the server resolve metadata at consume time.
     // The wire-shape requires the fields, so synthesise placeholders
-    // (mirroring the legacy SSE behaviour); the server's
-    // `process_message` only reads `path`, so the placeholders never
-    // leak into render.
+    // The server's `process_message` only reads `path`, so the placeholders
+    // never leak into render.
     const media: TurnStartMediaRef[] = opts.media.map((path) => ({
       path,
       mime: "application/octet-stream",
@@ -198,15 +182,13 @@ export function buildTurnStartExtras(
 //
 // Pre-fix, `sendMessageV1` called `bridge.sendTurn(...)` immediately. When
 // the user (or a soak test) sent a second prompt before the first turn's
-// foreground phase finished, the SPA had already added a user bubble via
-// `ThreadStore.addUserMessage` but the server then rejected the RPC. The
-// bubble stayed on screen with no assistant pair — exactly the `live-
-// overflow-stress` failure mode (4 of 5 prompts orphaned at workers=1).
+// foreground phase finished, the server rejected the RPC. The queue keeps
+// those starts ordered until the matching canonical terminal is admitted.
 //
 // Implementation: a per-session promise chain. `enqueueSendV1` pushes the
 // next send onto the chain; each send awaits BOTH (a) the prior send's
-// completion AND (b) the prior turn's lifecycle event (`turn/completed`
-// or `turn/error`) before issuing `bridge.sendTurn`. The chain is keyed
+// completion AND (b) the prior turn's canonical `turn_terminal` envelope
+// before issuing `bridge.sendTurn`. The chain is keyed
 // by `sessionId` to match the server-side lock scope.
 
 const turnQueues = new Map<string, Promise<void>>();
@@ -345,54 +327,13 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
   const key = queueKey(opts.sessionId);
   const prev = turnQueues.get(key) ?? Promise.resolve();
 
-  // Codex round 5 P1: pin the clientMessageId ONCE so the synchronous
-  // ThreadStore mirror and the eventual `sendTurn`/lifecycle gate use
-  // the same value. Pre-fix, when a caller omitted `clientMessageId`
-  // (the chat-thread default), `enqueueSendV1` minted one for the
-  // mirror but `sendMessageV1` minted a different one for sendTurn —
-  // server events / errors would not attach to the mirrored pending
-  // bubble.
+  // Pin the clientMessageId once so the ghost overlay, turn/start request,
+  // and canonical terminal use the same identity.
   const clientMessageId = opts.clientMessageId ?? crypto.randomUUID();
   const pinnedOpts: SendOptions = { ...opts, clientMessageId };
-  let optimisticMirrored = false;
 
-  const mirrorOptimisticUserMessage = () => {
-    if (optimisticMirrored) return;
-    optimisticMirrored = true;
-
-    // Codex round 4-6 P2: mirror the user message into ThreadStore
-    // before issuing `sendTurn`, so the bubble is visible the instant
-    // the bridge is confirmed available. Queued follow-ups with an
-    // already-active bridge mirror before the FIFO wait below, so the
-    // user's just-submitted message renders while it is parked behind
-    // the in-flight turn.
-    const localFiles = pinnedOpts.media.map((path) => ({
-      filename: displayFilenameFromPath(path),
-      path,
-      caption: "",
-    }));
-    // Canonical v2 receives the user row from the server envelope. Do not
-    // create an optimistic ThreadStore row; the Composer's ghost is the only
-    // temporary overlay and settles only on the matching cmid.
-    if (
-      !pinnedOpts.skipOptimisticUserMessage &&
-      !ProjectionStore.isProjectionV2Enabled(
-        pinnedOpts.sessionId,
-        pinnedOpts.historyTopic,
-      )
-    ) {
-      ThreadStore.addUserMessage(pinnedOpts.sessionId, {
-        text: pinnedOpts.text,
-        clientMessageId,
-        files: localFiles,
-        topic: pinnedOpts.historyTopic,
-      });
-    }
-    pinnedOpts.onSessionActive?.(pinnedOpts.text);
-  };
-
-  // The signal we hand to `sendMessageV1`. The lifecycle handler resolves
-  // it on `turn/completed` or `turn/error` (or on early failure inside
+  // The signal we hand to `sendMessageV1`. Its canonical-terminal handler
+  // resolves it (or an early failure inside
   // `sendMessageV1`). The next chained call awaits this signal before
   // issuing its own `bridge.sendTurn`.
   let release!: () => void;
@@ -414,22 +355,10 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
   incrementQueueTotal(key, clientMessageId);
 
   try {
-    // If the runtime already has a same-scope bridge, the queued user
-    // message is accepted by the client now even though its `turn/start`
-    // must wait for the prior lifecycle gate. Render that user bubble
-    // immediately so follow-up sends do not look lost while queued.
-    if (getActiveBridge(pinnedOpts.sessionId, pinnedOpts.historyTopic)) {
-      mirrorOptimisticUserMessage();
-    }
-
     await prev;
-    // Issue #109.1: ensure the bridge is usable BEFORE mutating
-    // ThreadStore / firing `onSessionActive`. Pre-fix, the optimistic
-    // row + session-active callback ran unconditionally, so a failed
-    // bridge start left an orphan user bubble + an "active" session
-    // row that never reached JSONL. `startBridgeForSession` is
-    // idempotent for same-scope already-started bridges so the happy
-    // path stays cheap.
+    // Ensure the bridge is usable before marking the session active. A failed
+    // start leaves no local render row; the ghost's error callback is the
+    // only optimistic failure surface.
     try {
       await startBridgeForSession(
         pinnedOpts.sessionId,
@@ -441,29 +370,17 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
           "ui-protocol-send: bridge start failed; aborting optimistic projection",
         );
       }
-      if (
-        optimisticMirrored ||
-        pinnedOpts.skipOptimisticUserMessage ||
-        ProjectionStore.isProjectionV2Enabled(
-          pinnedOpts.sessionId,
-          pinnedOpts.historyTopic,
-        )
-      ) {
-        markSendFailure(
-          pinnedOpts,
-          clientMessageId,
-          new Error("Unable to connect to the server."),
-        );
-      }
+      markSendFailure(
+        pinnedOpts,
+        clientMessageId,
+        new Error("Unable to connect to the server."),
+      );
       pinnedOpts.onComplete?.();
       release();
       return;
     }
 
-    // The no-active-bridge path still waits for `startBridgeForSession`
-    // before mutating ThreadStore, preserving the #109.1 failed-start /
-    // no-orphan contract. Already-active queued sends mirrored above.
-    mirrorOptimisticUserMessage();
+    pinnedOpts.onSessionActive?.(pinnedOpts.text);
 
     // M9-β-1 (UPCR-2026-015 / server PR #860): the three previously
     // unsupported variants — media-bearing, /queue-rewrite, and
@@ -473,9 +390,9 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
     // the populated extras onto the wire (so the on-wire shape stays
     // byte-identical to a pre-β-1 build for text-only sends).
     await sendMessageV1(pinnedOpts, release);
-    // Wait for the lifecycle to complete before we let the chain advance.
+    // Wait for the canonical terminal before we let the chain advance.
     // `sendMessageV1` always calls `release()` — on success via the
-    // `turn/completed`/`turn/error` listener, on early fallback or RPC
+    // `turn_terminal` listener, on early failure or RPC
     // failure inline (including the connection-state `closed` listener
     // for codex P2 round 2: bridge teardown cascades release through
     // every parked entry without the 15-min safety wait). So this
@@ -510,7 +427,7 @@ export function __resetSendQueueForTest(): void {
 async function sendMessageV1(
   opts: SendOptions,
   // Bug B (M10 follow-up): per-session FIFO queue gate. Resolves on the
-  // server's `turn/completed`/`turn/error` for THIS turn so the next
+  // server's canonical terminal for THIS turn so the next
   // `enqueueSendV1` call can issue its own `bridge.sendTurn` without
   // racing the server's "one turn at a time" rule. Always called exactly
   // once on every code path (including the unsupported-send and bridge-
@@ -526,19 +443,13 @@ async function sendMessageV1(
     onComplete,
   } = opts;
 
-  // The user message is mirrored into ThreadStore by `enqueueSendV1`
-  // BEFORE the queue gate (codex round 4 P2). All sendMessageV1 callers
-  // arrive here through `enqueueSendV1` for the v1 path, so the bubble
-  // already exists in the thread store. Direct test paths that call
-  // `sendMessageV1` without going through the queue must mirror their
-  // own user message — but the production export (`sendMessage`) goes
-  // through `enqueueSendV1` unconditionally.
+  // The composer owns the temporary ghost overlay. Durable user and
+  // assistant rows arrive only through canonical projection envelopes.
 
   const bridge = getActiveBridge(sessionId, historyTopic);
   if (!bridge) {
-    // Bridge was torn down between the queue gate and now. M9-α-5/α-6
-    // removed the legacy SSE fallback — surface an error on the
-    // assistant bubble so the user can retry once the bridge mounts.
+    // Bridge was torn down between the queue gate and now. Surface the error
+    // through the caller's ghost callback so the user can retry.
     if (typeof console !== "undefined" && console.warn) {
       console.warn(
         "ui-protocol-send: WS bridge unavailable; cannot send turn",
@@ -554,8 +465,8 @@ async function sendMessageV1(
     return;
   }
 
-  // Codex review must-fix #5B: subscribe to the turn lifecycle BEFORE
-  // calling `sendTurn`. A fast turn/completed (or turn/error) can fire
+  // Subscribe to the canonical terminal BEFORE calling `sendTurn`. A fast
+  // terminal can arrive
   // between the RPC ack and the post-await `finally` block, leaving
   // `sendingRef` (the chat input lock) stuck-true if we install the
   // listener afterwards. The handler also fires `onComplete` on RPC
@@ -564,22 +475,14 @@ async function sendMessageV1(
   let lifecycleSafetyTimer: ReturnType<typeof setTimeout> | null = null;
   let offState: (() => void) | null = null;
   let offProjectionTerminal: (() => void) | null = null;
-  // Codex BLOCK F: track whether `turn/started` has arrived for this
-  // turn. If a `BridgeStoppedError` from `sendTurn` lands after the
-  // server accepted the turn (its `turn/started` notification reached
-  // us before the transport dropped), we should NOT impose a 45s
-  // ceiling on the wait — the turn is already running server-side, and
-  // its `turn/completed` will arrive via the normal lifecycle channel.
-  let turnStartedSeen = false;
-  // Cancel handle for the BridgeStoppedError grace timer. Surfaced
-  // here so the `turn/started` handler can clear it as soon as the
-  // server's ack arrives during the grace window.
+  // A transient transport failure can race an accepted turn/start reply.
+  // Give canonical replay a short grace period before surfacing a ghost error.
   let graceTimer: ReturnType<typeof setTimeout> | null = null;
   // Latest known connection state. Used at the moment of an error to
   // distinguish terminal `closed`/`error` (finalize immediately) from
   // mid-flight `reconnecting` (apply the grace window so an
-  // accepted-but-not-acked turn can complete via the lifecycle
-  // channel after reconnect). Codex round-2 BLOCK F: seed from the
+  // accepted-but-not-acked turn can complete via canonical replay
+  // after reconnect). Codex round-2 BLOCK F: seed from the
   // bridge synchronously. `onConnectionStateChange` only fires on
   // TRANSITIONS, so seeding `"connected"` masks the case where the
   // bridge is ALREADY terminal at send-start — a sync
@@ -630,98 +533,45 @@ async function sendMessageV1(
     turnId: clientMessageId,
     complete: fireComplete,
   });
-  const off = bridge.onTurnLifecycle((e) => {
-    // A negotiated v2 connection owns turn settlement through the canonical
-    // `turn_terminal` frame. Do not let a compatibility lifecycle notice
-    // preempt that terminal (and silently remove a ghost before its canonical
-    // error state arrives).
-    if (ProjectionStore.isProjectionV2Enabled(sessionId, historyTopic)) {
+  // Canonical `turn_terminal` is the sole turn-settlement signal. Match the
+  // explicit cmid when present; the turn id is the fallback identity.
+  offProjectionTerminal = bridge.onProjectionTerminal((event) => {
+    if (
+      event.client_message_id !== clientMessageId &&
+      event.turn_id !== clientMessageId
+    ) {
       return;
     }
-    if (e.turn_id !== clientMessageId) return;
-    // The bridge emits all three lifecycle variants through one channel.
-    // We fire on `completed` and `error`; `started` cancels the grace
-    // window (codex BLOCK F) so a long-running accepted turn doesn't
-    // get errored out by the 45s ceiling.
-    if ("error" in e) {
-      off();
-      fireComplete();
-      return;
+    if (event.outcome !== "completed") {
+      markSendFailure(
+        opts,
+        clientMessageId,
+        new Error(
+          event.error?.message ??
+            (event.outcome === "interrupted"
+              ? "Turn interrupted."
+              : "Turn failed."),
+        ),
+      );
     }
-    if ("reason" in e) {
-      off();
-      fireComplete();
-      return;
-    }
-    // Bare `turn/started`: server accepted the turn. If we're in a
-    // BridgeStoppedError grace wait, cancel it — the lifecycle channel
-    // (and the 15-min safety timer) is now the only thing that can
-    // finalize the bubble.
-    turnStartedSeen = true;
-    if (graceTimer !== null) {
-      clearTimeout(graceTimer);
-      graceTimer = null;
-    }
+    fireComplete();
   });
 
-  // A negotiated v2 server settles turns through `turn_terminal`, not the
-  // legacy `turn/completed` / `turn/error` notifications. Match the explicit
-  // cmid when present; the server's turn id is the fallback identity for
-  // current turn/start calls.
-  if (typeof bridge.onProjectionTerminal === "function") {
-    offProjectionTerminal = bridge.onProjectionTerminal((event) => {
-      if (
-        event.client_message_id !== clientMessageId &&
-        event.turn_id !== clientMessageId
-      ) {
-        return;
-      }
-      if (event.outcome !== "completed") {
-        markSendFailure(
-          opts,
-          clientMessageId,
-          new Error(
-            event.error?.message ??
-              (event.outcome === "interrupted"
-                ? "Turn interrupted."
-                : "Turn failed."),
-          ),
-        );
-      }
-      off();
-      fireComplete();
-    });
-  }
-
   // Codex P2 round 2: if the bridge stops (user navigates away from this
-  // session/topic, runtime tears down), `bridge.stop()` calls
-  // `subTurnLifecycle.clear()` and our `onTurnLifecycle` handler is gone
-  // forever — `releaseLifecycleGate` would otherwise wait on the 15-min
-  // safety timer. Subscribe to the bridge's connection state and force a
-  // release as soon as it transitions to `closed`. Idempotent via the
-  // `completed` guard inside `fireComplete`.
+  // session/topic, runtime tears down), release the FIFO instead of waiting
+  // for a terminal that can no longer arrive. `fireComplete` is idempotent.
   offState = bridge.onConnectionStateChange((s) => {
     lastConnState = s;
     if (s === "closed") {
-      off();
       fireComplete();
     }
   });
 
-  // Bug B safety net: if the server never emits `turn/completed` /
-  // `turn/error` for this turn (server crash mid-turn, WS reconnect race
-  // that drops the lifecycle frame past the ledger replay window), the
-  // per-session queue would otherwise wedge — every subsequent
-  // `sendMessage` call sits forever waiting for `lifecycleDone`. Force a
-  // release after a generously long upper bound (15 min); long enough
-  // that legitimate slow turns (deep_research foreground, mofa-podcast
-  // generation) finish well within it, short enough that a wedged
-  // session recovers without a page reload. `fireComplete` is
-  // idempotent, so a late lifecycle frame after the timeout is a no-op.
+  // Safety net: if no canonical terminal arrives (server crash or a replay
+  // failure), release the FIFO after a generous upper bound.
   lifecycleSafetyTimer = setTimeout(
     () => {
       if (!completed) {
-        off();
         fireComplete();
       }
     },
@@ -746,49 +596,20 @@ async function sendMessageV1(
       extras,
     );
     // Codex round 7 P2: if the server's RPC reply is structurally
-    // valid but reports `{ accepted: false }`, no `turn/started` will
-    // ever fire — the lifecycle gate would otherwise wait the full
-    // 15-min safety timer. Mark the bubble errored and release
-    // immediately, mirroring the rejected-RPC catch branch below.
+    // valid but reports `{ accepted: false }`, no canonical terminal will
+    // ever arrive — release immediately.
     if (!result?.accepted) {
       markSendFailure(
         opts,
         clientMessageId,
         new Error("The server rejected this turn."),
       );
-      off();
       fireComplete();
     }
   } catch (err) {
-    // Issue #109.3 / codex BLOCK F: distinguish "reconnectable
-    // mid-flight transport drop" from "terminal fast-reject":
-    //
-    //  - Terminal `BridgeStoppedError` (bridge transitioned to
-    //    `closed` or `error`+abandoned): finalize the bubble
-    //    immediately. The bridge will not re-deliver the lifecycle.
-    //    Pre-fix every BridgeStoppedError took the 45s ceiling,
-    //    which made auth-denied / validation-error fast-rejects
-    //    sit for 45s for no reason.
-    //
-    //  - Reconnectable `BridgeStoppedError` (state still
-    //    `reconnecting` / `connecting` — the bridge is going to
-    //    try again): wait the grace window. If `turn/started`
-    //    arrived during the wait, the lifecycle handler cancels
-    //    `graceTimer` and the 15-min safety timer becomes the
-    //    only ceiling (which is what we want for legitimately
-    //    long-running accepted turns).
-    //
-    //  - `turn/started` already seen: do NOT impose any grace
-    //    ceiling. The server accepted the turn; the lifecycle
-    //    channel is the source of truth. This covers BOTH the
-    //    transport-drop path AND a `BridgeTimeoutError` on the RPC
-    //    reply (WS blip lost the response frame while the turn keeps
-    //    running server-side) — pre-fix the timeout path finalized
-    //    the bubble as error and released the send queue early.
-    //
-    //  - Other errors (RPC permission_denied, validation error, a
-    //    timeout with no `turn/started` evidence, etc.): finalize
-    //    immediately.
+    // Distinguish a reconnectable transport drop from a terminal fast reject.
+    // The former gets a grace period for canonical replay; all other errors
+    // surface immediately through the ghost callback.
     const finalizeAsError = () => {
       if (completed) return;
       markSendFailure(
@@ -796,21 +617,15 @@ async function sendMessageV1(
         clientMessageId,
         err instanceof Error ? err : new Error(String(err)),
       );
-      off();
       fireComplete();
     };
     const isTransportClose = err instanceof BridgeStoppedError;
     const isRpcTimeout = err instanceof BridgeTimeoutError;
     const terminalConnState =
       lastConnState === "closed" || lastConnState === "error";
-    if ((isTransportClose || isRpcTimeout) && turnStartedSeen) {
-      // Server accepted the turn before the transport dropped / the
-      // RPC reply went missing. Don't finalize — the 15-min safety
-      // timer + the lifecycle channel will handle completion (or
-      // release the gate on bridge teardown via offState).
-    } else if (isTransportClose && !terminalConnState) {
-      // Reconnectable mid-flight drop: give the bridge a chance to
-      // reconnect and deliver `turn/started` via lifecycle.
+    if ((isTransportClose || isRpcTimeout) && !terminalConnState) {
+      // Reconnectable mid-flight drop: give canonical replay a chance to
+      // deliver the terminal before declaring the optimistic ghost failed.
       graceTimer = setTimeout(() => {
         graceTimer = null;
         finalizeAsError();

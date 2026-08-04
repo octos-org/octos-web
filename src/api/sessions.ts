@@ -10,7 +10,7 @@ import {
   BridgeTimeoutError,
   METHODS,
 } from "@/runtime/ui-protocol-bridge";
-import { getAnyConnectedBridge } from "@/runtime/ui-protocol-runtime";
+import { ensureAuxBridge } from "@/runtime/ui-protocol-runtime";
 import {
   MESSAGES_PAGE_LIMIT_CAP,
   MESSAGES_PAGE_OFFSET_CAP,
@@ -83,10 +83,7 @@ function translateBridgeError(err: unknown): Error {
 }
 
 async function callAuxWs<T>(method: string, params: unknown): Promise<T> {
-  const bridge = getAnyConnectedBridge();
-  if (!bridge) {
-    throw new Error("ui-protocol-bridge: no connected bridge for " + method);
-  }
+  const bridge = await ensureAuxBridge();
   try {
     return await bridge.callMethod<T>(method, params);
   } catch (err) {

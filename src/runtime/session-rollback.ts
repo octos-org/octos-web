@@ -6,20 +6,9 @@
  * last N USER turns (persisted marker + in-memory trim) and returns the
  * trimmed thread projected in the `session/hydrate` shape.
  *
- * Local application is a SURGICAL SUFFIX TRIM, not a clear+reseed
- * (codex #262 round 1): `dropLastUserTurnThreads` removes the dropped
- * user-turn threads (placeholder orphans excluded from the count) and
- * everything after the cut, keeping surviving thread objects — and
- * with them their tool cards, progress timelines, and message meta,
- * which the hydrate rows cannot rebuild. Only when the local view
- * disagrees with the server's `dropped_turns` (local rows were already
- * inconsistent) — or the server CLAMPED the requested count — does it
- * fall back to an exact-key clear + reseed from the returned
- * projection; `clearSessionScope` never touches sibling topic caches
- * the RPC did not mutate. Either way the scope's hydrate-snapshot
- * cache is replaced with the trimmed projection and the seq-dedup
- * ledger is rebuilt from surviving rows (the server renumbers
- * persisted seqs from the trimmed length).
+ * Local application replaces the affected canonical projection scope from a
+ * fresh server snapshot. The dashboard never reconstructs rendered history
+ * from legacy persisted-message rows.
  *
  * Concurrency: rollbacks are RELATIVE ("last N"), so two in-flight
  * rollbacks — or a send racing the trim — can delete unintended turns.
@@ -30,8 +19,6 @@
  */
 
 import { useSyncExternalStore } from "react";
-import * as ThreadStore from "@/store/thread-store";
-import { setHydrateSnapshot } from "@/store/thread-store";
 import * as ProjectionStore from "@/store/projection-store";
 import {
   parseProjectionEnvelopeV2,
@@ -192,8 +179,8 @@ async function reconcileProjectionAfterRollback(
 }
 
 /**
- * Roll the session back by `numTurns` user turns and trim the local
- * thread state to match.
+ * Roll the session back by `numTurns` user turns and replace the local
+ * canonical projection with the server's post-rollback snapshot.
  */
 export async function rollbackSessionTurns(
   sessionId: string,
@@ -221,56 +208,7 @@ export async function rollbackSessionTurns(
         reason: isTurnInProgress(err) ? "turn_in_progress" : "rpc_failed",
       };
     }
-    if (ProjectionStore.isProjectionV2Enabled(sessionId, topic)) {
-      await reconcileProjectionAfterRollback(sessionId, topic, bridge);
-      return { ok: true, droppedTurns: result.dropped_turns };
-    }
-    const droppedLocally = ThreadStore.dropLastUserTurnThreads(
-      sessionId,
-      topic,
-      result.dropped_turns,
-    );
-    // Reconcile from the authoritative projection when EITHER side
-    // disagrees (codex #262 round 2):
-    //   • server clamped (`dropped_turns !== numTurns`): the request
-    //     was computed against local indices the server didn't share,
-    //     so the surviving local rows are not trustworthy either;
-    //   • local trim count mismatched: local rows were already
-    //     inconsistent.
-    // Exact-key clear — sibling topic caches were not mutated by the
-    // RPC and must survive. This degraded path loses rich per-turn UI
-    // state; the surgical trim above is the normal path precisely to
-    // avoid that.
-    const serverClamped = result.dropped_turns !== numTurns;
-    if (serverClamped || droppedLocally !== result.dropped_turns) {
-      ThreadStore.clearSessionScope(sessionId, topic);
-    } else {
-      // Surgical path: the local trim rebuilt the seq ledger from
-      // surviving rows' historySeq, which a prior messages_page replay
-      // may have stripped (and companion merges collapse). Union the
-      // AUTHORITATIVE surviving seqs from the rollback projection so
-      // live re-emissions for surviving rows keep deduping
-      // (codex #262 round 3).
-      ThreadStore.unionSeenSeqs(
-        sessionId,
-        topic,
-        (result.thread.messages ?? [])
-          .map((m) => m.seq)
-          .filter((n): n is number => typeof n === "number"),
-      );
-    }
-    // ALWAYS replace the hydrate cache with the trimmed projection —
-    // surgical path included (codex #262 round 2). The pre-rollback
-    // snapshot still contains the dropped turns; a later
-    // `replayHistory`/dedup pass reading it would resurrect them. On
-    // the surgical path the store keeps its surviving threads and the
-    // dedup pass only coalesces; on the reconcile path it reseeds the
-    // just-cleared scope.
-    setHydrateSnapshot(sessionId, topic, {
-      messages: result.thread.messages ?? [],
-      replayed_envelopes: result.thread.replayed_envelopes,
-      replayed_tool_envelopes: result.thread.replayed_tool_envelopes,
-    });
+    await reconcileProjectionAfterRollback(sessionId, topic, bridge);
     return { ok: true, droppedTurns: result.dropped_turns };
   } finally {
     setBusy(key, false);

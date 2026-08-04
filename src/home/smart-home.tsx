@@ -20,6 +20,8 @@ import { createPortal } from "react-dom";
 import type { CSSProperties, ReactNode } from "react";
 
 import { useHomeSettings } from "./home-settings-context";
+import { METHODS } from "@/runtime/ui-protocol-bridge";
+import { ensureAuxBridge } from "@/runtime/ui-protocol-runtime";
 
 type DeviceKind =
   | "camera"
@@ -107,11 +109,7 @@ interface SmartHomeLabels {
   readOnly: string;
 }
 
-const SMART_HOME_API_BASE =
-  (import.meta.env.VITE_SMART_HOME_API_BASE as string | undefined)?.replace(/\/$/, "") ||
-  "/smart-home-api";
 const POLL_MS = 4000;
-const REQUEST_TIMEOUT_MS = 3500;
 
 const LABELS: Record<"en" | "zh", SmartHomeLabels> = {
   en: {
@@ -190,10 +188,6 @@ const LABELS: Record<"en" | "zh", SmartHomeLabels> = {
   },
 };
 
-function apiPath(path: string): string {
-  return `${SMART_HOME_API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
-}
-
 function numberOrZero(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
@@ -202,32 +196,15 @@ function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
-function postBody(params: Record<string, string | number | boolean>): URLSearchParams {
-  const body = new URLSearchParams();
-  Object.entries(params).forEach(([key, value]) => body.set(key, String(value)));
-  return body;
-}
-
-async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  try {
-    const response = await fetch(url, {
-      cache: "no-store",
-      ...init,
-      signal: controller.signal,
-    });
-    const data = (await response.json().catch(() => ({}))) as T;
-    if (!response.ok) {
-      const error = data && typeof data === "object" && "error" in data
-        ? String((data as { error?: unknown }).error)
-        : `HTTP ${response.status}`;
-      throw new Error(error);
-    }
-    return data;
-  } finally {
-    window.clearTimeout(timer);
-  }
+/** Device control/state now lives in the backend's per-profile smart-home
+ *  bridge client; this widget reaches it over the same WS connection every
+ *  other auxiliary panel (memory/cron) uses rather than a direct REST
+ *  fetch. `ensureAuxBridge` reuses a connected session-scoped bridge when
+ *  one exists (the common case: this widget mounts inside `/home`'s
+ *  `ScopedRuntimeBridge`) and otherwise lazily starts a sessionless one. */
+async function callSmartHomeWs<T>(method: string, params: unknown): Promise<T> {
+  const bridge = await ensureAuxBridge();
+  return await bridge.callMethod<T>(method, params);
 }
 
 function useSmartHomeDevices() {
@@ -242,8 +219,12 @@ function useSmartHomeDevices() {
   const loadDevices = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const data = await fetchJson<SmartHomeResponse>(apiPath("/devices"));
+      const result = await callSmartHomeWs<{ devices: SmartHomeResponse }>(
+        METHODS.SMART_HOME_DEVICE_LIST,
+        {},
+      );
       if (!aliveRef.current) return;
+      const data = result.devices;
       setDevices(Array.isArray(data.devices) ? data.devices : []);
       setSource(data.source ?? "home_assistant");
       setError(data.ok === false ? data.error ?? "Bridge error" : null);
@@ -269,10 +250,9 @@ function useSmartHomeDevices() {
     async (id: string, params: Record<string, string | number | boolean>) => {
       setActionId(id);
       try {
-        await fetchJson(apiPath(`/devices/${encodeURIComponent(id)}`), {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: postBody(params),
+        await callSmartHomeWs(METHODS.SMART_HOME_DEVICE_COMMAND, {
+          device_id: id,
+          params,
         });
         setError(null);
         await loadDevices(true);
@@ -288,15 +268,11 @@ function useSmartHomeDevices() {
   const startCamera = useCallback(async (id: string) => {
     setActionId(id);
     try {
-      const data = await fetchJson<CameraStreamInfo>(
-        apiPath(`/cameras/${encodeURIComponent(id)}/stream`),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: postBody({ quality: 2 }),
-        },
+      const result = await callSmartHomeWs<{ stream: CameraStreamInfo }>(
+        METHODS.SMART_HOME_CAMERA_STREAM_START,
+        { device_id: id, quality: 2 },
       );
-      setCameraStreams((prev) => ({ ...prev, [id]: data }));
+      setCameraStreams((prev) => ({ ...prev, [id]: result.stream }));
       setError(null);
       await loadDevices(true);
     } catch (err) {
@@ -309,8 +285,8 @@ function useSmartHomeDevices() {
   const stopCamera = useCallback(async (id: string) => {
     setActionId(id);
     try {
-      await fetchJson(apiPath(`/cameras/${encodeURIComponent(id)}/stop`), {
-        method: "POST",
+      await callSmartHomeWs(METHODS.SMART_HOME_CAMERA_STREAM_STOP, {
+        device_id: id,
       });
       setCameraStreams((prev) => {
         const next = { ...prev };

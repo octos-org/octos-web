@@ -2,9 +2,12 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HomeAssistantPage } from "./home-assistant-page";
+import {
+  clearWakeAudio,
+  consumeWakeAudio,
+} from "@/learning/wake-audio-handoff";
 
 const navigateMock = vi.hoisted(() => vi.fn());
-const loadHistoryMock = vi.hoisted(() => vi.fn());
 const unlockAudioMock = vi.hoisted(() => vi.fn());
 const runtimeMock = vi.hoisted(() => ({
   ready: true,
@@ -19,6 +22,7 @@ const wakeMock = vi.hoisted(() => ({
       at: number;
       score: number;
       wakeWord: string;
+      audio: Blob;
     }) => void;
   },
   state: "listening",
@@ -45,10 +49,6 @@ vi.mock("@/components/ui-protocol-approval-host", () => ({
 
 vi.mock("@/components/ui-protocol-question-host", () => ({
   UiProtocolQuestionHost: () => null,
-}));
-
-vi.mock("@/store/thread-store", () => ({
-  loadHistory: (...args: unknown[]) => loadHistoryMock(...args),
 }));
 
 vi.mock("./use-wake-lock", () => ({
@@ -110,6 +110,7 @@ vi.mock("./voice/use-wake-word-listener", () => ({
       at: number;
       score: number;
       wakeWord: string;
+      audio: Blob;
     }) => void;
   }) => {
     wakeMock.options = options;
@@ -130,7 +131,6 @@ describe("HomeAssistantPage wake word", () => {
     cleanup();
     localStorage.clear();
     navigateMock.mockReset();
-    loadHistoryMock.mockReset();
     unlockAudioMock.mockReset();
     runtimeMock.ready = true;
     runtimeMock.loading = false;
@@ -138,9 +138,10 @@ describe("HomeAssistantPage wake word", () => {
     runtimeMock.tone = "success";
     wakeMock.options = null;
     wakeMock.state = "listening";
+    clearWakeAudio();
   });
 
-  it("starts the wake listener on standby and opens voice on detection", () => {
+  it("starts the wake listener on standby and opens learning on detection", () => {
     render(<HomeAssistantPage />);
 
     expect(wakeMock.options?.enabled).toBe(true);
@@ -153,11 +154,13 @@ describe("HomeAssistantPage wake word", () => {
         at: Date.now(),
         score: 0.8,
         wakeWord: "你好小章鱼",
+        audio: new Blob(["wake"], { type: "audio/wav" }),
       });
     });
 
     expect(unlockAudioMock).toHaveBeenCalledTimes(1);
-    expect(navigateMock).toHaveBeenCalledWith("/voice");
+    expect(navigateMock).toHaveBeenCalledWith("/learn");
+    expect(consumeWakeAudio()?.type).toBe("audio/wav");
   });
 
   it("does not expose a wake status when the voice runtime is not ready", () => {

@@ -55,3 +55,31 @@ describe("non-admin Settings navigation", () => {
     expect(screen.getAllByText("Settings").length).toBeGreaterThan(0);
   });
 });
+
+describe("Learning navigation", () => {
+  it("keeps Learning in the workbench navigation", () => {
+    render(
+      <MemoryRouter>
+        <WorkbenchRouteNav />
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByRole("link", { name: "Learning" }).getAttribute("href"),
+    ).toBe("/learn");
+  });
+
+  it("keeps Learning in the studio navigation", () => {
+    render(
+      <MemoryRouter>
+        <StudioNav />
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getAllByRole("link", { name: "Learning" }).some(
+        (link) => link.getAttribute("href") === "/learn",
+      ),
+    ).toBe(true);
+  });
+});

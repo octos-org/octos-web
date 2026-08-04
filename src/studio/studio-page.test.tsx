@@ -15,9 +15,6 @@ import type { ReactNode } from "react";
 // ---------------------------------------------------------------------------
 
 const sendMessageMock = vi.hoisted(() => vi.fn());
-const threadStoreMocks = vi.hoisted(() => ({
-  loadHistory: vi.fn(),
-}));
 const uploadFilesMock = vi.hoisted(() =>
   vi.fn(async () => ["research/up.pdf"]),
 );
@@ -69,7 +66,6 @@ vi.mock("@/runtime/runtime-provider", () => ({
 vi.mock("@/runtime/ui-protocol-send", () => ({
   sendMessage: sendMessageMock,
 }));
-vi.mock("@/store/thread-store", () => threadStoreMocks);
 vi.mock("@/store/file-store", () => ({
   useAllFiles: () => fileFixtures,
   loadSessionFiles: loadSessionFilesMock,
@@ -101,7 +97,6 @@ beforeEach(() => {
     JSON.stringify({ sources: true, rail: true }),
   );
   sendMessageMock.mockReset();
-  threadStoreMocks.loadHistory.mockReset();
   loadSessionFilesMock.mockClear();
   uploadFilesMock.mockClear();
   uploadFilesMock.mockResolvedValue(["research/up.pdf"]);
@@ -133,10 +128,6 @@ describe("StudioPage", () => {
     expect(screen.queryByText("other.md")).toBeNull();
 
     expect(loadSessionFilesMock).toHaveBeenCalledWith("web-abc");
-    expect(threadStoreMocks.loadHistory).toHaveBeenCalledWith(
-      "web-abc",
-      undefined,
-    );
   });
 
   it("falls back to the default title when none is stored", () => {

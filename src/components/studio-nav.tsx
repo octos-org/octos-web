@@ -13,6 +13,7 @@ import { useOminixRuntimeSummary } from "@/home/use-ominix-runtime-summary";
 const NAV_LINKS: Array<{ label: string; to: string; adminOnly?: boolean }> = [
   { label: "Dashboard", to: "/" },
   { label: "Chat", to: "/chat" },
+  { label: "Learning", to: "/learn" },
   { label: "Slides", to: "/slides" },
   { label: "Sites", to: "/sites" },
   { label: "Settings", to: "/settings" },
