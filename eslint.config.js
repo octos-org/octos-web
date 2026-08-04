@@ -19,5 +19,20 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      // eslint-plugin-react-hooks v6 folded the React Compiler strict rules
+      // into `recommended`. This codebase predates them, and fixing ~87 hits
+      // properly means restructuring effects one by one. Keep them visible
+      // as warnings (ratchet: fix a rule, then restore it to 'error') while
+      // the classic bug-catching rules (rules-of-hooks, exhaustive-deps)
+      // stay errors and gate CI.
+      'react-hooks/set-state-in-effect': 'warn',
+      'react-hooks/refs': 'warn',
+      'react-hooks/immutability': 'warn',
+      'react-hooks/purity': 'warn',
+      'react-hooks/static-components': 'warn',
+      // Fast-refresh ergonomics, not correctness.
+      'react-refresh/only-export-components': 'warn',
+    },
   },
 ])

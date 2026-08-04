@@ -56,7 +56,9 @@ function attachWsTap(page: import("@playwright/test").Page) {
         ) {
           frames.push({ dir: "<", method: m, ts: Date.now(), sample: s.slice(0, 240) });
         }
-      } catch {}
+      } catch {
+        // Not a JSON frame (e.g. binary payload) — nothing to record.
+      }
     });
     ws.on("framesent", (data) => {
       const s = typeof data.payload === "string" ? data.payload : data.payload.toString("utf8");
@@ -66,7 +68,9 @@ function attachWsTap(page: import("@playwright/test").Page) {
         if (/turn\/start|session\/(open|hydrate)/.test(m)) {
           frames.push({ dir: ">", method: m, ts: Date.now(), sample: s.slice(0, 240) });
         }
-      } catch {}
+      } catch {
+        // Not a JSON frame (e.g. binary payload) — nothing to record.
+      }
     });
   });
   return frames;

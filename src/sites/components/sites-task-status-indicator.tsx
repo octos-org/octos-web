@@ -14,7 +14,6 @@ function isActiveStatus(status: BackgroundTaskInfo["status"]): boolean {
 export function SitesTaskStatusIndicator({
   sessionId,
   historyTopic,
-  profileId: _profileId,
 }: {
   sessionId: string;
   historyTopic?: string;

@@ -8,13 +8,10 @@
 import { test, expect } from "@playwright/test";
 import {
   login,
-  sendAndWait,
   SEL,
   createNewSession,
   getInput,
-  getSendButton,
-  markLogPosition,
-  adminShell
+  getSendButton
 } from "./helpers";
 
 /** Get all message bubbles with role and text. */

@@ -1,4 +1,4 @@
-import { type Page, type Route, expect, test } from "@playwright/test";
+import { type Page, type Route } from "@playwright/test";
 
 const AUTH_TOKEN = process.env.AUTH_TOKEN || "e2e-test-2026";
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "octos-admin-2026";
@@ -1300,7 +1300,10 @@ export async function getLogsSince(
   if (!result?.stdout) return [];
   return result.stdout
     .split("\n")
-    .map((line) => line.replace(/\x1b\[[0-9;]*m/g, "").trim())
+    .map((line) =>
+      // eslint-disable-next-line no-control-regex -- deliberately strips ANSI escape sequences from server log lines
+      line.replace(/\x1b\[[0-9;]*m/g, "").trim(),
+    )
     .filter(Boolean);
 }
 

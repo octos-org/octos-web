@@ -15,6 +15,7 @@ export const ShellToolUI = makeAssistantToolUI<
 >({
   toolName: "shell",
   render: ({ args, result, status }) => {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- assistant-ui invokes this render prop as a component; the hook call is unconditional
     const [expanded, setExpanded] = useState(status.type === "running");
     const command = args?.command ?? "...";
     const output = result?.output ?? "";

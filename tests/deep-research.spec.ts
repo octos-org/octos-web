@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { login, sendAndWait, SEL } from "./helpers";
+import { login, sendAndWait } from "./helpers";
 
 test.describe("Deep research pipeline", () => {
   test.setTimeout(900_000); // 10 min — pipelines are slow
@@ -10,9 +10,6 @@ test.describe("Deep research pipeline", () => {
 
   test("pipeline executes and produces structured output", async ({ page }) => {
     // Solo-mode servers have no pipeline daemon — skip gracefully.
-    const soloToken = process.env.AUTH_TOKEN || process.env.OCTOS_AUTH_TOKEN || "";
-    const baseUrl = process.env.BASE_URL || "http://127.0.0.1:5173";
-
     // Probe: send a pipeline-ish prompt and check if the server actually
     // routes it to a pipeline tool (indicated by a tool-call chip or
     // progress bar appearing). On solo servers with no pipeline config,

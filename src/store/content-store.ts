@@ -25,13 +25,11 @@ let total = 0;
 let loading = false;
 let error: string | null = null;
 let currentFilters: ContentFilters = {};
-let version = 0;
 
 const listeners = new Set<() => void>();
 let snapshot: { entries: ContentEntry[]; total: number; loading: boolean; error: string | null } = { entries, total, loading, error };
 
 function notify() {
-  version++;
   snapshot = { entries: [...entries], total, loading, error };
   listeners.forEach((fn) => fn());
 }
@@ -113,7 +111,10 @@ export function initContentStore(filters: ContentFilters = {}) {
 if (typeof window !== "undefined") {
   window.addEventListener("crew:file", () => {
     // Debounce: wait 2s for potential batch of files
-    clearTimeout((window as any).__contentRefreshTimer);
-    (window as any).__contentRefreshTimer = setTimeout(refreshContent, 2000);
+    const w = window as unknown as {
+      __contentRefreshTimer?: ReturnType<typeof setTimeout>;
+    };
+    clearTimeout(w.__contentRefreshTimer);
+    w.__contentRefreshTimer = setTimeout(refreshContent, 2000);
   });
 }
