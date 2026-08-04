@@ -367,6 +367,13 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
       await startBridgeForSession(
         pinnedOpts.sessionId,
         pinnedOpts.historyTopic,
+        // Fire-and-forget: the send only needs a usable bridge, it never
+        // tears one down — so it OBSERVES any in-flight same-scope start
+        // instead of claiming it. Claiming here stole `latestCaller` from
+        // the runtime provider effect mid-handshake; the effect's start
+        // then rejected and its cleanup ownership +
+        // `onSessionTitleUpdated` forwarding never installed. (#292)
+        { ownership: "observe" },
       );
     } catch (err) {
       if (typeof console !== "undefined" && console.warn) {

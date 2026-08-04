@@ -344,6 +344,54 @@ describe("startBridgeForSession race safety", () => {
     expect(getActiveBridge("sess-A", "site-x")).toBe(shared.bridge);
   });
 
+  it("an observing same-scope caller does not steal ownership from the claiming effect", async () => {
+    // PR #292 review (blocker): the template-session auto-first-message
+    // fires a SEND while the provider effect's start is still handshaking.
+    // The send path is fire-and-forget — it never tears the bridge down —
+    // so it must OBSERVE the in-flight start, not claim it. Pre-fix the
+    // send overwrote `latestCaller`, the provider effect's start REJECTED,
+    // and its cleanup ownership + `onSessionTitleUpdated` forwarding
+    // (runtime-provider.tsx) never installed — a leaked bridge on unmount
+    // and renames silently stopping for that session.
+    const shared = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(shared.bridge);
+
+    const providerEffect = startBridgeForSession("sess-A", "site-x");
+    const sendPath = startBridgeForSession("sess-A", " site-x ", {
+      ownership: "observe",
+    });
+
+    expect(createBridgeSpy).toHaveBeenCalledTimes(1);
+    expect(shared.startCalls).toBe(1);
+
+    shared.resolveStart();
+
+    await expect(providerEffect).resolves.toBe(shared.bridge);
+    await expect(sendPath).resolves.toBe(shared.bridge);
+    expect(getActiveBridge("sess-A", "site-x")).toBe(shared.bridge);
+  });
+
+  it("a claiming caller takes ownership from an observer without rejecting it", async () => {
+    // Mirror image of the above: the send fires BEFORE the provider effect
+    // mounts (observer-created start). The effect must take cleanup
+    // ownership WITHOUT rejecting the in-flight send — only claim-vs-claim
+    // (StrictMode remount) keeps last-writer-wins rejection semantics.
+    const shared = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(shared.bridge);
+
+    const sendPath = startBridgeForSession("sess-A", undefined, {
+      ownership: "observe",
+    });
+    const providerEffect = startBridgeForSession("sess-A");
+
+    expect(createBridgeSpy).toHaveBeenCalledTimes(1);
+    shared.resolveStart();
+
+    await expect(sendPath).resolves.toBe(shared.bridge);
+    await expect(providerEffect).resolves.toBe(shared.bridge);
+    expect(getActiveBridge("sess-A")).toBe(shared.bridge);
+  });
+
   it("reuses a same-scope bridge during a transient error", async () => {
     const recovering = makeDeferredBridge();
     createBridgeSpy.mockReturnValueOnce(recovering.bridge);

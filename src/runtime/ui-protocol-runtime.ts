@@ -88,9 +88,12 @@ interface BridgeStartInFlight {
   sessionId: string;
   topic?: string;
   promise: Promise<UiProtocolBridge>;
-  /** Only the newest same-scope caller may claim ownership. Older provider
-   *  effects must reject instead of stopping the shared bridge in cleanup. */
-  latestCaller: symbol;
+  /** Only the newest same-scope CLAIMING caller may hold ownership; older
+   *  claiming effects reject instead of stopping the shared bridge in
+   *  cleanup. `null` while every waiter so far is an observer (a
+   *  fire-and-forget caller such as the send path) — observers await the
+   *  raw start promise and never reject on an ownership transfer. */
+  latestCaller: symbol | null;
 }
 
 let bridgeStartInFlight: BridgeStartInFlight | null = null;
@@ -129,27 +132,45 @@ function resultForBridgeStartCaller(
   );
 }
 
+export interface BridgeStartOptions {
+  /**
+   * `"claim"` (default): participate in cleanup ownership — among claiming
+   * callers the newest wins and older ones reject once the shared start
+   * settles (StrictMode remount semantics). `"observe"`: wait for the
+   * same-scope in-flight start and use its bridge WITHOUT claiming
+   * ownership — for fire-and-forget callers (the send path) that never
+   * tear the bridge down. An observer that arrives FIRST still creates the
+   * start but leaves it unowned, so a later claiming effect takes
+   * ownership without the observer's in-flight work rejecting.
+   */
+  ownership?: "claim" | "observe";
+}
+
 /**
  * Start a v1 bridge for the given session. If a bridge is already running
  * for the same scope, returns the existing one (idempotent across StrictMode
  * remounts). Concurrent same-scope calls also share one underlying handshake;
- * only the newest caller resolves, preserving the provider cleanup invariant
- * while avoiding duplicate sockets. When called for a different scope, the
+ * among CLAIMING callers only the newest resolves, preserving the provider
+ * cleanup invariant while avoiding duplicate sockets — observing callers
+ * (`options.ownership === "observe"`) always resolve with the shared bridge
+ * and never take or block ownership. When called for a different scope, the
  * previous bridge is stopped first.
  *
  * Race-safe: each owned handshake captures the current `generation` before
  * awaiting `bridge.start()`. If a different-scope call (or
  * `stopActiveBridge`) bumped the generation while we were awaiting, this
  * start is stale — we stop the orphaned bridge and ALWAYS THROW. For
- * same-scope coalescing, older callers also throw after the shared handshake
- * settles so only the newest effect can claim cleanup ownership. Callers
- * wanting "give me the active bridge for this scope, regardless of who
- * published" should use `getActiveBridge(sessionId, topic)` instead.
+ * same-scope coalescing, older claiming callers also throw after the shared
+ * handshake settles so only the newest effect can claim cleanup ownership.
+ * Callers wanting "give me the active bridge for this scope, regardless of
+ * who published" should use `getActiveBridge(sessionId, topic)` instead.
  */
 export function startBridgeForSession(
   sessionId: string,
   topic?: string,
+  options?: BridgeStartOptions,
 ): Promise<UiProtocolBridge> {
+  const observe = options?.ownership === "observe";
   if (
     active &&
     sameScope(active, sessionId, topic) &&
@@ -163,6 +184,14 @@ export function startBridgeForSession(
   const caller = Symbol("bridge-start-caller");
   const shared = bridgeStartInFlight;
   if (shared && sameInFlightScope(shared, sessionId, topic)) {
+    if (observe) {
+      // Fire-and-forget caller (e.g. the template auto-first-message SEND
+      // landing mid-handshake): it needs a usable bridge but never tears
+      // one down, so it must not overwrite `latestCaller` — doing so made
+      // the provider effect's start REJECT, orphaning the bridge's cleanup
+      // ownership and its `onSessionTitleUpdated` forwarding. (#292)
+      return shared.promise;
+    }
     shared.latestCaller = caller;
     return resultForBridgeStartCaller(shared, caller);
   }
@@ -172,7 +201,7 @@ export function startBridgeForSession(
     sessionId,
     topic,
     promise,
-    latestCaller: caller,
+    latestCaller: observe ? null : caller,
   };
   bridgeStartInFlight = owned;
   const clearOwnedStart = () => {
@@ -184,7 +213,7 @@ export function startBridgeForSession(
   // rejection; each caller receives the original outcome through its own
   // wrapper below.
   void promise.then(clearOwnedStart, clearOwnedStart);
-  return resultForBridgeStartCaller(owned, caller);
+  return observe ? promise : resultForBridgeStartCaller(owned, caller);
 }
 
 async function startOwnedBridgeForSession(

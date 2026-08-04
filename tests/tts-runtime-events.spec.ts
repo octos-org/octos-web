@@ -146,6 +146,12 @@ async function installMockRuntime(page: Page) {
           opened: {
             session_id: sessionId,
             active_profile_id: "admin",
+            // Match the deployed Core server: without the v2 capability the
+            // client gate fails startup, so the spec would exercise a path
+            // production never takes.
+            capabilities: {
+              supported_features: ["projection.envelope.v2"],
+            },
           },
         }));
         return;
