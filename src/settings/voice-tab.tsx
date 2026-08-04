@@ -133,7 +133,9 @@ export function VoiceTab({
           </div>
           <div>
             <h3 className="text-sm font-semibold text-text-strong">Speech recognition (ASR)</h3>
-            <p className="text-xs text-muted">Choose the language expected from this profile</p>
+            <p className="text-xs text-muted">
+              Choose how speech is recognized for this profile across AppUI and connected channels
+            </p>
           </div>
         </div>
         <label htmlFor="asr-language" className="mb-1.5 block text-xs font-medium text-muted">
@@ -146,12 +148,13 @@ export function VoiceTab({
           className={SELECT_CLASS}
         >
           <option value="inherit">Inherit (server default)</option>
+          <option value="auto">Auto</option>
           {ASR_LANGUAGES.map((language) => (
             <option key={language} value={language}>{language}</option>
           ))}
         </select>
         <p className="mt-1.5 text-xs text-muted">
-          Applied on the next utterance. “Auto” is intentionally unavailable because the current Qwen3-ASR model does not support it reliably.
+          Applied on the next utterance. Auto lets the recognition engine detect the spoken language.
         </p>
       </div>
 
