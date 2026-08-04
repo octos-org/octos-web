@@ -70,6 +70,7 @@ import { useTasks } from "@/store/task-store";
 import { SPAWN_ONLY_TOOL_NAMES } from "@/runtime/spawn-only-tools";
 import { GhostBubble } from "./GhostBubble";
 import { ModelSetupNotice } from "./model-setup-notice";
+import { ConnectionNotice } from "./connection-notice";
 import { UserBubbleShell } from "./user-bubble-shell";
 import { CopyMarkdownButton } from "./copy-markdown-button";
 import { ReaderViewTrigger } from "./reader-view-trigger";
@@ -1508,6 +1509,7 @@ function ChatThreadV2({
           `hasRunningToolCall || showLiveIndicators`) and it still
           surfaces for spawn_only — just anchored where the user
           expects it. */}
+      <ConnectionNotice />
       <ModelSetupNotice />
       <div className="shrink-0">
         <Composer

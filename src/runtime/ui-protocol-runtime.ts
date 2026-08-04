@@ -49,6 +49,33 @@ interface ActiveBridge {
 
 let active: ActiveBridge | null = null;
 
+// ---------------------------------------------------------------------------
+// Connection-state observers (UI surface)
+// ---------------------------------------------------------------------------
+
+type ConnectionStateListener = (state: ConnectionState | null) => void;
+const connectionStateListeners = new Set<ConnectionStateListener>();
+
+function emitConnectionState(state: ConnectionState | null): void {
+  connectionStateListeners.forEach((listener) => listener(state));
+}
+
+/** React-level subscription to the ACTIVE session bridge's connection state.
+ *  `null` means no session bridge is running (e.g. the user is not on a chat
+ *  surface). Fires immediately with the current value, then on every change.
+ *  The bridge already exposes per-instance `onConnectionStateChange`; this
+ *  accessor saves UI components from tracking which bridge is active (and
+ *  from re-subscribing across session switches). */
+export function onActiveConnectionStateChange(
+  listener: ConnectionStateListener,
+): () => void {
+  connectionStateListeners.add(listener);
+  listener(active ? active.connectionState : null);
+  return () => {
+    connectionStateListeners.delete(listener);
+  };
+}
+
 // The canonical store owns gap detection. Keep this bridge-level callback
 // narrow: it only hydrates the currently mounted scope and never reaches
 // into ThreadStore while v2 is active.
@@ -160,6 +187,7 @@ export async function startBridgeForSession(
   const unsubscribeState = bridge.onConnectionStateChange((s) => {
     if (active?.bridge === bridge) {
       active.connectionState = s;
+      emitConnectionState(s);
     } else {
       connectionState = s;
     }
@@ -241,6 +269,7 @@ export async function startBridgeForSession(
     unsubscribeReopened,
     unsubscribeSessionOpened,
   };
+  emitConnectionState(connectionState);
 
   // Immediately hydrate the canonical v2 snapshot. The bridge keeps live
   // envelopes buffered atomically while this snapshot is installed.
@@ -605,6 +634,7 @@ export async function stopActiveBridge(): Promise<void> {
   if (!active) return;
   const handle = active;
   active = null;
+  emitConnectionState(null);
   handle.attachment.detach();
   handle.unsubscribeState();
   handle.unsubscribeReopened();
@@ -634,6 +664,7 @@ export async function stopActiveBridgeIfScope(
   generation++;
   const handle = active;
   active = null;
+  emitConnectionState(null);
   handle.attachment.detach();
   handle.unsubscribeState();
   handle.unsubscribeReopened();
@@ -650,6 +681,7 @@ export async function stopActiveBridgeIfScope(
 export function __resetUiProtocolRuntimeForTest(): void {
   active = null;
   generation = 0;
+  connectionStateListeners.clear();
   if (auxSlot) {
     auxSlot.unsubscribeState();
     // Best-effort async stop; tests inject mocks whose `stop()` resolves

@@ -38,6 +38,7 @@ import {
   __setActiveBridgeForTest,
   ensureAuxBridge,
   getActiveBridge,
+  onActiveConnectionStateChange,
   startBridgeForSession,
   stopActiveBridge,
 } from "./ui-protocol-runtime";
@@ -810,5 +811,53 @@ describe("ensureAuxBridge — sessionless auxiliary singleton", () => {
     const p2 = ensureAuxBridge();
     aux2.resolveStart();
     expect(await p2).toBe(aux2.bridge);
+  });
+});
+
+describe("onActiveConnectionStateChange — UI surface subscription", () => {
+  it("fires immediately with null when no bridge is active", () => {
+    const events: (ConnectionState | null)[] = [];
+    const off = onActiveConnectionStateChange((s) => events.push(s));
+    expect(events).toEqual([null]);
+    off();
+  });
+
+  it("publishes the active bridge's state through its whole lifecycle", async () => {
+    const events: (ConnectionState | null)[] = [];
+    const off = onActiveConnectionStateChange((s) => events.push(s));
+
+    const deferred = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(deferred.bridge);
+    const p = startBridgeForSession("sess-conn");
+    deferred.resolveStart();
+    await p;
+    // Published as "connecting"; the UI gate hides pre-connect states.
+    deferred.setConnected();
+    deferred.setState("reconnecting");
+    await stopActiveBridge();
+
+    expect(events).toEqual([
+      null,
+      "connecting",
+      "connected",
+      "reconnecting",
+      null,
+    ]);
+    off();
+  });
+
+  it("fires immediately with the live state when a bridge is already active", async () => {
+    const deferred = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(deferred.bridge);
+    const p = startBridgeForSession("sess-live");
+    deferred.resolveStart();
+    await p;
+    deferred.setConnected();
+
+    const events: (ConnectionState | null)[] = [];
+    const off = onActiveConnectionStateChange((s) => events.push(s));
+    expect(events).toEqual(["connected"]);
+    off();
+    await stopActiveBridge();
   });
 });
