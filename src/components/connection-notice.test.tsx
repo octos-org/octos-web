@@ -120,4 +120,40 @@ describe("ConnectionNotice", () => {
     );
     harness.unmount();
   });
+
+  it("signals a local network drop instantly instead of waiting for the keepalive", () => {
+    const harness = mount();
+    emit("connected");
+    act(() => {
+      window.dispatchEvent(new Event("offline"));
+    });
+    const el = notice(harness.container);
+    expect(el?.getAttribute("data-connection-notice")).toBe("offline");
+    expect(el?.textContent).toContain("You're offline");
+
+    // Network back, bridge state hasn't moved yet — the banner clears.
+    act(() => {
+      window.dispatchEvent(new Event("online"));
+    });
+    expect(notice(harness.container)).toBeNull();
+
+    // If the socket DID die while offline, the bridge's own state takes over.
+    emit("reconnecting");
+    expect(
+      notice(harness.container)?.getAttribute("data-connection-notice"),
+    ).toBe("reconnecting");
+    harness.unmount();
+  });
+
+  it("stays silent about an offline event that precedes any connection", () => {
+    const harness = mount();
+    act(() => {
+      window.dispatchEvent(new Event("offline"));
+    });
+    expect(notice(harness.container)).toBeNull();
+    act(() => {
+      window.dispatchEvent(new Event("online"));
+    });
+    harness.unmount();
+  });
 });

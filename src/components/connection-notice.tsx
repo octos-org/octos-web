@@ -15,16 +15,29 @@
  *
  * Deliberately silent during the initial `connecting` handshake — flashing
  * a warning on every navigation would be worse than no banner.
+ *
+ * The bridge only learns about a blackholed network from its keepalive
+ * (up to ~60s of silence), so the banner ALSO listens to the browser's
+ * online/offline events: a local network drop gets an instant signal
+ * instead of looking like a slow minute.
  */
 
 import { useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { onActiveConnectionStateChange } from "@/runtime/ui-protocol-runtime";
 
-type NoticeKind = "reconnecting" | "lost";
+type NoticeKind = "offline" | "reconnecting" | "lost";
+
+const COPY: Record<NoticeKind, string> = {
+  offline: "You're offline — messages will send when the network returns.",
+  reconnecting:
+    "Connection lost — reconnecting. New messages will send when it's back.",
+  lost: "Connection to the server was lost and couldn't be restored.",
+};
 
 export function ConnectionNotice(): React.ReactElement | null {
-  const [notice, setNotice] = useState<NoticeKind | null>(null);
+  const [bridgeNotice, setBridgeNotice] = useState<NoticeKind | null>(null);
+  const [offline, setOffline] = useState<boolean>(() => !navigator.onLine);
   // Only a drop AFTER a successful connect is worth surfacing. Tracks the
   // lifetime of the subscription, not the mount: a session switch re-emits
   // "connecting" → "connected" and re-arms the gate naturally.
@@ -34,7 +47,7 @@ export function ConnectionNotice(): React.ReactElement | null {
     return onActiveConnectionStateChange((state) => {
       if (state === "connected") {
         wasConnectedRef.current = true;
-        setNotice(null);
+        setBridgeNotice(null);
         return;
       }
       if (!wasConnectedRef.current) {
@@ -42,15 +55,31 @@ export function ConnectionNotice(): React.ReactElement | null {
         return;
       }
       if (state === "reconnecting") {
-        setNotice("reconnecting");
+        setBridgeNotice("reconnecting");
       } else if (state === "closed" || state === "error") {
-        setNotice("lost");
+        setBridgeNotice("lost");
       } else {
         // "connecting"/"idle" after a drop: the bridge is mid-recovery —
         // keep the current notice rather than flicker.
       }
     });
   }, []);
+
+  useEffect(() => {
+    const handleOnline = () => setOffline(false);
+    const handleOffline = () => setOffline(true);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
+  // A local network drop outranks whatever the bridge last knew — its
+  // keepalive won't have noticed yet, and "offline" names the real cause.
+  const notice =
+    offline && wasConnectedRef.current ? "offline" : bridgeNotice;
 
   if (!notice) return null;
 
@@ -61,11 +90,7 @@ export function ConnectionNotice(): React.ReactElement | null {
       role="alert"
       className="mx-4 mb-2 flex shrink-0 items-center gap-2 rounded-[10px] border border-(--workbench-warning-border) bg-(--workbench-warning-bg) px-3 py-2 text-xs text-(--workbench-warning-text)"
     >
-      <span className="min-w-0 flex-1">
-        {notice === "reconnecting"
-          ? "Connection lost — reconnecting. New messages will send when it's back."
-          : "Connection to the server was lost and couldn't be restored."}
-      </span>
+      <span className="min-w-0 flex-1">{COPY[notice]}</span>
       {notice === "lost" && (
         <button
           type="button"
