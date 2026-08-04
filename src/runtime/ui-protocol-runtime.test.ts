@@ -721,6 +721,26 @@ describe("ensureAuxBridge — sessionless auxiliary singleton", () => {
     expect(createBridgeSpy).not.toHaveBeenCalled();
   });
 
+  it("starts a sessionless bridge on Settings even while Chat teardown is pending", async () => {
+    const previousPath = window.location.pathname;
+    window.history.pushState({}, "", "/settings");
+    try {
+      const chat = makeDeferredBridge();
+      __setActiveBridgeForTest("sess-1", chat.bridge);
+      const aux = makeDeferredBridge();
+      createBridgeSpy.mockReturnValueOnce(aux.bridge);
+
+      const pending = ensureAuxBridge();
+      aux.resolveStart();
+
+      expect(await pending).toBe(aux.bridge);
+      expect(createBridgeSpy).toHaveBeenCalledTimes(1);
+      expect(aux.bridge.start).toHaveBeenCalledWith({});
+    } finally {
+      window.history.replaceState({}, "", previousPath);
+    }
+  });
+
   it("starts ONE sessionless bridge and shares it across concurrent callers", async () => {
     const aux = makeDeferredBridge();
     createBridgeSpy.mockReturnValueOnce(aux.bridge);

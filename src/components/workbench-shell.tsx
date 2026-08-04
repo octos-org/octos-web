@@ -1,6 +1,7 @@
 import {
   ArrowLeft,
   ArrowRight,
+  GraduationCap,
   Globe,
   Home,
   LogOut,
@@ -29,6 +30,7 @@ const routeItems: Array<{
 }> = [
   { to: "/", label: "Home", icon: Home },
   { to: "/chat", label: "Chat", icon: MessageSquare },
+  { to: "/learn", label: "Learning", icon: GraduationCap },
   { to: "/slides", label: "Slides", icon: Presentation },
   { to: "/sites", label: "Sites", icon: Globe },
   { to: "/home", label: "Display", icon: MonitorSmartphone },

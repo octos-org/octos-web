@@ -526,6 +526,13 @@ export function getAnyConnectedBridge(): UiProtocolBridge | null {
 
 // ---- Sessionless auxiliary bridge (settings surface) ----
 
+function settingsRequiresSessionlessBridge(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    /\/settings\/?$/.test(window.location.pathname)
+  );
+}
+
 /** The settings page mounts OUTSIDE `OctosRuntimeProvider`, so no
  *  session-scoped bridge exists there — and navigating chat → settings
  *  unmounts the provider, which stops the chat bridge (codex web#268 r1
@@ -559,7 +566,13 @@ let auxGeneration = 0;
  * replaced so a "Reload" after re-login gets a live socket.
  */
 export async function ensureAuxBridge(): Promise<UiProtocolBridge> {
-  const chat = getAnyConnectedBridge();
+  // Route teardown is asynchronous. Immediately after Chat navigates to
+  // Settings, the old session-scoped bridge can still be published for a
+  // short window. Settings must never adopt it: its Memory/Cron RPCs belong
+  // to the page-owned sessionless lifecycle documented above.
+  const chat = settingsRequiresSessionlessBridge()
+    ? null
+    : getAnyConnectedBridge();
   if (chat) return chat;
   if (auxSlot && !auxSlot.bridge.isTerminal()) {
     // Reuse across `connecting`, transient `error`, and `reconnecting`:

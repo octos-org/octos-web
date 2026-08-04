@@ -7,11 +7,16 @@ import {
 import { getActiveBridge } from "@/runtime/ui-protocol-runtime";
 import type { Thread, ThreadMessage } from "@/store/thread-store";
 import { useRenderThreads } from "@/store/projection-render-adapter";
+import * as ProjectionStore from "@/store/projection-store";
 import { buildFileUrl } from "@/api/files";
 import { buildApiHeaders } from "@/api/client";
 import { useVoiceCapture } from "./use-voice-capture";
-import { useCameraFrame } from "./use-camera-frame";
+import {
+  useCameraFrame,
+  type CameraFrameSettings,
+} from "./use-camera-frame";
 import { playAudioBlob, stopAudio, unlockAudio } from "./audio-playback";
+import { stripLearningContext } from "@/learning/learning-context";
 
 export type VoiceState = "idle" | "listening" | "thinking" | "speaking" | "error";
 
@@ -21,7 +26,7 @@ export interface VoiceConversation {
   lastAssistantText: string;
   turns: VoiceConversationTurn[];
   error: string | null;
-  start: () => Promise<void>;
+  start: (options?: VoiceConversationStartOptions) => Promise<void>;
   stop: () => void;
   interrupt: () => void;
   /** Whether the camera is on (each spoken turn then attaches a frame). */
@@ -34,6 +39,13 @@ export interface VoiceConversation {
   lastSentFrameUrl: string | null;
   /** Last camera error (permission denied / no device). */
   cameraError: string | null;
+  cameraSettings: CameraFrameSettings;
+  updateCameraSettings: (patch: Partial<CameraFrameSettings>) => void;
+  resetCameraSettings: () => void;
+  /** Start only the camera, without changing microphone/conversation state. */
+  startCamera: () => Promise<boolean>;
+  /** Stop only the camera stream. */
+  stopCamera: () => void;
   /** Toggle the camera on/off. */
   toggleCamera: () => void;
   /** The latest rich-output artifact (image/HTML) to render, or null. */
@@ -45,6 +57,41 @@ export interface VoiceConversation {
   /** UPCR-2026-025: true once an exit intent fired; the view shows a farewell
    *  while the last reply audio finishes, then navigates home. */
   exiting: boolean;
+}
+
+export interface VoiceConversationStartOptions {
+  /** Submit already-captured audio instead of waiting for a new utterance. */
+  initialAudio?: Blob | null;
+  /** Wake audio deliberately excludes the camera frame. */
+  includeCamera?: boolean;
+}
+
+export interface VoiceTurnSendContext {
+  sessionId: string;
+  turnId: string;
+  mediaPaths: string[];
+  currentFramePath?: string;
+}
+
+export interface VoiceConversationOptions {
+  /** Build application context after uploads resolve, so frame paths are exact. */
+  buildTurnText?: (context: VoiceTurnSendContext) => string;
+  /** Start the privacy-visible camera stream when voice capture starts. */
+  autoStartCamera?: boolean;
+  /** Learning sessions show their recent hydrated history when resumed. */
+  showExistingTurns?: boolean;
+  /**
+   * Whether this controller consumes assistant-reply audio attachments.
+   * Disable it when another playback surface owns the audible response.
+   */
+  playReplyAudio?: boolean;
+  /**
+   * Another audio surface currently owns speaker playback. Microphone capture
+   * pauses until that playback ends so the assistant cannot hear itself.
+   */
+  externalSpeechActive?: boolean;
+  /** Reports the exact client turn after the assistant has finished replying. */
+  onTurnComplete?: (turnId: string) => void;
 }
 
 export interface VoiceConversationTurn {
@@ -161,6 +208,7 @@ export function collectFreshAudioWithTurnIds(
 export function buildVoiceTurns(
   threads: Thread[],
   baseline = 0,
+  liveTranscripts: ReadonlyMap<string, string> = new Map(),
 ): VoiceConversationTurn[] {
   return threads.slice(baseline).filter((thread) => !thread.backgroundChild).map((thread) => {
     const assistants: ThreadMessage[] = [
@@ -170,7 +218,9 @@ export function buildVoiceTurns(
     const assistantText = stripVisualMarker(
       [...assistants].reverse().find((m) => m.text.trim().length > 0)?.text ?? "",
     );
-    const userText = thread.userMsg.text.trim();
+    const userText = stripLearningContext(
+      liveTranscripts.get(thread.id) ?? thread.userMsg.text,
+    );
     const awaitingTranscript =
       userText.length === 0 &&
       thread.userMsg.files.some((f) => AUDIO_EXT.test(f.path));
@@ -277,7 +327,12 @@ export function useVoiceConversation(
   /** UPCR-2026-025: called to leave the voice screen (e.g. navigate('/')) when
    *  the user expresses an exit intent — invoked AFTER the farewell audio. */
   onExit?: () => void,
+  options?: VoiceConversationOptions,
 ): VoiceConversation {
+  const buildTurnText = options?.buildTurnText;
+  const playReplyAudio = options?.playReplyAudio !== false;
+  const externalSpeechActive = options?.externalSpeechActive === true;
+  const onTurnComplete = options?.onTurnComplete;
   const threads = useRenderThreads(sessionId, historyTopic);
   const capture = useVoiceCapture();
   // Destructure the STABLE function refs (useVoiceCapture returns a fresh
@@ -295,8 +350,14 @@ export function useVoiceConversation(
   const cameraActive = camera.active;
   const cameraStream = camera.stream;
   const cameraError = camera.error;
+  const cameraSettings = camera.settings;
+  const updateCameraSettings = camera.updateSettings;
+  const resetCameraSettings = camera.resetSettings;
   const [state, setState] = useState<VoiceState>("idle");
   const [lastAssistantText, setLastAssistantText] = useState("");
+  const [liveTranscripts, setLiveTranscripts] = useState<
+    ReadonlyMap<string, string>
+  >(() => new Map());
   const [visual, setVisual] = useState<VisualArtifact | null>(null);
   const [generating, setGenerating] = useState(false);
   const [exiting, setExiting] = useState(false);
@@ -355,6 +416,8 @@ export function useVoiceConversation(
   const replyTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const stateRef = useRef<VoiceState>("idle");
   stateRef.current = state;
+  const externalSpeechActiveRef = useRef(externalSpeechActive);
+  const previousExternalSpeechActiveRef = useRef(false);
   // Latest threads, for reading inside stable callbacks without churning deps.
   const threadsRef = useRef(threads);
   threadsRef.current = threads;
@@ -406,7 +469,9 @@ export function useVoiceConversation(
   // drainQueue. Each stores itself into its own ref every render.
   const beginListeningRef = useRef<() => Promise<void>>(async () => {});
   const beginBargeInRef = useRef<() => Promise<void>>(async () => {});
-  const sendUtteranceRef = useRef<(wav: Blob) => Promise<void>>(async () => {});
+  const sendUtteranceRef = useRef<
+    (wav: Blob, includeCamera?: boolean) => Promise<void>
+  >(async () => {});
   const drainQueueRef = useRef<() => Promise<void>>(async () => {});
 
   const releaseAudio = useCallback(() => {
@@ -448,7 +513,7 @@ export function useVoiceConversation(
   );
 
   const sendCapturedUtterance = useCallback(
-    async (wav: Blob) => {
+    async (wav: Blob, includeCamera?: boolean) => {
       try {
         const turnId = crypto.randomUUID();
         activeTurnIdRef.current = turnId;
@@ -460,20 +525,30 @@ export function useVoiceConversation(
         // VLM sees the frame. Degrades to audio-only on a failed grab.
         const files = await assembleTurnFiles(
           file,
-          cameraActiveRef.current,
+          includeCamera ?? cameraActiveRef.current,
           cameraGrab,
         );
         // Surface the exact image sent to the AI (the model's view).
         const sentFrame = files.find((f) => f.type.startsWith("image/"));
         if (sentFrame) showSentFrame(sentFrame);
         const paths = await uploadFiles(files, "recording");
+        const sentFrameIndex = sentFrame ? files.indexOf(sentFrame) : -1;
+        const currentFramePath =
+          sentFrameIndex >= 0 ? paths[sentFrameIndex] : undefined;
+        const text =
+          buildTurnText?.({
+            sessionId,
+            turnId,
+            mediaPaths: paths,
+            currentFramePath,
+          }) ?? "";
         // The server-side STT transcribes the audio in `media` into the prompt.
         // The reply's TTS audio arrives asynchronously and is played by the
         // threads watcher below (not here in onComplete).
         sendMessage({
           sessionId,
           historyTopic,
-          text: "",
+          text,
           media: paths,
           clientMessageId: turnId,
           // #1478: this turn carries a live camera frame iff one was actually
@@ -484,6 +559,12 @@ export function useVoiceConversation(
             if (activeTurnIdRef.current === turnId) {
               activeTurnIdRef.current = null;
             }
+            // When reply audio is owned elsewhere, there is no local playback
+            // queue to drive the usual queue-drained listening transition.
+            if (!playReplyAudio && stateRef.current === "thinking") {
+              void beginListeningRef.current();
+            }
+            onTurnComplete?.(turnId);
           },
         });
         void beginBargeInRef.current();
@@ -499,10 +580,19 @@ export function useVoiceConversation(
         setState("error");
       }
     },
-    [historyTopic, sessionId, cameraGrab, showSentFrame],
+    [
+      cameraGrab,
+      historyTopic,
+      buildTurnText,
+      onTurnComplete,
+      playReplyAudio,
+      sessionId,
+      showSentFrame,
+    ],
   );
 
   const beginBargeIn = useCallback(async () => {
+    if (externalSpeechActiveRef.current) return;
     if (stateRef.current !== "thinking" && stateRef.current !== "speaking") return;
     const captureMode = stateRef.current;
     if (captureModeRef.current === captureMode) return;
@@ -558,6 +648,11 @@ export function useVoiceConversation(
   // Define beginListening and playReply with useCallback; each calls the other via its ref.
 
   const beginListening = useCallback(async () => {
+    if (externalSpeechActiveRef.current) {
+      stateRef.current = "thinking";
+      setState("thinking");
+      return;
+    }
     stateRef.current = "listening";
     setState("listening");
     captureModeRef.current = "listening";
@@ -657,7 +752,32 @@ export function useVoiceConversation(
   sendUtteranceRef.current = sendCapturedUtterance;
   drainQueueRef.current = drainQueue;
 
-  const start = useCallback(async () => {
+  useEffect(() => {
+    const wasActive = previousExternalSpeechActiveRef.current;
+    externalSpeechActiveRef.current = externalSpeechActive;
+    previousExternalSpeechActiveRef.current = externalSpeechActive;
+    if (externalSpeechActive) {
+      speechInterruptArmedRef.current = false;
+      captureModeRef.current = null;
+      void captureStop();
+      if (stateRef.current === "listening") {
+        stateRef.current = "thinking";
+        setState("thinking");
+      }
+      return;
+    }
+    if (
+      wasActive &&
+      stateRef.current === "thinking" &&
+      activeTurnIdRef.current === null
+    ) {
+      void beginListeningRef.current();
+    }
+  }, [captureStop, externalSpeechActive]);
+
+  const start = useCallback(async (
+    startOptions?: VoiceConversationStartOptions,
+  ) => {
     // Capture this start's generation. A later stop() (unmount, exit) or a
     // newer start() bumps the counter; every await below re-checks it and
     // abandons, so a stale start can never re-acquire the microphone.
@@ -679,8 +799,9 @@ export function useVoiceConversation(
     ignoredTurnIdsRef.current = new Set();
     activeTurnIdRef.current = null;
     captureModeRef.current = null;
-    turnBaselineRef.current = threadsRef.current.length;
-    setTurnBaseline(threadsRef.current.length);
+    const baseline = options?.showExistingTurns ? 0 : threadsRef.current.length;
+    turnBaselineRef.current = baseline;
+    setTurnBaseline(baseline);
     setLastAssistantText("");
     // Rich output: mark pre-existing artifacts as seen so re-entry doesn't
     // re-surface a prior turn's visual; reset the live visual/generating state.
@@ -723,8 +844,39 @@ export function useVoiceConversation(
       if (startGenRef.current !== gen) return;
     }
     if (startGenRef.current !== gen) return;
+    // Let StrictMode's effect cleanup/replay invalidate the first development
+    // start before a one-shot wake clip can be sent twice.
+    await Promise.resolve();
+    if (startGenRef.current !== gen) return;
+    if (options?.autoStartCamera) {
+      // A Learn turn must know whether a camera frame is available before it
+      // begins accepting the learner's first utterance. Otherwise a fast first
+      // question races camera startup and silently degrades to audio-only.
+      const cameraReady = await cameraStart();
+      cameraActiveRef.current = cameraReady;
+      if (startGenRef.current !== gen) {
+        if (cameraReady) cameraStop();
+        return;
+      }
+    }
+    if (startOptions?.initialAudio) {
+      await sendCapturedUtterance(
+        startOptions.initialAudio,
+        startOptions.includeCamera ?? false,
+      );
+      return;
+    }
     await beginListening();
-  }, [beginListening, sessionId, historyTopic]);
+  }, [
+    beginListening,
+    cameraStart,
+    cameraStop,
+    historyTopic,
+    options?.autoStartCamera,
+    options?.showExistingTurns,
+    sendCapturedUtterance,
+    sessionId,
+  ]);
 
   const stop = useCallback(() => {
     // Invalidate any in-flight start() (it re-checks this after each await).
@@ -749,10 +901,16 @@ export function useVoiceConversation(
     void captureStop();
     cameraStop();
     clearSentFrame();
-    releaseAudio();
+    if (playReplyAudio) releaseAudio();
     stateRef.current = "idle";
     setState("idle");
-  }, [captureStop, cameraStop, clearSentFrame, releaseAudio]);
+  }, [
+    captureStop,
+    cameraStop,
+    clearSentFrame,
+    playReplyAudio,
+    releaseAudio,
+  ]);
 
   // Leave the voice screen: one-shot. Tears down capture/audio/camera, then
   // invokes the navigation callback (e.g. navigate('/')). Called from the exit
@@ -777,6 +935,10 @@ export function useVoiceConversation(
   }, [cameraStart, cameraStop]);
 
   const interrupt = useCallback(() => {
+    if (externalSpeechActiveRef.current) {
+      releaseAudio();
+      return;
+    }
     if (stateRef.current === "speaking") {
       const turnId = speakingTurnIdRef.current;
       if (turnId) ignoredTurnIdsRef.current.add(turnId);
@@ -808,6 +970,43 @@ export function useVoiceConversation(
   }, [captureStop, releaseAudio, requestTurnInterrupt]);
 
   useEffect(() => {
+    const projectionKey = ProjectionStore.projectionStoreKey(
+      sessionId,
+      historyTopic,
+    );
+    return ProjectionStore.onEnvelopeAdmitted((storeKey, envelope) => {
+      if (!playReplyAudio) return;
+      if (
+        storeKey !== projectionKey ||
+        envelope.payload.type !== "file_attached" ||
+        (stateRef.current !== "thinking" && stateRef.current !== "speaking")
+      ) {
+        return;
+      }
+      const path = envelope.payload.data.path;
+      if (!AUDIO_EXT.test(path) || playedPathsRef.current.has(path)) return;
+      const renderThreadId =
+        ProjectionStore.clientMessageIdForTurn(storeKey, envelope.turn_id) ??
+        envelope.client_message_id ??
+        envelope.thread_id;
+      if (ignoredTurnIdsRef.current.has(renderThreadId)) return;
+
+      // Reply audio is an interaction side effect, not durable chat content.
+      // Observe the admitted envelope directly so a TTS file that lands after
+      // the canonical turn terminal can still play without weakening the
+      // projection's hard post-terminal rendering barrier.
+      playedPathsRef.current.add(path);
+      audioTurnByPathRef.current.set(path, renderThreadId);
+      audioQueueRef.current.push(path);
+      speechInterruptArmedRef.current = false;
+      activeTurnIdRef.current = null;
+      clearTimeout(replyTimerRef.current);
+      clearTimeout(graceTimerRef.current);
+      void drainQueueRef.current();
+    });
+  }, [historyTopic, playReplyAudio, sessionId]);
+
+  useEffect(() => {
     if (captureError) {
       captureModeRef.current = null;
       setState("error");
@@ -818,6 +1017,7 @@ export function useVoiceConversation(
   // from turn/completed timing (TTS is produced post-reply and can arrive
   // seconds after the turn completes). Only acts while "thinking".
   useEffect(() => {
+    if (!playReplyAudio) return;
     if (state !== "thinking" && state !== "speaking") return;
     const fresh = collectFreshAudioWithTurnIds(
       threads,
@@ -841,7 +1041,7 @@ export function useVoiceConversation(
     // interrupt by speaking. drainQueue is guarded by playingRef against
     // concurrent runs.
     void drainQueueRef.current();
-  }, [threads, state]);
+  }, [playReplyAudio, threads, state]);
 
   // Rich output: surface visual artifacts as they land (decoupled from turn
   // timing — HTML authoring / image gen can finish seconds after the reply).
@@ -978,6 +1178,39 @@ export function useVoiceConversation(
   }, [sessionId]);
 
   useEffect(() => {
+    const onTranscript = (ev: Event) => {
+      const detail = (ev as CustomEvent).detail as
+        | {
+            sessionId?: string;
+            topic?: string;
+            threadId?: string;
+            turnId?: string;
+            transcript?: string;
+          }
+        | undefined;
+      if (
+        !detail ||
+        detail.sessionId !== sessionId ||
+        (detail.topic ?? undefined) !== (historyTopic ?? undefined)
+      ) {
+        return;
+      }
+      const threadId = detail.threadId ?? detail.turnId ?? "";
+      const transcript = detail.transcript?.trim() ?? "";
+      if (!threadId || !transcript) return;
+      setLiveTranscripts((current) => {
+        if (current.get(threadId) === transcript) return current;
+        const next = new Map(current);
+        next.set(threadId, transcript);
+        return next;
+      });
+    };
+    window.addEventListener("crew:voice_transcript", onTranscript);
+    return () =>
+      window.removeEventListener("crew:voice_transcript", onTranscript);
+  }, [historyTopic, sessionId]);
+
+  useEffect(() => {
     const onNoSpeech = (ev: Event) => {
       const detail = (ev as CustomEvent).detail as
         | {
@@ -1023,8 +1256,14 @@ export function useVoiceConversation(
     .slice(turnBaseline)
     .reverse()
     .find((thread) => !thread.backgroundChild);
-  const lastUserText = latestUserThread?.userMsg.text ?? "";
-  const turns = buildVoiceTurns(threads, turnBaseline);
+  const lastUserText = stripLearningContext(
+    (latestUserThread
+      ? liveTranscripts.get(latestUserThread.id)
+      : undefined) ??
+      latestUserThread?.userMsg.text ??
+      "",
+  );
+  const turns = buildVoiceTurns(threads, turnBaseline, liveTranscripts);
 
   const dismissVisual = useCallback(() => setVisual(null), []);
 
@@ -1041,6 +1280,11 @@ export function useVoiceConversation(
     cameraStream,
     lastSentFrameUrl,
     cameraError,
+    cameraSettings,
+    updateCameraSettings,
+    resetCameraSettings,
+    startCamera: cameraStart,
+    stopCamera: cameraStop,
     toggleCamera,
     visual,
     generating,

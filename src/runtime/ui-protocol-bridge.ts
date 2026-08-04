@@ -23,7 +23,6 @@ import {
 import * as ProjectionStore from "@/store/projection-store";
 import {
   AUX_REST_TO_WS_V1_FEATURE,
-  isAuxRestToWsV1Enabled,
 } from "@/lib/feature-flags";
 import type {
   ApprovalDecision,
@@ -338,24 +337,20 @@ export const UI_PROTOCOL_FEATURES = [
 
 /**
  * Resolve the live `ui_feature` capability list to send on the WS open
- * query. Adds opt-in capabilities gated on client-side feature flags.
+ * query.
  *
- * M12 Phase D-2 (octos PR #912 / octos-web #103): when the
- * `octos_auxiliary_rest_to_ws_v1` localStorage flag is on, append
- * `auxiliary.rest_to_ws.v1`. Without that capability in the WS query,
- * the server advertises the 13 aux methods in `SessionOpened.capabilities`
- * but the dispatcher rejects every call (octos #913 — server polish
- * follow-up). The client must negotiate properly regardless of that
- * server bug, so the flag explicitly controls inclusion here.
+ * M12 Phase D-5 retired the REST endpoints used by the auxiliary wrappers.
+ * `session/list`, `session/messages_page`, and the other auxiliary methods
+ * therefore have no flag-off transport left. Always negotiate
+ * `auxiliary.rest_to_ws.v1`: honoring a stale localStorage opt-out here makes
+ * the client call the WS methods without advertising their required
+ * capability, so the server correctly returns METHOD_NOT_SUPPORTED and a
+ * fresh Learn page silently renders an empty session list.
  *
  * Tests can override the full list via `BridgeConfig.features`.
  */
 export function getUiProtocolFeatures(): readonly string[] {
-  const base: string[] = [...UI_PROTOCOL_FEATURES];
-  if (isAuxRestToWsV1Enabled()) {
-    base.push(AUX_REST_TO_WS_V1_FEATURE);
-  }
-  return base;
+  return [...UI_PROTOCOL_FEATURES, AUX_REST_TO_WS_V1_FEATURE];
 }
 
 const JSON_RPC_VERSION = "2.0";

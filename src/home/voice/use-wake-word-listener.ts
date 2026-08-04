@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   MAX_WAKE_AUDIO_SAMPLES,
   MODEL_AUDIO_WINDOW_SAMPLES,
+  TARGET_SAMPLE_RATE,
   appendSamples,
   isWakeWordOriginAllowed,
   resampleLinear,
@@ -10,6 +11,7 @@ import {
   loadWakeWordModel,
   type WakeWordModel,
 } from "./wake-word-model";
+import { encodeWav } from "./wav-encode";
 
 export type WakeWordListenerState =
   | "unsupported"
@@ -24,6 +26,8 @@ export interface WakeWordDetection {
   at: number;
   score: number;
   wakeWord: string;
+  /** A copy of the trigger window, captured before listener cleanup. */
+  audio: Blob;
 }
 
 export interface WakeWordListenerOptions {
@@ -182,10 +186,17 @@ export function useWakeWordListener({
         if (consecutiveRef.current >= consecutiveFramesRef.current) {
           const detectedWakeWord =
             model.info.models[0]?.wake_word ?? DEFAULT_WAKE_WORD;
+          // cleanupAudio() clears the rolling buffer. Encode a copy first so
+          // /learn can submit the already-spoken wake phrase as its first turn.
+          const audio = encodeWav(
+            bufferRef.current.slice(),
+            TARGET_SAMPLE_RATE,
+          );
           const detection: WakeWordDetection = {
             at: Date.now(),
             score: nextScore,
             wakeWord: detectedWakeWord,
+            audio,
           };
           setListenerState("detected");
           await cleanupAudio();

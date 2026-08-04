@@ -75,8 +75,11 @@ test.describe("UI Protocol startup failure recovery", () => {
     await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
 
     // The Settings page owns a sessionless auxiliary bridge. Force its first
-    // attempt to close before open, then prove the tab's Retry starts a new
-    // socket instead of reusing the terminal one.
+    // attempt to close before open, then prove the tab's Retry replaces that
+    // terminal bridge. The login bootstrap can already have opened an
+    // auxiliary socket, so close existing harness sockets before arming the
+    // next startup failure.
+    await uiProtocol.closeExistingSockets();
     uiProtocol.failStartup = true;
     await page.getByRole("button", { name: "Memory", exact: true }).click();
     await expect(

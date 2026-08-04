@@ -68,7 +68,9 @@ export function stopAudio(): void {
 export async function playAudioBlob(
   blob: Blob,
   onEnded: () => void,
+  signal?: AbortSignal,
 ): Promise<boolean> {
+  if (signal?.aborted) return false;
   const c = getCtx();
   if (!c) return false;
   if (c.state === "suspended") {
@@ -78,8 +80,11 @@ export async function playAudioBlob(
       // continue — decode/start may still succeed (or throw to the caller)
     }
   }
+  if (signal?.aborted) return false;
   const arrayBuf = await blob.arrayBuffer();
+  if (signal?.aborted) return false;
   const audioBuf = await c.decodeAudioData(arrayBuf);
+  if (signal?.aborted) return false;
   stopAudio();
   const src = c.createBufferSource();
   src.buffer = audioBuf;

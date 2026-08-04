@@ -20,10 +20,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
-      - run: npm ci
-      - run: npm run test:unit
-      - run: npm run build
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:unit
+      - run: pnpm run build

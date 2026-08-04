@@ -22,12 +22,16 @@ class FakeSource {
 }
 
 const sources: FakeSource[] = [];
+const contexts: FakeAudioContext[] = [];
 
 class FakeAudioContext {
   state = "running";
   destination = {};
   resume = vi.fn(async () => {});
   decodeAudioData = vi.fn(async () => ({}) as AudioBuffer);
+  constructor() {
+    contexts.push(this);
+  }
   createBufferSource() {
     const s = new FakeSource();
     sources.push(s);
@@ -114,5 +118,23 @@ describe("playAudioBlob / stopAudio", () => {
 
   it("stopAudio is a no-op when nothing is playing", () => {
     expect(() => stopAudio()).not.toThrow();
+  });
+
+  it("does not start decoded audio after its request is cancelled", async () => {
+    let finishDecode!: (buffer: AudioBuffer) => void;
+    contexts[0].decodeAudioData.mockImplementationOnce(
+      () => new Promise<AudioBuffer>((resolve) => {
+        finishDecode = resolve;
+      }),
+    );
+    const controller = new AbortController();
+    const playback = playAudioBlob(makeBlob(), vi.fn(), controller.signal);
+    await vi.waitFor(() => expect(finishDecode).toBeTypeOf("function"));
+
+    controller.abort();
+    finishDecode({} as AudioBuffer);
+
+    await expect(playback).resolves.toBe(false);
+    expect(sources).toHaveLength(0);
   });
 });

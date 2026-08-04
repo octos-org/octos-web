@@ -1,4 +1,10 @@
-import { type Page, type Route, expect, test } from "@playwright/test";
+import {
+  type Page,
+  type Route,
+  type WebSocketRoute,
+  expect,
+  test,
+} from "@playwright/test";
 
 const AUTH_TOKEN = process.env.AUTH_TOKEN || "e2e-test-2026";
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "octos-admin-2026";
@@ -10,6 +16,7 @@ export interface UiProtocolHarnessControl {
   socketAttempts: number;
   injectedFailures: number;
   sentMethods: string[];
+  closeExistingSockets: () => Promise<void>;
 }
 
 export function createUiProtocolHarnessControl(
@@ -20,6 +27,7 @@ export function createUiProtocolHarnessControl(
     socketAttempts: 0,
     injectedFailures: 0,
     sentMethods: [],
+    closeExistingSockets: async () => {},
   };
 }
 
@@ -205,6 +213,18 @@ async function installDefaultE2EHarness(
   page: Page,
   uiProtocolControl?: UiProtocolHarnessControl,
 ) {
+  const routedSockets = new Set<WebSocketRoute>();
+  if (uiProtocolControl) {
+    uiProtocolControl.closeExistingSockets = async () => {
+      const sockets = [...routedSockets];
+      routedSockets.clear();
+      await Promise.all(
+        sockets.map((ws) =>
+          ws.close({ code: 1000, reason: "closed by E2E harness" }).catch(() => {}),
+        ),
+      );
+    };
+  }
   const sessions = new Map<string, HarnessSession>();
   const tasks = new Map<string, HarnessTask[]>();
   const projectionEnvelopes = new Map<string, Array<Record<string, unknown>>>();
@@ -420,6 +440,7 @@ async function installDefaultE2EHarness(
   );
 
   await page.routeWebSocket(/\/api\/ui-protocol\/ws/, async (ws) => {
+    routedSockets.add(ws);
     if (uiProtocolControl) {
       uiProtocolControl.socketAttempts += 1;
       if (uiProtocolControl.failStartup) {
