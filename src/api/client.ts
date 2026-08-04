@@ -236,7 +236,7 @@ export async function request<T>(
       clearToken();
       // Redirect to login unless already there
       if (!window.location.pathname.endsWith("/login")) {
-        window.location.href = "/login?redirect=" + encodeURIComponent(window.location.pathname);
+        window.location.href = "/login?redirect=" + encodeURIComponent(window.location.pathname + window.location.search);
       }
     }
     const text = await resp.text();
