@@ -91,6 +91,16 @@ describe("LearningPage", () => {
   beforeEach(() => {
     cleanup();
     window.history.replaceState({}, "", "/learn");
+    Object.defineProperty(window, "isSecureContext", {
+      configurable: true,
+      value: true,
+    });
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn(async () => ({ getTracks: () => [] })),
+      },
+    });
     localStorage.clear();
     localStorage.setItem("octos_learning_auto_camera", "true");
     navigateMock.mockReset();
@@ -206,6 +216,110 @@ describe("LearningPage", () => {
         name: "请在白板上讲解一个新的二次函数问题",
       }),
     ).toBeTruthy();
+  });
+
+  it("explains that LAN microphone access requires a secure context", async () => {
+    localStorage.setItem("octos_learning_auto_camera", "true");
+    localStorage.setItem("octos_learning_input_mode", "voice");
+    const originalSecureContext = Object.getOwnPropertyDescriptor(
+      window,
+      "isSecureContext",
+    );
+    Object.defineProperty(window, "isSecureContext", {
+      configurable: true,
+      value: false,
+    });
+
+    try {
+      render(<LearningPage />);
+
+      expect((await screen.findByRole("alert")).textContent).toContain(
+        "当前页面不是安全连接",
+      );
+      expect(
+        (
+          screen.getByRole("button", {
+            name: "启用语音和摄像头",
+          }) as HTMLButtonElement
+        ).disabled,
+      ).toBe(true);
+      expect(
+        (screen.getByRole("button", {
+          name: "仅启用语音",
+        }) as HTMLButtonElement).disabled,
+      ).toBe(true);
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "仅用文字进入白板" }),
+      );
+      await waitFor(() =>
+        expect(learningWorkspaceMock.props?.voiceEnabled).toBe(false),
+      );
+    } finally {
+      if (originalSecureContext) {
+        Object.defineProperty(
+          window,
+          "isSecureContext",
+          originalSecureContext,
+        );
+      } else {
+        Reflect.deleteProperty(window, "isSecureContext");
+      }
+    }
+  });
+
+  it("reports a denied device permission with an actionable message", async () => {
+    localStorage.clear();
+    const originalSecureContext = Object.getOwnPropertyDescriptor(
+      window,
+      "isSecureContext",
+    );
+    const originalMediaDevices = Object.getOwnPropertyDescriptor(
+      navigator,
+      "mediaDevices",
+    );
+    Object.defineProperty(window, "isSecureContext", {
+      configurable: true,
+      value: true,
+    });
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn(async () => {
+          throw new DOMException("denied", "NotAllowedError");
+        }),
+      },
+    });
+
+    try {
+      render(<LearningPage />);
+      fireEvent.click(
+        await screen.findByRole("button", { name: "启用语音和摄像头" }),
+      );
+
+      expect((await screen.findByRole("alert")).textContent).toContain(
+        "麦克风或摄像头权限被拒绝",
+      );
+    } finally {
+      if (originalSecureContext) {
+        Object.defineProperty(
+          window,
+          "isSecureContext",
+          originalSecureContext,
+        );
+      } else {
+        Reflect.deleteProperty(window, "isSecureContext");
+      }
+      if (originalMediaDevices) {
+        Object.defineProperty(
+          navigator,
+          "mediaDevices",
+          originalMediaDevices,
+        );
+      } else {
+        Reflect.deleteProperty(navigator, "mediaDevices");
+      }
+    }
   });
 
   it("can enable voice and camera from an existing text-only lesson", async () => {
@@ -384,6 +498,30 @@ describe("LearningPage", () => {
     act(() => {
       learningWorkspaceMock.props?.onLearnerInput?.("继续讲一道相似题");
     });
+    await waitFor(() =>
+      expect(learningWorkspaceMock.props?.playbackMode).toBe("live"),
+    );
+  });
+
+  it("leaves review mode as soon as a voice turn starts", async () => {
+    sessionApiMock.listSessions.mockResolvedValue([
+      { id: "learn-200-geometry", message_count: 4, title: "几何课程" },
+    ]);
+    render(<LearningPage />);
+
+    await waitFor(() =>
+      expect(learningWorkspaceMock.props?.sessionId).toBe(
+        "learn-200-geometry",
+      ),
+    );
+    expect(learningWorkspaceMock.props?.playbackMode).toBe("review");
+
+    act(() => {
+      learningWorkspaceMock.props?.conversationOptions?.onTurnStart?.(
+        "turn-before-asr",
+      );
+    });
+
     await waitFor(() =>
       expect(learningWorkspaceMock.props?.playbackMode).toBe("live"),
     );

@@ -6,7 +6,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { BookOpen, Menu, Pencil, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, BookOpen, Menu, Pencil, Plus, Trash2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import {
   deleteSession,
@@ -65,10 +65,49 @@ const INPUT_MODE_KEY = "octos_learning_input_mode";
 const MINIMUM_WHITEBOARD_SKILL_VERSION = [0, 8, 4] as const;
 const LEARNING_TAB_ID = getLearningTabOwner();
 
+type LearningMediaCapability =
+  | { available: true }
+  | { available: false; message: string };
+
+function detectLearningMediaCapability(): LearningMediaCapability {
+  if (window.isSecureContext === false) {
+    return {
+      available: false,
+      message:
+        "当前页面不是安全连接，浏览器已停用麦克风和摄像头。请使用 HTTPS 地址；同一台电脑也可以使用 http://localhost:5173/learn。",
+    };
+  }
+  if (typeof navigator.mediaDevices?.getUserMedia !== "function") {
+    return {
+      available: false,
+      message:
+        "当前浏览器无法访问麦克风和摄像头。请确认浏览器支持媒体设备，并检查系统或浏览器权限设置。",
+    };
+  }
+  return { available: true };
+}
+
+function describeLearningDeviceError(cause: unknown): string {
+  if (cause instanceof DOMException) {
+    if (cause.name === "NotAllowedError" || cause.name === "SecurityError") {
+      return "麦克风或摄像头权限被拒绝。请在浏览器的网站设置中允许访问后重试。";
+    }
+    if (cause.name === "NotFoundError" || cause.name === "DevicesNotFoundError") {
+      return "没有找到可用的麦克风或摄像头。请连接设备后重试。";
+    }
+    if (cause.name === "NotReadableError" || cause.name === "TrackStartError") {
+      return "麦克风或摄像头正被其他应用占用，或暂时无法读取。";
+    }
+  }
+  return cause instanceof Error ? cause.message : "设备授权失败";
+}
+
 async function requestLearningDevices(autoCamera: boolean): Promise<{
   autoCamera: boolean;
   voiceEnabled: boolean;
 }> {
+  const capability = detectLearningMediaCapability();
+  if (!capability.available) throw new Error(capability.message);
   unlockAudio();
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: true,
@@ -105,12 +144,18 @@ function LearningPermissionGate({
   }) => void;
 }) {
   const [error, setError] = useState<string | null>(null);
+  const capability = detectLearningMediaCapability();
+  const capabilityMessage = capability.available ? null : capability.message;
 
   const activate = async (autoCamera: boolean) => {
+    if (capabilityMessage) {
+      setError(capabilityMessage);
+      return;
+    }
     try {
       onReady(await requestLearningDevices(autoCamera));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "设备授权失败");
+      setError(describeLearningDeviceError(cause));
     }
   };
 
@@ -126,14 +171,16 @@ function LearningPermissionGate({
         <button
           type="button"
           onClick={() => void activate(true)}
-          className="mt-7 w-full rounded-full bg-cyan-300 px-5 py-3 font-medium text-black"
+          disabled={!capability.available}
+          className="mt-7 w-full rounded-full bg-cyan-300 px-5 py-3 font-medium text-black disabled:cursor-not-allowed disabled:opacity-40"
         >
           启用语音和摄像头
         </button>
         <button
           type="button"
           onClick={() => void activate(false)}
-          className="mt-3 w-full rounded-full border border-white/15 px-5 py-3 text-white/75"
+          disabled={!capability.available}
+          className="mt-3 w-full rounded-full border border-white/15 px-5 py-3 text-white/75 disabled:cursor-not-allowed disabled:opacity-40"
         >
           仅启用语音
         </button>
@@ -148,7 +195,11 @@ function LearningPermissionGate({
         >
           仅用文字进入白板
         </button>
-        {error && <p className="mt-4 text-sm text-red-300">{error}</p>}
+        {(error || capabilityMessage) && (
+          <p className="mt-4 text-sm leading-5 text-red-300" role="alert">
+            {error ?? capabilityMessage}
+          </p>
+        )}
       </div>
     </div>
   );
@@ -339,14 +390,19 @@ export function LearningPage() {
     const storedCamera = localStorage.getItem(AUTO_CAMERA_KEY);
     const storedMode = localStorage.getItem(INPUT_MODE_KEY);
     if (storedCamera === null && storedMode === null) return null;
+    const voiceEnabled = storedMode !== "text";
+    if (voiceEnabled && !detectLearningMediaCapability().available) return null;
     return {
       autoCamera: storedCamera === "true",
-      voiceEnabled: storedMode !== "text",
+      voiceEnabled,
     };
   });
   const [skillState, setSkillState] = useState<
     "checking" | "ready" | "missing" | "outdated" | "error"
   >(ollFixture ? "ready" : "checking");
+  // Bumped by the gate's "重新检查" button to re-run the skill probe without
+  // a full page reload.
+  const [skillCheckTick, setSkillCheckTick] = useState(0);
   const [serverSyncReady, setServerSyncReady] = useState(Boolean(ollFixture));
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const markerSentRef = useRef(false);
@@ -444,7 +500,12 @@ export function LearningPage() {
     return () => {
       cancelled = true;
     };
-  }, [hasTabLease, ollFixture]);
+  }, [hasTabLease, ollFixture, skillCheckTick]);
+
+  const recheckSkill = useCallback(() => {
+    setSkillState("checking");
+    setSkillCheckTick((tick) => tick + 1);
+  }, []);
 
   const buildTurnText = useCallback<NonNullable<VoiceConversationOptions["buildTurnText"]>>(
     (context) => {
@@ -480,8 +541,13 @@ export function LearningPage() {
       buildTurnText,
       playReplyAudio: false,
       showExistingTurns: true,
+      onTurnStart: () => {
+        setReviewSessionId((current) =>
+          current === record.id ? null : current,
+        );
+      },
     }),
-    [buildTurnText, devicePreferences],
+    [buildTurnText, devicePreferences, record.id],
   );
 
   const handleBoardContextChange = useCallback(
@@ -624,7 +690,15 @@ export function LearningPage() {
 
   if (!hasTabLease) {
     return (
-      <div className="flex h-screen w-screen items-center justify-center bg-black px-6 text-white">
+      <div className="relative flex h-screen w-screen items-center justify-center bg-black px-6 text-white">
+        <button
+          type="button"
+          onClick={() => navigate("/")}
+          className="absolute left-5 top-6 flex items-center gap-2 rounded-full border border-white/15 px-4 py-2 text-sm text-white/60 transition hover:border-white/30 hover:text-white"
+        >
+          <ArrowLeft size={16} />
+          返回首页
+        </button>
         <div className="max-w-md text-center">
           <h1 className="text-xl font-semibold">学习助手已在另一个标签页中使用</h1>
           <p className="mt-3 text-sm leading-6 text-white/55">
@@ -637,7 +711,15 @@ export function LearningPage() {
 
   if (skillState !== "ready") {
     return (
-      <div className="flex h-screen w-screen items-center justify-center bg-black px-6 text-white">
+      <div className="relative flex h-screen w-screen items-center justify-center bg-black px-6 text-white">
+        <button
+          type="button"
+          onClick={() => navigate("/")}
+          className="absolute left-5 top-6 flex items-center gap-2 rounded-full border border-white/15 px-4 py-2 text-sm text-white/60 transition hover:border-white/30 hover:text-white"
+        >
+          <ArrowLeft size={16} />
+          返回首页
+        </button>
         <div className="w-full max-w-md text-center">
           <BookOpen className="mx-auto mb-5 text-cyan-300" size={36} />
           <h1 className="text-xl font-semibold">
@@ -653,16 +735,29 @@ export function LearningPage() {
             <>
               <p className="mt-3 text-sm leading-6 text-white/55">
                 {skillState === "outdated"
-                  ? "学习课堂需要 learning-coach 0.8.4 或更高版本；更新后请重启 Gateway。"
-                  : "学习页依赖这套教学与记忆规则；安装后请按提示重启 Gateway。"}
+                  ? "学习课堂需要 learning-coach 0.8.4 或更高版本。更新后回到这里重新检查；如提示需重启 Gateway，按提示操作即可。"
+                  : skillState === "missing"
+                    ? "学习课堂由 learning-coach 教学技能驱动。前往 设置 → Skills 安装后回到这里重新检查；如提示需重启 Gateway，按提示操作即可。"
+                    : "可能是网络或服务暂时不可用，请稍后重新检查。"}
               </p>
-              <button
-                type="button"
-                onClick={() => navigate("/settings?tab=skills")}
-                className="mt-6 rounded-full bg-white px-5 py-3 text-sm font-medium text-black"
-              >
-                打开 Skill 设置
-              </button>
+              <div className="mt-6 flex items-center justify-center gap-3">
+                {(skillState === "missing" || skillState === "outdated") && (
+                  <button
+                    type="button"
+                    onClick={() => navigate("/settings?tab=skills")}
+                    className="rounded-full bg-white px-5 py-3 text-sm font-medium text-black"
+                  >
+                    打开 Skill 设置
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={recheckSkill}
+                  className="rounded-full border border-white/20 px-5 py-3 text-sm font-medium text-white/80 transition hover:border-white/40 hover:text-white"
+                >
+                  重新检查
+                </button>
+              </div>
             </>
           )}
         </div>

@@ -96,6 +96,24 @@ function formatGhostTimestamp(ts: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+/** Backend RPC failures arrive as `rpc-error[code] message`. The protocol
+ *  prefix is noise for users — strip it for display (the full raw string
+ *  stays in the `title` tooltip for debugging). */
+function displayFailureMessage(raw: string): string {
+  return raw.replace(/^rpc-error\[[^\]]+\]\s*/, "");
+}
+
+/** "No ProfileRuntime registered" means the profile has no model/API key —
+ *  a setup gap, not a transient send failure. Point the user at the fix
+ *  (Settings → LLM) instead of leaving them with jargon and a Retry that
+ *  can only fail again. */
+const MODEL_NOT_CONFIGURED = /No ProfileRuntime registered/i;
+
+/** Deep link into the LLM settings tab. A plain anchor (not router `<Link>`)
+ *  keeps this component renderable outside a Router in tests; leaving the
+ *  page is harmless here because the session state reloads from the server. */
+const LLM_SETTINGS_HREF = "/settings?tab=llm";
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -217,24 +235,53 @@ export function GhostBubble({
     </>
   ) : null;
 
-  const failureMessage = failure ?? (timedOut ? "Send not confirmed within 30s." : null);
+  const rawFailure = failure ?? (timedOut ? "Send not confirmed within 30s." : null);
+  const modelMissing = rawFailure ? MODEL_NOT_CONFIGURED.test(rawFailure) : false;
+  const failureMessage = rawFailure
+    ? modelMissing
+      ? "No model is set up for this profile yet — add a provider and API key to start chatting."
+      : displayFailureMessage(rawFailure)
+    : null;
+
+  // "Set up a model" is the primary action when configuration is the
+  // problem; Retry stays (it works once a key is saved) but steps back to
+  // a quieter outline so it no longer invites a guaranteed re-failure.
+  const errorActions = (
+    <>
+      {modelMissing && (
+        <a
+          data-testid="ghost-bubble-setup-link"
+          href={LLM_SETTINGS_HREF}
+          className="shrink-0 rounded-md bg-red-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-red-700"
+        >
+          Set up a model
+        </a>
+      )}
+      {onRetry && (
+        <button
+          data-testid="ghost-bubble-retry"
+          type="button"
+          onClick={handleRetry}
+          className={
+            modelMissing
+              ? "shrink-0 rounded-md border border-red-500/40 px-2 py-0.5 text-[11px] font-medium hover:bg-red-500/10"
+              : "shrink-0 rounded-md bg-red-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-red-700"
+          }
+        >
+          Retry
+        </button>
+      )}
+    </>
+  );
+
   const trailing = failureMessage ? (
     <div
       data-testid="ghost-bubble-error"
       role="alert"
       className="mt-1.5 flex items-center gap-2 rounded-[10px] border border-red-500/20 bg-red-500/12 px-3 py-1.5 text-[11px] text-red-400"
     >
-      <span>{failureMessage}</span>
-      {onRetry && (
-        <button
-          data-testid="ghost-bubble-retry"
-          type="button"
-          onClick={handleRetry}
-          className="rounded-md bg-red-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-red-700"
-        >
-          Retry
-        </button>
-      )}
+      <span title={rawFailure ?? undefined}>{failureMessage}</span>
+      {errorActions}
     </div>
   ) : null;
 
@@ -248,17 +295,8 @@ export function GhostBubble({
         role="alert"
         className="mx-4 mt-2 flex items-center gap-2 rounded-[10px] border border-red-500/20 bg-red-500/12 px-3 py-1.5 text-[11px] text-red-400"
       >
-        <span>{failureMessage}</span>
-        {onRetry && (
-          <button
-            data-testid="ghost-bubble-retry"
-            type="button"
-            onClick={handleRetry}
-            className="rounded-md bg-red-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-red-700"
-          >
-            Retry
-          </button>
-        )}
+        <span title={rawFailure ?? undefined}>{failureMessage}</span>
+        {errorActions}
       </div>
     );
   }

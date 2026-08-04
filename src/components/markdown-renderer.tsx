@@ -1,5 +1,5 @@
-import { Component, memo, useEffect, useRef, useState, type ReactNode, type ErrorInfo } from "react";
-import ReactMarkdown from "react-markdown";
+import { Component, memo, useEffect, useRef, useState, type ComponentProps, type ReactNode, type ErrorInfo } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
@@ -89,8 +89,8 @@ class MarkdownErrorBoundary extends Component<{ children: ReactNode; fallback: s
 const remarkPlugins = [remarkGfm, remarkMath];
 const rehypePlugins = [rehypeKatex];
 
-const mdComponents: Record<string, any> = {
-  img: ({ src, alt }: any) => {
+const mdComponents: Components = {
+  img: ({ src, alt }) => {
     if (!src) return null;
     return (
       <a href={src} target="_blank" rel="noopener noreferrer" className="block my-2">
@@ -98,7 +98,7 @@ const mdComponents: Record<string, any> = {
       </a>
     );
   },
-  a: ({ href, children }: any) => {
+  a: ({ href, children }) => {
     if (!href) return <>{children}</>;
     if (/\.(mp3|wav|ogg|webm|m4a|aac|flac)$/i.test(href))
       return <a href={href} download className="inline-flex items-center gap-1 rounded-md bg-surface-light px-2 py-1 text-xs text-link hover:bg-accent/20 hover:text-accent"><Download size={12} />🎵 {children}</a>;
@@ -108,35 +108,37 @@ const mdComponents: Record<string, any> = {
       return <a href={href} download className="inline-flex items-center gap-1 rounded-md bg-surface-light px-2 py-1 text-xs text-link hover:bg-accent/20 hover:text-accent"><Download size={12} />{children}</a>;
     return <a href={href} target="_blank" rel="noopener noreferrer" className="text-link hover:text-accent hover:underline">{children}</a>;
   },
-  pre: ({ children }: any) => <>{children}</>,
-  code: ({ children, className: cn, inline }: any) => {
+  pre: ({ children }) => <>{children}</>,
+  // react-markdown v10 no longer passes `inline`, but keep accepting it so
+  // the branch below stays truthful if a plugin reintroduces the prop.
+  code: ({ children, className: cn, inline }: ComponentProps<"code"> & { inline?: boolean }) => {
     if (inline || (!cn && typeof children === "string" && !children.includes("\n"))) {
       return <code className="rounded bg-code-inline/15 px-1.5 py-0.5 text-xs text-code-inline">{children}</code>;
     }
     return <CodeBlock className={cn}>{children}</CodeBlock>;
   },
-  table: ({ children }: any) => (
+  table: ({ children }) => (
     <div className="my-3 overflow-x-auto rounded-lg bg-surface-container"><table className="min-w-full text-xs">{children}</table></div>
   ),
-  th: ({ children }: any) => <th className="border-b border-outline bg-surface-elevated px-4 py-2 text-left font-medium text-text-strong">{children}</th>,
-  td: ({ children }: any) => <td className="border-b border-border px-4 py-2">{children}</td>,
-  p: ({ children }: any) => <p className="mb-3 last:mb-0 leading-relaxed">{children}</p>,
-  ul: ({ children }: any) => <ul className="mb-3 list-disc pl-5 space-y-1">{children}</ul>,
-  ol: ({ children }: any) => <ol className="mb-3 list-decimal pl-5 space-y-1">{children}</ol>,
-  li: ({ children }: any) => <li className="leading-relaxed">{children}</li>,
-  h1: ({ children }: any) => <h1 className="mb-3 mt-5 text-xl font-bold text-heading-accent border-b-2 border-accent-dim pb-1">{children}</h1>,
-  h2: ({ children }: any) => <h2 className="mb-2 mt-4 text-lg font-bold text-heading">{children}</h2>,
-  h3: ({ children }: any) => <h3 className="mb-2 mt-3 text-base font-semibold text-heading">{children}</h3>,
-  h4: ({ children }: any) => <h4 className="mb-1 mt-2 text-sm font-semibold text-text-strong">{children}</h4>,
-  blockquote: ({ children }: any) => (
+  th: ({ children }) => <th className="border-b border-outline bg-surface-elevated px-4 py-2 text-left font-medium text-text-strong">{children}</th>,
+  td: ({ children }) => <td className="border-b border-border px-4 py-2">{children}</td>,
+  p: ({ children }) => <p className="mb-3 last:mb-0 leading-relaxed">{children}</p>,
+  ul: ({ children }) => <ul className="mb-3 list-disc pl-5 space-y-1">{children}</ul>,
+  ol: ({ children }) => <ol className="mb-3 list-decimal pl-5 space-y-1">{children}</ol>,
+  li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+  h1: ({ children }) => <h1 className="mb-3 mt-5 text-xl font-bold text-heading-accent border-b-2 border-accent-dim pb-1">{children}</h1>,
+  h2: ({ children }) => <h2 className="mb-2 mt-4 text-lg font-bold text-heading">{children}</h2>,
+  h3: ({ children }) => <h3 className="mb-2 mt-3 text-base font-semibold text-heading">{children}</h3>,
+  h4: ({ children }) => <h4 className="mb-1 mt-2 text-sm font-semibold text-text-strong">{children}</h4>,
+  blockquote: ({ children }) => (
     <blockquote className="my-3 border-l-3 border-blockquote-border pl-4 text-muted italic">{children}</blockquote>
   ),
   hr: () => <hr className="my-4 border-border" />,
-  strong: ({ children }: any) => <strong className="font-semibold text-text-strong">{children}</strong>,
-  em: ({ children }: any) => <em className="italic">{children}</em>,
-  del: ({ children }: any) => <del className="text-muted line-through">{children}</del>,
+  strong: ({ children }) => <strong className="font-semibold text-text-strong">{children}</strong>,
+  em: ({ children }) => <em className="italic">{children}</em>,
+  del: ({ children }) => <del className="text-muted line-through">{children}</del>,
   // Task list checkboxes (GFM)
-  input: ({ checked, ...props }: any) => (
+  input: ({ checked, ...props }) => (
     <input type="checkbox" checked={checked} readOnly className="mr-1.5 accent-accent" {...props} />
   ),
 };

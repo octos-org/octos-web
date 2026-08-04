@@ -200,4 +200,80 @@ describe("GhostBubble", () => {
     ).toContain("Send not confirmed");
     harness.unmount();
   });
+
+  it("strips the rpc-error protocol prefix from display but keeps it in the tooltip", () => {
+    const harness = mount(
+      <GhostBubble
+        clientMessageId="cmid-prefixed"
+        text="hi"
+        files={[]}
+        sessionId={sessionId}
+        failure="rpc-error[-32603] turn/start rejected by gateway"
+        onSettle={() => {}}
+      />,
+    );
+    const row = harness.container.querySelector(
+      '[data-testid="ghost-bubble-error"]',
+    );
+    expect(row?.textContent).toContain("turn/start rejected by gateway");
+    expect(row?.textContent).not.toContain("rpc-error[");
+    expect(row?.querySelector("span")?.getAttribute("title")).toContain(
+      "rpc-error[-32603]",
+    );
+    harness.unmount();
+  });
+
+  it("turns a missing-runtime failure into setup guidance with a settings link", () => {
+    const onRetry = vi.fn();
+    const harness = mount(
+      <GhostBubble
+        clientMessageId="cmid-no-model"
+        text="hello"
+        files={[]}
+        sessionId={sessionId}
+        failure="rpc-error[-32603] No ProfileRuntime registered for profile 'yao'. Set up the profile with an API key in the dashboard."
+        onSettle={() => {}}
+        onRetry={onRetry}
+      />,
+    );
+    const row = harness.container.querySelector(
+      '[data-testid="ghost-bubble-error"]',
+    );
+    // Friendly copy replaces the internal jargon…
+    expect(row?.textContent).toContain("No model is set up");
+    expect(row?.textContent).not.toContain("ProfileRuntime");
+    expect(row?.textContent).not.toContain("rpc-error[");
+    // …and the primary action deep-links into the LLM settings tab.
+    const link = row?.querySelector(
+      '[data-testid="ghost-bubble-setup-link"]',
+    ) as HTMLAnchorElement | null;
+    expect(link?.getAttribute("href")).toBe("/settings?tab=llm");
+    // Retry stays available (it succeeds once a key is saved).
+    expect(row?.querySelector('[data-testid="ghost-bubble-retry"]')).not.toBeNull();
+    harness.unmount();
+  });
+
+  it("offers the same setup guidance on a settled terminal failure", () => {
+    const harness = mount(
+      <GhostBubble
+        clientMessageId="cmid-terminal-no-model"
+        text="hi"
+        files={[]}
+        sessionId={sessionId}
+        settled
+        failure="rpc-error[-32603] No ProfileRuntime registered for profile 'yao'."
+        onSettle={() => {}}
+      />,
+    );
+    const row = harness.container.querySelector(
+      '[data-testid="ghost-bubble-terminal-error"]',
+    );
+    expect(row?.textContent).toContain("No model is set up");
+    expect(
+      row
+        ?.querySelector('[data-testid="ghost-bubble-setup-link"]')
+        ?.getAttribute("href"),
+    ).toBe("/settings?tab=llm");
+    harness.unmount();
+  });
 });

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CanonicalEvent } from "octos-lesson-language";
+import { compilePlaybackOperations } from "octos-lesson-language/player";
 import { parseCanonicalJsonl } from "octos-lesson-language/web-runtime";
 import {
   ChevronRight,
@@ -36,6 +37,7 @@ import {
 import geometryLessonSource from "./oll/fixtures/geometry-auxiliary-line-v2.canonical.jsonl?raw";
 import { OllCourseOutline } from "./oll/oll-course-outline";
 import { OllLessonBoard } from "./oll/oll-lesson-runtime";
+import { isLessonDeliverySettled } from "./oll/lesson-delivery";
 import { useOllNarrationTts } from "./oll/use-oll-narration-tts";
 import {
   buildOllLessonTopics,
@@ -142,6 +144,13 @@ export function LearningWorkspace({
   const activeOllEvents = ollFixture === "geometry-v2"
     ? geometryLessonEvents
     : deliveredOllEvents;
+  const appendedOllEventCountRef = useRef(1);
+  const expectedOllOperationCount = useMemo(
+    () => activeOllEvents
+      ? compilePlaybackOperations(activeOllEvents, { allowIncomplete: true }).length
+      : 0,
+    [activeOllEvents],
+  );
   const activeOllTopics = useMemo(
     () => buildOllLessonTopics(
       ollFixture === "geometry-v2"
@@ -164,11 +173,20 @@ export function LearningWorkspace({
   });
   // Audio ownership follows playback intent, not the current speech sample.
   // A live lesson claims the microphone on its first render and keeps it
-  // through Beat/event gaps; only an explicit pause or completion releases it.
+  // through Beat/event gaps, then releases it once the Runtime has consumed
+  // every operation compiled from the currently delivered Canonical events.
+  const hasUndeliveredOllEvents = Boolean(
+    ollLesson &&
+    ollLesson.totalOperations < expectedOllOperationCount,
+  );
+  const lessonDeliverySettled = Boolean(
+    ollLesson &&
+    isLessonDeliverySettled(ollLesson, hasUndeliveredOllEvents),
+  );
   const lessonOwnsNarration =
     playbackMode === "live" &&
-    Boolean(ollLesson) &&
-    !ollLesson?.completed &&
+    ollLesson !== null &&
+    !lessonDeliverySettled &&
     pausedLessonSource !== ollOpenSource;
   const handleTurnComplete = useCallback((turnId: string) => {
     setPlainReply(null);
@@ -408,7 +426,6 @@ export function LearningWorkspace({
     [sessionId],
   );
   const appendOllEvents = ollLesson?.appendEvents;
-  const appendedOllEventCountRef = useRef(1);
 
   useEffect(() => {
     if (!activeOllEvents || !appendOllEvents) return;
@@ -633,7 +650,7 @@ export function LearningWorkspace({
         ? "我正在整理这道题，马上写到白板上。"
         : ollLesson
           ? ollLesson.activeSpeech ||
-            (ollLesson.completed
+            (lessonDeliverySettled
               ? "这节课讲完了，你可以缩放白板回顾刚才的内容。"
               : "")
           : conv.state === "thinking"
@@ -657,7 +674,7 @@ export function LearningWorkspace({
                 else controlledOllLesson?.play();
               }}
               aria-label={ollLesson.playing ? "暂停 OLL 课程" : "播放 OLL 课程"}
-              disabled={ollLesson.completed}
+              disabled={lessonDeliverySettled}
             >
               {ollLesson.playing ? <Pause size={17} /> : <Play size={17} />}
             </button>
@@ -668,7 +685,7 @@ export function LearningWorkspace({
                 controlledOllLesson?.nextBeat();
               }}
               aria-label="下一 OLL Beat"
-              disabled={ollLesson.completed}
+              disabled={lessonDeliverySettled}
             >
               <ChevronRight size={17} />
             </button>

@@ -674,6 +674,7 @@ describe("start() cancellation (post-unmount mic re-acquire)", () => {
     cameraMock.active = true;
     uploadFilesMock.mockResolvedValueOnce(["uploads/wake.wav"]);
     const buildTurnText = vi.fn(() => "[[LEARNING_SESSION]]");
+    const onTurnStart = vi.fn();
     const onTurnComplete = vi.fn();
     const { result, rerender, unmount } = renderHook(
       ({ externalSpeechActive }) =>
@@ -682,6 +683,7 @@ describe("start() cancellation (post-unmount mic re-acquire)", () => {
           buildTurnText,
           playReplyAudio: false,
           externalSpeechActive,
+          onTurnStart,
           onTurnComplete,
         }),
       { initialProps: { externalSpeechActive: false } },
@@ -696,6 +698,11 @@ describe("start() cancellation (post-unmount mic re-acquire)", () => {
 
     expect(cameraMock.start).toHaveBeenCalledTimes(1);
     expect(cameraMock.grabFrame).not.toHaveBeenCalled();
+    expect(onTurnStart).toHaveBeenCalledTimes(1);
+    expect(onTurnStart).toHaveBeenCalledWith(expect.any(String));
+    expect(onTurnStart.mock.invocationCallOrder[0]).toBeLessThan(
+      uploadFilesMock.mock.invocationCallOrder[0],
+    );
     expect(buildTurnText).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: "learn-wake-test",

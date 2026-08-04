@@ -19,12 +19,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # eslint exits nonzero only on errors; the react-hooks v6 strict rules
+      # are intentionally warnings (see eslint.config.js).
+      - run: pnpm lint
       - run: pnpm test:unit
       - run: pnpm run build

@@ -19,8 +19,6 @@ import {
   countAssistantBubbles
 } from "./helpers";
 
-const BASE_URL = process.env.BASE_URL || "http://localhost:5174";
-
 test.beforeEach(async ({ page }) => {
   await login(page);
   await createNewSession(page);
@@ -40,7 +38,6 @@ test("IME guard: isComposing check exists in keydown handler", async ({
     // by testing the actual behavior: compositionstart sets isComposing=true
     // on subsequent keydown events in real browsers.
     // Here we verify the textarea has the onKeyDown handler attached.
-    const events = (el as any).__reactEvents || {};
     return el.hasAttribute("data-testid"); // basic sanity check
   });
   expect(hasGuard).toBe(true);

@@ -45,8 +45,8 @@ importers:
         specifier: ^11.13.0
         version: 11.15.0
       octos-lesson-language:
-        specifier: git+https://github.com/alan0x/octos-lesson-language.git#be9447cc783f29037b711a514b94abb0293371c2
-        version: https://codeload.github.com/alan0x/octos-lesson-language/tar.gz/be9447cc783f29037b711a514b94abb0293371c2
+        specifier: git+https://github.com/alan0x/octos-lesson-language.git#04b21a64190c7bc955db5ef112a730292d0e2b2d
+        version: https://codeload.github.com/alan0x/octos-lesson-language/tar.gz/04b21a64190c7bc955db5ef112a730292d0e2b2d
       onnxruntime-web:
         specifier: ^1.26.0
         version: 1.26.0
@@ -3261,8 +3261,8 @@ packages:
   nwsapi@2.2.23:
     resolution: {integrity: sha512-7wfH4sLbt4M0gCDzGE6vzQBo0bfTKjU7Sfpqy/7gs1qBfYz2vEJH6vXcBKpO3+6Yu1telwd0t9HpyOoLEQQbIQ==}
 
-  octos-lesson-language@https://codeload.github.com/alan0x/octos-lesson-language/tar.gz/be9447cc783f29037b711a514b94abb0293371c2:
-    resolution: {gitHosted: true, integrity: sha512-MdQ3ZJMXnoeunvwPID/q8LJZLi/z7pZ6UfpAjtuns3Jxcjx/DG98FPpVBaw5rpAVlVYOSZjrlECsl07SgDOxdQ==, tarball: https://codeload.github.com/alan0x/octos-lesson-language/tar.gz/be9447cc783f29037b711a514b94abb0293371c2}
+  octos-lesson-language@https://codeload.github.com/alan0x/octos-lesson-language/tar.gz/04b21a64190c7bc955db5ef112a730292d0e2b2d:
+    resolution: {gitHosted: true, integrity: sha512-JJVNtpLBSFiZaDHYTXcglRm2X6jE+2OqW7v3cZIrWm+hN/m4HZAh5rsYFNfALw/o46JgWPC+I6YLAB5hIxr0PQ==, tarball: https://codeload.github.com/alan0x/octos-lesson-language/tar.gz/04b21a64190c7bc955db5ef112a730292d0e2b2d}
     version: 0.1.0-rc.1
     engines: {node: '>=20'}
 
@@ -7380,7 +7380,7 @@ snapshots:
 
   nwsapi@2.2.23: {}
 
-  octos-lesson-language@https://codeload.github.com/alan0x/octos-lesson-language/tar.gz/be9447cc783f29037b711a514b94abb0293371c2:
+  octos-lesson-language@https://codeload.github.com/alan0x/octos-lesson-language/tar.gz/04b21a64190c7bc955db5ef112a730292d0e2b2d:
     dependencies:
       ajv: 8.20.0
       katex: 0.18.1

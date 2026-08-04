@@ -29,8 +29,9 @@ interface AuthState {
    *  "HTTP 404" error when no solo profile exists yet — the caller then shows
    *  the create form. */
   soloLogin: () => Promise<void>;
-  /** Onboard a local profile AND log in (no password). */
-  soloCreate: (body: { name: string; username: string; email: string }) => Promise<void>;
+  /** Onboard a local profile AND log in (no password). The server derives
+   *  username/email from `name` when omitted. */
+  soloCreate: (body: { name: string; username?: string; email?: string }) => Promise<void>;
   logout: () => Promise<void>;
   /** Re-validate the stored token against `/api/auth/me`. Call this from
    *  any code path that sees an authenticated request rejected (e.g. the
@@ -179,8 +180,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setTokenState(null);
       setUser(null);
       setPortal(null);
-      const msg = err instanceof Error ? err.message : "Token validation failed";
-      throw new Error(msg);
+      // Rethrow the ORIGINAL error so callers keep structural info (e.g.
+      // ApiError.status 401 → "wrong token" copy) instead of a flattened
+      // message string.
+      throw err instanceof Error ? err : new Error("Token validation failed");
     }
   }, [syncMe]);
 
@@ -202,7 +205,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [syncMe]);
 
   const soloCreate = useCallback(
-    async (body: { name: string; username: string; email: string }) => {
+    async (body: { name: string; username?: string; email?: string }) => {
       const resp = await authApi.soloCreate(body);
       setToken(resp.token);
       setTokenState(resp.token);

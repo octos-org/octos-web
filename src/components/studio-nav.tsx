@@ -107,7 +107,7 @@ export function StudioNav({ actions }: { actions?: ReactNode }) {
               src="/images/octos-logo-color.svg"
               alt=""
               aria-hidden="true"
-              className="h-6 w-6"
+              className="h-6 w-auto"
             />
             <span className="studio-headline text-lg font-bold">Octos</span>
           </Link>

@@ -67,7 +67,7 @@ export function WorkbenchBrand() {
       <img
         src="/images/octos-logo-color.svg"
         alt="Octos"
-        className="workbench-brand-logo h-8 w-8 shrink-0 select-none object-cover"
+        className="h-8 w-auto shrink-0 select-none"
       />
       <span className="text-base font-semibold text-text-strong max-sm:hidden">
         Octos
@@ -130,8 +130,11 @@ export function WorkbenchUserActions() {
 
   return (
     <div className="flex min-w-0 items-center gap-2">
+      {/* Prefer the display name the user gave at onboarding; fall back to
+          email (which for derived solo credentials is a `*.solo.local`
+          placeholder nobody wants to read). */}
       <span className="max-w-[18rem] truncate text-sm text-muted max-xl:hidden">
-        {user.email}
+        {user.name?.trim() || user.email}
       </span>
       <button
         type="button"

@@ -11,8 +11,6 @@ import {
   sendAndWait,
   SEL,
   createNewSession,
-  getInput,
-  getSendButton,
   getRenderedAudioAttachments,
   getRenderedThreadBubbles
 } from "./helpers";

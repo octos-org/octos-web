@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { login, sendAndWait, createNewSession, SEL } from "./helpers";
+import { login, sendAndWait, createNewSession } from "./helpers";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";

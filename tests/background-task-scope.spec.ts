@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { login, createNewSession, SEL } from "./helpers";
+import { login, createNewSession } from "./helpers";
 
 test.describe("background task scoping", () => {
   test("failed task notification stays in its originating session", async ({ page }) => {

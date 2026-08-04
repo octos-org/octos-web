@@ -90,6 +90,8 @@ export interface VoiceConversationOptions {
    * pauses until that playback ends so the assistant cannot hear itself.
    */
   externalSpeechActive?: boolean;
+  /** Reports the exact client turn as soon as a captured utterance is accepted. */
+  onTurnStart?: (turnId: string) => void;
   /** Reports the exact client turn after the assistant has finished replying. */
   onTurnComplete?: (turnId: string) => void;
 }
@@ -332,6 +334,7 @@ export function useVoiceConversation(
   const buildTurnText = options?.buildTurnText;
   const playReplyAudio = options?.playReplyAudio !== false;
   const externalSpeechActive = options?.externalSpeechActive === true;
+  const onTurnStart = options?.onTurnStart;
   const onTurnComplete = options?.onTurnComplete;
   const threads = useRenderThreads(sessionId, historyTopic);
   const capture = useVoiceCapture();
@@ -519,6 +522,7 @@ export function useVoiceConversation(
         activeTurnIdRef.current = turnId;
         stateRef.current = "thinking";
         setState("thinking");
+        onTurnStart?.(turnId);
         const file = new File([wav], "utterance.wav", { type: "audio/wav" });
         // When the camera is on, attach the current frame so the turn is a
         // video call (audio + image); the server transcribes the audio and the
@@ -584,6 +588,7 @@ export function useVoiceConversation(
       cameraGrab,
       historyTopic,
       buildTurnText,
+      onTurnStart,
       onTurnComplete,
       playReplyAudio,
       sessionId,
