@@ -816,6 +816,71 @@ describe("connection lifecycle", () => {
     expect(states).toEqual(["connecting", "connected"]);
   });
 
+  it("parks terminally instead of reconnect-storming when session/open fails runtime_unavailable", async () => {
+    // A profile with a provider selected but no API key: the server's eager
+    // LLM bootstrap fails the open with `data.kind === "runtime_unavailable"`.
+    // That is a config error — reconnecting just re-runs the same doomed
+    // handshake. The bridge must park (error + terminal) and leave the story
+    // to the model-setup surfaces; the next send re-creates the bridge via
+    // the runtime's dead-bridge replacement (issue #109.4).
+    vi.useFakeTimers();
+    const states: ConnectionState[] = [];
+    const warnings: { reason: string }[] = [];
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    bridge.onConnectionStateChange((s) => states.push(s));
+    bridge.onWarning((w) => warnings.push(w));
+    const start = bridge.start({ sessionId: "sess-no-key" });
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(ws, METHODS.SESSION_OPEN);
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      error: {
+        code: -32603,
+        message:
+          "failed to bootstrap ProfileRuntime for profile 'yao': failed to create LLM provider for profile 'yao'",
+        data: { kind: "runtime_unavailable" },
+      },
+    });
+    await start;
+
+    expect(states).toEqual(["connecting", "error"]);
+    expect(bridge.isTerminal()).toBe(true);
+    expect(warnings.map((w) => w.reason)).toContain("session_open_failed");
+
+    // Well past any reconnect backoff: still exactly ONE socket — no storm.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await bridge.stop();
+  });
+
+  it("still reconnects after a generic session/open failure (transport-like errors keep the old policy)", async () => {
+    vi.useFakeTimers();
+    const states: ConnectionState[] = [];
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    bridge.onConnectionStateChange((s) => states.push(s));
+    const start = bridge.start({ sessionId: "sess-generic-fail" });
+    await Promise.resolve();
+    const ws1 = lastInstance();
+    ws1.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(ws1, METHODS.SESSION_OPEN);
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      error: { code: -32603, message: "internal error" },
+    });
+    await start;
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(MockWebSocket.instances.length).toBeGreaterThan(1);
+    expect(states).toContain("reconnecting");
+    await bridge.stop();
+  });
+
 
   it("uses direct canonical v2 ingest only after session/open confirms the capability", async () => {
     const bridge = createUiProtocolBridge(makeBridgeOpts());

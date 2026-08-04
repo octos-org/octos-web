@@ -1689,7 +1689,11 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
    *  permission_denied on `session/open`, or 401 on the upgrade
    *  fallback); retrying is wasted load until the user re-logs in.
    *  `null` = not abandoned (sentinel for cleared state). */
-  private latchReason: "attempts_exhausted" | "auth_rejected" | null = null;
+  private latchReason:
+    | "attempts_exhausted"
+    | "auth_rejected"
+    | "runtime_unavailable"
+    | null = null;
   /** Issue #137: idempotency guard for the visibilitychange handler.
    *  Mobile browsers can fire `visibilitychange` multiple times in
    *  quick succession during app-switches; once we have already
@@ -2705,6 +2709,31 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
         this.latchReason = "auth_rejected";
         this.setState("error");
         this.rejectAllPending(new BridgeStoppedError("auth permission denied"));
+        return;
+      }
+      // `runtime_unavailable` on `session/open` means the server REFUSED
+      // the open because the profile's model can't run right now (e.g. a
+      // provider is selected but its API key is missing, so the eager
+      // LLM bootstrap fails). That is a CONFIG error, not a transport
+      // drop: reconnecting just re-runs the same doomed handshake
+      // forever (observed: an open→error→close storm every few seconds).
+      // Park terminally like the auth path — the chat surface's
+      // model-setup surfaces own the user story, and the next send
+      // re-creates the bridge via the runtime's dead-bridge replacement
+      // (issue #109.4), which is exactly what recovery needs once the
+      // user fixes the config.
+      if (
+        err instanceof BridgeRpcError &&
+        (err.data as { kind?: unknown } | null)?.kind === "runtime_unavailable"
+      ) {
+        this.reconnectAbandoned = true;
+        // Same treatment as `auth_rejected`: the visibilitychange reset
+        // must not auto-retry — the config error outlives any app-switch.
+        this.latchReason = "runtime_unavailable";
+        this.setState("error");
+        this.rejectAllPending(
+          new BridgeStoppedError("session runtime unavailable"),
+        );
         return;
       }
       this.scheduleReconnect();
