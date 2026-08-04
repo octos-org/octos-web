@@ -264,7 +264,7 @@ describe("VoiceView", () => {
 
     render(<VoiceView sessionId="voice-test" onBack={vi.fn()} />);
 
-    expect(screen.getByText("语音引擎未就绪，请先在 Settings 里安装或修复 OMiniX。")).toBeTruthy();
+    expect(screen.getByText("Voice engine isn't ready — install or repair OMiniX in Settings first.")).toBeTruthy();
     // The readiness pill surfaces only in a problem state.
     expect(screen.getByText("Voice engine needs repair")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "open OMiniX settings" }));
@@ -292,8 +292,8 @@ describe("VoiceView", () => {
     // orb keeps its not-ready affordance, but its click is a no-op until the
     // check resolves, so no explicit settings CTA is shown either.)
     expect(
-      screen.queryByText("语音引擎未就绪，请先在 Settings 里安装或修复 OMiniX。"),
+      screen.queryByText("Voice engine isn't ready — install or repair OMiniX in Settings first."),
     ).toBeNull();
-    expect(screen.queryByText(/打开 OMiniX 设置/)).toBeNull();
+    expect(screen.queryByText(/Open OMiniX Settings/)).toBeNull();
   });
 });

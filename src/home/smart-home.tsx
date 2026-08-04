@@ -77,6 +77,8 @@ interface SmartHomeLabels {
   refresh: string;
   loading: string;
   offline: string;
+  notConfigured: string;
+  notConfiguredBody: string;
   online: string;
   unavailable: string;
   devices: string;
@@ -118,6 +120,9 @@ const LABELS: Record<"en" | "zh", SmartHomeLabels> = {
     refresh: "Refresh",
     loading: "Loading devices",
     offline: "Bridge offline",
+    notConfigured: "Not set up",
+    notConfiguredBody:
+      "No smart home bridge connected yet — devices will appear here once one is set up.",
     online: "Online",
     unavailable: "Unavailable",
     devices: "Devices",
@@ -155,6 +160,8 @@ const LABELS: Record<"en" | "zh", SmartHomeLabels> = {
     refresh: "\u5237\u65B0",
     loading: "\u6B63\u5728\u8BFB\u53D6\u8BBE\u5907",
     offline: "\u6865\u63A5\u79BB\u7EBF",
+    notConfigured: "\u672A\u914D\u7F6E",
+    notConfiguredBody: "\u5C1A\u672A\u8FDE\u63A5\u667A\u80FD\u5BB6\u5C45\u6865\u63A5 \u2014 \u914D\u7F6E\u5B8C\u6210\u540E\u8BBE\u5907\u4F1A\u663E\u793A\u5728\u8FD9\u91CC\u3002",
     online: "\u5728\u7EBF",
     unavailable: "\u4E0D\u53EF\u7528",
     devices: "\u8BBE\u5907",
@@ -190,6 +197,19 @@ const LABELS: Record<"en" | "zh", SmartHomeLabels> = {
 
 function numberOrZero(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+/** The WS bridge surfaces RPC failures as `rpc-error[code] message`. On a
+ *  fresh profile no smart-home bridge is registered at all, which the
+ *  backend reports as `-32170 smart_home_device not found: not_configured`
+ *  (octos-cli `smart_home_panel.rs`). That's the DEFAULT state, not an
+ *  outage — it gets a quiet "not set up" empty state instead of raw
+ *  protocol jargon. Any other failure just loses the rpc-error prefix
+ *  (same treatment as GhostBubble's failure display). */
+const BRIDGE_NOT_CONFIGURED = /smart_home_device not found/i;
+
+function displaySmartHomeError(raw: string): string {
+  return raw.replace(/^rpc-error\[[^\]]+\]\s*/, "");
 }
 
 function clampPercent(value: number): number {
@@ -898,9 +918,12 @@ export function SmartHomePanel({ variant = "metro" }: { variant?: "metro" | "cla
     updateDevice,
   } = useSmartHomeDevices();
 
+  // "Bridge never set up" is a first-run default, not an outage — render it
+  // as a quiet empty state (header + body) rather than "offline" + jargon.
+  const bridgeNotConfigured = error ? BRIDGE_NOT_CONFIGURED.test(error) : false;
+
   const summary = useMemo(() => {
-    const online = devices.filter((device) => device.online !== false).length;
-    const controllable = devices.filter(hasDeviceActions).length;
+    const online = devices.filter((device) => device.online !== false).length;    const controllable = devices.filter(hasDeviceActions).length;
     const cameras = devices.filter((device) => device.kind === "camera").length;
     return { online, controllable, cameras };
   }, [devices]);
@@ -938,7 +961,9 @@ export function SmartHomePanel({ variant = "metro" }: { variant?: "metro" | "cla
           <h2>{labels.title}</h2>
           <p>
             {error
-              ? labels.offline
+              ? bridgeNotConfigured
+                ? labels.notConfigured
+                : labels.offline
               : variant === "metro"
                 ? `${summary.online}/${devices.length || 0} ${labels.online}`
                 : labels.subtitle}
@@ -997,7 +1022,11 @@ export function SmartHomePanel({ variant = "metro" }: { variant?: "metro" | "cla
       {loading && devices.length === 0 ? (
         <div className="smart-home-empty">{labels.loading}</div>
       ) : error && devices.length === 0 ? (
-        <div className="smart-home-empty">{error}</div>
+        <div className="smart-home-empty">
+          {bridgeNotConfigured
+            ? labels.notConfiguredBody
+            : displaySmartHomeError(error)}
+        </div>
       ) : (
         <div className="smart-home-device-list">
           {displayedDevices.map((device) =>

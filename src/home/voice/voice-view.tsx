@@ -173,7 +173,7 @@ export function VoiceView({
               : STATE_WORD[conv.state]
             : runtime.loading
               ? /* still checking — stay silent, the pill is hidden too */ ""
-              : "语音引擎未就绪，请先在 Settings 里安装或修复 OMiniX。"}
+              : "Voice engine isn't ready — install or repair OMiniX in Settings first."}
         </div>
 
         {runtime.ready && conv.error && (
@@ -189,7 +189,7 @@ export function VoiceView({
             className="voice-runtime-action"
           >
             <Settings size={15} />
-            打开 OMiniX 设置
+            Open OMiniX Settings
           </button>
         )}
 

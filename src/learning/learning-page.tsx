@@ -400,7 +400,7 @@ export function LearningPage() {
   const [skillState, setSkillState] = useState<
     "checking" | "ready" | "missing" | "outdated" | "error"
   >(ollFixture ? "ready" : "checking");
-  // Bumped by the gate's "重新检查" button to re-run the skill probe without
+  // Bumped by the gate's "Re-check" button to re-run the skill probe without
   // a full page reload.
   const [skillCheckTick, setSkillCheckTick] = useState(0);
   const [serverSyncReady, setServerSyncReady] = useState(Boolean(ollFixture));
@@ -697,12 +697,13 @@ export function LearningPage() {
           className="absolute left-5 top-6 flex items-center gap-2 rounded-full border border-white/15 px-4 py-2 text-sm text-white/60 transition hover:border-white/30 hover:text-white"
         >
           <ArrowLeft size={16} />
-          返回首页
+          Back to home
         </button>
         <div className="max-w-md text-center">
-          <h1 className="text-xl font-semibold">学习助手已在另一个标签页中使用</h1>
+          <h1 className="text-xl font-semibold">Learning is active in another tab</h1>
           <p className="mt-3 text-sm leading-6 text-white/55">
-            为避免两个页面同时占用麦克风，请先关闭另一个学习页，再刷新这里。
+            Two pages can't share the microphone — close the other learning
+            tab, then refresh here.
           </p>
         </div>
       </div>
@@ -718,27 +719,27 @@ export function LearningPage() {
           className="absolute left-5 top-6 flex items-center gap-2 rounded-full border border-white/15 px-4 py-2 text-sm text-white/60 transition hover:border-white/30 hover:text-white"
         >
           <ArrowLeft size={16} />
-          返回首页
+          Back to home
         </button>
         <div className="w-full max-w-md text-center">
           <BookOpen className="mx-auto mb-5 text-cyan-300" size={36} />
           <h1 className="text-xl font-semibold">
             {skillState === "checking"
-              ? "正在检查学习教练…"
+              ? "Checking for the learning coach…"
               : skillState === "missing"
-                ? "需要安装 learning-coach Skill"
+                ? "The learning-coach skill is required"
                 : skillState === "outdated"
-                  ? "learning-coach 版本过旧"
-                  : "暂时无法确认 learning-coach Skill"}
+                  ? "learning-coach is out of date"
+                  : "Can't verify the learning-coach skill right now"}
           </h1>
           {skillState !== "checking" && (
             <>
               <p className="mt-3 text-sm leading-6 text-white/55">
                 {skillState === "outdated"
-                  ? "学习课堂需要 learning-coach 0.8.4 或更高版本。更新后回到这里重新检查；如提示需重启 Gateway，按提示操作即可。"
+                  ? "Learning needs learning-coach 0.8.4 or newer. Update it, then re-check here — if you're asked to restart the Gateway, follow the prompt."
                   : skillState === "missing"
-                    ? "学习课堂由 learning-coach 教学技能驱动。前往 设置 → Skills 安装后回到这里重新检查；如提示需重启 Gateway，按提示操作即可。"
-                    : "可能是网络或服务暂时不可用，请稍后重新检查。"}
+                    ? "Learning is powered by the learning-coach teaching skill. Install it in Settings → Skills, then re-check here — if you're asked to restart the Gateway, follow the prompt."
+                    : "The network or service may be temporarily unavailable — try re-checking shortly."}
               </p>
               <div className="mt-6 flex items-center justify-center gap-3">
                 {(skillState === "missing" || skillState === "outdated") && (
@@ -747,7 +748,7 @@ export function LearningPage() {
                     onClick={() => navigate("/settings?tab=skills")}
                     className="rounded-full bg-white px-5 py-3 text-sm font-medium text-black"
                   >
-                    打开 Skill 设置
+                    Open Skill Settings
                   </button>
                 )}
                 <button
@@ -755,7 +756,7 @@ export function LearningPage() {
                   onClick={recheckSkill}
                   className="rounded-full border border-white/20 px-5 py-3 text-sm font-medium text-white/80 transition hover:border-white/40 hover:text-white"
                 >
-                  重新检查
+                  Re-check
                 </button>
               </div>
             </>

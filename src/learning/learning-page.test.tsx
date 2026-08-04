@@ -154,10 +154,10 @@ describe("LearningPage", () => {
 
     expect(
       await screen.findByRole("heading", {
-        name: "learning-coach 版本过旧",
+        name: "learning-coach is out of date",
       }),
     ).toBeTruthy();
-    expect(screen.getByText(/需要 learning-coach 0.8.4/)).toBeTruthy();
+    expect(screen.getByText(/needs learning-coach 0.8.4/)).toBeTruthy();
     expect(learningWorkspaceMock.props).toBeNull();
   });
 
