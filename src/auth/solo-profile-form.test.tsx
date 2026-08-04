@@ -115,4 +115,16 @@ describe("SoloProfileForm", () => {
     const err = container.querySelector('[data-testid="solo-error"]');
     expect(err?.textContent).toContain("username taken");
   });
+
+  it("gives the name input an accessible name (placeholder is not a label)", () => {
+    const { container } = mount(
+      <MemoryRouter>
+        <SoloProfileForm />
+      </MemoryRouter>,
+    );
+    const el = container.querySelector(
+      '[data-testid="solo-name"]',
+    ) as HTMLInputElement;
+    expect(el.getAttribute("aria-label")).toBe("What should we call you?");
+  });
 });

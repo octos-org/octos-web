@@ -21,6 +21,8 @@ export function LoginPage() {
   const [authStatus, setAuthStatus] = useState<AuthStatusResponse | null>(
     initialAuthStatus,
   );
+  const [statusError, setStatusError] = useState(false);
+  const [statusTick, setStatusTick] = useState(0);
   const [showToken, setShowToken] = useState(false);
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
@@ -40,12 +42,14 @@ export function LoginPage() {
         if (active) setAuthStatus(status);
       })
       .catch(() => {
-        // Leave the page usable even if auth status probing fails.
+        // Surface the failure with a retry instead of spinning forever on
+        // "Checking sign-in options…" when the server is down.
+        if (active) setStatusError(true);
       });
     return () => {
       active = false;
     };
-  }, []);
+  }, [statusTick]);
 
   // Resend-code countdown tick.
   useEffect(() => {
@@ -145,11 +149,21 @@ export function LoginPage() {
     ? "This login is scoped to the addressed account. Use the exact email registered for this sub-account."
     : soloFirstRun || step === "solo"
       ? "A local, single-user workspace. Set it up in one step."
-      : authStatus?.bootstrap_mode
-        ? "Bootstrap admin access is enabled on this host."
-        : authStatus?.allow_self_registration
-          ? "Verify your email to create an account and sign in."
-          : "Use an allowed or registered email to sign in.";
+      : authStatus === null
+        ? statusError
+          ? ""
+          : "Sign in to your workspace."
+        : authStatus.bootstrap_mode
+          ? "Bootstrap admin access is enabled on this host."
+          : !emailLoginEnabled
+            ? soloEnabled
+              ? "Continue with the local profile on this machine."
+              : tokenModeEnabled
+                ? "Sign in with your admin auth token."
+                : "" // no methods — the warning box below says so
+            : authStatus.allow_self_registration
+              ? "Verify your email to create an account and sign in."
+              : "Use an allowed or registered email to sign in.";
 
   const emailSection = (
     <>
@@ -256,21 +270,44 @@ export function LoginPage() {
         <img
           src="/images/octos-logo-color.svg"
           alt="Octos"
-          className="mb-4 h-9 w-auto select-none"
+          className="mb-4 h-11 w-auto select-none"
         />
         <h1 className="text-2xl font-semibold tracking-tight text-text-strong">
           {scopedProfile
             ? `Sign in to ${scopedProfile.name}`
             : soloFirstRun || step === "solo"
-              ? "Welcome to octos"
-              : "octos"}
+              ? "Welcome to Octos"
+              : "Octos"}
         </h1>
-        <p className="mb-6 mt-2 text-sm text-muted">{subtitle}</p>
+        {subtitle ? (
+          <p className="mb-6 mt-2 text-sm text-muted">{subtitle}</p>
+        ) : (
+          // Keep the vertical rhythm when there is no subtitle to show.
+          <div className="mb-6 mt-2" />
+        )}
 
         {authStatus === null ? (
-          // The available sign-in methods are server-driven; don't flash the
-          // wrong set while probing.
-          <p className="text-sm text-muted">Checking sign-in options…</p>
+          statusError ? (
+            <div className="space-y-4">
+              <div className="rounded-lg border border-(--workbench-danger-border) bg-(--workbench-danger-bg) p-3 text-sm text-(--workbench-danger-text)">
+                Can't reach the server to load the sign-in options. Check
+                that it is running, then retry.
+              </div>
+              <button
+                onClick={() => {
+                  setStatusError(false);
+                  setStatusTick((t) => t + 1);
+                }}
+                className="workbench-button workbench-button-primary w-full py-3 font-medium"
+              >
+                Retry
+              </button>
+            </div>
+          ) : (
+            // The available sign-in methods are server-driven; don't flash
+            // the wrong set while probing.
+            <p className="text-sm text-muted">Checking sign-in options…</p>
+          )
         ) : (
           <>
             {/* Primary block: solo (first-run form or one-click continue) */}
@@ -312,7 +349,7 @@ export function LoginPage() {
             ) : null}
 
             {error && (
-              <div data-testid="login-error" className="mb-4 rounded-lg border border-red-500/25 bg-red-500/10 p-3 text-sm text-red-300">
+              <div data-testid="login-error" className="mb-4 rounded-lg border border-(--workbench-danger-border) bg-(--workbench-danger-bg) p-3 text-sm text-(--workbench-danger-text)">
                 {error}
               </div>
             )}
@@ -345,7 +382,7 @@ export function LoginPage() {
                   ))}
 
                 {visibleMethods === 0 && (
-                  <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 p-3 text-sm text-amber-200">
+                  <div className="rounded-lg border border-(--workbench-warning-border) bg-(--workbench-warning-bg) p-3 text-sm text-(--workbench-warning-text)">
                     No sign-in method is enabled on this host yet. Check the
                     server configuration.
                   </div>

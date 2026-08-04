@@ -67,7 +67,7 @@ export function WorkbenchBrand() {
       <img
         src="/images/octos-logo-color.svg"
         alt="Octos"
-        className="workbench-brand-logo h-8 w-8 shrink-0 select-none object-cover"
+        className="h-8 w-auto shrink-0 select-none"
       />
       <span className="text-base font-semibold text-text-strong max-sm:hidden">
         Octos

@@ -157,7 +157,9 @@ export function ChatLayout({ children }: { children: ReactNode }) {
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-medium text-text">
-                    {user.email}
+                    {/* Display name first — derived solo emails are
+                        `*.solo.local` placeholders. */}
+                    {user.name?.trim() || user.email}
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
