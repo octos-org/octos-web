@@ -1079,6 +1079,30 @@ export function appendCompletionBubble(
     }
   }
 
+  // Content-identity fallback (spawn_complete double-render fix). The
+  // identity checks above only fire when the streamed bubble shares the
+  // envelope's `messageId`/`historySeq`. A spawn_only turn whose reply ALSO
+  // streamed live lands those tokens on a pending bubble with a DIFFERENT id
+  // (the turn's own id, not the completion envelope's), so neither identity
+  // match fires and the full text would be appended a second time. Guard on
+  // content identity: if any existing response, or the in-flight pending
+  // bubble, already carries this exact text, the completion is a duplicate —
+  // upgrade nothing, append nothing. `spawnComplete` is the only caller that
+  // delivers full-turn text, so an exact-content match here is a replay, not
+  // a coincidence. This mirrors `rowMatchesCompletionContent` but extends it
+  // to the pending slot and to rows whose id/seq differ from the envelope.
+  if (opts.spawnComplete && opts.text.length > 0) {
+    for (const r of thread.responses) {
+      if (r.role === "assistant" && r.text.length > 0 && r.text === opts.text) {
+        return true;
+      }
+    }
+    const pending = thread.pendingAssistant;
+    if (pending && pending.text.length > 0 && pending.text === opts.text) {
+      return true;
+    }
+  }
+
   const completion: ThreadMessage = {
     id: opts.messageId ?? nextId(),
     role: "assistant",

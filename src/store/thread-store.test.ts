@@ -29,3 +29,58 @@ describe("thread-store compatibility bookkeeping", () => {
     ]);
   });
 });
+
+describe("spawn_complete double-render dedupe", () => {
+  it("does not append a second bubble when the reply already streamed live", () => {
+    // The reply streams via message/delta onto the pending bubble (which has
+    // the turn's own id, NOT the completion envelope's messageId/historySeq),
+    // then turn/spawn_complete arrives carrying the SAME full text. The
+    // content-identity guard must recognize the duplicate and NOT append a
+    // second bubble.
+    ThreadStore.addUserMessage(sessionId, {
+      text: "do a thing",
+      clientMessageId: threadId,
+    });
+    const fullText = "Here is the complete answer.";
+    // Simulate live streaming landing the full text on the pending bubble.
+    ThreadStore.appendAssistantToken(threadId, fullText);
+
+    // spawn_complete arrives with the same text but a different messageId/seq.
+    const appended = ThreadStore.appendCompletionBubble(threadId, {
+      text: fullText,
+      media: [],
+      spawnComplete: true,
+      messageId: "completion-msg-1",
+      historySeq: 42,
+      sessionId,
+    });
+    expect(appended).toBe(true); // handled (deduped), not an error
+
+    const [thread] = ThreadStore.getThreads(sessionId);
+    const assistantTexts = [
+      ...(thread.pendingAssistant ? [thread.pendingAssistant.text] : []),
+      ...thread.responses.filter((r) => r.role === "assistant").map((r) => r.text),
+    ].filter((t) => t === fullText);
+    expect(assistantTexts).toHaveLength(1);
+  });
+
+  it("still appends when content differs (genuine new completion)", () => {
+    ThreadStore.addUserMessage(sessionId, {
+      text: "do a thing",
+      clientMessageId: threadId,
+    });
+    ThreadStore.appendAssistantToken(threadId, "streamed text");
+    ThreadStore.appendCompletionBubble(threadId, {
+      text: "a DIFFERENT completion",
+      media: [],
+      spawnComplete: true,
+      messageId: "completion-msg-2",
+      historySeq: 43,
+      sessionId,
+    });
+
+    const [thread] = ThreadStore.getThreads(sessionId);
+    const assistantRows = thread.responses.filter((r) => r.role === "assistant");
+    expect(assistantRows.map((r) => r.text)).toContain("a DIFFERENT completion");
+  });
+});
