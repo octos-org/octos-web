@@ -37,6 +37,7 @@ import {
   stripLearningContext,
 } from "./learning-context";
 import { LearningWorkspace } from "./learning-workspace";
+import { traceLearnDiagnostic } from "./learn-diagnostics";
 import type { LearningBoardContext } from "./board/session-board";
 import {
   createProvisionalLearningSession,
@@ -541,7 +542,12 @@ export function LearningPage() {
       buildTurnText,
       playReplyAudio: false,
       showExistingTurns: true,
-      onTurnStart: () => {
+      onTurnStart: (turnId) => {
+        traceLearnDiagnostic("voice.turn_started", {
+          sessionId: record.id,
+          turnId,
+          action: "leave_review_mode",
+        });
         setReviewSessionId((current) =>
           current === record.id ? null : current,
         );

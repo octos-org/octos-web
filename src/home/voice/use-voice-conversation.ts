@@ -17,6 +17,11 @@ import {
 } from "./use-camera-frame";
 import { playAudioBlob, stopAudio, unlockAudio } from "./audio-playback";
 import { stripLearningContext } from "@/learning/learning-context";
+import {
+  LISTENING_VAD_OPTIONS,
+  SPEAKING_INTERRUPT_VAD_OPTIONS,
+  THINKING_INTERRUPT_VAD_OPTIONS,
+} from "./vad-config";
 
 export type VoiceState = "idle" | "listening" | "thinking" | "speaking" | "error";
 
@@ -135,25 +140,6 @@ const AUDIO_EXT = /\.(wav|mp3|ogg|m4a|flac)$/i;
 const REPLY_TIMEOUT_MS = 90000;
 /** How long the "frame sent to the AI" thumbnail lingers before auto-hiding. */
 const SENT_FRAME_TTL_MS = 12000;
-const LISTENING_VAD_OPTIONS = {
-  positiveSpeechThreshold: 0.5,
-  negativeSpeechThreshold: 0.35,
-  minSpeechMs: 220,
-  redemptionMs: 700,
-};
-const THINKING_INTERRUPT_VAD_OPTIONS = {
-  positiveSpeechThreshold: 0.75,
-  negativeSpeechThreshold: 0.55,
-  minSpeechMs: 700,
-  redemptionMs: 650,
-};
-const SPEAKING_INTERRUPT_VAD_OPTIONS = {
-  positiveSpeechThreshold: 0.68,
-  negativeSpeechThreshold: 0.48,
-  minSpeechMs: 620,
-  redemptionMs: 700,
-};
-
 /** Find the most recent unplayed assistant audio from threads. Exported for unit tests. */
 export function pickFreshAudio(
   threads: Thread[],

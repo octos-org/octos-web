@@ -30,6 +30,7 @@ import { useRenderThreads } from "@/store/projection-render-adapter";
 import type { Thread } from "@/store/thread-store";
 import { InfiniteBoard } from "./board/infinite-board";
 import { CameraSettingsDialog } from "./camera-settings-dialog";
+import { traceLearnDiagnostic } from "./learn-diagnostics";
 import {
   mergeSessionBoardPackets,
   type LearningBoardContext,
@@ -124,6 +125,22 @@ export function LearningWorkspace({
     ),
     [persistedOllArtifacts, threads],
   );
+  const artifactDiagnosticSignatureRef = useRef("");
+  useEffect(() => {
+    const artifacts = ollArtifacts.map((artifact) => ({
+      filename: artifact.filename,
+      threadId: artifact.threadId,
+      turnId: artifact.turnId,
+      source: artifact.id.startsWith("persisted:") ? "durable" : "projection",
+    }));
+    const signature = JSON.stringify({ sessionId, artifacts });
+    if (artifactDiagnosticSignatureRef.current === signature) return;
+    artifactDiagnosticSignatureRef.current = signature;
+    traceLearnDiagnostic("artifact.references_changed", {
+      sessionId,
+      artifacts,
+    });
+  }, [ollArtifacts, sessionId]);
   const requestedOllArtifactsRef = useRef(new Set<string>());
   const ollArtifactRequestsRef = useRef(new Map<string, AbortController>());
   const deliveredOllLessons = useMemo(() => {
@@ -189,11 +206,12 @@ export function LearningWorkspace({
     !lessonDeliverySettled &&
     pausedLessonSource !== ollOpenSource;
   const handleTurnComplete = useCallback((turnId: string) => {
+    traceLearnDiagnostic("turn.completed", { sessionId, turnId });
     setPlainReply(null);
     setPlainReplySpoken(false);
     setCompletedTurnId(turnId);
     conversationOptions?.onTurnComplete?.(turnId);
-  }, [conversationOptions]);
+  }, [conversationOptions, sessionId]);
   const voiceConversationOptions = useMemo(
     () => ({
       ...conversationOptions,
@@ -326,13 +344,29 @@ export function LearningWorkspace({
     let requestVersion = 0;
     const loadPersistedArtifacts = async () => {
       const version = ++requestVersion;
+      traceLearnDiagnostic("artifact.durable_list_requested", {
+        sessionId,
+        version,
+      });
       try {
         const files = await getSessionFiles(sessionId);
         if (cancelled || version !== requestVersion) return;
-        setPersistedOllArtifacts(collectPersistedOllLessonArtifacts(files));
+        const artifacts = collectPersistedOllLessonArtifacts(files);
+        traceLearnDiagnostic("artifact.durable_list_received", {
+          sessionId,
+          version,
+          totalFiles: files.length,
+          artifacts: artifacts.map((artifact) => artifact.filename),
+        });
+        setPersistedOllArtifacts(artifacts);
         setFileListError(null);
       } catch (cause) {
         if (cancelled || version !== requestVersion) return;
+        traceLearnDiagnostic("artifact.durable_list_failed", {
+          sessionId,
+          version,
+          error: cause instanceof Error ? cause.message : String(cause),
+        });
         setFileListError(
           cause instanceof Error
             ? cause.message
@@ -391,10 +425,25 @@ export function LearningWorkspace({
     pending.forEach((artifact) => {
       const artifactIdentity = ollArtifactIdentity(artifact);
       const controller = new AbortController();
+      traceLearnDiagnostic("artifact.load_started", {
+        sessionId,
+        identity: artifactIdentity,
+        filename: artifact.filename,
+        threadId: artifact.threadId,
+        turnId: artifact.turnId,
+        source: artifact.id.startsWith("persisted:") ? "durable" : "projection",
+      });
       requestedOllArtifactsRef.current.add(artifactIdentity);
       ollArtifactRequestsRef.current.set(artifactIdentity, controller);
       loadOllLessonArtifact(artifact, sessionId, controller.signal)
         .then((events) => {
+          traceLearnDiagnostic("artifact.load_succeeded", {
+            sessionId,
+            identity: artifactIdentity,
+            filename: artifact.filename,
+            eventCount: events.length,
+            stepCount: events.filter((event) => event.event === "lesson.step").length,
+          });
           setLoadedOllArtifacts((current) => ({
             ...current,
             [artifactIdentity]: events,
@@ -402,6 +451,12 @@ export function LearningWorkspace({
         })
         .catch((cause) => {
           if (controller.signal.aborted) return;
+          traceLearnDiagnostic("artifact.load_failed", {
+            sessionId,
+            identity: artifactIdentity,
+            filename: artifact.filename,
+            error: cause instanceof Error ? cause.message : String(cause),
+          });
           setRejectedOllArtifactIds((current) => {
             const next = new Set(current);
             next.add(artifactIdentity);
@@ -427,6 +482,37 @@ export function LearningWorkspace({
   );
   const appendOllEvents = ollLesson?.appendEvents;
 
+  const appendDiagnosedOllEvents = useCallback(
+    (events: CanonicalEvent[], mode: "live" | "review") => {
+      if (!appendOllEvents) return;
+      const sequences = events.map((event) => event.sequence);
+      traceLearnDiagnostic("runtime.append_started", {
+        sessionId,
+        mode,
+        eventCount: events.length,
+        sequences,
+      });
+      try {
+        const result = appendOllEvents(events);
+        traceLearnDiagnostic("runtime.append_succeeded", {
+          sessionId,
+          mode,
+          sequences,
+          ...result,
+        });
+      } catch (cause) {
+        traceLearnDiagnostic("runtime.append_failed", {
+          sessionId,
+          mode,
+          sequences,
+          error: cause instanceof Error ? cause.message : String(cause),
+        });
+        throw cause;
+      }
+    },
+    [appendOllEvents, sessionId],
+  );
+
   useEffect(() => {
     if (!activeOllEvents || !appendOllEvents) return;
     if (appendedOllEventCountRef.current > activeOllEvents.length) {
@@ -434,7 +520,7 @@ export function LearningWorkspace({
     }
     if (playbackMode === "review") {
       const pending = activeOllEvents.slice(appendedOllEventCountRef.current);
-      if (pending.length > 0) appendOllEvents(pending);
+      if (pending.length > 0) appendDiagnosedOllEvents(pending, "review");
       appendedOllEventCountRef.current = activeOllEvents.length;
       return;
     }
@@ -443,7 +529,7 @@ export function LearningWorkspace({
     const appendNext = () => {
       const event = activeOllEvents[eventIndex] as CanonicalEvent | undefined;
       if (!event) return;
-      appendOllEvents([event]);
+      appendDiagnosedOllEvents([event], "live");
       eventIndex += 1;
       appendedOllEventCountRef.current = eventIndex;
       if (eventIndex < activeOllEvents.length) {
@@ -454,7 +540,33 @@ export function LearningWorkspace({
     return () => {
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [activeOllEvents, appendOllEvents, playbackMode]);
+  }, [activeOllEvents, appendDiagnosedOllEvents, appendOllEvents, playbackMode]);
+  const runtimeDiagnosticStateRef = useRef("");
+  useEffect(() => {
+    const signature = JSON.stringify({
+      playbackMode,
+      status: ollLesson?.status ?? "missing",
+      playing: ollLesson?.playing ?? false,
+      currentBeatId: ollLesson?.currentBeatId ?? null,
+      narrationLength: ollLesson?.activeSpeech.length ?? 0,
+      totalOperations: ollLesson?.totalOperations ?? 0,
+    });
+    if (runtimeDiagnosticStateRef.current === signature) return;
+    runtimeDiagnosticStateRef.current = signature;
+    traceLearnDiagnostic("runtime.state_changed", {
+      sessionId,
+      playbackMode,
+      status: ollLesson?.status ?? "missing",
+      playing: ollLesson?.playing ?? false,
+      waiting: ollLesson?.waiting ?? false,
+      completed: ollLesson?.completed ?? false,
+      cursor: ollLesson?.cursor ?? 0,
+      totalOperations: ollLesson?.totalOperations ?? 0,
+      currentStepId: ollLesson?.currentStepId ?? null,
+      currentBeatId: ollLesson?.currentBeatId ?? null,
+      narrationLength: ollLesson?.activeSpeech.length ?? 0,
+    });
+  });
   useEffect(() => {
     if (ollLesson) {
       onBoardContextChange?.({
@@ -481,6 +593,7 @@ export function LearningWorkspace({
     completeOllNarration?.(narrationId);
   }, [completeOllNarration]);
   const ollNarrationTts = useOllNarrationTts({
+    sessionId,
     enabled: narrationAudioEnabled && (Boolean(ollLesson) || Boolean(plainReply)),
     playing: lessonOwnsNarration
       ? ollNarrationActive

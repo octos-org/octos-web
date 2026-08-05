@@ -116,6 +116,38 @@ describe("useVoiceCapture", () => {
     unmount();
   });
 
+  it("reports the actually loaded model and per-frame speech probability for diagnostics", async () => {
+    const onModelLoaded = vi.fn();
+    const onFrameProcessed = vi.fn();
+    const { result, unmount } = renderHook(() => useVoiceCapture());
+
+    await act(async () => {
+      await result.current.start(vi.fn(), { onModelLoaded, onFrameProcessed });
+    });
+
+    expect(onModelLoaded).toHaveBeenCalledWith(expect.objectContaining({
+      library: "@ricky0123/vad-web",
+      libraryVersion: "0.0.30",
+      model: "legacy",
+      sampleRate: 16000,
+      frameSamples: 1536,
+      frameDurationMs: 96,
+    }));
+    await act(async () => {
+      (vadInstances[0].options.onFrameProcessed as (
+        probabilities: { isSpeech: number; notSpeech: number },
+        frame: Float32Array,
+      ) => void)({ isSpeech: 0.88, notSpeech: 0.12 }, new Float32Array(1536));
+      await Promise.resolve();
+    });
+    expect(onFrameProcessed).toHaveBeenCalledWith(expect.objectContaining({
+      speechProbability: 0.88,
+      nonSpeechProbability: 0.12,
+      frameSamples: 1536,
+    }));
+    unmount();
+  });
+
   it("reuses the active VAD and updates callbacks and thresholds", async () => {
     const firstUtterance = vi.fn();
     const secondUtterance = vi.fn();

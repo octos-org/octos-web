@@ -24,28 +24,92 @@ export interface VoiceCaptureStartOptions {
   onSpeechConfirmed?: () => void;
   onSpeechRealStart?: () => void;
   onVADMisfire?: () => void;
+  /** Per-frame Silero scores, used by the isolated Voice Lab only. */
+  onFrameProcessed?: (frame: VoiceCaptureFrame) => void;
+  /** Called after the browser grants the stream, for microphone diagnostics. */
+  onMediaStream?: (stream: MediaStream) => void;
+  /** Reports the model that successfully started, not merely the preference. */
+  onModelLoaded?: (model: VoiceCaptureModelInfo) => void;
 }
 
 const VAD_SAMPLE_RATE = 16000;
 const VAD_ASSET_TIMEOUT_MS = 5000;
+const VAD_WEB_DEFAULTS = {
+  // These are @ricky0123/vad-web 0.0.30 FrameProcessor defaults; production
+  // intentionally leaves them at the library values.
+  preSpeechPadMs: 800,
+  submitUserSpeechOnPause: false,
+} as const;
 type VadModel = "legacy" | "v5";
+
+export interface VoiceCaptureFrame {
+  /** Monotonic browser timestamp, measured with performance.now(). */
+  atMs: number;
+  speechProbability: number;
+  nonSpeechProbability: number;
+  frameSamples: number;
+}
+
+export interface VoiceCaptureModelInfo {
+  library: "@ricky0123/vad-web";
+  libraryVersion: "0.0.30";
+  model: VadModel;
+  modelAsset: string;
+  sampleRate: number;
+  frameSamples: number;
+  frameDurationMs: number;
+}
 
 // `all` is the standards-defined mode that asks the browser to remove every
 // system-played source from the microphone signal, including our local Web
 // Audio TTS. TypeScript's current lib.dom still models echoCancellation as a
 // boolean-only constraint, so keep the standards-compatible runtime value in
 // this narrowly cast object until that declaration catches up.
-const MIC_CONSTRAINTS_WITH_ALL_SYSTEM_AEC = {
+const REQUESTED_MIC_CONSTRAINTS = {
   channelCount: 1,
   echoCancellation: "all",
   autoGainControl: true,
   noiseSuppression: true,
-} as unknown as MediaTrackConstraints;
+} as const;
+const MIC_CONSTRAINTS_WITH_ALL_SYSTEM_AEC =
+  REQUESTED_MIC_CONSTRAINTS as unknown as MediaTrackConstraints;
 
-async function getEchoCancelledMicStream(): Promise<MediaStream> {
-  return navigator.mediaDevices.getUserMedia({
+export function getVoiceCaptureDiagnosticConfig(
+  options: VoiceCaptureStartOptions = {},
+) {
+  return {
+    requestedConstraints: { ...REQUESTED_MIC_CONSTRAINTS },
+    sampleRate: VAD_SAMPLE_RATE,
+    modelPreference: [...VAD_MODEL_PREFERENCE],
+    defaults: { ...VAD_WEB_DEFAULTS, ...frameProcessorOptions(options) },
+  };
+}
+
+function monotonicNow(): number {
+  return typeof performance !== "undefined" ? performance.now() : 0;
+}
+
+function modelInfo(model: VadModel): VoiceCaptureModelInfo {
+  const frameSamples = model === "legacy" ? 1536 : 512;
+  return {
+    library: "@ricky0123/vad-web",
+    libraryVersion: "0.0.30",
+    model,
+    modelAsset: model === "legacy" ? "silero_vad_legacy.onnx" : "silero_vad_v5.onnx",
+    sampleRate: VAD_SAMPLE_RATE,
+    frameSamples,
+    frameDurationMs: (frameSamples / VAD_SAMPLE_RATE) * 1000,
+  };
+}
+
+async function getEchoCancelledMicStream(
+  onMediaStream?: (stream: MediaStream) => void,
+): Promise<MediaStream> {
+  const stream = await navigator.mediaDevices.getUserMedia({
     audio: MIC_CONSTRAINTS_WITH_ALL_SYSTEM_AEC,
   });
+  onMediaStream?.(stream);
+  return stream;
 }
 
 let vadAssetCheckPromise: Promise<void> | null = null;
@@ -290,8 +354,12 @@ export function useVoiceCapture(): VoiceCapture {
           vad = await createVadWithModel(model, {
             baseAssetPath: VAD_BASE_ASSET_PATH,
             onnxWASMBasePath: VAD_ONNX_WASM_BASE_PATH,
-            getStream: getEchoCancelledMicStream,
-            resumeStream: getEchoCancelledMicStream,
+            getStream: () => getEchoCancelledMicStream(
+              callbacksRef.current?.options.onMediaStream,
+            ),
+            resumeStream: () => getEchoCancelledMicStream(
+              callbacksRef.current?.options.onMediaStream,
+            ),
             // Less trigger-happy than the defaults so transient noise (keyboard
             // clicks, taps) doesn't register as speech and kick off a turn:
             //  - require a higher speech probability to START,
@@ -324,6 +392,22 @@ export function useVoiceCapture(): VoiceCapture {
                 (current.options.onVADMisfire ?? noop)();
               }, setError);
             },
+            onFrameProcessed: (probabilities: {
+              isSpeech: number;
+              notSpeech: number;
+            }, frame: Float32Array) => {
+              if (gen !== startGenRef.current) return;
+              const current = callbacksRef.current;
+              if (!current?.options.onFrameProcessed) return;
+              runCallbackSafely("onFrameProcessed", () => {
+                current.options.onFrameProcessed?.({
+                  atMs: monotonicNow(),
+                  speechProbability: probabilities.isSpeech,
+                  nonSpeechProbability: probabilities.notSpeech,
+                  frameSamples: frame.length,
+                });
+              }, setError);
+            },
             onSpeechEnd: (audio: Float32Array) => {
               if (gen !== startGenRef.current) return;
               if (audio.length === 0) return;
@@ -340,6 +424,12 @@ export function useVoiceCapture(): VoiceCapture {
           if (gen !== startGenRef.current) {
             await vad.destroy().catch(() => undefined);
             return;
+          }
+          const current = callbacksRef.current;
+          if (current?.options.onModelLoaded) {
+            runCallbackSafely("onModelLoaded", () => {
+              current.options.onModelLoaded?.(modelInfo(model));
+            }, setError);
           }
           break;
         } catch (err) {

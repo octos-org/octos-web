@@ -4,8 +4,10 @@ import {
   playAudioBlob,
   stopAudio,
 } from "@/home/voice/audio-playback";
+import { traceLearnDiagnostic } from "../learn-diagnostics";
 
 export interface OllNarrationTtsOptions {
+  sessionId?: string;
   enabled: boolean;
   playing: boolean;
   text: string;
@@ -25,6 +27,7 @@ export interface OllNarrationTtsState {
  * therefore share this exact synthesis, cancellation, and playback path.
  */
 export function useOllNarrationTts({
+  sessionId,
   enabled,
   playing,
   text,
@@ -42,6 +45,10 @@ export function useOllNarrationTts({
     const completePlayback = () => {
       if (!current || completed || !narrationId) return;
       completed = true;
+      traceLearnDiagnostic("tts.playback_completed", {
+        sessionId,
+        narrationId,
+      });
       onPlaybackComplete?.(narrationId);
     };
 
@@ -55,9 +62,20 @@ export function useOllNarrationTts({
       };
     }
 
+    traceLearnDiagnostic("tts.request_started", {
+      sessionId,
+      narrationId: narrationId ?? null,
+      textLength: normalizedText.length,
+    });
     void synthesizeSpeech(normalizedText, request.signal)
       .then(async (audio) => {
         if (!current || request.signal.aborted) return;
+        traceLearnDiagnostic("tts.synthesis_succeeded", {
+          sessionId,
+          narrationId: narrationId ?? null,
+          audioBytes: audio.size,
+          audioType: audio.type,
+        });
         setFailure(null);
         onSpeakingChange?.(true);
         const started = await playAudioBlob(
@@ -68,6 +86,13 @@ export function useOllNarrationTts({
             completePlayback();
           },
           request.signal,
+        );
+        traceLearnDiagnostic(
+          started ? "tts.playback_started" : "tts.playback_rejected",
+          {
+            sessionId,
+            narrationId: narrationId ?? null,
+          },
         );
         if (!started && current) {
           onSpeakingChange?.(false);
@@ -84,11 +109,23 @@ export function useOllNarrationTts({
           return;
         }
         onSpeakingChange?.(false);
+        traceLearnDiagnostic("tts.request_failed", {
+          sessionId,
+          narrationId: narrationId ?? null,
+          error: cause instanceof Error ? cause.message : String(cause),
+        });
         setFailure("课程语音暂时不可用，旁白仍会显示。");
         completePlayback();
       });
 
     return () => {
+      if (!completed) {
+        traceLearnDiagnostic("tts.cancelled", {
+          sessionId,
+          narrationId: narrationId ?? null,
+          willAbortRequest: !request.signal.aborted,
+        });
+      }
       current = false;
       request.abort();
       onSpeakingChange?.(false);
@@ -101,6 +138,7 @@ export function useOllNarrationTts({
     onPlaybackComplete,
     onSpeakingChange,
     playing,
+    sessionId,
   ]);
 
   return {

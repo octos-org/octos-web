@@ -14,6 +14,7 @@ import {
   type Profile,
   type CloudTtsConfig,
 } from "./settings-api";
+import { VoiceLab } from "./voice-lab";
 
 const TOKEN_ENV = "VOLC_TTS_TOKEN";
 // `inherit` maps to a null `tts_provider` (no per-profile override → use the
@@ -254,6 +255,8 @@ export function VoiceTab({
           </div>
         </div>
       )}
+
+      <VoiceLab />
 
       {/* Save actions */}
       <div className="flex items-center gap-3">
