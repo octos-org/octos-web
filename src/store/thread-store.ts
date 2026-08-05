@@ -1091,15 +1091,26 @@ export function appendCompletionBubble(
   // delivers full-turn text, so an exact-content match here is a replay, not
   // a coincidence. This mirrors `rowMatchesCompletionContent` but extends it
   // to the pending slot and to rows whose id/seq differ from the envelope.
-  if (opts.spawnComplete && opts.text.length > 0) {
-    for (const r of thread.responses) {
-      if (r.role === "assistant" && r.text.length > 0 && r.text === opts.text) {
+  // Compare TRIMMED, because byte-equality is too strict to survive the wire.
+  // The two lanes accumulate the same answer differently: streaming appends
+  // raw deltas, while the completion carries the server's joined-and-persisted
+  // copy. Measured on an adjacent octos ui-protocol ledger, one turn's streamed
+  // accumulation was 3738 chars against 3735 for the identical persisted text —
+  // a 3-char whitespace skew from segment joins. Under `===` that turn renders
+  // twice; trimming absorbs it. Interior differences still (correctly) fall
+  // through to the append below.
+  if (opts.spawnComplete) {
+    const incoming = opts.text.trim();
+    if (incoming.length > 0) {
+      for (const r of thread.responses) {
+        if (r.role === "assistant" && r.text.trim() === incoming) {
+          return true;
+        }
+      }
+      const pending = thread.pendingAssistant;
+      if (pending && pending.text.trim() === incoming) {
         return true;
       }
-    }
-    const pending = thread.pendingAssistant;
-    if (pending && pending.text.length > 0 && pending.text === opts.text) {
-      return true;
     }
   }
 
