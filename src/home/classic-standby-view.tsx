@@ -57,12 +57,19 @@ export function ClassicStandbyView({
 
   const handleOrbClick = useCallback(() => {
     if (!voiceRuntime.ready) {
-      if (!voiceRuntime.loading) navigate("/settings?tab=ominix");
+      if (!voiceRuntime.loading && voiceRuntime.settingsPath) {
+        navigate(voiceRuntime.settingsPath);
+      }
       return;
     }
     unlockAudio();
     navigate("/voice");
-  }, [navigate, voiceRuntime.loading, voiceRuntime.ready]);
+  }, [
+    navigate,
+    voiceRuntime.loading,
+    voiceRuntime.ready,
+    voiceRuntime.settingsPath,
+  ]);
 
   const dateStr = `${strings.weekdays[clock.date.getDay()]}, ${
     strings.months[clock.date.getMonth()]

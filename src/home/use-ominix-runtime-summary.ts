@@ -13,6 +13,9 @@ export interface OminixRuntimeSummary {
   loading: boolean;
   canRepair: boolean;
   state: string;
+  settingsPath: string | null;
+  actionLabel: string | null;
+  guidance: string;
   /**
    * Whether the UI should surface the voice status at all. Only a problem
    * state (`warning`/`danger`) warrants a notification — a ready engine is
@@ -37,6 +40,9 @@ const INITIAL_SUMMARY: OminixRuntimeSnapshot = {
   loading: true,
   canRepair: false,
   state: "checking",
+  settingsPath: null,
+  actionLabel: null,
+  guidance: "",
 };
 
 let cachedSummary: OminixRuntimeSnapshot = INITIAL_SUMMARY;
@@ -51,16 +57,12 @@ function emit(summary: OminixRuntimeSnapshot) {
 /**
  * Collapse the three-leg pipeline readiness into the UI snapshot. The check
  * confirms the WHOLE voice path is usable under the caller's current config —
- * ASR (always on-device), LLM, and TTS validated per its effective route
- * (cloud credentials for Volcano, or the on-device GPT-SoVITS engine). When a
- * leg blocks, its `detail` becomes the label so the UI names the exact gap
- * instead of a generic "models not ready".
- *
- * `canRepair` is true only for on-device-engine gaps (ASR model / local TTS),
- * which the OMiniX repair flow can fix; LLM and cloud-credential gaps are a
- * settings task, not a repair, so they report `canRepair: false`.
+ * ASR, LLM, and TTS are each validated against their effective route. When a
+ * leg blocks, the summary points to the settings surface that owns that route.
  */
-export function summarizeVoiceReadiness(readiness: VoiceReadiness): OminixRuntimeSnapshot {
+export function summarizeVoiceReadiness(
+  readiness: VoiceReadiness,
+): OminixRuntimeSnapshot {
   if (readiness.ready) {
     return {
       label: "Voice engine ready",
@@ -69,11 +71,27 @@ export function summarizeVoiceReadiness(readiness: VoiceReadiness): OminixRuntim
       loading: false,
       canRepair: false,
       state: "ready",
+      settingsPath: null,
+      actionLabel: null,
+      guidance: "",
     };
   }
 
   // Report the first failing leg, in pipeline order: ASR → LLM → TTS.
   if (!readiness.asr.ready) {
+    if (readiness.asr.mode === "external") {
+      return {
+        label: readiness.asr.detail,
+        tone: "warning",
+        ready: false,
+        loading: false,
+        canRepair: false,
+        state: "asr_not_ready_external",
+        settingsPath: null,
+        actionLabel: null,
+        guidance: "请检查 ASR_API_URL 指向的语音识别服务。",
+      };
+    }
     return {
       label: readiness.asr.detail,
       tone: "warning",
@@ -81,6 +99,9 @@ export function summarizeVoiceReadiness(readiness: VoiceReadiness): OminixRuntim
       loading: false,
       canRepair: true,
       state: "asr_not_ready",
+      settingsPath: "/settings?tab=ominix",
+      actionLabel: "打开 OMiniX 设置",
+      guidance: "语音引擎未就绪，请安装或修复 OMiniX。",
     };
   }
 
@@ -92,6 +113,9 @@ export function summarizeVoiceReadiness(readiness: VoiceReadiness): OminixRuntim
       loading: false,
       canRepair: false,
       state: "llm_not_ready",
+      settingsPath: "/settings?tab=llm",
+      actionLabel: "打开 LLM 设置",
+      guidance: "请先配置可用的 LLM 服务。",
     };
   }
 
@@ -103,6 +127,11 @@ export function summarizeVoiceReadiness(readiness: VoiceReadiness): OminixRuntim
     loading: false,
     canRepair: localTts,
     state: `tts_not_ready_${readiness.tts.mode}`,
+    settingsPath: localTts ? "/settings?tab=ominix" : "/settings?tab=voice",
+    actionLabel: localTts ? "打开 OMiniX 设置" : "打开语音设置",
+    guidance: localTts
+      ? "本地语音合成尚未就绪，请检查 OMiniX。"
+      : "请检查云端语音合成配置。",
   };
 }
 
@@ -120,6 +149,9 @@ export function refreshOminixRuntimeSummary(): Promise<void> {
         loading: false,
         canRepair: false,
         state: "unknown",
+        settingsPath: null,
+        actionLabel: null,
+        guidance: "无法检查语音服务状态，请稍后重试。",
       });
     })
     .finally(() => {
@@ -128,10 +160,11 @@ export function refreshOminixRuntimeSummary(): Promise<void> {
   return inFlight;
 }
 
-export function useOminixRuntimeSummary() {
+export function useOminixRuntimeSummary(enabled = true) {
   const [summary, setSummary] = useState<OminixRuntimeSnapshot>(cachedSummary);
 
   useEffect(() => {
+    if (!enabled) return;
     listeners.add(setSummary);
     void refreshOminixRuntimeSummary();
     const timer = window.setInterval(() => {
@@ -148,7 +181,7 @@ export function useOminixRuntimeSummary() {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, []);
+  }, [enabled]);
 
   return {
     ...summary,

@@ -473,18 +473,20 @@ function VoiceTile({
   wakeWordStatus,
 }: {
   onOpen: () => void;
-  onOpenSettings: () => void;
+  onOpenSettings: (path: string) => void;
   wakeWordStatus?: WakeWordStatusView;
 }) {
   const runtime = useOminixRuntimeSummary();
   const handleClick = useCallback(() => {
     if (!runtime.ready) {
-      if (!runtime.loading) onOpenSettings();
+      if (!runtime.loading && runtime.settingsPath) {
+        onOpenSettings(runtime.settingsPath);
+      }
       return;
     }
     unlockAudio();
     onOpen();
-  }, [onOpen, onOpenSettings, runtime.loading, runtime.ready]);
+  }, [onOpen, onOpenSettings, runtime.loading, runtime.ready, runtime.settingsPath]);
 
   return (
     <div className="metro-tile-voice" onClick={(e) => e.stopPropagation()}>
@@ -754,7 +756,7 @@ export function MetroTileGrid({
       case "voice": return (
         <VoiceTile
           onOpen={() => navigate("/voice")}
-          onOpenSettings={() => navigate("/settings?tab=ominix")}
+          onOpenSettings={(path) => navigate(path)}
           wakeWordStatus={wakeWordStatus}
         />
       );

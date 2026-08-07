@@ -997,6 +997,12 @@ export interface VoiceLeg {
   detail: string;
 }
 
+/** Readiness of the ASR leg, plus the effective transcription route. */
+export interface VoiceAsrLeg extends VoiceLeg {
+  /** "external" (ASR_API_URL) or "ominix" (local OMiniX runtime). */
+  mode?: "external" | "ominix" | string;
+}
+
 /** Readiness of the TTS leg, plus the effective route for this profile. */
 export interface VoiceTtsLeg {
   ready: boolean;
@@ -1012,7 +1018,7 @@ export interface VoiceTtsLeg {
  */
 export interface VoiceReadiness {
   ready: boolean;
-  asr: VoiceLeg;
+  asr: VoiceAsrLeg;
   llm: VoiceLeg;
   tts: VoiceTtsLeg;
 }

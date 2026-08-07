@@ -75,14 +75,16 @@ export function VoiceView({
     onTurnsChange?.(conv.turns);
   }, [conv.turns, onTurnsChange]);
 
-  const openOminixSettings = () => {
-    navigate("/settings?tab=ominix");
+  const openReadinessSettings = () => {
+    if (runtime.settingsPath) {
+      navigate(runtime.settingsPath);
+    }
   };
   const visibleTurns = conv.turns.slice(-3);
 
   const onOrbClick = () => {
     if (!runtime.ready) {
-      if (!runtime.loading) openOminixSettings();
+      if (!runtime.loading) openReadinessSettings();
       return;
     }
     // Backup audio unlock: if the entry gesture didn't stick, tapping the orb
@@ -153,7 +155,15 @@ export function VoiceView({
         <div
           onClick={onOrbClick}
           role="button"
-          aria-label={runtime.ready ? "voice orb" : "open OMiniX settings"}
+          aria-label={
+            runtime.ready
+              ? "voice orb"
+              : runtime.settingsPath === "/settings?tab=ominix"
+                ? "open OMiniX settings"
+                : runtime.settingsPath
+                  ? "open voice settings"
+                  : "voice unavailable"
+          }
         >
           <VoiceOrb state={runtime.ready ? conv.state : "error"} />
         </div>
@@ -173,7 +183,7 @@ export function VoiceView({
               : STATE_WORD[conv.state]
             : runtime.loading
               ? /* still checking — stay silent, the pill is hidden too */ ""
-              : "语音引擎未就绪，请先在 Settings 里安装或修复 OMiniX。"}
+              : runtime.guidance}
         </div>
 
         {runtime.ready && conv.error && (
@@ -182,16 +192,19 @@ export function VoiceView({
           </div>
         )}
 
-        {!runtime.ready && !runtime.loading && (
-          <button
-            type="button"
-            onClick={openOminixSettings}
-            className="voice-runtime-action"
-          >
-            <Settings size={15} />
-            打开 OMiniX 设置
-          </button>
-        )}
+        {!runtime.ready &&
+          !runtime.loading &&
+          runtime.settingsPath &&
+          runtime.actionLabel && (
+            <button
+              type="button"
+              onClick={openReadinessSettings}
+              className="voice-runtime-action"
+            >
+              <Settings size={15} />
+              {runtime.actionLabel}
+            </button>
+          )}
 
         {/* Camera on but stream not ready yet, or it failed. */}
         {conv.cameraActive && !conv.cameraStream && (

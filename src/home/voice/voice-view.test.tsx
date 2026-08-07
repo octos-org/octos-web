@@ -30,6 +30,9 @@ const runtimeMock = vi.hoisted((): {
   state: string;
   needsAttention: boolean;
   refresh: ReturnType<typeof vi.fn>;
+  settingsPath: string | null;
+  actionLabel: string | null;
+  guidance: string;
 } => ({
   label: "Voice engine ready",
   tone: "success",
@@ -39,6 +42,9 @@ const runtimeMock = vi.hoisted((): {
   state: "healthy",
   needsAttention: false,
   refresh: vi.fn(),
+  settingsPath: null,
+  actionLabel: null,
+  guidance: "",
 }));
 
 vi.mock("react-router-dom", () => ({
@@ -115,6 +121,9 @@ describe("VoiceView", () => {
     runtimeMock.state = "healthy";
     runtimeMock.needsAttention = false;
     runtimeMock.refresh.mockReset();
+    runtimeMock.settingsPath = null;
+    runtimeMock.actionLabel = null;
+    runtimeMock.guidance = "";
   });
 
   it("auto-starts microphone capture on mount", () => {
@@ -261,16 +270,41 @@ describe("VoiceView", () => {
     runtimeMock.canRepair = true;
     runtimeMock.state = "missing_plist";
     runtimeMock.needsAttention = true;
+    runtimeMock.settingsPath = "/settings?tab=ominix";
+    runtimeMock.actionLabel = "打开 OMiniX 设置";
+    runtimeMock.guidance = "语音引擎未就绪，请安装或修复 OMiniX。";
 
     render(<VoiceView sessionId="voice-test" onBack={vi.fn()} />);
 
-    expect(screen.getByText("语音引擎未就绪，请先在 Settings 里安装或修复 OMiniX。")).toBeTruthy();
+    expect(screen.getByText("语音引擎未就绪，请安装或修复 OMiniX。")).toBeTruthy();
     // The readiness pill surfaces only in a problem state.
     expect(screen.getByText("Voice engine needs repair")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "open OMiniX settings" }));
 
     expect(conversationMock.start).not.toHaveBeenCalled();
     expect(navigateMock).toHaveBeenCalledWith("/settings?tab=ominix");
+  });
+
+  it("does not redirect an external ASR failure to OMiniX settings", () => {
+    runtimeMock.label = "External ASR is unreachable";
+    runtimeMock.tone = "warning";
+    runtimeMock.ready = false;
+    runtimeMock.loading = false;
+    runtimeMock.canRepair = false;
+    runtimeMock.state = "asr_not_ready_external";
+    runtimeMock.needsAttention = true;
+    runtimeMock.settingsPath = null;
+    runtimeMock.actionLabel = null;
+    runtimeMock.guidance = "请检查 ASR_API_URL 指向的语音识别服务。";
+
+    render(<VoiceView sessionId="voice-test" onBack={vi.fn()} />);
+
+    expect(screen.getByText("请检查 ASR_API_URL 指向的语音识别服务。")).toBeTruthy();
+    expect(screen.queryByText(/打开 OMiniX 设置/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "voice unavailable" }));
+
+    expect(conversationMock.start).not.toHaveBeenCalled();
+    expect(navigateMock).not.toHaveBeenCalled();
   });
 
   it("does not show the readiness pill when the engine is ready", () => {

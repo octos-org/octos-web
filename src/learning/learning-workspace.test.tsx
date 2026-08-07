@@ -36,6 +36,12 @@ const sessionFilesMock = vi.hoisted(() => ({
 const narrationTtsMock = vi.hoisted(() => ({
   useOllNarrationTts: vi.fn(() => ({ error: null })),
 }));
+const runtimeSummaryMock = vi.hoisted(() => ({
+  useOminixRuntimeSummary: vi.fn(() => ({
+    ready: true,
+    loading: false,
+  })),
+}));
 
 vi.mock("@/api/chat", () => ({ uploadFiles: vi.fn() }));
 vi.mock("@/api/sessions", () => ({
@@ -53,10 +59,7 @@ vi.mock("@/store/projection-render-adapter", () => ({
   useRenderThreads: () => conversationMock.threads,
 }));
 vi.mock("@/home/use-ominix-runtime-summary", () => ({
-  useOminixRuntimeSummary: () => ({
-    ready: true,
-    loading: false,
-  }),
+  useOminixRuntimeSummary: runtimeSummaryMock.useOminixRuntimeSummary,
 }));
 vi.mock("@/home/voice/use-voice-conversation", () => ({
   useVoiceConversation: (
@@ -119,6 +122,7 @@ describe("LearningWorkspace", () => {
     conversationMock.options = null;
     conversationMock.optionsHistory = [];
     narrationTtsMock.useOllNarrationTts.mockClear();
+    runtimeSummaryMock.useOminixRuntimeSummary.mockClear();
     sessionFilesMock.getSessionFiles.mockReset();
     sessionFilesMock.getSessionFiles.mockResolvedValue([]);
   });
@@ -197,6 +201,30 @@ describe("LearningWorkspace", () => {
       await Promise.resolve();
     });
     expect(onUseVoiceMode).toHaveBeenCalledTimes(1);
+  });
+
+  it("checks voice readiness only when voice mode is enabled", () => {
+    const { rerender } = render(
+      <LearningWorkspace
+        sessionId="learn-readiness-route"
+        voiceEnabled={false}
+        onBack={vi.fn()}
+      />,
+    );
+    expect(
+      runtimeSummaryMock.useOminixRuntimeSummary,
+    ).toHaveBeenLastCalledWith(false);
+
+    rerender(
+      <LearningWorkspace
+        sessionId="learn-readiness-route"
+        voiceEnabled
+        onBack={vi.fn()}
+      />,
+    );
+    expect(
+      runtimeSummaryMock.useOminixRuntimeSummary,
+    ).toHaveBeenLastCalledWith(true);
   });
 
   it("keeps camera calibration available in text mode and releases its temporary preview", async () => {

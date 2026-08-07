@@ -98,7 +98,7 @@ export function LearningWorkspace({
   onVoiceExit,
   ollFixture,
 }: LearningWorkspaceProps) {
-  const runtime = useOminixRuntimeSummary();
+  const runtime = useOminixRuntimeSummary(voiceEnabled);
   const threads = useRenderThreads(sessionId);
   const [narrationSpeechActive, setNarrationSpeechActive] = useState(false);
   const [completedTurnId, setCompletedTurnId] = useState<string | null>(null);
@@ -854,7 +854,7 @@ export function LearningWorkspace({
       )}
       {voiceEnabled && !runtime.ready && !runtime.loading && (
         <div className="learning-runtime-warning">
-          语音引擎尚未就绪，白板示范仍可使用。
+          {runtime.label}，白板示范仍可使用。
         </div>
       )}
     </div>
