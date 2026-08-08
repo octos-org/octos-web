@@ -165,6 +165,8 @@ export interface ProfileConfig {
   // `null` clears the per-profile override → inherit the server default.
   tts_provider?: string | null;
   tts_cloud?: CloudTtsConfig | null;
+  // `null` clears the per-profile ASR override → inherit server default.
+  asr_language?: string | null;
   smart_home?: SmartHomeProfileConfig | null;
 }
 
@@ -406,6 +408,9 @@ export function mergeProfileConfig(
   }
   if (patch.tts_cloud !== undefined) {
     next.tts_cloud = patch.tts_cloud;
+  }
+  if (patch.asr_language !== undefined) {
+    next.asr_language = patch.asr_language;
   }
   if (patch.smart_home !== undefined) {
     next.smart_home = patch.smart_home;

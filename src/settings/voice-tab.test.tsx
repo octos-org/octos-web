@@ -64,6 +64,41 @@ describe("VoiceTab", () => {
     expect(patch.tts_cloud.appid).toBe("123");
   });
 
+  it("persists a per-profile ASR language and clears it back to inherit", async () => {
+    render(<VoiceTab profile={baseProfile} onProfileUpdated={() => {}} />);
+    const language = screen.getByLabelText(
+      /Recognition language/i,
+    ) as HTMLSelectElement;
+    expect([...language.options].some((option) => option.value === "auto")).toBe(
+      true,
+    );
+    fireEvent.change(language, { target: { value: "English" } });
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    await waitFor(() => expect(apiMocks.updateMyProfileConfig).toHaveBeenCalled());
+    expect(apiMocks.updateMyProfileConfig.mock.calls[0][1].asr_language).toBe(
+      "English",
+    );
+
+    cleanup();
+    apiMocks.updateMyProfileConfig.mockClear();
+    const persistedEnglishProfile = makeProfile({
+      ...baseProfile.config,
+      asr_language: "English",
+    });
+    render(
+      <VoiceTab
+        profile={persistedEnglishProfile}
+        onProfileUpdated={() => {}}
+      />,
+    );
+    const persistedLanguage = screen.getByLabelText(/Recognition language/i);
+    expect((persistedLanguage as HTMLSelectElement).value).toBe("English");
+    fireEvent.change(persistedLanguage, { target: { value: "inherit" } });
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    await waitFor(() => expect(apiMocks.updateMyProfileConfig).toHaveBeenCalled());
+    expect(apiMocks.updateMyProfileConfig.mock.calls[0][1].asr_language).toBeNull();
+  });
+
   it("should write a newly typed token into the save patch", async () => {
     render(<VoiceTab profile={baseProfile} onProfileUpdated={() => {}} />);
     fireEvent.change(screen.getByLabelText(/Token/i), {

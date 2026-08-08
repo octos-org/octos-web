@@ -11,7 +11,7 @@ const apiMocks = vi.hoisted(() => ({
 
 const authMocks = vi.hoisted(() => ({
   portal: {
-    accessible_profiles: [] as never[],
+    accessible_profiles: [] as Array<{ id: string; name: string }>,
     can_access_admin_portal: true,
     home_profile_id: "",
   },
@@ -41,6 +41,23 @@ describe("AdminSettingsPage", () => {
     apiMocks.getMyProfile.mockReset();
     apiMocks.getMyProfile.mockResolvedValue(null);
     authMocks.portal.can_access_admin_portal = true;
+    authMocks.portal.accessible_profiles = [];
+  });
+
+  it("keeps self-service settings scoped to the authenticated profile", async () => {
+    authMocks.portal.accessible_profiles = [
+      { id: "profile-a", name: "Profile A" },
+      { id: "profile-b", name: "Profile B" },
+    ];
+
+    render(
+      <MemoryRouter>
+        <AdminSettingsPage />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(apiMocks.getMyProfile).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("combobox")).toBeNull();
   });
 
   it("keeps the Authentication menu icon visible beside the admin badge", async () => {
