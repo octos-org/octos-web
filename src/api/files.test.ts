@@ -26,6 +26,33 @@ describe("buildFileUrl", () => {
     ).toBe("/api/files/skill-output%2Freport.md");
   });
 
+  it("scopes Studio source paths to their workspace session when requested", () => {
+    expect(
+      buildFileUrl("notebook-sources/report/source.md", {
+        sessionId: "web-abc",
+        workspaceScoped: true,
+      }),
+    ).toBe(
+      "/api/files?path=notebook-sources%2Freport%2Fsource.md&session=web-abc",
+    );
+  });
+
+  it("scopes legacy Studio output paths without changing default file URL semantics", () => {
+    expect(
+      buildFileUrl("notebook-outputs/video/final.mp4", {
+        sessionId: "web-abc",
+        workspaceScoped: true,
+      }),
+    ).toBe(
+      "/api/files?path=notebook-outputs%2Fvideo%2Ffinal.mp4&session=web-abc",
+    );
+    expect(
+      buildFileUrl("notebook-outputs/video/final.mp4", {
+        sessionId: "web-abc",
+      }),
+    ).toBe("/api/files/notebook-outputs%2Fvideo%2Ffinal.mp4");
+  });
+
   it("includes session context for opaque workspace handles", () => {
     expect(
       buildFileUrl("ws/cXVpei5tZA/quiz.md", { sessionId: "web-abc" }),

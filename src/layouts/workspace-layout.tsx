@@ -298,7 +298,7 @@ export function WorkspaceLayout({ children }: { children: ReactNode }) {
                 <StudioSourcesPane
                   sessionId={currentSessionId}
                   historyTopic={historyTopic}
-                  selected={selectedSources}
+                  selected={selectedSourceIds}
                   onToggle={toggleSource}
                   uploaded={uploadedSources}
                   onUploaded={mergeUploadedSourceRows}

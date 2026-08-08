@@ -292,7 +292,11 @@ describe("useNotebookSources", () => {
     });
 
     await waitFor(() =>
-      expect(result.current.uploadedSources).toEqual([readyRow("notes")]),
+      expect(result.current.uploadedSources).toEqual([{
+        ...readyRow("notes"),
+        jobId: "job-1",
+        batchId: "batch-1",
+      }]),
     );
   });
 
@@ -329,7 +333,11 @@ describe("useNotebookSources", () => {
       );
     });
     await waitFor(() =>
-      expect(result.current.uploadedSources).toEqual([readyRow("notes")]),
+      expect(result.current.uploadedSources).toEqual([{
+        ...readyRow("notes"),
+        jobId: "job-1",
+        batchId: "batch-1",
+      }]),
     );
 
     await act(async () => {
@@ -351,6 +359,48 @@ describe("useNotebookSources", () => {
       await staleRestore.promise;
     });
 
-    expect(result.current.uploadedSources).toEqual([readyRow("notes")]);
+    expect(result.current.uploadedSources).toEqual([{
+      ...readyRow("notes"),
+      jobId: "job-1",
+      batchId: "batch-1",
+    }]);
+  });
+
+  it("does not resurrect a removed source from completed import history", async () => {
+    const removed = readyRow("notes");
+    let restoreCount = 0;
+    listSkillActionJobsMock.mockImplementation(() => {
+      restoreCount += 1;
+      return Promise.resolve(restoreCount === 1 ? [] : [{
+        job_id: "job-1",
+        batch_id: "batch-1",
+        profile_id: "profile-1",
+        session_id: "web-session",
+        action_id: "source.import",
+        skill_id: "mofa-notebook-source",
+        status: "succeeded",
+        input_path: "uploads/notes.md",
+        filename: "notes.md",
+        source_id: "notes",
+        source_path: "notebook-sources/notes/source.md",
+        created_at: "2026-07-09T01:00:00Z",
+        updated_at: "2026-07-09T01:02:00Z",
+      }]);
+    });
+    loadSourceCatalogMock
+      .mockResolvedValueOnce([removed])
+      .mockResolvedValue([]);
+
+    const { result } = renderHook(() => useNotebookSources("web-session"));
+    await waitFor(() => expect(result.current.uploadedSources).toEqual([removed]));
+
+    act(() => result.current.removeUploadedSourceRow(removed));
+    await waitFor(() => expect(result.current.uploadedSources).toEqual([]));
+
+    act(() => window.dispatchEvent(new Event("crew:bridge_connected")));
+    await waitFor(() => expect(restoreCount).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(result.current.sourcesCapability.status).toBe("supported"));
+
+    expect(result.current.uploadedSources).toEqual([]);
   });
 });

@@ -15,10 +15,13 @@ import {
   type SessionSendRequest,
 } from "@/runtime/session-context";
 import { recordProjectOpened } from "@/store/project-store";
+import { useResizablePanel } from "@/hooks/use-resizable-panel";
 
 import { mergeSourceMedia } from "./source-media";
 import { StudioRail } from "./studio-rail";
 import { StudioSourcesPane } from "./studio-sources-pane";
+import type { CitationTarget } from "./structured-asset-viewers";
+import { withNotebookToolContext } from "./tool-context";
 import { useNotebookSources } from "./use-notebook-sources";
 
 const TITLE_STORAGE_KEY = "octos_session_titles";
@@ -107,6 +110,35 @@ export function StudioPage() {
 function StudioWorkspace({ projectId }: { projectId: string }) {
   const [title, setTitle] = useState(() => readStoredTitle(projectId));
   const [panes, setPanes] = useState<PaneState>(loadPaneState);
+  const {
+    width: sourcesPaneWidthValue,
+    effectiveWidth: sourcesPaneWidth,
+    onPointerDown: onSourcesResizeStart,
+    onKeyDown: onSourcesResizeKeyDown,
+  } = useResizablePanel({
+    minWidth: 240,
+    maxWidth: 480,
+    defaultWidth: 280,
+    storageKey: "octos_studio_sources_width",
+    side: "left",
+  });
+  const {
+    width: studioRailWidthValue,
+    effectiveWidth: studioRailWidth,
+    onPointerDown: onStudioRailResizeStart,
+    onKeyDown: onStudioRailResizeKeyDown,
+  } = useResizablePanel({
+    minWidth: 280,
+    maxWidth: 520,
+    defaultWidth: 320,
+    storageKey: "octos_studio_rail_width",
+    side: "right",
+  });
+  const [sourcePreviewKey, setSourcePreviewKey] = useState<string | null>(null);
+  const [assetPreviewId, setAssetPreviewId] = useState<string | null>(null);
+  const [sourceQuery, setSourceQuery] = useState("");
+  const [sourceListScrollTop, setSourceListScrollTop] = useState(0);
+  const [citationTarget, setCitationTarget] = useState<CitationTarget | null>(null);
 
   // Persist only explicit user toggles — a mount must not freeze the
   // viewport-derived defaults into storage as if the user chose them.
@@ -133,6 +165,21 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
     removeUploadedSourceRow,
     refreshSourceCatalog,
   } = useNotebookSources(projectId);
+
+  function openCitation(citation: CitationTarget) {
+    setCitationTarget(citation);
+    const row = uploadedSources.find((candidate) =>
+      (citation.sourceId && candidate.sourceId === citation.sourceId)
+      || (citation.sourcePath && candidate.sourcePath === citation.sourcePath)
+    );
+    if (!row) return;
+    setSourcePreviewKey(row.jobId ?? row.sourceId ?? row.path);
+    updatePanes((current) => ({
+      ...current,
+      sources: true,
+      rail: window.innerWidth < 1024 ? false : current.rail,
+    }));
+  }
 
   // Title: seed from localStorage, then track the runtime-provider's
   // `crew:session_title_updated` window event (detail is the bridge's
@@ -165,13 +212,14 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
     };
   }, [projectId]);
 
-  // The composer has no attachment picker in Studio, but checked catalog
-  // sources still have to enter this turn's grounding context explicitly.
+  // Studio turns carry both the Notebook routing context and the currently
+  // selected catalog paths used for grounding.
   const beforeSend = useCallback(
     async (request: SessionSendRequest): Promise<SessionBeforeSendResult> => {
+      const contextual = withNotebookToolContext(request);
       return {
-        ...request,
-        media: mergeSourceMedia(request.media, selectedSources),
+        ...contextual,
+        media: mergeSourceMedia(contextual.media ?? [], selectedSources),
       };
     },
     [selectedSources],
@@ -189,6 +237,7 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
       historyTopic: undefined,
       currentSessionTitle: title,
       currentSessionStats: null,
+      initialMessages: [] as never[],
       activeTaskOnServer: false,
       queueMode,
       adaptiveMode,
@@ -259,22 +308,49 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
             )}
             {panes.sources && (
               <aside
-                className="studio-pane w-[280px] shrink-0 border-r max-lg:fixed max-lg:bottom-0 max-lg:left-0 max-lg:top-16 max-lg:z-[35] max-lg:shadow-2xl"
+                style={{ width: sourcesPaneWidth }}
+                className="studio-pane shrink-0 border-r max-lg:fixed max-lg:bottom-0 max-lg:left-0 max-lg:top-16 max-lg:z-[35] max-lg:!w-[280px] max-lg:shadow-2xl"
                 data-testid="studio-sources-pane"
               >
                 <StudioSourcesPane
                   sessionId={projectId}
-                  selected={selectedSources}
+                  previewKey={sourcePreviewKey}
+                  onPreviewKeyChange={setSourcePreviewKey}
+                  selected={selectedSourceIds}
                   onToggle={toggleSource}
                   uploaded={uploadedSources}
                   onUploaded={mergeUploadedSourceRows}
                   onRenamed={renameUploadedSourceRow}
                   onRemoved={removeUploadedSourceRow}
-                  onCatalogChanged={refreshSourceCatalog}
+                  onCatalogChanged={() => {
+                    void refreshSourceCatalog();
+                  }}
                   loading={sourcesLoading}
+                  query={sourceQuery}
+                  onQueryChange={setSourceQuery}
+                  listScrollTop={sourceListScrollTop}
+                  onListScrollTopChange={setSourceListScrollTop}
+                  citationTarget={citationTarget}
+                  onCitationTargetClear={() => setCitationTarget(null)}
                   capability={sourcesCapability}
                 />
               </aside>
+            )}
+            {panes.sources && (
+              <div
+                className="panel-resize-handle max-lg:hidden"
+                data-testid="studio-sources-resize-handle"
+                title="Resize Sources pane"
+                role="separator"
+                tabIndex={0}
+                aria-label="Resize Sources pane"
+                aria-orientation="vertical"
+                aria-valuemin={240}
+                aria-valuemax={480}
+                aria-valuenow={sourcesPaneWidthValue}
+                onPointerDown={onSourcesResizeStart}
+                onKeyDown={onSourcesResizeKeyDown}
+              />
             )}
             <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
               <div className="shrink-0 pb-4 pt-8 text-center">
@@ -305,14 +381,33 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
               />
             )}
             {panes.rail && (
+              <div
+                className="panel-resize-handle max-xl:hidden"
+                data-testid="studio-rail-resize-handle"
+                title="Resize Studio pane"
+                role="separator"
+                tabIndex={0}
+                aria-label="Resize Studio pane"
+                aria-orientation="vertical"
+                aria-valuemin={280}
+                aria-valuemax={520}
+                aria-valuenow={studioRailWidthValue}
+                onPointerDown={onStudioRailResizeStart}
+                onKeyDown={onStudioRailResizeKeyDown}
+              />
+            )}
+            {panes.rail && (
               <aside
-                className="studio-pane w-[320px] shrink-0 border-l max-xl:fixed max-xl:bottom-0 max-xl:right-0 max-xl:top-16 max-xl:z-[35] max-xl:shadow-2xl"
+                style={{ width: studioRailWidth }}
+                className="studio-pane shrink-0 border-l max-xl:fixed max-xl:bottom-0 max-xl:right-0 max-xl:top-16 max-xl:z-[35] max-xl:!w-[320px] max-xl:shadow-2xl"
                 data-testid="studio-rail"
               >
                 <StudioRail
                   sessionId={projectId}
-                  selectedSources={selectedSources}
+                  selectedAssetId={assetPreviewId}
+                  onSelectedAssetIdChange={setAssetPreviewId}
                   selectedSourceIds={selectedSourceIds}
+                  onCitationOpen={openCitation}
                 />
               </aside>
             )}
