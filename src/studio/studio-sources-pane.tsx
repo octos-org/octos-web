@@ -1,14 +1,44 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
-import { FileText, Image, Music, Plus, Search, Table, Video } from "lucide-react";
+import {
+  Check,
+  Eye,
+  FileText,
+  Image,
+  Music,
+  Pencil,
+  MoreHorizontal,
+  Plus,
+  Search,
+  Table,
+  Trash2,
+  Video,
+  X,
+} from "lucide-react";
 
 import { uploadFiles } from "@/api/chat";
-import { useAllFiles } from "@/store/file-store";
+import {
+  invokeSkillAction,
+  skillActionScopeId,
+} from "@/api/skill-actions";
 
-import { sourceKind, type SourceKind, type SourceRow } from "./source-media";
+import {
+  SOURCE_IMPORT_ACTION_ID,
+  SOURCE_REMOVE_ACTION_ID,
+  SOURCE_RENAME_ACTION_ID,
+  isSourceRowReady,
+  sourceKind,
+  sourceRowFromSkillActionJob,
+  sourcePreviewPath,
+  type SourceKind,
+  type SourceRow,
+} from "./source-media";
+import { StudioFilePreviewDialog } from "./studio-file-preview";
+import type { NotebookSourcesCapability } from "./use-notebook-sources";
 
 interface Props {
   sessionId: string;
+  historyTopic?: string;
   /** Server file paths currently selected as grounding sources. */
   selected: string[];
   onToggle: (path: string) => void;
@@ -18,8 +48,12 @@ interface Props {
    */
   uploaded: SourceRow[];
   onUploaded: (rows: SourceRow[]) => void;
+  onRenamed: (row: SourceRow, title: string) => void;
+  onRemoved: (row: SourceRow) => void;
+  onCatalogChanged: () => void;
   /** True while the initial session file listing is in flight. */
   loading: boolean;
+  capability: NotebookSourcesCapability;
 }
 
 const KIND_ICONS: Record<SourceKind, LucideIcon> = {
@@ -30,36 +64,186 @@ const KIND_ICONS: Record<SourceKind, LucideIcon> = {
   text: FileText,
 };
 
+function sourceRowIdentityKeys(row: SourceRow): string[] {
+  const keys = [
+    row.jobId ? `job:${row.jobId}` : null,
+    row.sourceId ? `source:${row.sourceId}` : null,
+    row.path ? `path:${row.path}` : null,
+    row.sourcePath ? `path:${row.sourcePath}` : null,
+    row.inputPath ? `path:${row.inputPath}` : null,
+    row.materializedPath ? `path:${row.materializedPath}` : null,
+  ].filter((key): key is string => Boolean(key));
+  return Array.from(new Set(keys));
+}
+
+function SourceActionsMenu({
+  row,
+  busy,
+  canRename,
+  canRemoveSource,
+  onPreview,
+  onRename,
+  onRemoveSource,
+}: {
+  row: SourceRow;
+  busy: boolean;
+  canRename: boolean;
+  canRemoveSource: boolean;
+  onPreview: () => void;
+  onRename: () => void;
+  onRemoveSource: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    menuRef.current?.querySelector("button")?.focus();
+    function closeIfOutside(target: EventTarget | null) {
+      if (rootRef.current && !rootRef.current.contains(target as Node)) {
+        setOpen(false);
+      }
+    }
+    function onDocPointerDown(event: MouseEvent) {
+      closeIfOutside(event.target);
+    }
+    function onDocFocusIn(event: FocusEvent) {
+      closeIfOutside(event.target);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+        return;
+      }
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        const items = Array.from(
+          menuRef.current?.querySelectorAll<HTMLButtonElement>("button") ?? [],
+        );
+        if (items.length === 0) return;
+        event.preventDefault();
+        const index = items.indexOf(
+          document.activeElement as HTMLButtonElement,
+        );
+        const delta = event.key === "ArrowDown" ? 1 : -1;
+        items[(index + delta + items.length) % items.length]?.focus();
+      }
+    }
+    document.addEventListener("mousedown", onDocPointerDown);
+    document.addEventListener("focusin", onDocFocusIn);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onDocPointerDown);
+      document.removeEventListener("focusin", onDocFocusIn);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative shrink-0" ref={rootRef}>
+      <button
+        type="button"
+        ref={triggerRef}
+        className="studio-ghost-button p-1.5"
+        aria-label={`Source actions for ${row.filename}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={busy}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen((o) => !o);
+        }}
+      >
+        <MoreHorizontal size={14} aria-hidden="true" />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          ref={menuRef}
+          className="studio-menu min-w-[10rem]"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className="studio-menu-item"
+            onClick={() => {
+              onPreview();
+              setOpen(false);
+            }}
+          >
+            <Eye size={14} aria-hidden="true" />
+            Preview
+          </button>
+          {canRename && (
+            <button
+              type="button"
+              role="menuitem"
+              className="studio-menu-item"
+              onClick={() => {
+                onRename();
+                setOpen(false);
+              }}
+            >
+              <Pencil size={14} aria-hidden="true" />
+              Rename source
+            </button>
+          )}
+          {canRemoveSource && (
+            <button
+              type="button"
+              role="menuitem"
+              className="studio-menu-item text-red-500"
+              onClick={() => {
+                onRemoveSource();
+                setOpen(false);
+              }}
+            >
+              <Trash2 size={14} aria-hidden="true" />
+              Remove source
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function StudioSourcesPane({
   sessionId,
+  historyTopic,
   selected,
   onToggle,
   uploaded,
   onUploaded,
   loading,
+  onRenamed,
+  onRemoved,
+  onCatalogChanged,
+  capability,
 }: Props) {
-  const allFiles = useAllFiles();
+  const scopeId = skillActionScopeId(sessionId, historyTopic);
   const [query, setQuery] = useState("");
   const [uploadError, setUploadError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const [previewRow, setPreviewRow] = useState<SourceRow | null>(null);
+  const [renamingKey, setRenamingKey] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const rows = useMemo(() => {
-    const sessionRows: SourceRow[] = allFiles
-      .filter((f) => f.sessionId === sessionId)
-      .map((f) => ({
-        filename: f.filename,
-        path: f.filePath,
-        timestamp: f.timestamp,
-      }));
     const seen = new Set<string>();
-    return [...uploaded, ...sessionRows]
+    return uploaded
       .filter((row) => {
         if (seen.has(row.path)) return false;
         seen.add(row.path);
         return true;
       })
       .sort((a, b) => b.timestamp - a.timestamp);
-  }, [allFiles, sessionId, uploaded]);
+  }, [uploaded]);
 
   const trimmedQuery = query.trim().toLowerCase();
   const visible = trimmedQuery
@@ -72,24 +256,130 @@ export function StudioSourcesPane({
     setUploadError(null);
     try {
       const paths = await uploadFiles(files);
-      const now = Date.now();
-      onUploaded(
-        paths.map((path, i) => ({
-          path,
-          filename: files[i]?.name ?? path.split("/").pop() ?? path,
-          timestamp: now,
-        })),
+      const imported = await invokeSkillAction(
+        sessionId,
+        SOURCE_IMPORT_ACTION_ID,
+        { paths },
+        historyTopic,
       );
-      // Real grounding: newly uploaded sources are attached to the next
-      // send, so auto-select them (parent toggles via functional
-      // setState, so back-to-back calls in one tick all apply).
-      for (const path of paths) onToggle(path);
+      if (!imported.ok) {
+        const failed = imported.results?.find((result) => !result.success);
+        throw new Error(failed?.output || "Source import failed");
+      }
+      if (imported.jobs?.length) {
+        onUploaded(
+          imported.jobs.map((job, index) =>
+            sourceRowFromSkillActionJob(job, files[index]?.name),
+          ),
+        );
+        return;
+      }
+      onCatalogChanged();
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : "Upload failed");
     } finally {
       // Allow re-uploading the same file after a failure.
       if (inputRef.current) inputRef.current.value = "";
     }
+  }
+
+  function rowKey(row: SourceRow): string {
+    return row.jobId ?? row.sourceId ?? row.path;
+  }
+
+  function dismissSourceRow(row: SourceRow) {
+    setActionError(null);
+    if (
+      previewRow &&
+      sourceRowIdentityKeys(previewRow).some((key) =>
+        sourceRowIdentityKeys(row).includes(key),
+      )
+    ) {
+      setPreviewRow(null);
+    }
+    onRemoved(row);
+  }
+
+  function beginRename(row: SourceRow) {
+    setActionError(null);
+    setRenamingKey(rowKey(row));
+    setRenameValue(row.filename);
+  }
+
+  async function saveRename(row: SourceRow) {
+    if (!row.sourceId) return;
+    const title = renameValue.trim();
+    if (!title) return;
+    const key = rowKey(row);
+    setBusyKey(key);
+    setActionError(null);
+    try {
+      const response = await invokeSkillAction(
+        sessionId,
+        SOURCE_RENAME_ACTION_ID,
+        {
+          source_id: row.sourceId,
+          title,
+        },
+        historyTopic,
+      );
+      if (!response.ok) {
+        const failed = response.results?.find((result) => !result.success);
+        throw new Error(failed?.output || "Source rename failed");
+      }
+      onRenamed(row, title);
+      onCatalogChanged();
+      setRenamingKey(null);
+      setRenameValue("");
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Source rename failed");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function removeSource(row: SourceRow) {
+    if (!row.sourceId) return;
+    if (!window.confirm(`Remove source "${row.filename}"?`)) return;
+    const key = rowKey(row);
+    setBusyKey(key);
+    setActionError(null);
+    try {
+      const response = await invokeSkillAction(
+        sessionId,
+        SOURCE_REMOVE_ACTION_ID,
+        { source_id: row.sourceId },
+        historyTopic,
+      );
+      if (!response.ok) {
+        const failed = response.results?.find((result) => !result.success);
+        throw new Error(failed?.output || "Source remove failed");
+      }
+      dismissSourceRow(row);
+      onCatalogChanged();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Source remove failed");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  if (capability.status !== "supported") {
+    const title =
+      capability.status === "connecting"
+        ? "Checking Notebook Sources…"
+        : capability.status === "unsupported"
+          ? "Notebook Sources unavailable"
+          : "Notebook Sources temporarily unavailable";
+    return (
+      <div className="flex h-full min-h-0 flex-col gap-3 p-4">
+        <h2 className="studio-headline text-sm">Sources</h2>
+        <div className="studio-empty-state text-xs" role="status">
+          <strong className="block text-text-strong">{title}</strong>
+          <span className="mt-1 block">{capability.reason}</span>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -120,6 +410,11 @@ export function StudioSourcesPane({
           {uploadError}
         </p>
       )}
+      {actionError && (
+        <p className="shrink-0 text-xs text-red-500" role="alert">
+          {actionError}
+        </p>
+      )}
       <div className="relative shrink-0">
         <Search
           size={15}
@@ -142,27 +437,111 @@ export function StudioSourcesPane({
             {rows.length === 0
               ? loading
                 ? "Loading sources…"
-                : "No sources yet. Upload files or generate some in chat."
+                : "No sources yet. Upload files to add notebook sources."
               : "No sources match your search."}
           </div>
         ) : (
           <ul className="flex flex-col">
             {visible.map((row) => {
               const Icon = KIND_ICONS[sourceKind(row.filename)];
+              const ready = isSourceRowReady(row);
+              const statusLabel =
+                row.status === "processing"
+                  ? "Processing"
+                  : row.status === "failed"
+                    ? "Failed"
+                    : row.status === "cancelled"
+                      ? "Cancelled"
+                    : row.status === "abandoned"
+                      ? "Abandoned"
+                      : null;
+              const key = rowKey(row);
+              const isRenaming = renamingKey === key;
+              const isBusy = busyKey === key;
+              const canManageSource = ready && Boolean(row.sourceId);
               return (
-                <li key={row.path} className="studio-list-row">
-                  <Icon size={16} className="shrink-0 text-muted" />
-                  <span
-                    className="min-w-0 flex-1 truncate text-sm"
-                    title={row.filename}
-                  >
-                    {row.filename}
-                  </span>
+                <li key={row.jobId ?? row.path} className="studio-list-row">
+                  {/* Failed/abandoned jobs intentionally expose no local
+                      retry or dismiss control. Those actions must wait for
+                      Core's durable, idempotent lifecycle contract so a
+                      reconnect cannot resurrect a locally hidden attempt. */}
+                  {isRenaming ? (
+                    <div className="flex min-w-0 flex-1 items-center gap-2">
+                      <Icon size={16} className="shrink-0 text-muted" />
+                      <div className="min-w-0 flex-1">
+                        <input
+                          className="studio-input h-8 text-sm"
+                          aria-label="Rename source title"
+                          value={renameValue}
+                          onChange={(event) => setRenameValue(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              void saveRename(row);
+                            }
+                            if (event.key === "Escape") {
+                              setRenamingKey(null);
+                              setRenameValue("");
+                            }
+                          }}
+                          autoFocus
+                        />
+                        {row.error && <p className="mt-1 truncate text-xs text-red-500">{row.error}</p>}
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                      aria-label={`Preview ${row.filename}`}
+                      onClick={() => setPreviewRow(row)}
+                    >
+                      <Icon size={16} className="shrink-0 text-muted" />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className="min-w-0 truncate text-sm" title={row.filename}>
+                            {row.filename}
+                          </span>
+                          {statusLabel && (
+                            <span className="shrink-0 rounded border px-1.5 py-0.5 font-label text-[10px] uppercase tracking-[0.04em] text-muted">
+                              {statusLabel}
+                            </span>
+                          )}
+                        </div>
+                        {row.error && <p className="mt-1 truncate text-xs text-red-500">{row.error}</p>}
+                      </div>
+                    </button>
+                  )}
+                  {isRenaming ? (
+                    <>
+                      <button type="button" className="studio-ghost-button p-1.5" aria-label="Save source rename" disabled={isBusy} onClick={() => void saveRename(row)}>
+                        <Check size={14} />
+                      </button>
+                      <button type="button" className="studio-ghost-button p-1.5" aria-label="Cancel source rename" disabled={isBusy} onClick={() => setRenamingKey(null)}>
+                        <X size={14} />
+                      </button>
+                    </>
+                  ) : canManageSource ? (
+                    <SourceActionsMenu
+                      row={row}
+                      busy={isBusy}
+                      canRename={canManageSource}
+                      canRemoveSource={canManageSource}
+                      onPreview={() => setPreviewRow(row)}
+                      onRename={() => beginRename(row)}
+                      onRemoveSource={() => {
+                        void removeSource(row);
+                      }}
+                    />
+                  ) : null}
                   <input
                     type="checkbox"
                     className="accent-accent h-4 w-4"
-                    checked={selected.includes(row.path)}
-                    onChange={() => onToggle(row.path)}
+                    checked={ready && selected.includes(row.path)}
+                    disabled={!ready}
+                    onChange={() => {
+                      if (ready) onToggle(row.path);
+                    }}
                     aria-label={`Use ${row.filename} as source`}
                   />
                 </li>
@@ -173,9 +552,19 @@ export function StudioSourcesPane({
       </div>
       {selected.length > 0 && (
         <p className="studio-kicker shrink-0">
-          {selected.length} source{selected.length === 1 ? "" : "s"} attach to
-          your next message
+          {selected.length} source{selected.length === 1 ? "" : "s"} selected for
+          notebook grounding
         </p>
+      )}
+      {previewRow && (
+        <StudioFilePreviewDialog
+          filename={previewRow.filename}
+          filePath={sourcePreviewPath(previewRow)}
+          mediaType={previewRow.mediaType}
+          sessionId={scopeId}
+          kind="source"
+          onClose={() => setPreviewRow(null)}
+        />
       )}
     </div>
   );

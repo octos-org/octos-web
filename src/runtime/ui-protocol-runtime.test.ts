@@ -123,6 +123,7 @@ function makeDeferredBridge(): DeferredBridge {
     onVoiceExit: vi.fn(() => () => {}),
     onTaskUpdated: vi.fn(() => () => {}),
     onTaskOutputDelta: vi.fn(() => () => {}),
+    onSkillActionJobUpdated: vi.fn(() => () => {}),
     onTurnLifecycle: vi.fn(() => () => {}),
     onApprovalRequested: vi.fn(() => () => {}),
     onApprovalAutoResolved: vi.fn(() => () => {}),

@@ -2,9 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import {
   attachRouter,
   handleApprovalRequested,
+  handleSkillActionJobUpdated,
 } from "./ui-protocol-event-router";
 import type {
   ApprovalRequestedEvent,
+  SkillActionJobUpdatedEvent,
   UiProtocolBridge,
 } from "./ui-protocol-bridge";
 
@@ -39,6 +41,7 @@ describe("ui-protocol event router", () => {
     expect(subscriptions.has("onMessageDelta")).toBe(true);
     expect(subscriptions.has("onSpawnComplete")).toBe(true);
     expect(subscriptions.has("onTaskUpdated")).toBe(true);
+    expect(subscriptions.has("onSkillActionJobUpdated")).toBe(true);
     expect(subscriptions.has("onMessagePersisted")).toBe(false);
 
     attachment.detach();
@@ -65,6 +68,35 @@ describe("ui-protocol event router", () => {
     );
 
     expect(events).toHaveLength(1);
+    expect((events[0] as CustomEvent).detail).toEqual(event);
+  });
+
+  it("forwards skill action job updates to the Studio event path", () => {
+    const events: Event[] = [];
+    const event: SkillActionJobUpdatedEvent = {
+      job_id: "job-1",
+      batch_id: "batch-1",
+      profile_id: "profile-1",
+      session_id: "session-router",
+      action_id: "source.import",
+      skill_id: "mofa-notebook-source",
+      status: "succeeded",
+      input_path: "uploads/chart.jpg",
+      filename: "chart.jpg",
+      source_id: "chart",
+      source_path: "notebook-sources/chart/source.md",
+      metadata_path: "notebook-sources/chart/metadata.json",
+      created_at: "2026-07-09T01:00:00Z",
+      updated_at: "2026-07-09T01:01:00Z",
+    };
+
+    handleSkillActionJobUpdated(
+      { sessionId: "session-router", dispatchEvent: (entry) => events.push(entry) },
+      event,
+    );
+
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe("crew:skill_action_job_updated");
     expect((events[0] as CustomEvent).detail).toEqual(event);
   });
 });

@@ -14,11 +14,12 @@
  * the shared runtime provider is never touched.
  */
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { Mic, PanelLeft, PanelRight, Plus, Target } from "lucide-react";
 
 import type { BackgroundTaskInfo } from "@/api/types";
+import { skillActionScopeId } from "@/api/skill-actions";
 import { CostBar } from "@/components/cost-bar";
 import { RouterFailoverBanner } from "@/components/router-failover-banner";
 import { RouterModeSwitcher } from "@/components/router-mode-switcher";
@@ -43,15 +44,14 @@ import {
 } from "@/runtime/session-context";
 import { displayLabelForRolled } from "@/runtime/task-rollup";
 import { useAutonomyState } from "@/store/autonomy-store";
-import { loadSessionFiles } from "@/store/file-store";
 import { useTasks } from "@/store/task-store";
 import {
   mergeSourceMedia,
   relativeTime,
-  type SourceRow,
 } from "@/studio/source-media";
 import { StudioRail } from "@/studio/studio-rail";
 import { StudioSourcesPane } from "@/studio/studio-sources-pane";
+import { useNotebookSources } from "@/studio/use-notebook-sources";
 
 const PANES_STORAGE_KEY = "octos-workspace-panes";
 
@@ -167,35 +167,22 @@ export function WorkspaceLayout({ children }: { children: ReactNode }) {
   }, []);
 
   const [railTab, setRailTab] = useState<"artifacts" | "runs">("artifacts");
-  const [selectedSources, setSelectedSources] = useState<string[]>([]);
-  const [uploadedSources, setUploadedSources] = useState<SourceRow[]>([]);
-  const [sourcesLoading, setSourcesLoading] = useState(true);
-
-  // Switching sessions resets the source selection (it is scoped to one
-  // workspace's files) and reloads that session's file listing. The reset
-  // is render-phase state adjustment (React's sanctioned alternative to
-  // setState-in-effect); the effect only kicks off the async reload.
-  const [loadedSession, setLoadedSession] = useState(currentSessionId);
-  if (loadedSession !== currentSessionId) {
-    setLoadedSession(currentSessionId);
-    setSelectedSources([]);
-    setSourcesLoading(true);
-  }
-  useEffect(() => {
-    let cancelled = false;
-    void Promise.resolve(loadSessionFiles(currentSessionId)).finally(() => {
-      if (!cancelled) setSourcesLoading(false);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [currentSessionId]);
-
-  const toggleSource = useCallback((path: string) => {
-    setSelectedSources((prev) =>
-      prev.includes(path) ? prev.filter((p) => p !== path) : [...prev, path],
-    );
-  }, []);
+  const {
+    selectedSources,
+    uploadedSources,
+    sourcesLoading,
+    sourcesCapability,
+    selectedSourceIds,
+    toggleSource,
+    mergeUploadedSourceRows,
+    renameUploadedSourceRow,
+    removeUploadedSourceRow,
+    refreshSourceCatalog,
+  } = useNotebookSources(currentSessionId, historyTopic);
+  const notebookScopeId = skillActionScopeId(
+    currentSessionId,
+    historyTopic,
+  );
 
   const beforeSend = useCallback(
     async (request: SessionSendRequest): Promise<SessionBeforeSendResult> => ({
@@ -310,13 +297,16 @@ export function WorkspaceLayout({ children }: { children: ReactNode }) {
               <div className="min-h-0 flex-1 overflow-hidden">
                 <StudioSourcesPane
                   sessionId={currentSessionId}
+                  historyTopic={historyTopic}
                   selected={selectedSources}
                   onToggle={toggleSource}
                   uploaded={uploadedSources}
-                  onUploaded={(rows) =>
-                    setUploadedSources((prev) => [...rows, ...prev])
-                  }
+                  onUploaded={mergeUploadedSourceRows}
+                  onRenamed={renameUploadedSourceRow}
+                  onRemoved={removeUploadedSourceRow}
+                  onCatalogChanged={refreshSourceCatalog}
                   loading={sourcesLoading}
+                  capability={sourcesCapability}
                 />
               </div>
               {liveGoal && (
@@ -413,9 +403,11 @@ export function WorkspaceLayout({ children }: { children: ReactNode }) {
               <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
                 {railTab === "artifacts" ? (
                   <StudioRail
+                    key={notebookScopeId}
                     sessionId={currentSessionId}
                     historyTopic={historyTopic}
                     selectedSources={selectedSources}
+                    selectedSourceIds={selectedSourceIds}
                   />
                 ) : (
                   <WorkspaceRuns

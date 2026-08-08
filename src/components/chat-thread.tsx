@@ -553,14 +553,17 @@ const EMPTY_GHOSTS: ReadonlyArray<GhostSpec> = Object.freeze([]);
 
 interface ChatThreadProps {
   hideFileOnlyAssistantMessages?: boolean;
+  allowAttachments?: boolean;
 }
 
 export function ChatThread({
   hideFileOnlyAssistantMessages = false,
+  allowAttachments = true,
 }: ChatThreadProps = {}) {
   return (
     <ChatThreadV2
       hideFileOnlyAssistantMessages={hideFileOnlyAssistantMessages}
+      allowAttachments={allowAttachments}
     />
   );
 }
@@ -1364,6 +1367,7 @@ function ThreadList({
 
 function ChatThreadV2({
   hideFileOnlyAssistantMessages = false,
+  allowAttachments = true,
 }: ChatThreadProps) {
   const { currentSessionId, historyTopic } = useSession();
   const threads = useRenderThreads(currentSessionId, historyTopic);
@@ -1513,6 +1517,7 @@ function ChatThreadV2({
         <Composer
           mountGhost={mountGhost}
           unmountGhost={unmountGhost}
+          allowAttachments={allowAttachments}
           failGhost={failGhost}
           completeGhost={completeGhost}
         />
@@ -1531,6 +1536,7 @@ interface ComposerProps {
   /** Tear down a ghost (used by the Retry path to clear a stale
    *  overlay before re-issuing the send). */
   unmountGhost: (clientMessageId: string) => void;
+  allowAttachments?: boolean;
   failGhost: (clientMessageId: string, error: Error) => void;
   completeGhost: (clientMessageId: string) => void;
 }
@@ -1538,6 +1544,7 @@ interface ComposerProps {
 function Composer({
   mountGhost,
   unmountGhost,
+  allowAttachments = true,
   failGhost,
   completeGhost,
 }: ComposerProps) {
@@ -1787,13 +1794,14 @@ function Composer({
   }, [cameraStream]);
 
   const addFiles = useCallback((files: FileList | File[]) => {
+    if (!allowAttachments) return;
     const newFiles: PendingFile[] = Array.from(files).map((file) => {
       const pf: PendingFile = { file, source: "upload" };
       if (file.type.startsWith("image/")) pf.preview = URL.createObjectURL(file);
       return pf;
     });
     setPendingFiles((prev) => [...prev, ...newFiles]);
-  }, []);
+  }, [allowAttachments]);
 
   const removeFile = useCallback((index: number) => {
     setPendingFiles((prev) => {
@@ -2124,6 +2132,7 @@ function Composer({
 
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
+      if (!allowAttachments) return;
       const items = e.clipboardData.items;
       const files: File[] = [];
       for (let i = 0; i < items.length; i++) {
@@ -2134,7 +2143,7 @@ function Composer({
       }
       if (files.length > 0) addFiles(files);
     },
-    [addFiles],
+    [addFiles, allowAttachments],
   );
 
   const handleKeyDown = useCallback(
@@ -2175,7 +2184,9 @@ function Composer({
         onDrop={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          if (e.dataTransfer.files.length > 0) addFiles(e.dataTransfer.files);
+          if (allowAttachments && e.dataTransfer.files.length > 0) {
+            addFiles(e.dataTransfer.files);
+          }
         }}
       >
         {cmdFeedback && (
@@ -2275,16 +2286,18 @@ function Composer({
           </div>
         )}
         <div className="chat-composer-frame composer-shell animate-shell-rise flex flex-col rounded-[12px] p-2">
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={(e) => {
-              if (e.target.files) addFiles(e.target.files);
-              e.target.value = "";
-            }}
-          />
+          {allowAttachments && (
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files) addFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+          )}
           {/* Top row: text input + send */}
           <div className="flex items-end gap-1.5">
             <textarea
@@ -2341,53 +2354,57 @@ function Composer({
           </div>
           {/* Bottom row: media buttons */}
           <div className="chat-composer-toolbar composer-toolbar mt-2 flex items-center gap-0.5 px-1 pt-2">
-            <button
-              data-testid="attach-button"
-              aria-label="Attach file"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={recording !== null}
-              className="glass-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] disabled:opacity-30"
-              title="Attach files"
-            >
-              <Paperclip size={16} />
-            </button>
-            <button
-              data-testid="voice-button"
-              onClick={() => (recording === "voice" ? stopRecording() : startRecording("voice"))}
-              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] ${
-                recording === "voice"
-                  ? "bg-red-600 text-white animate-pulse"
-                  : "glass-icon-button"
-              } ${recording === "video" ? "opacity-30 pointer-events-none" : ""}`}
-              title={recording === "voice" ? "Stop recording" : "Record voice"}
-            >
-              {recording === "voice" ? <StopCircle size={16} /> : <Mic size={16} />}
-            </button>
-            <button
-              data-testid="video-button"
-              onClick={() => (recording === "video" ? stopRecording() : startRecording("video"))}
-              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] ${
-                recording === "video"
-                  ? "bg-red-600 text-white animate-pulse"
-                  : "glass-icon-button"
-              } ${recording === "voice" ? "opacity-30 pointer-events-none" : ""}`}
-              title={recording === "video" ? "Stop recording" : "Record video"}
-            >
-              {recording === "video" ? <StopCircle size={16} /> : <Video size={16} />}
-            </button>
-            <button
-              data-testid="camera-button"
-              onClick={cameraStream ? capturePhoto : openCamera}
-              disabled={recording !== null}
-              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] ${
-                cameraStream
-                  ? "bg-green-600 text-white hover:bg-green-700"
-                  : "glass-icon-button"
-              } disabled:opacity-30`}
-              title={cameraStream ? "Take photo" : "Open camera"}
-            >
-              <Camera size={16} />
-            </button>
+            {allowAttachments && (
+              <>
+                <button
+                  data-testid="attach-button"
+                  aria-label="Attach file"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={recording !== null}
+                  className="glass-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] disabled:opacity-30"
+                  title="Attach files"
+                >
+                  <Paperclip size={16} />
+                </button>
+                <button
+                  data-testid="voice-button"
+                  onClick={() => (recording === "voice" ? stopRecording() : startRecording("voice"))}
+                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] ${
+                    recording === "voice"
+                      ? "bg-red-600 text-white animate-pulse"
+                      : "glass-icon-button"
+                  } ${recording === "video" ? "opacity-30 pointer-events-none" : ""}`}
+                  title={recording === "voice" ? "Stop recording" : "Record voice"}
+                >
+                  {recording === "voice" ? <StopCircle size={16} /> : <Mic size={16} />}
+                </button>
+                <button
+                  data-testid="video-button"
+                  onClick={() => (recording === "video" ? stopRecording() : startRecording("video"))}
+                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] ${
+                    recording === "video"
+                      ? "bg-red-600 text-white animate-pulse"
+                      : "glass-icon-button"
+                  } ${recording === "voice" ? "opacity-30 pointer-events-none" : ""}`}
+                  title={recording === "video" ? "Stop recording" : "Record video"}
+                >
+                  {recording === "video" ? <StopCircle size={16} /> : <Video size={16} />}
+                </button>
+                <button
+                  data-testid="camera-button"
+                  onClick={cameraStream ? capturePhoto : openCamera}
+                  disabled={recording !== null}
+                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] ${
+                    cameraStream
+                      ? "bg-green-600 text-white hover:bg-green-700"
+                      : "glass-icon-button"
+                  } disabled:opacity-30`}
+                  title={cameraStream ? "Take photo" : "Open camera"}
+                >
+                  <Camera size={16} />
+                </button>
+              </>
+            )}
             {/* Mode indicator badges. Wave4-A: `queueDepth` is the live
                 count of turns parked behind the in-flight gate (see
                 `ui-protocol-send.ts`); we render it whenever a queued

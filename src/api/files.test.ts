@@ -26,6 +26,23 @@ describe("buildFileUrl", () => {
     ).toBe("/api/files/skill-output%2Freport.md");
   });
 
+  it("includes session context for opaque workspace handles", () => {
+    expect(
+      buildFileUrl("ws/cXVpei5tZA/quiz.md", { sessionId: "web-abc" }),
+    ).toBe(
+      "/api/files?path=ws%2FcXVpei5tZA%2Fquiz.md&session=web-abc",
+    );
+  });
+
+  it("uses the query endpoint for absolute workspace artifact paths", () => {
+    expect(
+      buildFileUrl(
+        "/Users/alan0x/.octos/profiles/alan0x/data/users/web-abc/workspace/notebook-outputs/study/quiz/quiz.md",
+        { sessionId: "web-abc" },
+      ),
+    ).toBe("/api/files?path=%2FUsers%2Falan0x%2F.octos%2Fprofiles%2Falan0x%2Fdata%2Fusers%2Fweb-abc%2Fworkspace%2Fnotebook-outputs%2Fstudy%2Fquiz%2Fquiz.md&session=web-abc");
+  });
+
   it("appends auth tokens after existing session query parameters", () => {
     localStorage.setItem(TOKEN_KEY, "abc 123");
 

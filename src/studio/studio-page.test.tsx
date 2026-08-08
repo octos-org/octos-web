@@ -1,8 +1,11 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
   screen,
+  waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -15,8 +18,22 @@ import type { ReactNode } from "react";
 // ---------------------------------------------------------------------------
 
 const sendMessageMock = vi.hoisted(() => vi.fn());
+const beforeSendResultMock = vi.hoisted(() => vi.fn());
 const uploadFilesMock = vi.hoisted(() =>
   vi.fn(async () => ["research/up.pdf"]),
+);
+const invokeSkillActionMock = vi.hoisted(() =>
+  vi.fn(async () => ({
+    action_id: "source.import",
+    ok: true,
+    materialized_paths: ["uploads/up.pdf"],
+    results: [{ success: true, output: "captured" }],
+  })),
+);
+const listSkillActionJobsMock = vi.hoisted(() => vi.fn(async () => []));
+const loadSourceCatalogMock = vi.hoisted(() => vi.fn(async () => []));
+const listSkillActionsMock = vi.hoisted(() =>
+  vi.fn(),
 );
 const fileFixtures = vi.hoisted(() => [
   {
@@ -47,9 +64,38 @@ const fileFixtures = vi.hoisted(() => [
 ]);
 const loadSessionFilesMock = vi.hoisted(() => vi.fn(async () => {}));
 
-vi.mock("@/components/chat-thread", () => ({
-  ChatThread: () => <div data-testid="chat-thread-stub" />,
-}));
+vi.mock("@/components/chat-thread", async () => {
+  const React = await import("react");
+  const { SessionContext } = await import("@/runtime/session-context");
+  return {
+    ChatThread: (props: { allowAttachments?: boolean }) => {
+      const session = React.useContext(SessionContext);
+      return (
+        <>
+          <div
+            data-testid="chat-thread-stub"
+            data-allow-attachments={String(props.allowAttachments)}
+          />
+          <button
+            type="button"
+            data-testid="chat-before-send-probe"
+            onClick={() => {
+              if (!session.beforeSend) return;
+              void Promise.resolve(
+                session.beforeSend({
+                  sessionId: "web-abc",
+                  text: "probe",
+                  requestText: "probe",
+                  media: ["composer.png"],
+                }),
+              ).then(beforeSendResultMock);
+            }}
+          />
+        </>
+      );
+    },
+  };
+});
 vi.mock("@/components/ui-protocol-approval-host", () => ({
   UiProtocolApprovalHost: () => null,
 }));
@@ -73,9 +119,64 @@ vi.mock("@/store/file-store", () => ({
 vi.mock("@/api/chat", () => ({
   uploadFiles: uploadFilesMock,
 }));
+vi.mock("@/api/skill-actions", () => ({
+  invokeSkillAction: invokeSkillActionMock,
+  listSkillActions: listSkillActionsMock,
+  listSkillActionJobs: listSkillActionJobsMock,
+  skillActionScopeId: (sessionId: string, topic?: string) =>
+    topic?.trim() && !sessionId.includes("#")
+      ? `${sessionId}#${topic.trim()}`
+      : sessionId,
+}));
+vi.mock("./source-store", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./source-store")>();
+  return { ...actual, loadSourceCatalog: loadSourceCatalogMock };
+});
 
 import { STUDIO_SKILLS } from "./skills";
 import { StudioPage } from "./studio-page";
+
+function readySourceJob(overrides: Record<string, unknown> = {}) {
+  return {
+    job_id: "job-photo",
+    batch_id: "batch-photo",
+    profile_id: "alan0x",
+    session_id: "web-abc",
+    action_id: "source.import",
+    skill_id: "mofa-notebook-source",
+    status: "succeeded",
+    input_path: "upload-handle-photo",
+    filename: "photo.jpg",
+    materialized_path: "uploads/photo.jpg",
+    source_id: "photo",
+    source_path: "notebook-sources/photo/source.md",
+    metadata_path: "notebook-sources/photo/metadata.json",
+    created_at: "2026-07-09T01:00:00Z",
+    updated_at: "2026-07-09T01:02:00Z",
+    ...overrides,
+  };
+}
+
+function mockSourceImportJobs(jobs: unknown[] = [readySourceJob()]) {
+  listSkillActionJobsMock.mockImplementation(
+    (_sessionId: string, options?: { actionId?: string }) =>
+      Promise.resolve(options?.actionId === "source.import" ? jobs : []),
+  );
+  loadSourceCatalogMock.mockResolvedValue(
+    (jobs as ReturnType<typeof readySourceJob>[])
+      .filter((job) => job.status === "succeeded" && job.source_id)
+      .map((job) => ({
+        sourceId: job.source_id,
+        filename: job.filename,
+        path: job.source_path,
+        sourcePath: job.source_path,
+        inputPath: job.materialized_path,
+        previewPath: job.materialized_path,
+        timestamp: Date.parse(job.updated_at),
+        status: "ready",
+      })),
+  );
+}
 
 function renderStudio(path = "/studio/web-abc") {
   return render(
@@ -97,18 +198,130 @@ beforeEach(() => {
     JSON.stringify({ sources: true, rail: true }),
   );
   sendMessageMock.mockReset();
+  beforeSendResultMock.mockReset();
   loadSessionFilesMock.mockClear();
   uploadFilesMock.mockClear();
   uploadFilesMock.mockResolvedValue(["research/up.pdf"]);
+  invokeSkillActionMock.mockClear();
+  listSkillActionsMock.mockReset();
+  listSkillActionsMock.mockImplementation(
+    (_sessionId: string, surface?: string) =>
+      Promise.resolve(
+        (surface === "studio.sources"
+          ? [
+              ["source.list", "List sources"],
+              ["source.import", "Import source"],
+              ["source.rename", "Rename source"],
+              ["source.remove", "Remove source"],
+            ]
+          : [
+              ["video_overview.generate", "Video Overview"],
+              ["mindmap.generate", "Mind Map"],
+              ["reports.generate", "Reports"],
+              ["flashcards.generate", "Flashcards"],
+              ["quiz.generate", "Quiz"],
+              ["data_table.generate", "Data Table"],
+            ]
+        ).map(([id, label]) => ({
+          id,
+          skill_id: "test-skill",
+          label,
+          tags: ["notebook"],
+          surfaces: [surface ?? "studio.skills"],
+          input_schema: {},
+          execution: "background",
+          available: true,
+        })),
+      ),
+  );
+  listSkillActionJobsMock.mockClear();
+  listSkillActionJobsMock.mockResolvedValue([]);
+  loadSourceCatalogMock.mockReset();
+  loadSourceCatalogMock.mockResolvedValue([
+    {
+      sourceId: "notes",
+      filename: "notes.md",
+      path: "notebook-sources/notes/source.md",
+      sourcePath: "notebook-sources/notes/source.md",
+      inputPath: "research/notes.md",
+      previewPath: "research/notes.md",
+      timestamp: 2000,
+      status: "ready",
+    },
+  ]);
+  invokeSkillActionMock.mockResolvedValue({
+    action_id: "source.import",
+    ok: true,
+    materialized_paths: ["uploads/up.pdf"],
+    results: [{ success: true, output: "captured" }],
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      blob: async () => new Blob(["preview"]),
+    })),
+  );
+  Object.defineProperty(URL, "createObjectURL", {
+    configurable: true,
+    value: vi.fn(() => "blob:studio-preview"),
+  });
+  Object.defineProperty(URL, "revokeObjectURL", {
+    configurable: true,
+    value: vi.fn(),
+  });
 });
 
 afterEach(() => {
   cleanup();
   localStorage.clear();
+  vi.unstubAllGlobals();
 });
 
 describe("StudioPage", () => {
-  it("renders the 3-pane workspace with the pinned chat and session sources", () => {
+  it("gates the Sources surface when the scoped action contract is incomplete", async () => {
+    listSkillActionsMock.mockImplementation(
+      (_sessionId: string, surface?: string) =>
+        Promise.resolve(
+          surface === "studio.sources"
+            ? [
+                {
+                  id: "source.list",
+                  skill_id: "mofa-notebook-source",
+                  label: "List sources",
+                  tags: ["notebook"],
+                  surfaces: ["studio.sources"],
+                  input_schema: {},
+                  execution: "sync",
+                  available: true,
+                },
+              ]
+            : [],
+        ),
+    );
+
+    renderStudio();
+
+    const sourcesPane = within(screen.getByTestId("studio-sources-pane"));
+    expect(
+      await sourcesPane.findByText("Notebook Sources unavailable"),
+    ).toBeTruthy();
+    expect(sourcesPane.queryByTestId("studio-upload-input")).toBeNull();
+    expect(loadSourceCatalogMock).not.toHaveBeenCalled();
+    expect(listSkillActionJobsMock).not.toHaveBeenCalledWith(
+      "web-abc",
+      { actionId: "source.import" },
+      undefined,
+    );
+    expect(listSkillActionJobsMock).not.toHaveBeenCalledWith(
+      "web-abc",
+      {},
+      undefined,
+    );
+  });
+
+  it("renders the 3-pane workspace with the pinned chat and catalog sources", async () => {
     localStorage.setItem(
       "octos_session_titles",
       JSON.stringify({ "web-abc": "My Research" }),
@@ -117,17 +330,22 @@ describe("StudioPage", () => {
 
     expect(screen.getByTestId("studio-page")).toBeTruthy();
     expect(screen.getByTestId("chat-thread-stub")).toBeTruthy();
+    expect(
+      screen
+        .getByTestId("chat-thread-stub")
+        .getAttribute("data-allow-attachments"),
+    ).toBe("false");
     expect(screen.getByTestId("studio-sources-pane")).toBeTruthy();
     expect(screen.getByTestId("studio-rail")).toBeTruthy();
     expect(screen.getByTestId("studio-title").textContent).toBe("My Research");
 
-    // Session-scoped source rows from the file-store fixtures.
-    expect(screen.getAllByText("notes.md").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("chart.png").length).toBeGreaterThan(0);
-    // Files from other sessions never leak in.
-    expect(screen.queryByText("other.md")).toBeNull();
+    // Ready rows come from the authoritative source catalog.
+    const sourcesPane = within(screen.getByTestId("studio-sources-pane"));
+    expect(await sourcesPane.findByText("notes.md")).toBeTruthy();
+    expect(sourcesPane.queryByText("chart.png")).toBeNull();
+    expect(sourcesPane.queryByText("other.md")).toBeNull();
 
-    expect(loadSessionFilesMock).toHaveBeenCalledWith("web-abc");
+    expect(loadSourceCatalogMock).toHaveBeenCalledWith("web-abc", undefined);
   });
 
   it("falls back to the default title when none is stored", () => {
@@ -143,93 +361,410 @@ describe("StudioPage", () => {
     expect(screen.queryByTestId("studio-page")).toBeNull();
   });
 
-  it("updates the grounding footer when a source is checked", () => {
+  it("updates the grounding footer when a catalog source is checked", async () => {
     renderStudio();
 
     expect(screen.queryByText(/source/, { selector: "p" })).toBeNull();
-    fireEvent.click(screen.getByLabelText("Use notes.md as source"));
+    fireEvent.click(await screen.findByLabelText("Use notes.md as source"));
     expect(
-      screen.getByText(/1 source attach to your next message/),
-    ).toBeTruthy();
-
-    fireEvent.click(screen.getByLabelText("Use chart.png as source"));
-    expect(
-      screen.getByText(/2 sources attach to your next message/),
+      screen.getByText(/1 source selected for notebook grounding/),
     ).toBeTruthy();
 
     // Unchecking drops it back down.
-    fireEvent.click(screen.getByLabelText("Use chart.png as source"));
+    fireEvent.click(screen.getByLabelText("Use notes.md as source"));
+    expect(screen.queryByText(/source selected for notebook grounding/)).toBeNull();
+  });
+
+  it("adds only checked catalog sources to the next chat turn", async () => {
+    renderStudio();
+    fireEvent.click(await screen.findByLabelText("Use notes.md as source"));
+    fireEvent.click(screen.getByTestId("chat-before-send-probe"));
+
+    await waitFor(() => {
+      expect(beforeSendResultMock).toHaveBeenCalledWith({
+        sessionId: "web-abc",
+        text: "probe",
+        requestText: "probe",
+        media: ["composer.png", "notebook-sources/notes/source.md"],
+      });
+    });
+  });
+
+  it("does not treat unclassified session files as sources", async () => {
+    loadSourceCatalogMock.mockResolvedValue([]);
+    renderStudio();
+
+    const sourcesPane = within(screen.getByTestId("studio-sources-pane"));
+    await waitFor(() => {
+      expect(sourcesPane.queryByText("notes.md")).toBeNull();
+    });
+    expect(sourcesPane.queryByText("chart.png")).toBeNull();
+  });
+
+  it("keeps ordinary session artifacts and deduplicates skill job handles", async () => {
+    listSkillActionJobsMock.mockImplementation(
+      (_sessionId: string, options?: { actionId?: string }) =>
+        Promise.resolve(
+          options?.actionId === "source.import"
+            ? []
+            : [
+                {
+                  job_id: "job-notes",
+                  batch_id: "batch-notes",
+                  profile_id: "alan0x",
+                  session_id: "web-abc",
+                  action_id: "reports.generate",
+                  skill_id: "mofa-notebook-study",
+                  status: "succeeded",
+                  result: {
+                    artifacts: [
+                      {
+                        handle: "research/notes.md",
+                        display_name: "notes.md",
+                        media_type: "text/markdown",
+                        size: 42,
+                      },
+                    ],
+                  },
+                  created_at: "2026-07-09T01:00:00Z",
+                  updated_at: "2026-07-09T01:01:00Z",
+                },
+              ],
+        ),
+    );
+
+    renderStudio();
+
+    const rail = within(screen.getByTestId("studio-rail"));
+    expect(await rail.findAllByText("notes.md")).toHaveLength(1);
+    expect(rail.getByText("chart.png")).toBeTruthy();
     expect(
-      screen.getByText(/1 source attach to your next message/),
+      await rail.findByRole("button", { name: "Preview notes.md" }),
     ).toBeTruthy();
   });
 
-  it("sends the skill prompt through the bridge when a tile is clicked", () => {
+  it("renders notebook-style studio skills from the installed notebook skill set", () => {
     renderStudio();
 
-    const deepResearch = STUDIO_SKILLS.find((s) => s.id === "deep-research");
-    expect(deepResearch).toBeDefined();
+    expect(STUDIO_SKILLS.map((skill) => skill.label)).toEqual([
+      "Audio Overview",
+      "Slide Deck",
+      "Video Overview",
+      "Mind Map",
+      "Reports",
+      "Flashcards",
+      "Quiz",
+      "Infographic",
+      "Data Table",
+    ]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Deep Research" }));
-    expect(sendMessageMock).toHaveBeenCalledTimes(1);
-    expect(sendMessageMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionId: "web-abc",
-        text: deepResearch?.prompt,
-        media: [],
-      }),
-    );
+    const studioRail = within(screen.getByTestId("studio-rail"));
+    for (const skill of STUDIO_SKILLS) {
+      expect(
+        studioRail.getByRole("button", { name: new RegExp(skill.label) }),
+      ).toBeTruthy();
+    }
   });
 
-  it("disables requiresSources skills until a source is selected", () => {
+  it("invokes a notebook skill action with selected imported source ids", async () => {
+    mockSourceImportJobs();
+    invokeSkillActionMock.mockResolvedValueOnce({
+      action_id: "quiz.generate",
+      ok: true,
+      execution: "background",
+      queued: 1,
+      batch_id: "batch-quiz",
+      jobs: [
+        {
+          job_id: "job-quiz",
+          batch_id: "batch-quiz",
+          profile_id: "alan0x",
+          session_id: "web-abc",
+          action_id: "quiz.generate",
+          skill_id: "mofa-notebook-study",
+          status: "running",
+          created_at: "2026-07-09T01:00:00Z",
+          updated_at: "2026-07-09T01:00:00Z",
+        },
+      ],
+    });
+
     renderStudio();
+    await screen.findByText("photo.jpg");
+    fireEvent.click(screen.getByLabelText("Use photo.jpg as source"));
 
-    const dataViz = screen.getByRole("button", {
-      name: "Data Viz",
-    }) as HTMLButtonElement;
-    expect(dataViz.disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Quiz" }));
 
-    fireEvent.click(dataViz);
+    await waitFor(() => {
+      expect(invokeSkillActionMock).toHaveBeenCalledWith(
+        "web-abc",
+        "quiz.generate",
+        { source_ids: ["photo"] },
+        undefined,
+      );
+    });
     expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(
+      within(screen.getByTestId("studio-rail")).getByText("Running"),
+    ).toBeTruthy();
+  });
 
-    fireEvent.click(screen.getByLabelText("Use notes.md as source"));
-    const dataVizEnabled = screen.getByRole("button", {
-      name: "Data Viz",
+  it("previews and downloads artifacts from completed studio action jobs", async () => {
+    mockSourceImportJobs();
+    invokeSkillActionMock.mockResolvedValueOnce({
+      action_id: "quiz.generate",
+      ok: true,
+      execution: "background",
+      queued: 1,
+      batch_id: "batch-quiz",
+      jobs: [
+        {
+          job_id: "job-quiz",
+          batch_id: "batch-quiz",
+          profile_id: "alan0x",
+          session_id: "web-abc",
+          action_id: "quiz.generate",
+          skill_id: "mofa-notebook-study",
+          status: "running",
+          created_at: "2026-07-09T01:00:00Z",
+          updated_at: "2026-07-09T01:00:00Z",
+        },
+      ],
+    });
+
+    renderStudio();
+    await screen.findByText("photo.jpg");
+    fireEvent.click(screen.getByLabelText("Use photo.jpg as source"));
+    fireEvent.click(screen.getByRole("button", { name: "Quiz" }));
+
+    fireEvent(
+      window,
+      new CustomEvent("crew:skill_action_job_updated", {
+        detail: {
+          job_id: "job-quiz",
+          batch_id: "batch-quiz",
+          profile_id: "alan0x",
+          session_id: "web-abc",
+          action_id: "quiz.generate",
+          skill_id: "mofa-notebook-study",
+          status: "succeeded",
+          result: {
+            artifacts: [
+              {
+                handle: "ws/bm90ZWJvb2stb3V0cHV0cy9xdWl6Lm1k/quiz.md",
+                display_name: "quiz.md",
+                media_type: "text/markdown",
+                size: 42,
+              },
+            ],
+          },
+          created_at: "2026-07-09T01:00:00Z",
+          updated_at: "2026-07-09T01:01:00Z",
+        },
+      }),
+    );
+
+    expect(await screen.findByText("quiz.md")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Preview quiz.md" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Download quiz.md" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview quiz.md" }));
+    const preview = await screen.findByTitle("quiz.md asset preview");
+    expect(preview.getAttribute("src")).toBe("blob:studio-preview");
+
+    const appendChild = vi.spyOn(document.body, "appendChild");
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    fireEvent.click(screen.getByRole("button", { name: "Download quiz.md" }));
+    await waitFor(() => expect(appendChild).toHaveBeenCalled());
+    expect((appendChild.mock.calls[0][0] as HTMLAnchorElement).download).toBe("quiz.md");
+  });
+
+  it("restores persisted generated assets after a page refresh", async () => {
+    listSkillActionJobsMock.mockImplementation(
+      (_sessionId: string, options?: { actionId?: string }) =>
+        Promise.resolve(
+          options?.actionId === "source.import"
+            ? []
+            : [
+                {
+                  job_id: "job-restored-quiz",
+                  batch_id: "batch-restored-quiz",
+                  profile_id: "alan0x",
+                  session_id: "web-abc",
+                  action_id: "quiz.generate",
+                  skill_id: "mofa-notebook-study",
+                  status: "succeeded",
+                  result: {
+                    artifacts: [
+                      {
+                        handle: "ws/cmVzdG9yZWQtcXVpei5tZA/restored-quiz.md",
+                        display_name: "restored-quiz.md",
+                        media_type: "text/markdown",
+                        size: 42,
+                      },
+                    ],
+                  },
+                  created_at: "2026-07-09T01:00:00Z",
+                  updated_at: "2026-07-09T01:01:00Z",
+                },
+              ],
+        ),
+    );
+
+    renderStudio();
+
+    expect(await screen.findByText("restored-quiz.md")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Preview restored-quiz.md" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Download restored-quiz.md" }),
+    ).toBeTruthy();
+  });
+
+  it("ignores a generated job response from before a bridge reconnect", async () => {
+    let resolveStaleRestore!: (value: unknown[]) => void;
+    const staleRestore = new Promise<unknown[]>((resolve) => {
+      resolveStaleRestore = resolve;
+    });
+    let generatedRestoreCount = 0;
+    listSkillActionJobsMock.mockImplementation(
+      (_sessionId: string, options?: { actionId?: string }) => {
+        if (options?.actionId === "source.import") return Promise.resolve([]);
+        generatedRestoreCount += 1;
+        return generatedRestoreCount === 1
+          ? staleRestore
+          : Promise.resolve([]);
+      },
+    );
+
+    renderStudio();
+    await waitFor(() => expect(generatedRestoreCount).toBe(1));
+
+    fireEvent(window, new Event("crew:bridge_connected"));
+    await waitFor(() => expect(generatedRestoreCount).toBe(2));
+
+    await act(async () => {
+      resolveStaleRestore([
+        {
+          job_id: "stale-generated-job",
+          batch_id: "stale-generated-batch",
+          profile_id: "alan0x",
+          session_id: "web-abc",
+          action_id: "quiz.generate",
+          skill_id: "mofa-notebook-study",
+          status: "running",
+          created_at: "2026-07-09T01:00:00Z",
+          updated_at: "2026-07-09T01:01:00Z",
+        },
+      ]);
+      await staleRestore;
+    });
+
+    expect(screen.queryByText("Running")).toBeNull();
+  });
+
+  it("disables source-required action skills until a source is selected", () => {
+    renderStudio();
+
+    const dataTable = screen.getByRole("button", {
+      name: "Data Table",
     }) as HTMLButtonElement;
-    expect(dataVizEnabled.disabled).toBe(false);
+    expect(dataTable.disabled).toBe(true);
 
-    fireEvent.click(dataVizEnabled);
-    const dataVizSkill = STUDIO_SKILLS.find((s) => s.id === "data-viz");
-    // The selected source MUST ride along as turn media: skill sends
-    // bypass the composer (and therefore beforeSend), so the rail
-    // attaches the selection itself.
-    expect(sendMessageMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionId: "web-abc",
-        text: dataVizSkill?.prompt,
-        media: ["research/notes.md"],
-      }),
-    );
+    fireEvent.click(dataTable);
+    expect(invokeSkillActionMock).not.toHaveBeenCalled();
   });
 
-  it("attaches the selection to every skill send, not just gated ones", () => {
+  it("runs notebook actions directly without creating a chat message", async () => {
+    mockSourceImportJobs();
+    invokeSkillActionMock.mockResolvedValueOnce({
+      action_id: "mindmap.generate",
+      ok: true,
+      execution: "background",
+      queued: 0,
+      jobs: [],
+    });
     renderStudio();
+    await screen.findByText("photo.jpg");
+    fireEvent.click(screen.getByLabelText("Use photo.jpg as source"));
 
-    fireEvent.click(screen.getByLabelText("Use notes.md as source"));
-    fireEvent.click(screen.getByRole("button", { name: "Deep Research" }));
+    fireEvent.click(screen.getByRole("button", { name: "Mind Map" }));
 
-    expect(sendMessageMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionId: "web-abc",
-        media: ["research/notes.md"],
-      }),
+    await waitFor(() =>
+      expect(invokeSkillActionMock).toHaveBeenCalledWith(
+        "web-abc",
+        "mindmap.generate",
+        { source_ids: ["photo"] },
+        undefined,
+      ),
     );
+    expect(sendMessageMock).not.toHaveBeenCalled();
   });
 
-  it("uploads sources, lists them, and auto-selects them for grounding", async () => {
+  it("ignores an action response from before a bridge reconnect", async () => {
+    mockSourceImportJobs();
+    let resolveAction!: (value: Record<string, unknown>) => void;
+    invokeSkillActionMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveAction = resolve;
+      }),
+    );
+
+    renderStudio();
+    await screen.findByText("photo.jpg");
+    fireEvent.click(screen.getByLabelText("Use photo.jpg as source"));
+    fireEvent.click(screen.getByRole("button", { name: "Quiz" }));
+    await waitFor(() => expect(invokeSkillActionMock).toHaveBeenCalled());
+
+    fireEvent(window, new Event("crew:bridge_connected"));
+    await act(async () => {
+      resolveAction({
+        action_id: "quiz.generate",
+        ok: true,
+        jobs: [
+          {
+            job_id: "stale-job",
+            batch_id: "stale-batch",
+            profile_id: "alan0x",
+            session_id: "web-abc",
+            action_id: "quiz.generate",
+            skill_id: "mofa-notebook-study",
+            status: "running",
+            created_at: "2026-07-09T01:00:00Z",
+            updated_at: "2026-07-09T01:00:00Z",
+          },
+        ],
+      });
+    });
+
+    expect(screen.queryByText("Running")).toBeNull();
+  });
+
+  it("uploads sources and shows the queued import without auto-selecting it", async () => {
+    invokeSkillActionMock.mockResolvedValueOnce({
+      action_id: "source.import",
+      ok: true,
+      queued: 1,
+      jobs: [
+        {
+          job_id: "job-up",
+          batch_id: "batch-up",
+          profile_id: "alan0x",
+          session_id: "web-abc",
+          action_id: "source.import",
+          skill_id: "mofa-notebook-source",
+          status: "queued",
+          input_path: "research/up.pdf",
+          filename: "up.pdf",
+          created_at: "2026-07-09T01:00:00Z",
+          updated_at: "2026-07-09T01:00:00Z",
+        },
+      ],
+    });
     renderStudio();
 
-    const input = screen.getByTestId("studio-upload-input");
+    const input = await screen.findByTestId("studio-upload-input");
     fireEvent.change(input, {
       target: {
         files: [new File(["hello"], "up.pdf", { type: "application/pdf" })],
@@ -238,13 +773,396 @@ describe("StudioPage", () => {
 
     await screen.findByText("up.pdf");
     expect(uploadFilesMock).toHaveBeenCalledTimes(1);
+    expect(invokeSkillActionMock).toHaveBeenCalledWith(
+      "web-abc",
+      "source.import",
+      {
+        paths: ["research/up.pdf"],
+      },
+      undefined,
+    );
 
     const checkbox = screen.getByLabelText(
       "Use up.pdf as source",
     ) as HTMLInputElement;
-    expect(checkbox.checked).toBe(true);
+    expect(checkbox.checked).toBe(false);
+    expect(checkbox.disabled).toBe(true);
+    expect(screen.queryByText(/source selected for notebook grounding/)).toBeNull();
+  });
+
+  it("renders a processing source row while a background import job runs", async () => {
+    uploadFilesMock.mockResolvedValue(["upload-handle-photo"]);
+    invokeSkillActionMock.mockResolvedValue({
+      action_id: "source.import",
+      ok: true,
+      queued: 1,
+      jobs: [
+        {
+          job_id: "job-photo",
+          batch_id: "batch-photo",
+          profile_id: "alan0x",
+          session_id: "web-abc",
+          action_id: "source.import",
+          skill_id: "mofa-notebook-source",
+          status: "queued",
+          input_path: "uploads/photo.jpg",
+          filename: "photo.jpg",
+          created_at: "2026-07-09T01:00:00Z",
+          updated_at: "2026-07-09T01:00:00Z",
+        },
+      ],
+    });
+
+    renderStudio();
+    fireEvent.change(await screen.findByTestId("studio-upload-input"), {
+      target: {
+        files: [new File(["image"], "photo.jpg", { type: "image/jpeg" })],
+      },
+    });
+
+    await screen.findByText("photo.jpg");
+    expect(screen.getByText("Processing")).toBeTruthy();
+    const checkbox = screen.getByLabelText(
+      "Use photo.jpg as source",
+    ) as HTMLInputElement;
+    expect(checkbox.disabled).toBe(true);
     expect(
-      screen.getByText(/1 source attach to your next message/),
+      screen.queryByText(/source selected for notebook grounding/),
+    ).toBeNull();
+  });
+
+  it("marks a processing source ready when its job succeeds", async () => {
+    uploadFilesMock.mockResolvedValue(["upload-handle-photo"]);
+    invokeSkillActionMock.mockResolvedValue({
+      action_id: "source.import",
+      ok: true,
+      queued: 1,
+      jobs: [
+        {
+          job_id: "job-photo",
+          batch_id: "batch-photo",
+          profile_id: "alan0x",
+          session_id: "web-abc",
+          action_id: "source.import",
+          skill_id: "mofa-notebook-source",
+          status: "running",
+          input_path: "uploads/photo.jpg",
+          filename: "photo.jpg",
+          created_at: "2026-07-09T01:00:00Z",
+          updated_at: "2026-07-09T01:00:00Z",
+        },
+      ],
+    });
+
+    renderStudio();
+    fireEvent.change(await screen.findByTestId("studio-upload-input"), {
+      target: {
+        files: [new File(["image"], "photo.jpg", { type: "image/jpeg" })],
+      },
+    });
+    await screen.findByText("Processing");
+
+    loadSourceCatalogMock.mockResolvedValue([
+      {
+        sourceId: "photo",
+        filename: "photo.jpg",
+        path: "notebook-sources/photo/source.md",
+        sourcePath: "notebook-sources/photo/source.md",
+        inputPath: "uploads/photo.jpg",
+        previewPath: "uploads/photo.jpg",
+        timestamp: Date.parse("2026-07-09T01:02:00Z"),
+        status: "ready",
+      },
+    ]);
+
+    fireEvent(
+      window,
+      new CustomEvent("crew:skill_action_job_updated", {
+        detail: {
+          job_id: "job-photo",
+          batch_id: "batch-photo",
+          profile_id: "alan0x",
+          session_id: "web-abc",
+          action_id: "source.import",
+          skill_id: "mofa-notebook-source",
+          status: "succeeded",
+          input_path: "uploads/photo.jpg",
+          filename: "photo.jpg",
+          source_id: "photo",
+          source_path: "notebook-sources/photo/source.md",
+          metadata_path: "notebook-sources/photo/metadata.json",
+          created_at: "2026-07-09T01:00:00Z",
+          updated_at: "2026-07-09T01:02:00Z",
+        },
+      }),
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByText("Processing")).toBeNull();
+    });
+    const checkbox = screen.getByLabelText(
+      "Use photo.jpg as source",
+    ) as HTMLInputElement;
+    expect(checkbox.disabled).toBe(false);
+    expect(checkbox.checked).toBe(false);
+    expect(screen.queryByText(/source selected for notebook grounding/)).toBeNull();
+  });
+
+  it("keeps a newly ready source when an older catalog request resolves last", async () => {
+    let resolveInitialCatalog: ((rows: unknown[]) => void) | undefined;
+    const initialCatalog = new Promise<unknown[]>((resolve) => {
+      resolveInitialCatalog = resolve;
+    });
+    const readyCatalog = [
+      {
+        sourceId: "photo",
+        filename: "photo.jpg",
+        path: "notebook-sources/photo/source.md",
+        sourcePath: "notebook-sources/photo/source.md",
+        inputPath: "uploads/photo.jpg",
+        previewPath: "uploads/photo.jpg",
+        timestamp: Date.parse("2026-07-09T01:02:00Z"),
+        status: "ready" as const,
+      },
+    ];
+    let catalogCalls = 0;
+    loadSourceCatalogMock.mockImplementation(() => {
+      catalogCalls += 1;
+      return catalogCalls === 1 ? initialCatalog : Promise.resolve(readyCatalog);
+    });
+
+    renderStudio();
+    await waitFor(() => expect(catalogCalls).toBe(1));
+
+    fireEvent(
+      window,
+      new CustomEvent("crew:skill_action_job_updated", {
+        detail: readySourceJob(),
+      }),
+    );
+
+    await waitFor(() => expect(catalogCalls).toBe(2));
+    expect(await screen.findByText("photo.jpg")).toBeTruthy();
+
+    await act(async () => {
+      resolveInitialCatalog?.([]);
+      await initialCatalog;
+    });
+
+    expect(screen.getByText("photo.jpg")).toBeTruthy();
+  });
+
+  it("shows a failed source import job error", async () => {
+    uploadFilesMock.mockResolvedValue(["upload-handle-photo"]);
+    invokeSkillActionMock.mockResolvedValue({
+      action_id: "source.import",
+      ok: true,
+      queued: 1,
+      jobs: [
+        {
+          job_id: "job-photo",
+          batch_id: "batch-photo",
+          profile_id: "alan0x",
+          session_id: "web-abc",
+          action_id: "source.import",
+          skill_id: "mofa-notebook-source",
+          status: "running",
+          input_path: "uploads/photo.jpg",
+          filename: "photo.jpg",
+          created_at: "2026-07-09T01:00:00Z",
+          updated_at: "2026-07-09T01:00:00Z",
+        },
+      ],
+    });
+
+    renderStudio();
+    fireEvent.change(await screen.findByTestId("studio-upload-input"), {
+      target: {
+        files: [new File(["image"], "photo.jpg", { type: "image/jpeg" })],
+      },
+    });
+    await screen.findByText("Processing");
+
+    fireEvent(
+      window,
+      new CustomEvent("crew:skill_action_job_updated", {
+        detail: {
+          job_id: "job-photo",
+          batch_id: "batch-photo",
+          profile_id: "alan0x",
+          session_id: "web-abc",
+          action_id: "source.import",
+          skill_id: "mofa-notebook-source",
+          status: "failed",
+          input_path: "uploads/photo.jpg",
+          filename: "photo.jpg",
+          error: "Unsupported image payload",
+          created_at: "2026-07-09T01:00:00Z",
+          updated_at: "2026-07-09T01:02:00Z",
+        },
+      }),
+    );
+
+    expect(await screen.findByText("Failed")).toBeTruthy();
+    expect(screen.getByText("Unsupported image payload")).toBeTruthy();
+    const checkbox = screen.getByLabelText(
+      "Use photo.jpg as source",
+    ) as HTMLInputElement;
+    expect(checkbox.disabled).toBe(true);
+  });
+
+  it("does not offer local retry or dismissal for durable failed jobs", async () => {
+    mockSourceImportJobs([
+      readySourceJob({
+        status: "failed",
+        source_id: undefined,
+        source_path: undefined,
+        materialized_path: "uploads/photo.jpg",
+        error: "Temporary model failure",
+      }),
+    ]);
+    renderStudio();
+    await screen.findByText("Failed");
+    expect(screen.queryByLabelText("Source actions for photo.jpg")).toBeNull();
+    expect(screen.getByLabelText("Preview photo.jpg")).toBeTruthy();
+    expect(invokeSkillActionMock).not.toHaveBeenCalled();
+  });
+
+  it("restores processing source jobs after the bridge reconnects", async () => {
+    let sourceRestoreCount = 0;
+    listSkillActionJobsMock.mockImplementation(
+      (_sessionId: string, options?: { actionId?: string }) => {
+        if (options?.actionId !== "source.import") return Promise.resolve([]);
+        sourceRestoreCount += 1;
+        return Promise.resolve(sourceRestoreCount === 1 ? [] : [
+          {
+            job_id: "job-restored",
+            batch_id: "batch-restored",
+            profile_id: "alan0x",
+            session_id: "web-abc",
+            action_id: "source.import",
+            skill_id: "mofa-notebook-source",
+            status: "running",
+            input_path: "uploads/restored.pdf",
+            filename: "restored.pdf",
+            created_at: "2026-07-09T01:00:00Z",
+            updated_at: "2026-07-09T01:02:00Z",
+          },
+        ]);
+      },
+    );
+
+    renderStudio();
+    await waitFor(() =>
+      expect(listSkillActionJobsMock).toHaveBeenCalledWith(
+        "web-abc",
+        {
+          actionId: "source.import",
+        },
+        undefined,
+      ),
+    );
+
+    fireEvent(window, new Event("crew:bridge_connected"));
+
+    expect(await screen.findByText("restored.pdf")).toBeTruthy();
+    expect(screen.getByText("Processing")).toBeTruthy();
+    expect(listSkillActionJobsMock).toHaveBeenLastCalledWith(
+      "web-abc",
+      {
+        actionId: "source.import",
+      },
+      undefined,
+    );
+  });
+
+  it("previews the original uploaded file for an imported source", async () => {
+    mockSourceImportJobs();
+
+    renderStudio();
+
+    await screen.findByText("photo.jpg");
+    fireEvent.click(screen.getByLabelText("Preview photo.jpg"));
+
+    const image = await screen.findByAltText("photo.jpg source preview");
+    expect(image.getAttribute("src")).toBe("blob:studio-preview");
+    expect(image.getAttribute("src")).not.toContain("notebook-sources");
+  });
+
+  it("renames an imported source through the source rename action", async () => {
+    mockSourceImportJobs();
+    invokeSkillActionMock.mockResolvedValueOnce({
+      action_id: "source.rename",
+      ok: true,
+      results: [{ success: true, output: "renamed" }],
+    });
+
+    renderStudio();
+    await screen.findByText("photo.jpg");
+
+    fireEvent.click(screen.getByLabelText("Source actions for photo.jpg"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename source" }));
+    fireEvent.change(screen.getByLabelText("Rename source title"), {
+      target: { value: "Renamed Photo" },
+    });
+    loadSourceCatalogMock.mockResolvedValue([
+      {
+        sourceId: "photo",
+        filename: "Renamed Photo",
+        path: "notebook-sources/photo/source.md",
+        sourcePath: "notebook-sources/photo/source.md",
+        inputPath: "uploads/photo.jpg",
+        previewPath: "uploads/photo.jpg",
+        timestamp: Date.now(),
+        status: "ready",
+      },
+    ]);
+    fireEvent.click(screen.getByLabelText("Save source rename"));
+
+    await waitFor(() => {
+      expect(invokeSkillActionMock).toHaveBeenCalledWith(
+        "web-abc",
+        "source.rename",
+        { source_id: "photo", title: "Renamed Photo" },
+        undefined,
+      );
+    });
+    expect(await screen.findByText("Renamed Photo")).toBeTruthy();
+  });
+
+  it("removes an imported source through the source remove action", async () => {
+    mockSourceImportJobs();
+    invokeSkillActionMock.mockResolvedValueOnce({
+      action_id: "source.remove",
+      ok: true,
+      results: [{ success: true, output: "removed" }],
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderStudio();
+    await screen.findByText("photo.jpg");
+    fireEvent.click(screen.getByLabelText("Use photo.jpg as source"));
+    expect(
+      screen.getByText(/1 source selected for notebook grounding/),
     ).toBeTruthy();
+    loadSourceCatalogMock.mockResolvedValue([]);
+    fireEvent.click(screen.getByLabelText("Source actions for photo.jpg"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove source" }));
+
+    await waitFor(() => {
+      expect(invokeSkillActionMock).toHaveBeenCalledWith(
+        "web-abc",
+        "source.remove",
+        { source_id: "photo" },
+        undefined,
+      );
+    });
+    await waitFor(() => {
+      expect(screen.queryByText("photo.jpg")).toBeNull();
+      expect(
+        screen.queryByText(/source selected for notebook grounding/),
+      ).toBeNull();
+    });
+    confirm.mockRestore();
   });
 });

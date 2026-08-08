@@ -4,6 +4,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 
+const railInstances = vi.hoisted(() => ({ next: 0 }));
+
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
 
@@ -42,12 +44,43 @@ vi.mock("@/runtime/ui-protocol-runtime", () => ({
 }));
 
 vi.mock("@/studio/studio-sources-pane", () => ({
-  StudioSourcesPane: () => null,
+  StudioSourcesPane: ({
+    sessionId,
+    historyTopic,
+  }: {
+    sessionId: string;
+    historyTopic?: string;
+  }) => (
+    <div
+      data-testid="studio-sources-stub"
+      data-session-id={sessionId}
+      data-topic={historyTopic ?? ""}
+    />
+  ),
 }));
 
-vi.mock("@/studio/studio-rail", () => ({
-  StudioRail: () => null,
-}));
+vi.mock("@/studio/studio-rail", async () => {
+  const React = await import("react");
+  return {
+    StudioRail: ({
+      sessionId,
+      historyTopic,
+    }: {
+      sessionId: string;
+      historyTopic?: string;
+    }) => {
+      const [instance] = React.useState(() => ++railInstances.next);
+      return (
+        <div
+          data-testid="studio-rail-stub"
+          data-session-id={sessionId}
+          data-topic={historyTopic ?? ""}
+          data-instance={instance}
+        />
+      );
+    },
+  };
+});
 
 import { WorkspaceLayout } from "./workspace-layout";
 import {
@@ -113,6 +146,7 @@ async function mount(ctx: SessionContextValue = makeSessionCtx()): Promise<Mount
 
 beforeEach(() => {
   localStorage.clear();
+  railInstances.next = 0;
 });
 
 afterEach(() => {
@@ -160,6 +194,72 @@ describe("WorkspaceLayout", () => {
     click(runsTab);
     expect(runsTab.getAttribute("aria-selected")).toBe("true");
     expect(rail!.textContent).toContain("No runs yet");
+  });
+
+  it("remounts the artifact rail when the active session scope changes", async () => {
+    localStorage.setItem(
+      "octos-workspace-panes",
+      JSON.stringify({ sources: true, rail: true }),
+    );
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const renderWithSession = (sessionId: string, historyTopic?: string) =>
+      root.render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <SessionContext.Provider
+            value={makeSessionCtx({
+              sessions: [
+                { id: sessionId, message_count: 0, title: sessionId },
+              ],
+              currentSessionId: sessionId,
+              historyTopic,
+            })}
+          >
+            <WorkspaceLayout>
+              <div />
+            </WorkspaceLayout>
+          </SessionContext.Provider>
+        </MemoryRouter>,
+      );
+
+    await act(async () => {
+      renderWithSession("web-first");
+    });
+    const first = container.querySelector(
+      "[data-testid='studio-rail-stub']",
+    ) as HTMLElement;
+    expect(first.dataset.sessionId).toBe("web-first");
+    const firstInstance = first.dataset.instance;
+
+    await act(async () => {
+      renderWithSession("web-first", "slides");
+    });
+    const topic = container.querySelector(
+      "[data-testid='studio-rail-stub']",
+    ) as HTMLElement;
+    expect(topic.dataset.sessionId).toBe("web-first");
+    expect(topic.dataset.topic).toBe("slides");
+    expect(topic.dataset.instance).not.toBe(firstInstance);
+    expect(
+      (
+        container.querySelector(
+          "[data-testid='studio-sources-stub']",
+        ) as HTMLElement
+      ).dataset.topic,
+    ).toBe("slides");
+    const topicInstance = topic.dataset.instance;
+
+    await act(async () => {
+      renderWithSession("web-second");
+    });
+    const second = container.querySelector(
+      "[data-testid='studio-rail-stub']",
+    ) as HTMLElement;
+    expect(second.dataset.sessionId).toBe("web-second");
+    expect(second.dataset.instance).not.toBe(topicInstance);
+
+    mounted.push({ container, root });
   });
 
   it("injects a beforeSend that merges selected sources into turn media", async () => {

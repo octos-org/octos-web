@@ -14,12 +14,12 @@ import {
   type SessionContextValue,
   type SessionSendRequest,
 } from "@/runtime/session-context";
-import { loadSessionFiles } from "@/store/file-store";
 import { recordProjectOpened } from "@/store/project-store";
 
-import { mergeSourceMedia, type SourceRow } from "./source-media";
+import { mergeSourceMedia } from "./source-media";
 import { StudioRail } from "./studio-rail";
 import { StudioSourcesPane } from "./studio-sources-pane";
+import { useNotebookSources } from "./use-notebook-sources";
 
 const TITLE_STORAGE_KEY = "octos_session_titles";
 const PANES_STORAGE_KEY = "octos-studio-panes";
@@ -121,9 +121,18 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
       return next;
     });
   }, []);
-  const [selectedSources, setSelectedSources] = useState<string[]>([]);
-  const [uploadedSources, setUploadedSources] = useState<SourceRow[]>([]);
-  const [sourcesLoading, setSourcesLoading] = useState(true);
+  const {
+    selectedSources,
+    uploadedSources,
+    sourcesLoading,
+    sourcesCapability,
+    selectedSourceIds,
+    toggleSource,
+    mergeUploadedSourceRows,
+    renameUploadedSourceRow,
+    removeUploadedSourceRow,
+    refreshSourceCatalog,
+  } = useNotebookSources(projectId);
 
   // Title: seed from localStorage, then track the runtime-provider's
   // `crew:session_title_updated` window event (detail is the bridge's
@@ -156,27 +165,8 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
     };
   }, [projectId]);
 
-
-
-  // Session files feed the Sources pane and the Generated Assets list.
-  useEffect(() => {
-    let cancelled = false;
-    void Promise.resolve(loadSessionFiles(projectId)).finally(() => {
-      if (!cancelled) setSourcesLoading(false);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId]);
-
-  const toggleSource = useCallback((path: string) => {
-    setSelectedSources((prev) =>
-      prev.includes(path) ? prev.filter((p) => p !== path) : [...prev, path],
-    );
-  }, []);
-
-  // Sources grounding: checked sources ride along as turn media on the
-  // next send, deduped against anything the composer already attached.
+  // The composer has no attachment picker in Studio, but checked catalog
+  // sources still have to enter this turn's grounding context explicitly.
   const beforeSend = useCallback(
     async (request: SessionSendRequest): Promise<SessionBeforeSendResult> => {
       return {
@@ -277,10 +267,12 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
                   selected={selectedSources}
                   onToggle={toggleSource}
                   uploaded={uploadedSources}
-                  onUploaded={(rows) =>
-                    setUploadedSources((prev) => [...rows, ...prev])
-                  }
+                  onUploaded={mergeUploadedSourceRows}
+                  onRenamed={renameUploadedSourceRow}
+                  onRemoved={removeUploadedSourceRow}
+                  onCatalogChanged={refreshSourceCatalog}
                   loading={sourcesLoading}
+                  capability={sourcesCapability}
                 />
               </aside>
             )}
@@ -297,7 +289,7 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
                 </p>
               </div>
               <div className="min-h-0 flex-1 overflow-hidden">
-                <ChatThread />
+                <ChatThread allowAttachments={false} />
               </div>
               <p className="shrink-0 pb-2 text-center font-label text-[11px] tracking-[0.05em] text-muted">
                 AI responses may vary. Please verify important information.
@@ -320,6 +312,7 @@ function StudioWorkspace({ projectId }: { projectId: string }) {
                 <StudioRail
                   sessionId={projectId}
                   selectedSources={selectedSources}
+                  selectedSourceIds={selectedSourceIds}
                 />
               </aside>
             )}

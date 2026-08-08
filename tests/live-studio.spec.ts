@@ -53,7 +53,7 @@ test("live: real chat turn on /chat", async ({ page }) => {
   expect(reply).toContain("CHAT-LIVE-OK");
 });
 
-test("live: full studio journey — create, converse, ground on uploaded source, skill send", async ({
+test("live: full studio journey — create, converse, import source, generate asset", async ({
   page,
 }) => {
   await login(page);
@@ -86,29 +86,34 @@ test("live: full studio journey — create, converse, ground on uploaded source,
     timeout: 30_000,
   });
   const checkbox = page.getByLabel("Use live-grounding-probe.md as source");
+  await expect(checkbox).toBeEnabled({ timeout: 180_000 });
+  await checkbox.check();
   await expect(checkbox).toBeChecked();
-  await expect(page.getByText(/1 source attach/)).toBeVisible();
+  await expect(page.getByText(/1 source selected for notebook grounding/)).toBeVisible();
 
-  // 6. Grounding proof: the model must read the codeword out of the
-  //    attached file (upload → turn media → server materialization → LLM).
+  // 6. Grounding proof: the selected imported source is added to the turn's
+  //    grounding context without exposing an attachment control in the composer.
   await sendChat(
     page,
-    "Read the attached markdown source and reply with the secret codeword it contains, exactly as written.",
+    "Read the selected project source and reply with the secret codeword it contains, exactly as written.",
   );
   const grounded = await waitForAssistantReply(page, 1);
   expect(grounded.toUpperCase()).toContain("AUBERGINE-42");
   await page.screenshot({ path: `${SHOT_DIR}/live-studio-grounded.png` });
 
-  // 7. Skill tile send (bypasses the composer): translate the selected
-  //    source; the translation must carry the codeword through, proving
-  //    the rail attached the media itself.
-  await page.getByRole("button", { name: "Language Translate" }).click();
-  await expect(page.locator(SEL.userMessage).last()).toContainText(
-    /Translate the attached sources/,
-    { timeout: 30_000 },
-  );
-  const translated = await waitForAssistantReply(page, 2);
-  expect(translated.toLowerCase()).toMatch(/aubergine/);
+  // 7. Skill actions bypass chat. Clicking Quiz creates a background job and
+  //    eventually a downloadable/previewable Generated Asset without adding a
+  //    user message or assistant thinking bubble.
+  const userMessageCount = await page.locator(SEL.userMessage).count();
+  const quiz = page.getByRole("button", { name: "Quiz", exact: true });
+  await expect(quiz).toBeEnabled({ timeout: 60_000 });
+  await quiz.click();
+  await expect(page.locator(SEL.userMessage)).toHaveCount(userMessageCount);
+  const rail = page.getByTestId("studio-rail");
+  await expect(
+    rail.getByRole("button", { name: /^Preview / }).first(),
+  ).toBeVisible({ timeout: 180_000 });
+  await expect(rail.getByRole("button", { name: /^Download / }).first()).toBeVisible();
   await page.screenshot({ path: `${SHOT_DIR}/live-studio-skill.png` });
 
   // 8. Launcher lists the project we just created (title record seeding),
