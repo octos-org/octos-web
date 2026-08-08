@@ -18,6 +18,7 @@ import {
 } from "./projection-envelope-v2";
 import type {
   ConnectionState,
+  SessionOpenedResult,
   UiGoalRecord,
   UiLoopRecord,
 } from "./ui-protocol-types";
@@ -65,14 +66,15 @@ ProjectionStore.onRehydrateRequested((storeKey) => {
 }, { persistent: true });
 
 /**
- * Monotonic generation counter. Each `startBridgeForSession` /
+ * Monotonic generation counter. Each owned bridge start /
  * `stopActiveBridge` call increments it; in-flight `start()` resolutions
  * compare their captured generation against the live one before publishing
- * themselves as `active`. A stale start (a newer call ran while we were
- * awaiting the WebSocket handshake) is responsible for stopping its own
- * bridge and discarding the result. Codex review must-fix #4: avoids the
- * pre-fix race where rapid session switches could leak bridges or — worse —
- * have an older `start()` resolution overwrite a newer bridge in `active`.
+ * themselves as `active`. A stale start (a newer, different-scope start ran
+ * while we were awaiting the WebSocket handshake) is responsible for
+ * stopping its own bridge and discarding the result. Codex review must-fix
+ * #4: avoids the pre-fix race where rapid session switches could leak
+ * bridges or — worse — have an older `start()` resolution overwrite a newer
+ * bridge in `active`.
  */
 let generation = 0;
 
@@ -82,23 +84,139 @@ function sameScope(a: ActiveBridge, sessionId: string, topic?: string): boolean 
   return a.sessionId === sessionId && at === t;
 }
 
+interface BridgeStartInFlight {
+  sessionId: string;
+  topic?: string;
+  promise: Promise<UiProtocolBridge>;
+  /** Only the newest same-scope CLAIMING caller may hold ownership; older
+   *  claiming effects reject instead of stopping the shared bridge in
+   *  cleanup. `null` while every waiter so far is an observer (a
+   *  fire-and-forget caller such as the send path) — observers await the
+   *  raw start promise and never reject on an ownership transfer. */
+  latestCaller: symbol | null;
+}
+
+let bridgeStartInFlight: BridgeStartInFlight | null = null;
+
+function sameInFlightScope(
+  start: BridgeStartInFlight,
+  sessionId: string,
+  topic?: string,
+): boolean {
+  const t = topic?.trim() || undefined;
+  const startedTopic = start.topic?.trim() || undefined;
+  return start.sessionId === sessionId && startedTopic === t;
+}
+
+function resultForBridgeStartCaller(
+  start: BridgeStartInFlight,
+  caller: symbol,
+): Promise<UiProtocolBridge> {
+  return start.promise.then(
+    (bridge) => {
+      if (start.latestCaller !== caller) {
+        throw new Error(
+          "ui-protocol-runtime: bridge start superseded by a newer same-scope caller",
+        );
+      }
+      return bridge;
+    },
+    (err: unknown) => {
+      if (start.latestCaller !== caller) {
+        throw new Error(
+          "ui-protocol-runtime: bridge start superseded during handshake error",
+        );
+      }
+      throw err;
+    },
+  );
+}
+
+export interface BridgeStartOptions {
+  /**
+   * `"claim"` (default): participate in cleanup ownership — among claiming
+   * callers the newest wins and older ones reject once the shared start
+   * settles (StrictMode remount semantics). `"observe"`: wait for the
+   * same-scope in-flight start and use its bridge WITHOUT claiming
+   * ownership — for fire-and-forget callers (the send path) that never
+   * tear the bridge down. An observer that arrives FIRST still creates the
+   * start but leaves it unowned, so a later claiming effect takes
+   * ownership without the observer's in-flight work rejecting.
+   */
+  ownership?: "claim" | "observe";
+}
+
 /**
  * Start a v1 bridge for the given session. If a bridge is already running
  * for the same scope, returns the existing one (idempotent across StrictMode
- * remounts). When called for a different scope, the previous bridge is
- * stopped first.
+ * remounts). Concurrent same-scope calls also share one underlying handshake;
+ * among CLAIMING callers only the newest resolves, preserving the provider
+ * cleanup invariant while avoiding duplicate sockets — observing callers
+ * (`options.ownership === "observe"`) always resolve with the shared bridge
+ * and never take or block ownership. When called for a different scope, the
+ * previous bridge is stopped first.
  *
- * Race-safe: each call captures the current `generation` before awaiting
- * `bridge.start()`. If a newer call (or `stopActiveBridge`) bumped the
- * generation while we were awaiting, this start is stale — we stop the
- * orphaned bridge and ALWAYS THROW, even when a newer same-scope active
- * exists. The throw signals the caller "you did NOT publish this active";
- * callers depending on the published-by-me invariant (e.g. the provider's
- * scope-aware cleanup) can branch on it. Callers wanting "give me the
- * active bridge for this scope, regardless of who published" should use
- * `getActiveBridge(sessionId, topic)` instead.
+ * Race-safe: each owned handshake captures the current `generation` before
+ * awaiting `bridge.start()`. If a different-scope call (or
+ * `stopActiveBridge`) bumped the generation while we were awaiting, this
+ * start is stale — we stop the orphaned bridge and ALWAYS THROW. For
+ * same-scope coalescing, older claiming callers also throw after the shared
+ * handshake settles so only the newest effect can claim cleanup ownership.
+ * Callers wanting "give me the active bridge for this scope, regardless of
+ * who published" should use `getActiveBridge(sessionId, topic)` instead.
  */
-export async function startBridgeForSession(
+export function startBridgeForSession(
+  sessionId: string,
+  topic?: string,
+  options?: BridgeStartOptions,
+): Promise<UiProtocolBridge> {
+  const observe = options?.ownership === "observe";
+  if (
+    active &&
+    sameScope(active, sessionId, topic) &&
+    !(typeof active.bridge.isTerminal === "function"
+      ? active.bridge.isTerminal()
+      : active.connectionState === "closed")
+  ) {
+    return Promise.resolve(active.bridge);
+  }
+
+  const caller = Symbol("bridge-start-caller");
+  const shared = bridgeStartInFlight;
+  if (shared && sameInFlightScope(shared, sessionId, topic)) {
+    if (observe) {
+      // Fire-and-forget caller (e.g. the template auto-first-message SEND
+      // landing mid-handshake): it needs a usable bridge but never tears
+      // one down, so it must not overwrite `latestCaller` — doing so made
+      // the provider effect's start REJECT, orphaning the bridge's cleanup
+      // ownership and its `onSessionTitleUpdated` forwarding. (#292)
+      return shared.promise;
+    }
+    shared.latestCaller = caller;
+    return resultForBridgeStartCaller(shared, caller);
+  }
+
+  const promise = startOwnedBridgeForSession(sessionId, topic);
+  const owned: BridgeStartInFlight = {
+    sessionId,
+    topic,
+    promise,
+    latestCaller: observe ? null : caller,
+  };
+  bridgeStartInFlight = owned;
+  const clearOwnedStart = () => {
+    if (bridgeStartInFlight === owned) {
+      bridgeStartInFlight = null;
+    }
+  };
+  // Handle both outcomes so this observer never creates an unhandled
+  // rejection; each caller receives the original outcome through its own
+  // wrapper below.
+  void promise.then(clearOwnedStart, clearOwnedStart);
+  return observe ? promise : resultForBridgeStartCaller(owned, caller);
+}
+
+async function startOwnedBridgeForSession(
   sessionId: string,
   topic?: string,
 ): Promise<UiProtocolBridge> {
@@ -109,7 +227,9 @@ export async function startBridgeForSession(
   if (
     active &&
     sameScope(active, sessionId, topic) &&
-    (active.connectionState === "closed" || active.connectionState === "error")
+    (typeof active.bridge.isTerminal === "function"
+      ? active.bridge.isTerminal()
+      : active.connectionState === "closed")
   ) {
     await stopActiveBridge();
   }
@@ -121,6 +241,45 @@ export async function startBridgeForSession(
   }
   const myGeneration = ++generation;
   const bridge = createUiProtocolBridge();
+  let connectionState: ConnectionState = bridge.getConnectionState();
+  const dispatchBridgeConnected = () => {
+    if (typeof window === "undefined") return;
+    try {
+      window.dispatchEvent(new CustomEvent("crew:bridge_connected"));
+    } catch {
+      // best-effort
+    }
+  };
+  // `start()` resolves after the initial connected transition, so subscribe
+  // before it and delay the DOM wake-up until this bridge is published.
+  const unsubscribeState = bridge.onConnectionStateChange((s) => {
+    connectionState = s;
+    if (active?.bridge !== bridge) return;
+    active.connectionState = s;
+    if (s === "connected") dispatchBridgeConnected();
+  });
+
+  // Capture the initial session/open payload while the bridge is unpublished.
+  // The generation guard below decides whether it is safe to seed state.
+  const scopeHasTopic = Boolean(topic && topic.trim() !== "");
+  const initialOpenedRef: { current: SessionOpenedResult | null } = {
+    current: null,
+  };
+  let unsubscribeSessionOpened: () => void = () => {};
+  if (!scopeHasTopic && typeof bridge.onSessionOpened === "function") {
+    unsubscribeSessionOpened = bridge.onSessionOpened((opened) => {
+      if (myGeneration !== generation) return;
+      if (active?.bridge === bridge) {
+        setThinkingEffort(
+          sessionId,
+          asStoredEffort(opened.reasoning_effort),
+          topic,
+        );
+      } else {
+        initialOpenedRef.current = opened;
+      }
+    });
+  }
   try {
     // Codex BLOCK E: pass `topic` so the bridge can drop cross-topic
     // envelopes client-side. The server-side replay/live scoping by
@@ -128,6 +287,16 @@ export async function startBridgeForSession(
     // meantime.
     await bridge.start({ sessionId, topic });
   } catch (err) {
+    // A failed initial handshake never becomes runtime-owned. Stop the
+    // unpublished bridge so its reconnect timer, socket handlers, and auth
+    // listeners cannot survive behind a failed Chat send.
+    unsubscribeState();
+    unsubscribeSessionOpened();
+    try {
+      await bridge.stop();
+    } catch {
+      // best-effort
+    }
     if (myGeneration === generation) {
       // No newer start raced us; surface the failure.
       throw err;
@@ -143,6 +312,8 @@ export async function startBridgeForSession(
     // stop it and ALWAYS THROW so the caller does not assume ownership
     // of whatever the live `active` slot holds (it belongs to a newer
     // start, not us).
+    unsubscribeState();
+    unsubscribeSessionOpened();
     try {
       await bridge.stop();
     } catch {
@@ -153,34 +324,6 @@ export async function startBridgeForSession(
     );
   }
   const attachment = attachRouter(bridge, { sessionId, topic });
-  // Track live connection state for lifecycle observers. The bridge's send
-  // queue holds turns through the handshake/reconnect window and reports a
-  // terminal transport failure when recovery is exhausted.
-  let connectionState: ConnectionState = "connecting";
-  const unsubscribeState = bridge.onConnectionStateChange((s) => {
-    if (active?.bridge === bridge) {
-      active.connectionState = s;
-    } else {
-      connectionState = s;
-    }
-    // Wake any consumer that gated on `getAnyConnectedBridge()` returning
-    // non-null: the auxiliary REST→WS wrappers (`listSessions`,
-    // `system/status.get`, `content/list`) check that before falling back
-    // to legacy REST. Without this event, the first `refreshSessions()`
-    // call on `/chat` mount races the bridge transition to "connected"
-    // — when it loses, it falls through to `/api/sessions` (a route
-    // retired in M12 Phase D-5 → 404) and the sidebar stays empty until
-    // the 15 s polling interval fires. SessionProvider listens for
-    // `crew:bridge_connected` and re-runs `refreshSessions()` so the
-    // sidebar paints as soon as the bridge handshake completes.
-    if (s === "connected" && typeof window !== "undefined") {
-      try {
-        window.dispatchEvent(new CustomEvent("crew:bridge_connected"));
-      } catch {
-        // best-effort
-      }
-    }
-  });
   // Reload-bug fix (Yue 2026-05-15): subscribe to the bridge's `onReopened`
   // hook BEFORE the initial hydrate kicks off, so a reconnect that races
   // the initial hydrate still gets handled. The bridge guarantees this
@@ -204,33 +347,6 @@ export async function startBridgeForSession(
       runAutonomySnapshotFor(sessionId, topic, bridge, myGeneration);
     });
   }
-  // Thinking-effort parity: seed the per-session selector from the
-  // server-persisted value carried on every `session/open` ack, so a
-  // reload/reconnect restores the user's `/thinking`-equivalent choice.
-  // ROOT scope only (codex #261 P1): the bridge's `session/open` sends
-  // the bare session id, so `opened.reasoning_effort` describes the
-  // ROOT bucket — applying it to a topic key would restore the wrong
-  // value and let the topic's next turn overwrite the root's choice.
-  // Topic scopes are marked seeded-without-value instead (no restore is
-  // possible over the current wire; selector still works live).
-  // Same defensive-typeof guard as `onReopened` for pre-dating mocks —
-  // those are marked seeded too so sends never wait on a seed that
-  // cannot arrive.
-  let unsubscribeSessionOpened: () => void = () => {};
-  const scopeHasTopic = Boolean(topic && topic.trim() !== "");
-  if (!scopeHasTopic && typeof bridge.onSessionOpened === "function") {
-    unsubscribeSessionOpened = bridge.onSessionOpened((opened) => {
-      if (myGeneration !== generation) return;
-      setThinkingEffort(
-        sessionId,
-        asStoredEffort(opened.reasoning_effort),
-        topic,
-      );
-    });
-  } else {
-    markThinkingSeeded(sessionId, topic);
-  }
-
   active = {
     sessionId,
     topic,
@@ -241,6 +357,24 @@ export async function startBridgeForSession(
     unsubscribeReopened,
     unsubscribeSessionOpened,
   };
+
+  // Publish first, then replay the initial connected transition so
+  // SessionProvider can observe the bridge and retry its bridge-gated load.
+  if (connectionState === "connected") dispatchBridgeConnected();
+
+  // The root session/open ack carries the server-persisted thinking effort.
+  // Topic scopes do not have a distinct wire value; older test doubles may
+  // also lack the event hook, so mark those scopes seeded without a value.
+  const initialOpened = initialOpenedRef.current;
+  if (!scopeHasTopic && initialOpened) {
+    setThinkingEffort(
+      sessionId,
+      asStoredEffort(initialOpened.reasoning_effort),
+      topic,
+    );
+  } else {
+    markThinkingSeeded(sessionId, topic);
+  }
 
   // Immediately hydrate the canonical v2 snapshot. The bridge keeps live
   // envelopes buffered atomically while this snapshot is installed.
@@ -421,6 +555,13 @@ export function getAnyConnectedBridge(): UiProtocolBridge | null {
 
 // ---- Sessionless auxiliary bridge (settings surface) ----
 
+function settingsRequiresSessionlessBridge(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    /\/settings\/?$/.test(window.location.pathname)
+  );
+}
+
 /** The settings page mounts OUTSIDE `OctosRuntimeProvider`, so no
  *  session-scoped bridge exists there — and navigating chat → settings
  *  unmounts the provider, which stops the chat bridge (codex web#268 r1
@@ -454,7 +595,13 @@ let auxGeneration = 0;
  * replaced so a "Reload" after re-login gets a live socket.
  */
 export async function ensureAuxBridge(): Promise<UiProtocolBridge> {
-  const chat = getAnyConnectedBridge();
+  // Route teardown is asynchronous. Immediately after Chat navigates to
+  // Settings, the old session-scoped bridge can still be published for a
+  // short window. Settings must never adopt it: its Memory/Cron RPCs belong
+  // to the page-owned sessionless lifecycle documented above.
+  const chat = settingsRequiresSessionlessBridge()
+    ? null
+    : getAnyConnectedBridge();
   if (chat) return chat;
   if (auxSlot && !auxSlot.bridge.isTerminal()) {
     // Reuse across `connecting`, transient `error`, and `reconnecting`:
@@ -590,6 +737,13 @@ export async function restartBridgeForSession(
   sessionId: string,
   topic?: string,
 ): Promise<UiProtocolBridge> {
+  if (
+    bridgeStartInFlight &&
+    sameInFlightScope(bridgeStartInFlight, sessionId, topic)
+  ) {
+    generation++;
+    bridgeStartInFlight = null;
+  }
   if (active && sameScope(active, sessionId, topic)) {
     await stopActiveBridge();
   }
@@ -602,6 +756,7 @@ export async function restartBridgeForSession(
  *  orphaned bridge instead of publishing it. */
 export async function stopActiveBridge(): Promise<void> {
   generation++;
+  bridgeStartInFlight = null;
   if (!active) return;
   const handle = active;
   active = null;
@@ -632,6 +787,7 @@ export async function stopActiveBridgeIfScope(
   // Match — bump generation so any in-flight start sees itself as stale,
   // then perform the same stop as `stopActiveBridge`.
   generation++;
+  bridgeStartInFlight = null;
   const handle = active;
   active = null;
   handle.attachment.detach();
@@ -650,6 +806,7 @@ export async function stopActiveBridgeIfScope(
 export function __resetUiProtocolRuntimeForTest(): void {
   active = null;
   generation = 0;
+  bridgeStartInFlight = null;
   if (auxSlot) {
     auxSlot.unsubscribeState();
     // Best-effort async stop; tests inject mocks whose `stop()` resolves

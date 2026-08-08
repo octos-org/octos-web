@@ -1,4 +1,8 @@
+import { useEffect, useRef, useState } from "react";
+
 import type { VoiceState } from "@/home/voice/use-voice-conversation";
+import { OctosSkinArt } from "@/components/octos-skin-art";
+import { useTeacherSkin } from "@/hooks/use-teacher-skin";
 
 const STATE_LABEL: Record<VoiceState, string> = {
   idle: "轻触开始",
@@ -17,6 +21,33 @@ export function OctosTeacher({
   speech: string;
   onClick: () => void;
 }) {
+  const { skin } = useTeacherSkin();
+  const [reactionKey, setReactionKey] = useState(0);
+  const [reacting, setReacting] = useState(false);
+  const reactionTimerRef = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (reactionTimerRef.current !== null) {
+        window.clearTimeout(reactionTimerRef.current);
+      }
+    },
+    [],
+  );
+
+  const handleClick = () => {
+    if (reactionTimerRef.current !== null) {
+      window.clearTimeout(reactionTimerRef.current);
+    }
+    setReactionKey((current) => current + 1);
+    setReacting(true);
+    reactionTimerRef.current = window.setTimeout(() => {
+      setReacting(false);
+      reactionTimerRef.current = null;
+    }, 760);
+    onClick();
+  };
+
   return (
     <div className="octos-teacher">
       {speech && (
@@ -28,7 +59,8 @@ export function OctosTeacher({
         type="button"
         className="octos-teacher-avatar"
         data-state={state}
-        onClick={onClick}
+        data-reacting={reacting ? "true" : undefined}
+        onClick={handleClick}
         aria-label={
           state === "speaking" || state === "thinking"
             ? "打断 Octos"
@@ -36,9 +68,24 @@ export function OctosTeacher({
         }
       >
         <span className="octos-teacher-halo" />
-        <span className="octos-teacher-emoji" aria-hidden="true">
-          🐙
-        </span>
+        {reacting && (
+          <span
+            key={reactionKey}
+            className="octos-teacher-reaction"
+            aria-hidden="true"
+          >
+            <span>✦</span>
+            <span>●</span>
+            <span>✦</span>
+          </span>
+        )}
+        <OctosSkinArt
+          skin={skin}
+          className="octos-teacher-avatar-art"
+          eager
+          activity={state}
+          reactionKey={reactionKey}
+        />
         <span className="octos-teacher-state">{STATE_LABEL[state]}</span>
       </button>
     </div>

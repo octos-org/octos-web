@@ -811,6 +811,39 @@
     inset 0 1px rgba(255, 255, 255, 0.8);
 }
 
+.octos-teacher-reaction {
+  position: absolute;
+  inset: -14px;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.octos-teacher-reaction > span {
+  position: absolute;
+  color: #e9a83d;
+  font-family: var(--font-label);
+  line-height: 1;
+  text-shadow: 0 2px 8px rgba(120, 78, 21, 0.22);
+}
+
+.octos-teacher-reaction > span:nth-child(1) {
+  top: 10px;
+  left: 5px;
+}
+
+.octos-teacher-reaction > span:nth-child(2) {
+  top: -1px;
+  left: 50%;
+  color: #62b6c8;
+  font-size: 8px;
+}
+
+.octos-teacher-reaction > span:nth-child(3) {
+  top: 12px;
+  right: 3px;
+  font-size: 12px;
+}
+
 .octos-teacher-avatar[data-state="listening"] .octos-teacher-halo,
 .octos-teacher-avatar[data-state="speaking"] .octos-teacher-halo,
 .octos-teacher-avatar[data-state="thinking"] .octos-teacher-halo {
@@ -821,10 +854,8 @@
   animation: learning-teacher-pulse 1.8s ease-out infinite;
 }
 
-.octos-teacher-emoji {
+.octos-teacher-avatar-art {
   margin-top: -5px;
-  font-size: 50px;
-  filter: drop-shadow(0 7px 8px rgba(46, 93, 108, 0.16));
 }
 
 .octos-teacher-state {
@@ -963,6 +994,36 @@
   }
 }
 
+@keyframes learning-teacher-react {
+  0%, 100% { transform: translateY(0) rotate(0) scale(1); }
+  38% { transform: translateY(-7px) rotate(-3deg) scale(1.04); }
+  65% { transform: translateY(-2px) rotate(2deg) scale(1.02); }
+}
+
+@keyframes learning-teacher-spark {
+  0% { opacity: 0; transform: translateY(8px) scale(0.4) rotate(-12deg); }
+  32% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-12px) scale(1.12) rotate(12deg); }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .octos-teacher-avatar[data-reacting="true"] {
+    animation: learning-teacher-react 680ms cubic-bezier(0.2, 0.8, 0.3, 1);
+  }
+
+  .octos-teacher-reaction > span {
+    animation: learning-teacher-spark 720ms ease-out both;
+  }
+
+  .octos-teacher-reaction > span:nth-child(2) {
+    animation-delay: 55ms;
+  }
+
+  .octos-teacher-reaction > span:nth-child(3) {
+    animation-delay: 100ms;
+  }
+}
+
 @keyframes learning-mic-listening {
   0%,
   100% {
@@ -1060,8 +1121,9 @@
     height: 76px;
   }
 
-  .octos-teacher-emoji {
-    font-size: 41px;
+  .octos-teacher-avatar-art {
+    width: 54px;
+    height: 54px;
   }
 }
 

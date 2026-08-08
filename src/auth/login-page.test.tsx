@@ -107,4 +107,61 @@ describe("LoginPage registration guidance", () => {
       screen.queryByText(/email otp login is not enabled on this host/i),
     ).toBeNull();
   });
+
+  it("never promises email sign-in when email login is disabled", async () => {
+    authMocks.authStatus = {
+      bootstrap_mode: false,
+      email_login_enabled: false,
+      admin_token_login_enabled: true,
+      allow_self_registration: false,
+      local_solo_enabled: true,
+      scoped_profile: null,
+    };
+    apiMocks.status.mockResolvedValue(authMocks.authStatus);
+
+    render(
+      <MemoryRouter>
+        <LoginPage />
+      </MemoryRouter>,
+    );
+
+    expect(
+      await screen.findByText(/continue with the local profile/i),
+    ).toBeTruthy();
+    expect(screen.queryByText(/email/i)).toBeNull();
+  });
+
+  it("offers a retry when the auth status probe fails", async () => {
+    authMocks.authStatus = null;
+    apiMocks.status.mockRejectedValue(new Error("connection refused"));
+
+    render(
+      <MemoryRouter>
+        <LoginPage />
+      </MemoryRouter>,
+    );
+
+    expect(
+      await screen.findByText(/can't reach the server/i),
+    ).toBeTruthy();
+    expect(screen.queryByText(/checking sign-in options/i)).toBeNull();
+
+    // The probe recovers on retry.
+    apiMocks.status.mockResolvedValue({
+      bootstrap_mode: false,
+      email_login_enabled: true,
+      admin_token_login_enabled: false,
+      allow_self_registration: true,
+      local_solo_enabled: false,
+      scoped_profile: null,
+    } satisfies AuthStatusResponse);
+    screen.getByText("Retry").click();
+
+    expect(
+      await screen.findByText(
+        /verify your email to create an account and sign in/i,
+      ),
+    ).toBeTruthy();
+    expect(apiMocks.status).toHaveBeenCalledTimes(2);
+  });
 });

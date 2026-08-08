@@ -346,6 +346,19 @@ npm run dev                 # Vite dev server on http://localhost:5173
 
 The dev server proxies `/api` (including the WebSocket upgrade) to `http://localhost:50080`, so the app is same-origin out of the box. Sign in with one click on the solo button (email-code login needs the server's SMTP configured).
 
+Microphone and camera APIs require a secure context when the client is opened
+from another device over the LAN. On macOS, create a locally trusted certificate
+for the current host and private LAN addresses, then start Vite in HTTPS mode:
+
+```bash
+brew install mkcert
+pnpm setup:https             # installs the local CA and writes ignored files under .cert/
+pnpm dev:https               # serves https://<private-lan-ip>:5173
+```
+
+Run `pnpm setup:https` again if the machine's LAN IP changes. The generated
+certificate and private key are excluded from Git.
+
 ### If something looks wrong
 
 | Symptom | Fix |

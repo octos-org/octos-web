@@ -14,6 +14,7 @@ export const GenericToolUI = makeAssistantToolUI<
 >({
   toolName: "*",
   render: ({ args, result, status, toolName }) => {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- assistant-ui invokes this render prop as a component; the hook call is unconditional
     const [expanded, setExpanded] = useState(status.type === "running");
 
     return (

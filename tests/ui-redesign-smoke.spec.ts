@@ -330,7 +330,7 @@ async function installWorkbenchMocks(
           : message.method === "session/messages_page"
             ? { messages, has_more: false, next_offset: messages.length }
             : message.method === "session/open"
-              ? { opened: { session_id: "web-ui-smoke", active_profile_id: "admin" } }
+              ? { opened: { session_id: "web-ui-smoke", active_profile_id: "admin", capabilities: { supported_features: ["projection.envelope.v2"] } } }
               : message.method === "router/get_metrics"
                 ? { mode: "off", provider_count: 1, providers: [] }
                 : message.method === "session/status.get"

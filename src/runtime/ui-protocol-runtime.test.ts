@@ -43,8 +43,15 @@ import {
 } from "./ui-protocol-runtime";
 import * as ProjectionStore from "@/store/projection-store";
 import * as AutonomyStore from "@/store/autonomy-store";
+import {
+  __resetThinkingStoreForTest,
+  getThinkingEffort,
+} from "@/store/thinking-store";
 import type { UiProtocolBridge } from "./ui-protocol-bridge";
-import type { ConnectionState } from "./ui-protocol-types";
+import type {
+  ConnectionState,
+  SessionOpenedResult,
+} from "./ui-protocol-types";
 
 interface DeferredBridge {
   bridge: UiProtocolBridge;
@@ -64,6 +71,7 @@ interface DeferredBridge {
    *  aux-singleton replacement gate consults `isTerminal()`, not the
    *  connection state (codex web#268 r2 P2). */
   setTerminal: () => void;
+  fireSessionOpened: (opened: SessionOpenedResult) => void;
   startCalls: number;
   stopCalls: number;
 }
@@ -87,6 +95,8 @@ function makeDeferredBridge(): DeferredBridge {
   // Track the reopen subscriber so the test can simulate the bridge's
   // post-reconnect re-handshake event (reload-bug fix Yue 2026-05-15).
   let reopenedHandler: (() => void) | null = null;
+  let sessionOpenedHandler: ((opened: SessionOpenedResult) => void) | null =
+    null;
   const bridge: UiProtocolBridge = {
     start: vi.fn(async () => {
       startCalls++;
@@ -137,6 +147,12 @@ function makeDeferredBridge(): DeferredBridge {
         if (reopenedHandler === h) reopenedHandler = null;
       };
     }),
+    onSessionOpened: vi.fn((h: (opened: SessionOpenedResult) => void) => {
+      sessionOpenedHandler = h;
+      return () => {
+        if (sessionOpenedHandler === h) sessionOpenedHandler = null;
+      };
+    }),
     onWarning: vi.fn(() => () => {}),
     onSessionTitleUpdated: vi.fn(() => () => {}),
     hydrateSession: vi.fn(async () => null),
@@ -155,6 +171,7 @@ function makeDeferredBridge(): DeferredBridge {
      *  (reload-bug fix Yue 2026-05-15). The runtime layer subscribes via
      *  `onReopened` to re-fire `session/hydrate`. */
     fireReopened: () => reopenedHandler?.(),
+    fireSessionOpened: (opened) => sessionOpenedHandler?.(opened),
     get startCalls() {
       return startCalls;
     },
@@ -173,6 +190,7 @@ afterEach(() => {
   __resetUiProtocolRuntimeForTest();
   ProjectionStore.__resetProjectionForTests();
   AutonomyStore.__resetAutonomyStoreForTest();
+  __resetThinkingStoreForTest();
 });
 
 describe("startBridgeForSession race safety", () => {
@@ -210,6 +228,9 @@ describe("startBridgeForSession race safety", () => {
     // Active is still B.
     expect(getActiveBridge("sess-B")).toBe(b.bridge);
     expect(getActiveBridge("sess-A")).toBeNull();
+    expect(createBridgeSpy).toHaveBeenCalledTimes(2);
+    expect(a.startCalls).toBe(1);
+    expect(b.startCalls).toBe(1);
   });
 
   it("an in-flight start that gets stopped recognizes itself as superseded", async () => {
@@ -227,6 +248,69 @@ describe("startBridgeForSession race safety", () => {
     expect(getActiveBridge("sess-A")).toBeNull();
   });
 
+  it("does not reuse an in-flight start after stopActiveBridge invalidates it", async () => {
+    const stopped = makeDeferredBridge();
+    const fresh = makeDeferredBridge();
+    createBridgeSpy
+      .mockReturnValueOnce(stopped.bridge)
+      .mockReturnValueOnce(fresh.bridge);
+
+    const staleStart = startBridgeForSession("sess-A");
+    await stopActiveBridge();
+    const freshStart = startBridgeForSession("sess-A");
+
+    expect(createBridgeSpy).toHaveBeenCalledTimes(2);
+    expect(stopped.startCalls).toBe(1);
+    expect(fresh.startCalls).toBe(1);
+
+    stopped.resolveStart();
+    await expect(staleStart).rejects.toThrow(/superseded/);
+    expect(stopped.stopCalls).toBe(1);
+
+    fresh.resolveStart();
+    await expect(freshStart).resolves.toBe(fresh.bridge);
+    expect(getActiveBridge("sess-A")).toBe(fresh.bridge);
+  });
+
+  it("stops and does not publish a bridge whose initial handshake fails", async () => {
+    const failed = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(failed.bridge);
+
+    const start = startBridgeForSession("sess-failed");
+    failed.rejectStart(new Error("origin rejected"));
+
+    await expect(start).rejects.toThrow("origin rejected");
+    expect(failed.stopCalls).toBe(1);
+    expect(getActiveBridge("sess-failed")).toBeNull();
+  });
+
+  it("captures initial open state before start resolves and wakes consumers after publish", async () => {
+    const initial = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(initial.bridge);
+    const onConnected = vi.fn();
+    window.addEventListener("crew:bridge_connected", onConnected);
+
+    try {
+      const start = startBridgeForSession("sess-seeded");
+      initial.fireSessionOpened({
+        session_id: "sess-seeded",
+        reasoning_effort: "high",
+      });
+      initial.setConnected();
+      // The bridge is not runtime-owned until its readiness promise resolves.
+      expect(getActiveBridge("sess-seeded")).toBeNull();
+
+      initial.resolveStart();
+      await expect(start).resolves.toBe(initial.bridge);
+
+      expect(getThinkingEffort("sess-seeded")).toBe("high");
+      expect(getActiveBridge("sess-seeded")).toBe(initial.bridge);
+      expect(onConnected).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener("crew:bridge_connected", onConnected);
+    }
+  });
+
   it("idempotent same-scope re-entry returns the existing bridge", async () => {
     const a = makeDeferredBridge();
     createBridgeSpy.mockReturnValueOnce(a.bridge);
@@ -239,6 +323,107 @@ describe("startBridgeForSession race safety", () => {
     const second = await startBridgeForSession("sess-A");
     expect(second).toBe(a.bridge);
     expect(createBridgeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("coalesces concurrent same-scope starts while only the latest caller claims ownership", async () => {
+    const shared = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(shared.bridge);
+
+    const staleCaller = startBridgeForSession("sess-A", "site-x");
+    const latestCaller = startBridgeForSession("sess-A", " site-x ");
+
+    expect(createBridgeSpy).toHaveBeenCalledTimes(1);
+    expect(shared.startCalls).toBe(1);
+
+    const staleResult = expect(staleCaller).rejects.toThrow(/superseded/);
+    shared.resolveStart();
+
+    await staleResult;
+    await expect(latestCaller).resolves.toBe(shared.bridge);
+    expect(shared.stopCalls).toBe(0);
+    expect(getActiveBridge("sess-A", "site-x")).toBe(shared.bridge);
+  });
+
+  it("an observing same-scope caller does not steal ownership from the claiming effect", async () => {
+    // PR #292 review (blocker): the template-session auto-first-message
+    // fires a SEND while the provider effect's start is still handshaking.
+    // The send path is fire-and-forget — it never tears the bridge down —
+    // so it must OBSERVE the in-flight start, not claim it. Pre-fix the
+    // send overwrote `latestCaller`, the provider effect's start REJECTED,
+    // and its cleanup ownership + `onSessionTitleUpdated` forwarding
+    // (runtime-provider.tsx) never installed — a leaked bridge on unmount
+    // and renames silently stopping for that session.
+    const shared = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(shared.bridge);
+
+    const providerEffect = startBridgeForSession("sess-A", "site-x");
+    const sendPath = startBridgeForSession("sess-A", " site-x ", {
+      ownership: "observe",
+    });
+
+    expect(createBridgeSpy).toHaveBeenCalledTimes(1);
+    expect(shared.startCalls).toBe(1);
+
+    shared.resolveStart();
+
+    await expect(providerEffect).resolves.toBe(shared.bridge);
+    await expect(sendPath).resolves.toBe(shared.bridge);
+    expect(getActiveBridge("sess-A", "site-x")).toBe(shared.bridge);
+  });
+
+  it("a claiming caller takes ownership from an observer without rejecting it", async () => {
+    // Mirror image of the above: the send fires BEFORE the provider effect
+    // mounts (observer-created start). The effect must take cleanup
+    // ownership WITHOUT rejecting the in-flight send — only claim-vs-claim
+    // (StrictMode remount) keeps last-writer-wins rejection semantics.
+    const shared = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(shared.bridge);
+
+    const sendPath = startBridgeForSession("sess-A", undefined, {
+      ownership: "observe",
+    });
+    const providerEffect = startBridgeForSession("sess-A");
+
+    expect(createBridgeSpy).toHaveBeenCalledTimes(1);
+    shared.resolveStart();
+
+    await expect(sendPath).resolves.toBe(shared.bridge);
+    await expect(providerEffect).resolves.toBe(shared.bridge);
+    expect(getActiveBridge("sess-A")).toBe(shared.bridge);
+  });
+
+  it("reuses a same-scope bridge during a transient error", async () => {
+    const recovering = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(recovering.bridge);
+    const first = startBridgeForSession("sess-recovering");
+    recovering.resolveStart();
+    await first;
+
+    recovering.setState("error");
+    const second = await startBridgeForSession("sess-recovering");
+
+    expect(second).toBe(recovering.bridge);
+    expect(recovering.stopCalls).toBe(0);
+    expect(createBridgeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("replaces a same-scope bridge after a terminal failure", async () => {
+    const dead = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(dead.bridge);
+    const first = startBridgeForSession("sess-retry");
+    dead.resolveStart();
+    await first;
+    dead.setTerminal();
+    dead.setState("error");
+
+    const fresh = makeDeferredBridge();
+    createBridgeSpy.mockReturnValueOnce(fresh.bridge);
+    const retry = startBridgeForSession("sess-retry");
+    fresh.resolveStart();
+
+    await expect(retry).resolves.toBe(fresh.bridge);
+    expect(dead.stopCalls).toBe(1);
+    expect(fresh.startCalls).toBe(1);
   });
 
   it("sendTurn fast-rejects when the underlying bridge has gone closed", async () => {
@@ -582,6 +767,26 @@ describe("ensureAuxBridge — sessionless auxiliary singleton", () => {
 
     expect(got).toBe(chat.bridge);
     expect(createBridgeSpy).not.toHaveBeenCalled();
+  });
+
+  it("starts a sessionless bridge on Settings even while Chat teardown is pending", async () => {
+    const previousPath = window.location.pathname;
+    window.history.pushState({}, "", "/settings");
+    try {
+      const chat = makeDeferredBridge();
+      __setActiveBridgeForTest("sess-1", chat.bridge);
+      const aux = makeDeferredBridge();
+      createBridgeSpy.mockReturnValueOnce(aux.bridge);
+
+      const pending = ensureAuxBridge();
+      aux.resolveStart();
+
+      expect(await pending).toBe(aux.bridge);
+      expect(createBridgeSpy).toHaveBeenCalledTimes(1);
+      expect(aux.bridge.start).toHaveBeenCalledWith({});
+    } finally {
+      window.history.replaceState({}, "", previousPath);
+    }
   });
 
   it("starts ONE sessionless bridge and shares it across concurrent callers", async () => {

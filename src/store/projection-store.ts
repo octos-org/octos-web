@@ -59,6 +59,9 @@ const listeners = new Set<() => void>();
 const admittedEnvelopeListeners = new Set<
   (storeKey: string, envelope: ProjectionEnvelopeV2) => void
 >();
+const observedEnvelopeListeners = new Set<
+  (storeKey: string, envelope: ProjectionEnvelopeV2) => void
+>();
 const rehydrateListeners = new Set<(storeKey: string, watermark: ProjectionEnvelopeV2Cursor | null) => void>();
 const persistentRehydrateListeners = new Set<
   (storeKey: string, watermark: ProjectionEnvelopeV2Cursor | null) => void
@@ -120,6 +123,23 @@ function notifyEnvelopeAdmitted(
       listener(storeKey, envelope);
     } catch (error) {
       console.error("projection-store admitted-envelope listener threw", error);
+    }
+  }
+}
+
+/** Notify interaction consumers about every validated live envelope before
+ * canonical `(thread_id, seq)` deduplication. Durable rendering must never use
+ * this signal, but one-shot side effects such as TTS playback cannot discard a
+ * distinct attachment merely because an older server reused its sequence. */
+function notifyEnvelopeObserved(
+  storeKey: string,
+  envelope: ProjectionEnvelopeV2,
+): void {
+  for (const listener of [...observedEnvelopeListeners]) {
+    try {
+      listener(storeKey, envelope);
+    } catch (error) {
+      console.error("projection-store observed-envelope listener threw", error);
     }
   }
 }
@@ -357,6 +377,7 @@ export function ingest(
   storeKey: string,
   envelope: ProjectionEnvelopeV2,
 ): ProjectionIngestResult {
+  notifyEnvelopeObserved(storeKey, envelope);
   const state = stateFor(storeKey);
   if (state.hydrating) {
     state.bufferedLive.push(envelope);
@@ -547,6 +568,16 @@ export function onEnvelopeAdmitted(
   return () => admittedEnvelopeListeners.delete(listener);
 }
 
+/** Subscribe to validated live envelopes before canonical sequence dedupe.
+ * Use only for idempotent interaction side effects; render state belongs to
+ * `onEnvelopeAdmitted` / `getProjection`. */
+export function onEnvelopeObserved(
+  listener: (storeKey: string, envelope: ProjectionEnvelopeV2) => void,
+): () => void {
+  observedEnvelopeListeners.add(listener);
+  return () => observedEnvelopeListeners.delete(listener);
+}
+
 export function onRehydrateRequested(
   listener: (storeKey: string, watermark: ProjectionEnvelopeV2Cursor | null) => void,
   options: { persistent?: boolean } = {},
@@ -592,6 +623,7 @@ export function __resetProjectionForTests(): void {
   states.clear();
   listeners.clear();
   admittedEnvelopeListeners.clear();
+  observedEnvelopeListeners.clear();
   rehydrateListeners.clear();
   // Runtime owns a process-lifetime recovery hook. Keep that hook installed
   // across state resets so tests exercising reconnect/gap recovery still use

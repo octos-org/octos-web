@@ -43,6 +43,41 @@ afterEach(() => {
 });
 
 describe("ProjectionStore canonical admission", () => {
+  it("observes distinct interaction side effects even when they reuse a canonical seq", () => {
+    const key = ProjectionStore.projectionStoreKey("session-store");
+    const observed = vi.fn();
+    const admitted = vi.fn();
+    const disposeObserved = ProjectionStore.onEnvelopeObserved(observed);
+    const disposeAdmitted = ProjectionStore.onEnvelopeAdmitted(admitted);
+    const first = frame(1, {
+      type: "file_attached",
+      data: {
+        path: "reply-first.mp3",
+        mime: "audio/mpeg",
+        size_bytes: 10,
+        attachment_owner: { assistant_segment_id: "segment-store" },
+      },
+    });
+    const second = frame(1, {
+      type: "file_attached",
+      data: {
+        path: "reply-second.mp3",
+        mime: "audio/mpeg",
+        size_bytes: 12,
+        attachment_owner: { assistant_segment_id: "segment-store" },
+      },
+    });
+
+    ProjectionStore.ingest(key, first);
+    ProjectionStore.ingest(key, second);
+
+    expect(observed).toHaveBeenNthCalledWith(1, key, first);
+    expect(observed).toHaveBeenNthCalledWith(2, key, second);
+    expect(admitted).toHaveBeenCalledTimes(1);
+    disposeObserved();
+    disposeAdmitted();
+  });
+
   it("starts at seq 1, buffers a gap, and requests rehydrate until it closes", () => {
     const key = ProjectionStore.projectionStoreKey("session-store");
     const request = vi.fn();

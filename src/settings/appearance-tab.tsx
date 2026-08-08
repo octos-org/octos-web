@@ -1,6 +1,8 @@
-import { Check, LayoutGrid, MessagesSquare, Moon, Palette, Sun } from "lucide-react";
+import { Check, GraduationCap, LayoutGrid, MessagesSquare, Moon, Palette, Sun } from "lucide-react";
 
+import { OctosSkinArt } from "@/components/octos-skin-art";
 import { useLayout, type AppLayout } from "@/hooks/use-layout";
+import { TEACHER_SKINS, useTeacherSkin } from "@/hooks/use-teacher-skin";
 import { useTheme, type UiStyle } from "@/hooks/use-theme";
 
 const LAYOUT_OPTIONS: Array<{
@@ -66,6 +68,7 @@ const STYLE_OPTIONS: Array<{
 export function AppearanceTab() {
   const { theme, setTheme, toggleTheme, uiStyle, setUiStyle } = useTheme();
   const { layout, setLayout } = useLayout();
+  const { skin: teacherSkin, setSkin: setTeacherSkin } = useTeacherSkin();
 
   const chooseStyle = (next: UiStyle) => {
     setUiStyle(next);
@@ -126,6 +129,64 @@ export function AppearanceTab() {
                       style={{ backgroundColor: color }}
                     />
                   ))}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="glass-section p-5">
+        <div className="flex items-start gap-3">
+          <div className="workbench-icon-tile flex h-10 w-10 shrink-0 items-center justify-center">
+            <GraduationCap size={18} />
+          </div>
+          <div className="min-w-0">
+            <h3 className="text-base font-semibold text-text-strong">Learning Companion</h3>
+            <p className="mt-1 text-sm text-muted">
+              Choose the Octos skin shown in the lower-right corner of the learning classroom.
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {TEACHER_SKINS.map((option) => {
+            const active = teacherSkin === option.id;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                aria-label={`${option.label} Octos skin`}
+                aria-pressed={active}
+                data-active={active ? "true" : undefined}
+                data-testid={`teacher-skin-${option.id}`}
+                onClick={() => setTeacherSkin(option.id)}
+                className="workbench-card flex min-h-44 flex-col items-start justify-between gap-3 p-4 text-left"
+              >
+                <span className="w-full min-w-0">
+                  <span className="block text-sm font-semibold text-text-strong">
+                    {option.label}
+                  </span>
+                  <span className="mt-1 block text-xs leading-5 text-muted">
+                    {option.description}
+                  </span>
+                </span>
+                <span className="flex w-full justify-center" aria-hidden="true">
+                  <OctosSkinArt skin={option.id} className="octos-skin-card-art" />
+                </span>
+                <span className="flex w-full items-center justify-between gap-2">
+                  <span className="workbench-status-pill" data-tone="neutral">
+                    {option.kind === "model" ? "3D · Animated" : "2D · SVG"}
+                  </span>
+                  <span
+                    className={`workbench-status-pill shrink-0 ${active ? "" : "invisible"}`}
+                    data-tone="accent"
+                    data-testid={`teacher-skin-active-${option.id}`}
+                    aria-hidden={!active}
+                  >
+                    <Check size={13} />
+                    Active
+                  </span>
                 </span>
               </button>
             );

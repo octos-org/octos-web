@@ -1,9 +1,29 @@
-import { type Page, type Route, expect, test } from "@playwright/test";
+import { type Page, type Route, type WebSocketRoute } from "@playwright/test";
 
 const AUTH_TOKEN = process.env.AUTH_TOKEN || "e2e-test-2026";
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "octos-admin-2026";
 const BASE_URL = process.env.BASE_URL || "http://localhost:5174";
 const USE_E2E_HARNESS = process.env.OCTOS_LIVE_E2E !== "1";
+
+export interface UiProtocolHarnessControl {
+  failStartup: boolean;
+  socketAttempts: number;
+  injectedFailures: number;
+  sentMethods: string[];
+  closeExistingSockets: () => Promise<void>;
+}
+
+export function createUiProtocolHarnessControl(
+  failStartup = false,
+): UiProtocolHarnessControl {
+  return {
+    failStartup,
+    socketAttempts: 0,
+    injectedFailures: 0,
+    sentMethods: [],
+    closeExistingSockets: async () => {},
+  };
+}
 
 // ── Selectors (data-testid based) ──────────────────────────────
 
@@ -183,9 +203,26 @@ function harnessReplyFor(message: string): string {
   return `Mock response: ${message || "ok"}`;
 }
 
-async function installDefaultE2EHarness(page: Page) {
+async function installDefaultE2EHarness(
+  page: Page,
+  uiProtocolControl?: UiProtocolHarnessControl,
+) {
+  const routedSockets = new Set<WebSocketRoute>();
+  if (uiProtocolControl) {
+    uiProtocolControl.closeExistingSockets = async () => {
+      const sockets = [...routedSockets];
+      routedSockets.clear();
+      await Promise.all(
+        sockets.map((ws) =>
+          ws.close({ code: 1000, reason: "closed by E2E harness" }).catch(() => {}),
+        ),
+      );
+    };
+  }
   const sessions = new Map<string, HarnessSession>();
   const tasks = new Map<string, HarnessTask[]>();
+  const projectionEnvelopes = new Map<string, Array<Record<string, unknown>>>();
+  const projectionCursors = new Map<string, number>();
   let adaptiveMode: "off" | "hedge" | "lane" = "off";
   let harnessProfile = {
     id: "admin",
@@ -256,6 +293,24 @@ async function installDefaultE2EHarness(page: Page) {
       tasks.set(id, sessionTasks);
     }
     return sessionTasks;
+  };
+
+  const appendProjectionEnvelope = (
+    ws: { send(message: string | Buffer): void },
+    sessionId: string,
+    envelope: Omit<Record<string, unknown>, "session_id" | "cursor">,
+  ) => {
+    const cursorSeq = (projectionCursors.get(sessionId) ?? 0) + 1;
+    projectionCursors.set(sessionId, cursorSeq);
+    const frame = {
+      session_id: sessionId,
+      ...envelope,
+      cursor: { stream: sessionId, seq: cursorSeq },
+    };
+    const frames = projectionEnvelopes.get(sessionId) ?? [];
+    frames.push(frame);
+    projectionEnvelopes.set(sessionId, frames);
+    ws.send(rpcNotification("projection/envelope", frame));
   };
 
   await page.addInitScript(
@@ -378,7 +433,19 @@ async function installDefaultE2EHarness(page: Page) {
     }),
   );
 
-  await page.routeWebSocket(/\/api\/ui-protocol\/ws/, (ws) => {
+  await page.routeWebSocket(/\/api\/ui-protocol\/ws/, async (ws) => {
+    routedSockets.add(ws);
+    if (uiProtocolControl) {
+      uiProtocolControl.socketAttempts += 1;
+      if (uiProtocolControl.failStartup) {
+        uiProtocolControl.injectedFailures += 1;
+        await ws.close({
+          code: 1000,
+          reason: "injected startup handshake failure",
+        });
+        return;
+      }
+    }
     ws.onMessage((raw) => {
       let data: { id?: string; method?: string; params?: Record<string, unknown> };
       try {
@@ -389,12 +456,21 @@ async function installDefaultE2EHarness(page: Page) {
       const id = data.id;
       const method = data.method;
       const params = data.params;
+      if (method && uiProtocolControl) {
+        uiProtocolControl.sentMethods.push(method);
+      }
 
       if (method === "session/open" && id) {
         const sessionId = String(params?.session_id || "web-e2e");
         ensureSession(sessionId);
         ws.send(rpcResponse(id, {
-          opened: { session_id: sessionId, active_profile_id: "admin" },
+          opened: {
+            session_id: sessionId,
+            active_profile_id: "admin",
+            capabilities: {
+              supported_features: ["projection.envelope.v2"],
+            },
+          },
         }));
         ws.send(rpcNotification("router/status", {
           session_id: sessionId,
@@ -405,7 +481,34 @@ async function installDefaultE2EHarness(page: Page) {
       }
 
       if (method === "session/hydrate" && id) {
-        ws.send(rpcResponse(id, { replayed_envelopes: [] }));
+        const sessionId = String(params?.session_id || "web-e2e");
+        const cursor = {
+          stream: sessionId,
+          seq: projectionCursors.get(sessionId) ?? 0,
+        };
+        ws.send(rpcResponse(id, {
+          session_id: sessionId,
+          cursor,
+          projection_snapshot: {
+            envelopes: projectionEnvelopes.get(sessionId) ?? [],
+            cursor,
+          },
+        }));
+        return;
+      }
+
+      if (method === "memory/overview" && id) {
+        ws.send(rpcResponse(id, {
+          overview: {
+            ok: true,
+            long_term: "",
+            today: "",
+            recent: [],
+            entities: [],
+            staging_notes: 0,
+            refresh_enabled: true,
+          },
+        }));
         return;
       }
 
@@ -575,6 +678,56 @@ async function installDefaultE2EHarness(page: Page) {
         if (!session.title && userText) session.title = userText.slice(0, 50);
 
         ws.send(rpcResponse(id, { accepted: true }));
+        appendProjectionEnvelope(ws, sessionId, {
+          thread_id: turnId,
+          seq: 1,
+          turn_id: turnId,
+          client_message_id: turnId,
+          payload: {
+            type: "user_message",
+            data: { text: userText, files: [] },
+          },
+        });
+        appendProjectionEnvelope(ws, sessionId, {
+          thread_id: turnId,
+          seq: 2,
+          turn_id: turnId,
+          client_message_id: turnId,
+          payload: {
+            type: "assistant_delta",
+            data: {
+              text: reply,
+              assistant_segment_id: `assistant-${assistantSeq}`,
+            },
+          },
+        });
+        appendProjectionEnvelope(ws, sessionId, {
+          thread_id: turnId,
+          seq: 3,
+          turn_id: turnId,
+          client_message_id: turnId,
+          payload: {
+            type: "assistant_persisted",
+            data: {
+              text: reply,
+              assistant_segment_id: `assistant-${assistantSeq}`,
+              meta: {
+                message_id: `assistant-${assistantSeq}`,
+                persisted_at: new Date().toISOString(),
+              },
+            },
+          },
+        });
+        appendProjectionEnvelope(ws, sessionId, {
+          thread_id: turnId,
+          seq: 4,
+          turn_id: turnId,
+          client_message_id: turnId,
+          payload: {
+            type: "turn_terminal",
+            data: { outcome: "completed" },
+          },
+        });
         ws.send(rpcNotification("turn/started", {
           session_id: sessionId,
           turn_id: turnId,
@@ -735,12 +888,15 @@ export function isThinkingContent(text: string): boolean {
 
 // ── Login ──────────────────────────────────────────────────────
 
-export async function login(page: Page) {
+export async function login(
+  page: Page,
+  options: { uiProtocol?: UiProtocolHarnessControl } = {},
+) {
   const profileId = process.env.PROFILE_ID || "admin";
   const testEmail = process.env.TEST_EMAIL || "admin@localhost";
 
   if (USE_E2E_HARNESS) {
-    await installDefaultE2EHarness(page);
+    await installDefaultE2EHarness(page, options.uiProtocol);
   }
 
   // Obtain a real session token via static_tokens verify before seeding
@@ -1300,7 +1456,10 @@ export async function getLogsSince(
   if (!result?.stdout) return [];
   return result.stdout
     .split("\n")
-    .map((line) => line.replace(/\x1b\[[0-9;]*m/g, "").trim())
+    .map((line) =>
+      // eslint-disable-next-line no-control-regex -- deliberately strips ANSI escape sequences from server log lines
+      line.replace(/\x1b\[[0-9;]*m/g, "").trim(),
+    )
     .filter(Boolean);
 }
 

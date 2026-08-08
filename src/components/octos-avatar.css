@@ -1,0 +1,86 @@
+.octos-avatar-art {
+  --octos-start: #76d8e4;
+  --octos-end: #2d9fbd;
+  --octos-shadow: #246f82;
+  --octos-detail: #176b80;
+  display: block;
+  width: 64px;
+  height: 64px;
+  overflow: visible;
+  filter: drop-shadow(0 7px 7px color-mix(in srgb, var(--octos-shadow) 26%, transparent));
+}
+
+.octos-avatar-art[data-skin="coral"] {
+  --octos-start: #ffaaa0;
+  --octos-end: #ed6577;
+  --octos-shadow: #a9475c;
+  --octos-detail: #9d3d58;
+}
+
+.octos-avatar-art[data-skin="scholar"] {
+  --octos-start: #b5a7ee;
+  --octos-end: #766bd2;
+  --octos-shadow: #4d438f;
+  --octos-detail: #383265;
+}
+
+.octos-avatar-art[data-skin="starlight"] {
+  --octos-start: #6677d8;
+  --octos-end: #273678;
+  --octos-shadow: #182052;
+  --octos-detail: #eef1ff;
+}
+
+.octos-avatar-gradient-start {
+  stop-color: var(--octos-start);
+}
+
+.octos-avatar-gradient-end {
+  stop-color: var(--octos-end);
+}
+
+.octos-avatar-shadow {
+  fill: var(--octos-shadow);
+}
+
+.octos-avatar-shine {
+  color: rgba(255, 255, 255, 0.42);
+}
+
+.octos-avatar-stars {
+  fill: #fff4b9;
+}
+
+.octos-avatar-scholar {
+  color: var(--octos-detail);
+  fill: var(--octos-detail);
+}
+
+.octos-avatar-coral-flower {
+  fill: #fff0a8;
+}
+
+.octos-avatar-coral-flower circle:last-child {
+  fill: #cf6d61;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-state="listening"] .octos-avatar-art,
+  [data-state="speaking"] .octos-avatar-art {
+    animation: octos-avatar-bob 1.8s ease-in-out infinite;
+  }
+
+  [data-state="thinking"] .octos-avatar-art {
+    animation: octos-avatar-think 2.4s ease-in-out infinite;
+  }
+}
+
+@keyframes octos-avatar-bob {
+  0%, 100% { transform: translateY(0) rotate(-1deg); }
+  50% { transform: translateY(-3px) rotate(1deg); }
+}
+
+@keyframes octos-avatar-think {
+  0%, 100% { transform: rotate(0); }
+  50% { transform: rotate(-4deg); }
+}

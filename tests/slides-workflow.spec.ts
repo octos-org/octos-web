@@ -13,8 +13,6 @@ import {
   getInput,
   getSendButton,
   SEL,
-  countUserBubbles,
-  countAssistantBubbles,
   createNewSession
 } from "./helpers";
 
@@ -66,7 +64,6 @@ test("Round 1: /new slides creates project and agent follows design-first workfl
 test("Round 2: modify slide content before generating", async ({ page }) => {
   // Assume we're in a slides session from Round 1
   // First create a fresh project
-  const input = getInput(page);
   await issueSlidesCommand(page, "/new slides update-test");
 
   // Create initial 3-slide deck
@@ -98,7 +95,6 @@ test("Round 2: modify slide content before generating", async ({ page }) => {
 // ── Round 3: Generate PPTX ──────────────────────────────────────
 
 test("Round 3: generate PPTX on explicit command", async ({ page }) => {
-  const input = getInput(page);
   await issueSlidesCommand(page, "/new slides gen-test");
 
   // Create a minimal 2-slide deck
@@ -147,7 +143,6 @@ test("Round 3: generate PPTX on explicit command", async ({ page }) => {
 test("Round 4: incremental update deletes only changed slide PNG", async ({
   page
 }) => {
-  const input = getInput(page);
   await issueSlidesCommand(page, "/new slides delta-test");
 
   // Create and generate a 2-slide deck

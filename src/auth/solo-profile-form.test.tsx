@@ -53,7 +53,7 @@ afterEach(() => {
 });
 
 describe("SoloProfileForm", () => {
-  it("keeps submit disabled until name/username/email are valid, then submits trimmed values", async () => {
+  it("keeps submit disabled until a name is entered, then submits the trimmed name", async () => {
     soloCreate.mockResolvedValue(undefined);
     const onDone = vi.fn();
     const { container } = mount(
@@ -65,33 +65,39 @@ describe("SoloProfileForm", () => {
     expect(submitBtn(container).disabled).toBe(true);
 
     setInput(container, "solo-name", "  Ada Lovelace ");
-    setInput(container, "solo-username", " ada ");
-    expect(submitBtn(container).disabled).toBe(true); // email still missing
-
-    setInput(container, "solo-email", " ada@example.com ");
     expect(submitBtn(container).disabled).toBe(false);
 
     await act(async () => {
       submitBtn(container).click();
     });
 
-    expect(soloCreate).toHaveBeenCalledWith({
-      name: "Ada Lovelace",
-      username: "ada",
-      email: "ada@example.com",
-    });
+    expect(soloCreate).toHaveBeenCalledWith({ name: "Ada Lovelace" });
     expect(onDone).toHaveBeenCalled();
   });
 
-  it("keeps submit disabled for an invalid username", () => {
+  it("keeps submit disabled for a whitespace-only name", () => {
     const { container } = mount(
       <MemoryRouter>
         <SoloProfileForm />
       </MemoryRouter>,
     );
-    setInput(container, "solo-name", "Ada");
-    setInput(container, "solo-username", "has space");
-    setInput(container, "solo-email", "ada@example.com");
+    setInput(container, "solo-name", "   ");
+    expect(submitBtn(container).disabled).toBe(true);
+  });
+
+  it("shows a length hint for an over-long name", () => {
+    const { container } = mount(
+      <MemoryRouter>
+        <SoloProfileForm />
+      </MemoryRouter>,
+    );
+    const el = container.querySelector('[data-testid="solo-name"]')!;
+    act(() => {
+      // React's onBlur delegates to the "focusout" event type.
+      el.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    setInput(container, "solo-name", "x".repeat(129));
+    expect(container.textContent).toContain("128 characters");
     expect(submitBtn(container).disabled).toBe(true);
   });
 
@@ -103,12 +109,22 @@ describe("SoloProfileForm", () => {
       </MemoryRouter>,
     );
     setInput(container, "solo-name", "Ada");
-    setInput(container, "solo-username", "ada");
-    setInput(container, "solo-email", "ada@example.com");
     await act(async () => {
       submitBtn(container).click();
     });
     const err = container.querySelector('[data-testid="solo-error"]');
     expect(err?.textContent).toContain("username taken");
+  });
+
+  it("gives the name input an accessible name (placeholder is not a label)", () => {
+    const { container } = mount(
+      <MemoryRouter>
+        <SoloProfileForm />
+      </MemoryRouter>,
+    );
+    const el = container.querySelector(
+      '[data-testid="solo-name"]',
+    ) as HTMLInputElement;
+    expect(el.getAttribute("aria-label")).toBe("What should we call you?");
   });
 });

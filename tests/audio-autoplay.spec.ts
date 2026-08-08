@@ -35,15 +35,18 @@ test("audio files do NOT auto-play on page load or after delivery", async ({
 
   // Inject a MutationObserver to catch ALL audio elements and monitor play events
   await page.evaluate(() => {
+    type AudioPlayReporter = Window & {
+      __reportAudioPlay: (src: string) => void;
+    };
     function monitorAudio(audio: HTMLAudioElement) {
       const origPlay = audio.play.bind(audio);
       audio.play = function () {
-        (window as any).__reportAudioPlay(audio.src || audio.currentSrc || "unknown");
+        (window as AudioPlayReporter).__reportAudioPlay(audio.src || audio.currentSrc || "unknown");
         return origPlay();
       };
       // Also listen for the 'play' event (catches autoplay)
       audio.addEventListener("play", () => {
-        (window as any).__reportAudioPlay(
+        (window as AudioPlayReporter).__reportAudioPlay(
           `[event] ${audio.src || audio.currentSrc || "unknown"}`,
         );
       });

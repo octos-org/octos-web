@@ -1,17 +1,27 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import {
   login,
   sendAndWait,
-  SEL,
-  createNewSession,
   getInput,
   getSendButton,
   markLogPosition,
   assertLogContains,
-  assertLogDoesNotContain,
-  waitForLog,
-  adminShell
+  assertLogDoesNotContain
 } from "./helpers";
+
+/** Shape of the `crew:file` CustomEvent detail (mirrors
+ *  src/runtime/file-events.ts `dispatchCrewFileEvent`). */
+interface CapturedFileEvent {
+  fileUrl: string;
+  filename?: string;
+  caption?: string;
+  sessionId?: string;
+  topic?: string;
+}
+
+type FileEventWindow = Window & {
+  __capturedFileEvents?: CapturedFileEvent[];
+};
 
 test.describe("TTS file delivery", () => {
   test.beforeEach(async ({ page }) => {
@@ -29,13 +39,12 @@ test.describe("TTS file delivery", () => {
     console.log(`Log marker: ${logMark}`);
 
     // Capture crew:file DOM events
-    const fileEvents: any[] = [];
     await page.evaluate(() => {
-      (window as any).__capturedFileEvents = [];
+      (window as FileEventWindow).__capturedFileEvents = [];
       window.addEventListener("crew:file", (e: Event) => {
-        const detail = (e as CustomEvent).detail;
+        const detail = (e as CustomEvent<CapturedFileEvent>).detail;
         console.log("[test] crew:file event received:", JSON.stringify(detail));
-        (window as any).__capturedFileEvents.push(detail);
+        (window as FileEventWindow).__capturedFileEvents?.push(detail);
       });
     });
 
@@ -54,7 +63,7 @@ test.describe("TTS file delivery", () => {
     for (let i = 0; i < 20; i++) {
       await page.waitForTimeout(3000);
 
-      const events = await page.evaluate(() => (window as any).__capturedFileEvents);
+      const events = await page.evaluate(() => (window as FileEventWindow).__capturedFileEvents ?? []);
       console.log(`  ${i * 3}s: ${events.length} file events`);
 
       if (events.length > 0) {
@@ -72,8 +81,8 @@ test.describe("TTS file delivery", () => {
     expect(fileReceived).toBe(true);
 
     const uniqueFileUrls = await page.evaluate(() => {
-      const events = (window as any).__capturedFileEvents || [];
-      return [...new Set(events.map((event: any) => event.fileUrl))];
+      const events = (window as FileEventWindow).__capturedFileEvents ?? [];
+      return [...new Set(events.map((event) => event.fileUrl))];
     });
     expect(uniqueFileUrls).toHaveLength(1);
 

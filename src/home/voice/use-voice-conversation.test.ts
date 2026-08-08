@@ -15,6 +15,7 @@ import {
   useVoiceConversation,
 } from "./use-voice-conversation";
 import type { Thread } from "@/store/thread-store";
+import * as VoiceTranscriptStore from "@/store/voice-transcript-store";
 
 // ---------------------------------------------------------------------------
 // Hook-level harness (start() cancellation — post-unmount mic re-acquire).
@@ -113,7 +114,7 @@ vi.mock("@/store/projection-store", () => ({
   projectionStoreKey: (sessionId: string, topic?: string) =>
     `${sessionId}\u0000${topic ?? ""}`,
   clientMessageIdForTurn: (_storeKey: string, turnId: string) => turnId,
-  onEnvelopeAdmitted: (
+  onEnvelopeObserved: (
     listener: (storeKey: string, envelope: Record<string, unknown>) => void,
   ) => {
     projectionStoreMock.listener = listener;
@@ -224,6 +225,24 @@ describe("pickFreshAudio", () => {
 });
 
 describe("buildVoiceTurns", () => {
+  it("shows a provisional ASR turn before any canonical thread exists", () => {
+    expect(
+      buildVoiceTurns(
+        [],
+        0,
+        new Map([["turn-provisional", "先显示识别文字"]]),
+        ["turn-provisional"],
+      ),
+    ).toEqual([
+      {
+        id: "turn-provisional",
+        userText: "先显示识别文字",
+        assistantText: "",
+        awaitingTranscript: false,
+      },
+    ]);
+  });
+
   it("uses a live ASR transcript when the canonical user row is still empty", () => {
     const threads = [
       {
@@ -450,40 +469,23 @@ describe("farewellAudioActive (fallback must not cut off the goodbye)", () => {
 describe("live ASR transcript projection", () => {
   afterEach(() => {
     threadsMock.value = [];
+    VoiceTranscriptStore.__resetVoiceTranscriptStoreForTests();
   });
 
   it("updates the visible turn before canonical history contains the transcript", () => {
-    threadsMock.value = [
-      {
-        id: "turn-live-asr",
-        userMsg: {
-          text: "",
-          files: [{ path: "uploads/utterance.wav" }],
-        },
-        pendingAssistant: null,
-        responses: [],
-      },
-    ];
-    const { result, unmount } = renderHook(() =>
+    threadsMock.value = [];
+    const { result, rerender, unmount } = renderHook(() =>
       useVoiceConversation("voice-live-asr"),
     );
 
-    expect(result.current.turns[0]).toEqual(
-      expect.objectContaining({
-        userText: "",
-        awaitingTranscript: true,
-      }),
-    );
+    expect(result.current.turns).toEqual([]);
 
     act(() => {
-      window.dispatchEvent(
-        new CustomEvent("crew:voice_transcript", {
-          detail: {
-            sessionId: "voice-live-asr",
-            threadId: "turn-live-asr",
-            transcript: "提前显示这句话",
-          },
-        }),
+      VoiceTranscriptStore.upsert(
+        "voice-live-asr",
+        undefined,
+        "turn-live-asr",
+        "提前显示这句话",
       );
     });
 
@@ -494,6 +496,54 @@ describe("live ASR transcript projection", () => {
       }),
     );
     expect(result.current.lastUserText).toBe("提前显示这句话");
+
+    threadsMock.value = [
+      {
+        id: "turn-live-asr",
+        turnId: "turn-live-asr",
+        userMsg: {
+          text: "",
+          files: [{ path: "uploads/utterance.wav" }],
+        },
+        pendingAssistant: {
+          role: "assistant",
+          text: "稍后出现回答",
+          files: [],
+        },
+        responses: [],
+      },
+    ];
+    rerender();
+    expect(result.current.turns).toHaveLength(1);
+    expect(result.current.turns[0]).toEqual(
+      expect.objectContaining({
+        userText: "提前显示这句话",
+        assistantText: "稍后出现回答",
+      }),
+    );
+    unmount();
+  });
+
+  it("replays a transcript that arrived before the voice hook subscribed", () => {
+    VoiceTranscriptStore.upsert(
+      "voice-asr-before-mount",
+      undefined,
+      "turn-before-mount",
+      "订阅之前已经到达",
+    );
+
+    const { result, unmount } = renderHook(() =>
+      useVoiceConversation("voice-asr-before-mount"),
+    );
+
+    expect(result.current.turns).toEqual([
+      {
+        id: "turn-before-mount",
+        userText: "订阅之前已经到达",
+        assistantText: "",
+        awaitingTranscript: false,
+      },
+    ]);
     unmount();
   });
 });
@@ -513,7 +563,7 @@ describe("canonical reply-audio delivery", () => {
     getActiveBridgeMock.mockReturnValue(undefined);
   });
 
-  it("plays an admitted audio envelope even when it is absent from the terminal projection", async () => {
+  it("plays every observed sentence file even when consecutive files reuse a seq", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => ({
@@ -551,9 +601,26 @@ describe("canonical reply-audio delivery", () => {
           payload: {
             type: "file_attached",
             data: {
-              path: "reply-after-terminal.mp3",
+              path: "reply-first.mp3",
               mime: "audio/mpeg",
               size_bytes: 42,
+            },
+          },
+        },
+      );
+      projectionStoreMock.listener?.(
+        "voice-post-terminal-audio\u0000",
+        {
+          session_id: "voice-post-terminal-audio",
+          thread_id: "turn-post-terminal",
+          turn_id: "turn-post-terminal",
+          seq: 4,
+          payload: {
+            type: "file_attached",
+            data: {
+              path: "reply-second.mp3",
+              mime: "audio/mpeg",
+              size_bytes: 44,
             },
           },
         },
@@ -562,11 +629,24 @@ describe("canonical reply-audio delivery", () => {
     });
 
     expect(fetch).toHaveBeenCalledWith(
-      "reply-after-terminal.mp3?session=voice-post-terminal-audio",
+      "reply-first.mp3?session=voice-post-terminal-audio",
       { headers: {} },
     );
     expect(audioMock.playAudioBlob).toHaveBeenCalledTimes(1);
     expect(result.current.state).toBe("speaking");
+
+    await act(async () => {
+      const finishFirst = audioMock.state.onEnded;
+      audioMock.state.onEnded = null;
+      finishFirst?.();
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "reply-second.mp3?session=voice-post-terminal-audio",
+      { headers: {} },
+    );
+    expect(audioMock.playAudioBlob).toHaveBeenCalledTimes(2);
     unmount();
   });
 });
@@ -674,6 +754,7 @@ describe("start() cancellation (post-unmount mic re-acquire)", () => {
     cameraMock.active = true;
     uploadFilesMock.mockResolvedValueOnce(["uploads/wake.wav"]);
     const buildTurnText = vi.fn(() => "[[LEARNING_SESSION]]");
+    const onTurnStart = vi.fn();
     const onTurnComplete = vi.fn();
     const { result, rerender, unmount } = renderHook(
       ({ externalSpeechActive }) =>
@@ -682,6 +763,7 @@ describe("start() cancellation (post-unmount mic re-acquire)", () => {
           buildTurnText,
           playReplyAudio: false,
           externalSpeechActive,
+          onTurnStart,
           onTurnComplete,
         }),
       { initialProps: { externalSpeechActive: false } },
@@ -696,6 +778,11 @@ describe("start() cancellation (post-unmount mic re-acquire)", () => {
 
     expect(cameraMock.start).toHaveBeenCalledTimes(1);
     expect(cameraMock.grabFrame).not.toHaveBeenCalled();
+    expect(onTurnStart).toHaveBeenCalledTimes(1);
+    expect(onTurnStart).toHaveBeenCalledWith(expect.any(String));
+    expect(onTurnStart.mock.invocationCallOrder[0]).toBeLessThan(
+      uploadFilesMock.mock.invocationCallOrder[0],
+    );
     expect(buildTurnText).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: "learn-wake-test",

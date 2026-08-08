@@ -5,6 +5,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import geometryLessonSource from "./fixtures/geometry-auxiliary-line-v2.canonical.jsonl?raw";
 import type { CanonicalEvent } from "octos-lesson-language";
@@ -126,6 +127,43 @@ function IncrementalReviewRuntimeProbe() {
         恢复历史课程
       </button>
       <OllLessonBoard runtime={runtime} />
+    </div>
+  );
+}
+
+function ReviewToLiveRuntimeProbe() {
+  const [review, setReview] = useState(true);
+  const runtime = useOllLessonRuntime({
+    source: JSON.stringify(geometryEvents[0]),
+    storageKey: "oll-review-to-live-runtime-test",
+    incremental: true,
+    autoPlay: !review,
+    startAtEnd: review,
+    narrationTiming: "external",
+  });
+  if (!runtime) return null;
+  return (
+    <div>
+      <span data-testid="review-to-live-status">{runtime.status}</span>
+      <span data-testid="review-to-live-playing">
+        {String(runtime.playing)}
+      </span>
+      <span data-testid="review-to-live-speech">{runtime.activeSpeech}</span>
+      <button
+        type="button"
+        onClick={() => runtime.appendEvents([geometryEvents[1]!])}
+      >
+        恢复已有步骤
+      </button>
+      <button type="button" onClick={() => setReview(false)}>
+        开始新语音轮次
+      </button>
+      <button
+        type="button"
+        onClick={() => runtime.appendEvents([geometryEvents[2]!])}
+      >
+        追加新课程步骤
+      </button>
     </div>
   );
 }
@@ -261,5 +299,25 @@ describe("OLL lesson Runtime integration", () => {
       "false",
     );
     expect(screen.getByText("关键想法")).toBeTruthy();
+  });
+
+  it("plays a new incremental step after a reviewed lesson returns to live mode", async () => {
+    render(<ReviewToLiveRuntimeProbe />);
+    fireEvent.click(screen.getByRole("button", { name: "恢复已有步骤" }));
+    expect(screen.getByTestId("review-to-live-status").textContent).toBe(
+      "waiting",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "开始新语音轮次" }));
+    fireEvent.click(screen.getByRole("button", { name: "追加新课程步骤" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("review-to-live-playing").textContent).toBe(
+        "true",
+      );
+      expect(screen.getByTestId("review-to-live-speech").textContent).toContain(
+        "现在连接 A 和 D",
+      );
+    });
   });
 });

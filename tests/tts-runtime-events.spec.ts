@@ -131,6 +131,28 @@ async function installMockRuntime(page: Page) {
   });
 
   // ─── WebSocket mock ──────────────────────────────────────────
+  // v2 projection state: with the v2 capability advertised above, the
+  // client's canonical render path is driven by projection/envelope frames
+  // (and session/hydrate snapshots), exactly like the deployed Core server.
+  // Mirror the shared harness (tests/helpers.ts): foreground turn events go
+  // out as v2 envelopes; background task completion stays on the legacy
+  // task/updated + turn/spawn_complete notifications the harness also uses.
+  const projectionEnvelopes: Array<Record<string, unknown>> = [];
+  let projectionCursorSeq = 0;
+  const appendProjectionEnvelope = (
+    socket: { send(message: string): void },
+    envelope: Record<string, unknown>,
+  ) => {
+    projectionCursorSeq += 1;
+    const frame = {
+      session_id: sessionId,
+      ...envelope,
+      cursor: { stream: sessionId, seq: projectionCursorSeq },
+    };
+    projectionEnvelopes.push(frame);
+    socket.send(rpcNotification("projection/envelope", frame));
+  };
+
   await page.routeWebSocket(/\/api\/ui-protocol\/ws/, (ws) => {
     ws.onMessage((msg) => {
       let data: { jsonrpc: string; id?: string; method?: string; params?: Record<string, unknown> };
@@ -146,7 +168,23 @@ async function installMockRuntime(page: Page) {
           opened: {
             session_id: sessionId,
             active_profile_id: "admin",
+            // Match the deployed Core server: without the v2 capability the
+            // client gate fails startup, so the spec would exercise a path
+            // production never takes.
+            capabilities: {
+              supported_features: ["projection.envelope.v2"],
+            },
           },
+        }));
+        return;
+      }
+
+      if (data.method === "session/hydrate" && data.id) {
+        const cursor = { stream: sessionId, seq: projectionCursorSeq };
+        ws.send(rpcResponse(data.id, {
+          session_id: sessionId,
+          cursor,
+          projection_snapshot: { envelopes: projectionEnvelopes, cursor },
         }));
         return;
       }
@@ -154,9 +192,67 @@ async function installMockRuntime(page: Page) {
       if (data.method === "turn/start" && data.id) {
         const turnId = (data.params?.turn_id as string) || "turn-1";
         sessionId = (data.params?.session_id as string) || sessionId;
+        const userText = (
+          (data.params?.input as Array<Record<string, unknown>> | undefined) ??
+          []
+        )
+          .map((part) => (typeof part?.text === "string" ? part.text : ""))
+          .join("\n")
+          .trim();
 
         // Respond: turn accepted
         ws.send(rpcResponse(data.id, { accepted: true }));
+
+        // Canonical v2 envelopes for the foreground turn (the frames the
+        // v2-negotiated client renders from).
+        const introText = "TTS task started. Audio will arrive in this bubble.";
+        appendProjectionEnvelope(ws, {
+          thread_id: turnId,
+          seq: 1,
+          turn_id: turnId,
+          client_message_id: turnId,
+          payload: {
+            type: "user_message",
+            data: { text: userText, files: [] },
+          },
+        });
+        appendProjectionEnvelope(ws, {
+          thread_id: turnId,
+          seq: 2,
+          turn_id: turnId,
+          client_message_id: turnId,
+          payload: {
+            type: "assistant_delta",
+            data: { text: introText, assistant_segment_id: "msg-1" },
+          },
+        });
+        appendProjectionEnvelope(ws, {
+          thread_id: turnId,
+          seq: 3,
+          turn_id: turnId,
+          client_message_id: turnId,
+          payload: {
+            type: "assistant_persisted",
+            data: {
+              text: introText,
+              assistant_segment_id: "msg-1",
+              meta: {
+                message_id: "msg-1",
+                persisted_at: "2026-04-20T12:00:01Z",
+              },
+            },
+          },
+        });
+        appendProjectionEnvelope(ws, {
+          thread_id: turnId,
+          seq: 4,
+          turn_id: turnId,
+          client_message_id: turnId,
+          payload: {
+            type: "turn_terminal",
+            data: { outcome: "completed" },
+          },
+        });
 
         // Notification: turn/started
         ws.send(rpcNotification("turn/started", {

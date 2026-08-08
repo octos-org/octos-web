@@ -24,6 +24,7 @@ export function OllLessonBoard({
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef<MountedInfiniteBoard | null>(null);
+  const renderedFocusRef = useRef<string[]>([]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -45,11 +46,27 @@ export function OllLessonBoard({
 
   useEffect(() => {
     const view = mountedRef.current?.view;
+    const boardFocus = runtime.board?.focus ?? [];
+    const renderedFocus = renderedFocusRef.current;
+    const focusChanged =
+      boardFocus.length !== renderedFocus.length ||
+      boardFocus.some((target, index) => target !== renderedFocus[index]);
+    const atPlaybackBoundary =
+      runtime.currentOperation?.type === "beat.end" ||
+      runtime.currentOperation?.type === "step.commit";
     view?.render(
       runtime.board,
       runtime.currentOperation,
     );
-    view?.focusTargets(runtime.attentionTargets);
+    if (runtime.attentionTargets.length > 0) {
+      view?.focusTargets(runtime.attentionTargets);
+    } else if (atPlaybackBoundary && focusChanged) {
+      // React can batch every operation produced by advanceBeat() into the
+      // boundary render. In that case the board already contains the new Beat
+      // focus, but the view never observed the intermediate board.focus frame.
+      view?.focusTargets(boardFocus);
+    }
+    renderedFocusRef.current = [...boardFocus];
   }, [
     runtime.attentionTargets,
     runtime.board,

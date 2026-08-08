@@ -1079,6 +1079,41 @@ export function appendCompletionBubble(
     }
   }
 
+  // Content-identity fallback (spawn_complete double-render fix). The
+  // identity checks above only fire when the streamed bubble shares the
+  // envelope's `messageId`/`historySeq`. A spawn_only turn whose reply ALSO
+  // streamed live lands those tokens on a pending bubble with a DIFFERENT id
+  // (the turn's own id, not the completion envelope's), so neither identity
+  // match fires and the full text would be appended a second time. Guard on
+  // content identity: if any existing response, or the in-flight pending
+  // bubble, already carries this exact text, the completion is a duplicate —
+  // upgrade nothing, append nothing. `spawnComplete` is the only caller that
+  // delivers full-turn text, so an exact-content match here is a replay, not
+  // a coincidence. This mirrors `rowMatchesCompletionContent` but extends it
+  // to the pending slot and to rows whose id/seq differ from the envelope.
+  // Compare TRIMMED, because byte-equality is too strict to survive the wire.
+  // The two lanes accumulate the same answer differently: streaming appends
+  // raw deltas, while the completion carries the server's joined-and-persisted
+  // copy. Measured on an adjacent octos ui-protocol ledger, one turn's streamed
+  // accumulation was 3738 chars against 3735 for the identical persisted text —
+  // a 3-char whitespace skew from segment joins. Under `===` that turn renders
+  // twice; trimming absorbs it. Interior differences still (correctly) fall
+  // through to the append below.
+  if (opts.spawnComplete) {
+    const incoming = opts.text.trim();
+    if (incoming.length > 0) {
+      for (const r of thread.responses) {
+        if (r.role === "assistant" && r.text.trim() === incoming) {
+          return true;
+        }
+      }
+      const pending = thread.pendingAssistant;
+      if (pending && pending.text.trim() === incoming) {
+        return true;
+      }
+    }
+  }
+
   const completion: ThreadMessage = {
     id: opts.messageId ?? nextId(),
     role: "assistant",

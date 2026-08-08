@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { uploadFiles } from "@/api/chat";
 import {
   interruptActiveTurn,
@@ -8,6 +14,7 @@ import { getActiveBridge } from "@/runtime/ui-protocol-runtime";
 import type { Thread, ThreadMessage } from "@/store/thread-store";
 import { useRenderThreads } from "@/store/projection-render-adapter";
 import * as ProjectionStore from "@/store/projection-store";
+import * as VoiceTranscriptStore from "@/store/voice-transcript-store";
 import { buildFileUrl } from "@/api/files";
 import { buildApiHeaders } from "@/api/client";
 import { useVoiceCapture } from "./use-voice-capture";
@@ -90,6 +97,8 @@ export interface VoiceConversationOptions {
    * pauses until that playback ends so the assistant cannot hear itself.
    */
   externalSpeechActive?: boolean;
+  /** Reports the exact client turn as soon as a captured utterance is accepted. */
+  onTurnStart?: (turnId: string) => void;
   /** Reports the exact client turn after the assistant has finished replying. */
   onTurnComplete?: (turnId: string) => void;
 }
@@ -209,8 +218,15 @@ export function buildVoiceTurns(
   threads: Thread[],
   baseline = 0,
   liveTranscripts: ReadonlyMap<string, string> = new Map(),
+  provisionalTurnIds: readonly string[] = [],
 ): VoiceConversationTurn[] {
-  return threads.slice(baseline).filter((thread) => !thread.backgroundChild).map((thread) => {
+  const visibleThreads = threads
+    .slice(baseline)
+    .filter((thread) => !thread.backgroundChild);
+  const canonicalIds = new Set<string>();
+  const canonicalTurns = visibleThreads.map((thread) => {
+    canonicalIds.add(thread.id);
+    if (thread.turnId) canonicalIds.add(thread.turnId);
     const assistants: ThreadMessage[] = [
       ...thread.responses.filter((m) => m.role === "assistant"),
       ...(thread.pendingAssistant ? [thread.pendingAssistant] : []),
@@ -219,7 +235,9 @@ export function buildVoiceTurns(
       [...assistants].reverse().find((m) => m.text.trim().length > 0)?.text ?? "",
     );
     const userText = stripLearningContext(
-      liveTranscripts.get(thread.id) ?? thread.userMsg.text,
+      liveTranscripts.get(thread.id) ??
+        (thread.turnId ? liveTranscripts.get(thread.turnId) : undefined) ??
+        thread.userMsg.text,
     );
     const awaitingTranscript =
       userText.length === 0 &&
@@ -231,6 +249,18 @@ export function buildVoiceTurns(
       awaitingTranscript,
     };
   });
+  const provisionalTurns = provisionalTurnIds
+    .filter((turnId) => !canonicalIds.has(turnId))
+    .map((turnId) => {
+      const userText = stripLearningContext(liveTranscripts.get(turnId) ?? "");
+      return {
+        id: turnId,
+        userText,
+        assistantText: "",
+        awaitingTranscript: userText.length === 0,
+      };
+    });
+  return [...canonicalTurns, ...provisionalTurns];
 }
 
 const HTML_EXT = /\.html?$/i;
@@ -276,9 +306,7 @@ export function shouldHandleNoSpeechEvent(
   activeTurnId: string | null,
 ): boolean {
   if (!detail || detail.sessionId !== sessionId) return false;
-  const normalizeTopic = (value: string | undefined) =>
-    value?.trim() ? value.trim() : undefined;
-  if (normalizeTopic(detail.topic) !== normalizeTopic(topic)) return false;
+  if ((detail.topic ?? undefined) !== (topic ?? undefined)) return false;
   const eventTurnId = detail.threadId ?? detail.turnId ?? "";
   return activeTurnId === null || eventTurnId === activeTurnId;
 }
@@ -334,6 +362,7 @@ export function useVoiceConversation(
   const buildTurnText = options?.buildTurnText;
   const playReplyAudio = options?.playReplyAudio !== false;
   const externalSpeechActive = options?.externalSpeechActive === true;
+  const onTurnStart = options?.onTurnStart;
   const onTurnComplete = options?.onTurnComplete;
   const threads = useRenderThreads(sessionId, historyTopic);
   const capture = useVoiceCapture();
@@ -357,9 +386,14 @@ export function useVoiceConversation(
   const resetCameraSettings = camera.resetSettings;
   const [state, setState] = useState<VoiceState>("idle");
   const [lastAssistantText, setLastAssistantText] = useState("");
-  const [liveTranscripts, setLiveTranscripts] = useState<
-    ReadonlyMap<string, string>
-  >(() => new Map());
+  const [provisionalTurnIds, setProvisionalTurnIds] = useState<readonly string[]>(
+    [],
+  );
+  const transcriptSnapshot = useSyncExternalStore(
+    VoiceTranscriptStore.subscribe,
+    () => VoiceTranscriptStore.getSnapshot(sessionId, historyTopic),
+    () => VoiceTranscriptStore.getSnapshot(sessionId, historyTopic),
+  );
   const [visual, setVisual] = useState<VisualArtifact | null>(null);
   const [generating, setGenerating] = useState(false);
   const [exiting, setExiting] = useState(false);
@@ -518,9 +552,13 @@ export function useVoiceConversation(
     async (wav: Blob, includeCamera?: boolean) => {
       try {
         const turnId = crypto.randomUUID();
+        setProvisionalTurnIds((current) =>
+          current.includes(turnId) ? current : [...current, turnId],
+        );
         activeTurnIdRef.current = turnId;
         stateRef.current = "thinking";
         setState("thinking");
+        onTurnStart?.(turnId);
         const file = new File([wav], "utterance.wav", { type: "audio/wav" });
         // When the camera is on, attach the current frame so the turn is a
         // video call (audio + image); the server transcribes the audio and the
@@ -579,6 +617,12 @@ export function useVoiceConversation(
         }, REPLY_TIMEOUT_MS);
       } catch (e) {
         console.error("[voice] upload/send failed", e);
+        const failedTurnId = activeTurnIdRef.current;
+        if (failedTurnId) {
+          setProvisionalTurnIds((current) =>
+            current.filter((turnId) => turnId !== failedTurnId),
+          );
+        }
         setState("error");
       }
     },
@@ -586,6 +630,7 @@ export function useVoiceConversation(
       cameraGrab,
       historyTopic,
       buildTurnText,
+      onTurnStart,
       onTurnComplete,
       playReplyAudio,
       sessionId,
@@ -805,6 +850,8 @@ export function useVoiceConversation(
     turnBaselineRef.current = baseline;
     setTurnBaseline(baseline);
     setLastAssistantText("");
+    setProvisionalTurnIds([]);
+    VoiceTranscriptStore.clearScope(sessionId, historyTopic);
     // Rich output: mark pre-existing artifacts as seen so re-entry doesn't
     // re-surface a prior turn's visual; reset the live visual/generating state.
     seenVisualsRef.current = new Set(
@@ -900,6 +947,8 @@ export function useVoiceConversation(
     setVisual(null);
     setGenerating(false);
     clearTimeout(exitFallbackTimerRef.current);
+    setProvisionalTurnIds([]);
+    VoiceTranscriptStore.clearScope(sessionId, historyTopic);
     void captureStop();
     cameraStop();
     clearSentFrame();
@@ -912,6 +961,8 @@ export function useVoiceConversation(
     clearSentFrame,
     playReplyAudio,
     releaseAudio,
+    historyTopic,
+    sessionId,
   ]);
 
   // Leave the voice screen: one-shot. Tears down capture/audio/camera, then
@@ -976,7 +1027,7 @@ export function useVoiceConversation(
       sessionId,
       historyTopic,
     );
-    return ProjectionStore.onEnvelopeAdmitted((storeKey, envelope) => {
+    return ProjectionStore.onEnvelopeObserved((storeKey, envelope) => {
       if (!playReplyAudio) return;
       if (
         storeKey !== projectionKey ||
@@ -994,9 +1045,9 @@ export function useVoiceConversation(
       if (ignoredTurnIdsRef.current.has(renderThreadId)) return;
 
       // Reply audio is an interaction side effect, not durable chat content.
-      // Observe the admitted envelope directly so a TTS file that lands after
-      // the canonical turn terminal can still play without weakening the
-      // projection's hard post-terminal rendering barrier.
+      // Playback is a path-idempotent interaction side effect. Observe before
+      // canonical seq dedupe so older servers that assign the same seq to
+      // consecutive sentence files cannot truncate the spoken reply.
       playedPathsRef.current.add(path);
       audioTurnByPathRef.current.set(path, renderThreadId);
       audioQueueRef.current.push(path);
@@ -1200,12 +1251,12 @@ export function useVoiceConversation(
       const threadId = detail.threadId ?? detail.turnId ?? "";
       const transcript = detail.transcript?.trim() ?? "";
       if (!threadId || !transcript) return;
-      setLiveTranscripts((current) => {
-        if (current.get(threadId) === transcript) return current;
-        const next = new Map(current);
-        next.set(threadId, transcript);
-        return next;
-      });
+      VoiceTranscriptStore.upsert(
+        sessionId,
+        historyTopic,
+        threadId,
+        transcript,
+      );
     };
     window.addEventListener("crew:voice_transcript", onTranscript);
     return () =>
@@ -1239,6 +1290,13 @@ export function useVoiceConversation(
       audioQueueRef.current = [];
       audioTurnByPathRef.current.clear();
       speakingTurnIdRef.current = null;
+      const silentTurnId = detail?.threadId ?? detail?.turnId;
+      if (silentTurnId) {
+        VoiceTranscriptStore.remove(sessionId, historyTopic, silentTurnId);
+        setProvisionalTurnIds((current) =>
+          current.filter((turnId) => turnId !== silentTurnId),
+        );
+      }
       if (stateRef.current === "thinking") {
         void beginListeningRef.current();
       }
@@ -1254,18 +1312,19 @@ export function useVoiceConversation(
   stopRef.current = stop;
   useEffect(() => () => stopRef.current(), []);
 
-  const latestUserThread = threads
-    .slice(turnBaseline)
-    .reverse()
-    .find((thread) => !thread.backgroundChild);
-  const lastUserText = stripLearningContext(
-    (latestUserThread
-      ? liveTranscripts.get(latestUserThread.id)
-      : undefined) ??
-      latestUserThread?.userMsg.text ??
-      "",
+  const visibleTurnIds = [
+    ...provisionalTurnIds,
+    ...transcriptSnapshot.turnIds.filter(
+      (turnId) => !provisionalTurnIds.includes(turnId),
+    ),
+  ];
+  const turns = buildVoiceTurns(
+    threads,
+    turnBaseline,
+    transcriptSnapshot.transcripts,
+    visibleTurnIds,
   );
-  const turns = buildVoiceTurns(threads, turnBaseline, liveTranscripts);
+  const lastUserText = turns.at(-1)?.userText ?? "";
 
   const dismissVisual = useCallback(() => setVisual(null), []);
 
