@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Menu, Mic, MonitorSmartphone } from "lucide-react";
+import { Menu } from "lucide-react";
 
 import { useAuth } from "@/auth/auth-context";
 import {
@@ -9,19 +9,15 @@ import {
 } from "@/components/workbench-shell";
 import { unlockAudio } from "@/home/voice/audio-playback";
 import { useOminixRuntimeSummary } from "@/home/use-ominix-runtime-summary";
-
-const NAV_LINKS: Array<{ label: string; to: string; adminOnly?: boolean }> = [
-  { label: "Dashboard", to: "/" },
-  { label: "Chat", to: "/chat" },
-  { label: "Learning", to: "/learn" },
-  { label: "Slides", to: "/slides" },
-  { label: "Sites", to: "/sites" },
-  { label: "Settings", to: "/settings" },
-];
+import {
+  APP_NAV_ITEMS,
+  PRIMARY_NAV_ITEMS,
+  SECONDARY_NAV_ITEMS,
+  isAppNavActive,
+} from "@/components/app-nav";
 
 function isActive(pathname: string, to: string): boolean {
-  if (to === "/") return pathname === "/";
-  return pathname === to || pathname.startsWith(`${to}/`);
+  return isAppNavActive(pathname, to);
 }
 
 /**
@@ -29,6 +25,9 @@ function isActive(pathname: string, to: string): boolean {
  * text links with an active underline, and per-page actions on the
  * right ahead of the Display/Voice runtime shortcuts, theme toggle,
  * and user actions.
+ *
+ * Items come from the shared app-nav source of truth (same set, labels
+ * and order as the chat sidebar's WorkbenchRouteNav).
  */
 export function StudioNav({ actions }: { actions?: ReactNode }) {
   const { pathname } = useLocation();
@@ -59,7 +58,9 @@ export function StudioNav({ actions }: { actions?: ReactNode }) {
     };
   }, [mobileOpen]);
 
-  const links = NAV_LINKS.filter(
+  // Primary text links + the secondary Display/Voice shortcuts, so the
+  // mobile menu reaches exactly the same surfaces as the desktop bar.
+  const links = APP_NAV_ITEMS.filter(
     (link) => !link.adminOnly || portal?.can_access_admin_portal,
   );
 
@@ -112,7 +113,9 @@ export function StudioNav({ actions }: { actions?: ReactNode }) {
             <span className="studio-headline text-lg font-bold">Octos</span>
           </Link>
           <div className="hidden h-16 items-center gap-6 md:flex">
-            {links.map((link) => (
+            {PRIMARY_NAV_ITEMS.filter(
+              (link) => !link.adminOnly || portal?.can_access_admin_portal,
+            ).map((link) => (
               <Link
                 key={link.to}
                 to={link.to}
@@ -127,37 +130,34 @@ export function StudioNav({ actions }: { actions?: ReactNode }) {
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           {actions}
-          <button
-            type="button"
-            className="studio-ghost-button relative p-2"
-            aria-label="Display"
-            title="Display mode"
-            onClick={() => navigate("/home")}
-          >
-            <MonitorSmartphone size={18} />
-          </button>
-          <button
-            type="button"
-            className="studio-ghost-button relative p-2"
-            aria-label="Voice"
-            title={
-              voiceRuntime.needsAttention
-                ? `Voice — ${voiceRuntime.label}`
-                : "Voice"
-            }
-            onClick={() => {
-              unlockAudio();
-              navigate("/voice");
-            }}
-          >
-            <Mic size={18} />
-            {voiceRuntime.needsAttention && (
-              <span
-                className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-highlight"
-                aria-hidden="true"
-              />
-            )}
-          </button>
+          {SECONDARY_NAV_ITEMS.map((item) => {
+            const Icon = item.icon;
+            return (
+              <button
+                key={item.to}
+                type="button"
+                className="studio-ghost-button relative p-2"
+                aria-label={item.label}
+                title={
+                  item.to === "/voice" && voiceRuntime.needsAttention
+                    ? `Voice — ${voiceRuntime.label}`
+                    : item.label
+                }
+                onClick={() => {
+                  if (item.to === "/voice") unlockAudio();
+                  navigate(item.to);
+                }}
+              >
+                <Icon size={18} />
+                {item.to === "/voice" && voiceRuntime.needsAttention && (
+                  <span
+                    className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-highlight"
+                    aria-hidden="true"
+                  />
+                )}
+              </button>
+            );
+          })}
           <WorkbenchThemeButton />
           <WorkbenchUserActions />
         </div>

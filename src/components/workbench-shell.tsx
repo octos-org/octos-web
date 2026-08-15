@@ -1,16 +1,8 @@
 import {
   ArrowLeft,
   ArrowRight,
-  GraduationCap,
-  Globe,
-  Home,
   LogOut,
-  MessageSquare,
-  Mic,
-  MonitorSmartphone,
   Moon,
-  Presentation,
-  Settings,
   Sun,
   type LucideIcon,
 } from "lucide-react";
@@ -19,28 +11,21 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { useAuth } from "@/auth/auth-context";
 import { useTheme } from "@/hooks/use-theme";
+import {
+  APP_NAV_ITEMS,
+  isAppNavActive,
+  type AppNavItem,
+} from "@/components/app-nav";
 
 type WorkbenchTone = "default" | "accent" | "success" | "warning" | "danger";
 
-const routeItems: Array<{
-  to: string;
-  label: string;
-  icon: LucideIcon;
-  adminOnly?: boolean;
-}> = [
-  { to: "/", label: "Home", icon: Home },
-  { to: "/chat", label: "Chat", icon: MessageSquare },
-  { to: "/learn", label: "Learning", icon: GraduationCap },
-  { to: "/slides", label: "Slides", icon: Presentation },
-  { to: "/sites", label: "Sites", icon: Globe },
-  { to: "/home", label: "Display", icon: MonitorSmartphone },
-  { to: "/voice", label: "Voice", icon: Mic },
-  { to: "/settings", label: "Settings", icon: Settings },
-];
+// Navigation items come from the shared app-nav source of truth so the
+// chat sidebar and every other shell show the same set, labels and
+// order (see app-nav.ts).
+const routeItems: AppNavItem[] = APP_NAV_ITEMS;
 
 function isRouteActive(pathname: string, to: string) {
-  if (to === "/") return pathname === "/";
-  return pathname === to || pathname.startsWith(`${to}/`);
+  return isAppNavActive(pathname, to);
 }
 
 export function WorkbenchPage({

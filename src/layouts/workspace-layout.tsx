@@ -253,9 +253,10 @@ export function WorkspaceLayout({ children }: { children: ReactNode }) {
               className="workbench-button flex items-center gap-1.5 px-3 py-2 text-sm font-semibold"
               data-testid="workspace-new-session"
               onClick={() => createSession()}
+              title="Start a new chat session"
             >
               <Plus size={14} />
-              New workspace
+              New chat
             </button>
             <button
               type="button"
