@@ -107,9 +107,17 @@ export function AuroraOrb({ state, onClick, disabled }: AuroraOrbProps) {
     const cfg = STATE_CONFIG[state];
 
     const tick = (ts: number) => {
-      if (start === null) start = ts;
-      const t = (ts - start) / 1000;
-      drawAurora(ctx, rect.width, rect.height, t, cfg);
+      // Skip the draw while the tab is hidden — the aurora is a pure
+      // decoration and its 60fps canvas work should not run in the
+      // background (2026-08 UI audit M7). The clock re-bases when the
+      // tab becomes visible again so the animation doesn't jump.
+      if (!document.hidden) {
+        if (start === null) start = ts;
+        const t = (ts - start) / 1000;
+        drawAurora(ctx, rect.width, rect.height, t, cfg);
+      } else if (start !== null) {
+        start = null;
+      }
       rafRef.current = requestAnimationFrame(tick);
     };
 

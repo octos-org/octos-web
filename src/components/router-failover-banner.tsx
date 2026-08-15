@@ -20,6 +20,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { X } from "lucide-react";
 import { useSession } from "@/runtime/session-context";
 import { eventMatchesScope } from "@/runtime/event-scope";
 
@@ -97,15 +98,24 @@ export function RouterFailoverBanner({
       data-testid="router-failover-banner"
       role="status"
       aria-live="polite"
-      className="glass-pill pointer-events-none absolute left-1/2 top-3 z-30 -translate-x-1/2 rounded-[12px] px-4 py-2 text-xs text-text shadow-lg"
+      className="glass-pill absolute left-1/2 top-3 z-30 flex -translate-x-1/2 items-center gap-2 rounded-[12px] px-4 py-2 text-xs text-text shadow-lg"
     >
-      <span className="font-semibold">Router switched</span>
-      <span className="ml-1.5 text-muted/85">
+      <span className="font-semibold">Switched to backup route</span>
+      <span className="text-muted/85">
         {visible.from} → {visible.to}
       </span>
-      <span className="ml-2 text-muted/70">
+      <span className="hidden text-muted/70 sm:inline">
         ({visible.reason}, {visible.elapsedMs}ms)
       </span>
+      <button
+        type="button"
+        data-testid="router-failover-dismiss"
+        onClick={() => setVisible(null)}
+        aria-label="Dismiss"
+        className="rounded p-0.5 text-muted/70 transition hover:text-text"
+      >
+        <X size={12} />
+      </button>
     </div>
   );
 }

@@ -117,7 +117,9 @@ const DEFAULT_SETTINGS: HomeSettings = {
   clockFormat: "24h",
   idleSeconds: 30,
   nightMode: "auto",
-  burnInProtection: false,
+  // Always-on displays need burn-in protection out of the box
+  // (2026-08 UI audit M8); users can turn it off in the panel.
+  burnInProtection: true,
   lang: "en",
   newsFeedUrl: DEFAULT_FEED_URL,
   calendarFeedUrl: "",

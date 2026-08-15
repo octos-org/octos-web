@@ -317,6 +317,11 @@ export function InfiniteBoard({
     originX: number;
     originY: number;
   } | null>(null);
+  // Live pointer positions (multi-touch: one finger pans, two pinch).
+  const pointersRef = useRef(new Map<number, { x: number; y: number }>());
+  const pinchRef = useRef<{ startDist: number; startZoom: number } | null>(
+    null,
+  );
   const [viewport, setViewport] =
     useState<BoardViewport>(INITIAL_VIEWPORT);
 
@@ -393,6 +398,20 @@ export function InfiniteBoard({
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || event.target !== event.currentTarget) return;
     event.currentTarget.setPointerCapture(event.pointerId);
+    pointersRef.current.set(event.pointerId, {
+      x: event.clientX,
+      y: event.clientY,
+    });
+    if (pointersRef.current.size === 2) {
+      // Second finger lands → pinch zoom; drop the pan drag.
+      dragRef.current = null;
+      const [a, b] = [...pointersRef.current.values()];
+      pinchRef.current = {
+        startDist: Math.hypot(a.x - b.x, a.y - b.y),
+        startZoom: viewport.zoom,
+      };
+      return;
+    }
     dragRef.current = {
       pointerId: event.pointerId,
       x: event.clientX,
@@ -403,6 +422,24 @@ export function InfiniteBoard({
   };
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const point = pointersRef.current.get(event.pointerId);
+    if (!point) return;
+    point.x = event.clientX;
+    point.y = event.clientY;
+    if (pointersRef.current.size === 2 && pinchRef.current) {
+      // Pinch: zoom around the two-finger midpoint (audit M9 — the
+      // board previously zoomed only with the mouse wheel, which touch
+      // devices cannot do).
+      const [a, b] = [...pointersRef.current.values()];
+      const dist = Math.hypot(a.x - b.x, a.y - b.y);
+      const rect = event.currentTarget.getBoundingClientRect();
+      zoomAt(
+        pinchRef.current.startZoom * (dist / pinchRef.current.startDist),
+        (a.x + b.x) / 2 - rect.left,
+        (a.y + b.y) / 2 - rect.top,
+      );
+      return;
+    }
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     setViewport((current) => ({
@@ -413,6 +450,20 @@ export function InfiniteBoard({
   };
 
   const handlePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    pointersRef.current.delete(event.pointerId);
+    if (pointersRef.current.size < 2) pinchRef.current = null;
+    if (pointersRef.current.size === 1) {
+      // One finger remains → hand it to panning.
+      const [pid, point] = [...pointersRef.current.entries()][0];
+      dragRef.current = {
+        pointerId: pid,
+        x: point.x,
+        y: point.y,
+        originX: viewport.x,
+        originY: viewport.y,
+      };
+      return;
+    }
     if (dragRef.current?.pointerId === event.pointerId) {
       dragRef.current = null;
       event.currentTarget.releasePointerCapture(event.pointerId);
@@ -558,7 +609,7 @@ export function InfiniteBoard({
       </div>
 
       <div className="learning-board-zoom-hint">
-        拖动画布 · 滚轮缩放
+        拖动画布 · 滚轮或双指捏合缩放
       </div>
     </div>
   );

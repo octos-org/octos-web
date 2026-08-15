@@ -731,8 +731,41 @@ const ThreadUserBubble = memo(function ThreadUserBubble({
   );
 });
 
+function progressLevel(
+  text: string,
+): "info" | "debug" | "warn" | "error" | null {
+  const match = /^\[(info|debug|warn|error)\]\s*/i.exec(text);
+  if (!match) return null;
+  return match[1].toLowerCase() as "info" | "debug" | "warn" | "error";
+}
+
 function stripProgressLevel(text: string): string {
   return text.replace(/^\[(info|debug|warn|error)\]\s*/i, "");
+}
+
+/** Tailwind text color for a tool-progress level (kept visible instead
+ *  of being stripped — audit C6: an `[error]` line must read as one). */
+function progressLevelClass(level: "info" | "debug" | "warn" | "error" | null): string {
+  if (level === "error") return "text-red-400";
+  if (level === "warn") return "text-amber-400";
+  return "";
+}
+
+function ProgressLevelBadge({
+  level,
+}: {
+  level: "info" | "debug" | "warn" | "error" | null;
+}) {
+  if (level !== "error" && level !== "warn") return null;
+  return (
+    <span
+      className={`mr-1 text-[10px] font-bold uppercase tracking-wide ${
+        level === "error" ? "text-red-400" : "text-amber-400"
+      }`}
+    >
+      {level}
+    </span>
+  );
 }
 
 function ToolCallBubble({
@@ -941,7 +974,11 @@ function ToolCallBubble({
               className="m-0 mt-1 flex list-none flex-col gap-0.5 border-l border-current/20 pl-2"
             >
               {toolCall.progress.map((entry, idx) => (
-                <li key={idx} className="opacity-80">
+                <li
+                  key={idx}
+                  className={`opacity-80 ${progressLevelClass(progressLevel(entry.message))}`}
+                >
+                  <ProgressLevelBadge level={progressLevel(entry.message)} />
                   {stripProgressLevel(entry.message)}
                 </li>
               ))}
@@ -960,8 +997,9 @@ function ToolCallBubble({
               {latestProgress && (
                 <li
                   data-testid="tool-call-runtime-latest"
-                  className="opacity-80"
+                  className={`opacity-80 ${progressLevelClass(progressLevel(latestProgress.message))}`}
                 >
+                  <ProgressLevelBadge level={progressLevel(latestProgress.message)} />
                   {stripProgressLevel(latestProgress.message)}
                 </li>
               )}
@@ -1662,6 +1700,10 @@ function Composer({
 
   const [text, setText] = useState("");
   const [cmdFeedback, setCmdFeedback] = useState<string | null>(null);
+  // Errors persist until dismissed (2026-08 UI audit C6): the old
+  // 4-second auto-dismiss hid the exact moment users most need the
+  // message; informational feedback (/help etc.) still auto-clears.
+  const [feedbackIsError, setFeedbackIsError] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
 
   // Rewind → edit-and-resend: `ThreadUserBubble` dispatches
@@ -1796,10 +1838,10 @@ function Composer({
       setRecordingTime(0);
       setRecording(mode);
     } catch (e) {
+      setFeedbackIsError(true);
       setCmdFeedback(
         `Recording failed: ${e instanceof Error ? e.message : "permission denied"}`,
       );
-      setTimeout(() => setCmdFeedback(null), 4000);
     }
   }, []);
 
@@ -1833,8 +1875,8 @@ function Composer({
       });
       setCameraStream(stream);
     } catch (e) {
+      setFeedbackIsError(true);
       setCmdFeedback(`Camera failed: ${e instanceof Error ? e.message : "permission denied"}`);
-      setTimeout(() => setCmdFeedback(null), 4000);
     }
   }, [cameraStream]);
 
@@ -1979,16 +2021,17 @@ function Composer({
         return;
       }
     } catch (e) {
+      setFeedbackIsError(true);
       setCmdFeedback(
         `Send failed: ${e instanceof Error ? e.message : "unknown error"}`,
       );
-      setTimeout(() => setCmdFeedback(null), 4000);
       releaseSending();
       return;
     }
 
     if (trimmedInput === "/help" || trimmedInput === "/") {
       setText("");
+      setFeedbackIsError(false);
       setCmdFeedback(
         COMMANDS.map((c) => `${c.cmd} — ${c.desc}`).join("\n"),
       );
@@ -2015,10 +2058,10 @@ function Composer({
       try {
         await compactSession(scopedId);
       } catch (e) {
+        setFeedbackIsError(true);
         setCmdFeedback(
           `Compact failed: ${e instanceof Error ? e.message : "unknown error"}`,
         );
-        setTimeout(() => setCmdFeedback(null), 4000);
       }
       releaseSending();
       return;
@@ -2039,8 +2082,8 @@ function Composer({
           audioUploadMode,
         );
       } catch (e) {
+        setFeedbackIsError(true);
         setCmdFeedback(`Upload failed: ${e instanceof Error ? e.message : "unknown error"}`);
-        setTimeout(() => setCmdFeedback(null), 4000);
         setUploading(false);
         releaseSending();
         return;
@@ -2085,10 +2128,10 @@ function Composer({
         ...intercepted,
       };
     } catch (e) {
+      setFeedbackIsError(true);
       setCmdFeedback(
         `Send failed: ${e instanceof Error ? e.message : "unknown error"}`,
       );
-      setTimeout(() => setCmdFeedback(null), 4000);
       releaseSending();
       return;
     }
@@ -2278,9 +2321,26 @@ function Composer({
         {cmdFeedback && (
           <div
             data-testid="cmd-feedback"
-            className="glass-pill animate-shell-rise mb-3 whitespace-pre-wrap rounded-[10px] px-3.5 py-2 text-xs text-accent"
+            className={`glass-pill animate-shell-rise mb-3 flex items-start gap-2 whitespace-pre-wrap rounded-[10px] px-3.5 py-2 text-xs ${
+              feedbackIsError
+                ? "border border-red-500/30 bg-red-500/10 text-red-400"
+                : "text-accent"
+            }`}
           >
-            {cmdFeedback}
+            <span className="min-w-0 flex-1">{cmdFeedback}</span>
+            {feedbackIsError && (
+              <button
+                type="button"
+                onClick={() => {
+                  setCmdFeedback(null);
+                  setFeedbackIsError(false);
+                }}
+                aria-label="Dismiss error"
+                className="shrink-0 rounded p-0.5 text-red-400/70 transition hover:text-red-400"
+              >
+                <X size={12} />
+              </button>
+            )}
           </div>
         )}
         {matchingCmds.length > 0 && (
