@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/auth/auth-context";
 import {
@@ -21,6 +21,7 @@ import {
   AlarmClock,
   ShieldCheck,
   KeyRound,
+  Search,
 } from "lucide-react";
 import {
   WorkbenchStatusPill,
@@ -49,31 +50,43 @@ import { AuthenticationTab } from "./authentication-tab";
 
 type TabId = "profile" | "appearance" | "llm" | "api-keys" | "voice" | "memory" | "schedule" | "skills" | "channels" | "smart-home" | "sandbox" | "tools" | "authentication" | "users" | "system" | "server" | "ominix";
 
+type TabGroup = "personal" | "agent" | "connections" | "system";
+
 interface TabDef {
   id: TabId;
   label: string;
   icon: typeof User;
   adminOnly?: boolean;
+  group: TabGroup;
 }
 
+/** Settings rail groups (2026-08 UI audit #318): everyday items up
+ *  top, admin-only surfaces grouped under System & Runtime. */
+const TAB_GROUPS: Array<{ id: TabGroup; label: string }> = [
+  { id: "personal", label: "Personal" },
+  { id: "agent", label: "Agent" },
+  { id: "connections", label: "Connections" },
+  { id: "system", label: "System & Runtime" },
+];
+
 const TABS: TabDef[] = [
-  { id: "profile", label: "Profile", icon: User },
-  { id: "appearance", label: "Appearance", icon: Palette },
-  { id: "llm", label: "LLM", icon: Cpu },
-  { id: "api-keys", label: "API Keys", icon: KeyRound },
-  { id: "voice", label: "Voice", icon: Volume2 },
-  { id: "memory", label: "Memory", icon: Brain },
-  { id: "schedule", label: "Schedule", icon: AlarmClock },
-  { id: "skills", label: "Skills", icon: Puzzle },
-  { id: "channels", label: "Channels", icon: Radio },
-  { id: "smart-home", label: "Smart Home", icon: Home },
-  { id: "sandbox", label: "Sandbox", icon: Shield },
-  { id: "tools", label: "Tools", icon: Wrench },
-  { id: "authentication", label: "Authentication", icon: ShieldCheck, adminOnly: true },
-  { id: "users", label: "Users", icon: Users, adminOnly: true },
-  { id: "system", label: "System", icon: Activity, adminOnly: true },
-  { id: "server", label: "Server", icon: Server, adminOnly: true },
-  { id: "ominix", label: "OminiX", icon: Waves, adminOnly: true },
+  { id: "profile", label: "Profile", icon: User, group: "personal" },
+  { id: "appearance", label: "Appearance", icon: Palette, group: "personal" },
+  { id: "voice", label: "Voice", icon: Volume2, group: "personal" },
+  { id: "memory", label: "Memory", icon: Brain, group: "personal" },
+  { id: "llm", label: "LLM", icon: Cpu, group: "agent" },
+  { id: "api-keys", label: "API Keys", icon: KeyRound, group: "agent" },
+  { id: "tools", label: "Tools", icon: Wrench, group: "agent" },
+  { id: "skills", label: "Skills", icon: Puzzle, group: "agent" },
+  { id: "channels", label: "Channels", icon: Radio, group: "connections" },
+  { id: "smart-home", label: "Smart Home", icon: Home, group: "connections" },
+  { id: "schedule", label: "Schedule", icon: AlarmClock, group: "system" },
+  { id: "sandbox", label: "Sandbox", icon: Shield, group: "system" },
+  { id: "authentication", label: "Authentication", icon: ShieldCheck, adminOnly: true, group: "system" },
+  { id: "users", label: "Users", icon: Users, adminOnly: true, group: "system" },
+  { id: "system", label: "System", icon: Activity, adminOnly: true, group: "system" },
+  { id: "server", label: "Server", icon: Server, adminOnly: true, group: "system" },
+  { id: "ominix", label: "OminiX", icon: Waves, adminOnly: true, group: "system" },
 ];
 
 function asTabId(value: string | null): TabId | null {
@@ -141,6 +154,42 @@ export function AdminSettingsPage() {
 
   const isAdminOnlyTab = activeTab === "authentication" || activeTab === "system" || activeTab === "server" || activeTab === "users" || activeTab === "ominix";
 
+  // Rail search + grouping (2026-08 audit #318): the 17 flat tabs are
+  // grouped into Personal / Agent / Connections / System & Runtime on
+  // desktop; a filter input narrows by tab or group label.
+  const [tabQuery, setTabQuery] = useState("");
+  const q = tabQuery.trim().toLowerCase();
+  const searching = q.length > 0;
+  const accessibleTabs = TABS.filter(
+    (t) => !t.adminOnly || portal?.can_access_admin_portal,
+  );
+  const matchedTabs = searching
+    ? accessibleTabs.filter(
+        (t) =>
+          t.label.toLowerCase().includes(q) ||
+          (TAB_GROUPS.find((g) => g.id === t.group)?.label ?? "")
+            .toLowerCase()
+            .includes(q),
+      )
+    : accessibleTabs;
+
+  const renderTabButton = ({ id, label, icon: Icon, adminOnly }: TabDef) => (
+    <button
+      key={id}
+      onClick={() => selectTab(id)}
+      data-active={activeTab === id ? "true" : undefined}
+      className="settings-tab-button flex w-full items-center gap-3 rounded-lg border px-4 py-3 text-left text-sm font-medium transition max-md:w-auto max-md:shrink-0 max-md:px-3"
+    >
+      <Icon size={16} className="shrink-0" />
+      {label}
+      {adminOnly && (
+        <span className="ml-auto shrink-0">
+          <WorkbenchStatusPill tone="accent">Admin</WorkbenchStatusPill>
+        </span>
+      )}
+    </button>
+  );
+
   return (
     <div className="studio-shell settings-shell flex h-screen flex-col overflow-hidden">
       <StudioTopbar
@@ -183,25 +232,47 @@ export function AdminSettingsPage() {
       ) : (
         <div className="flex min-h-0 flex-1 overflow-hidden max-md:flex-col">
           <aside className="workbench-rail settings-rail w-60 shrink-0 overflow-y-auto px-3 py-4 max-md:w-full max-md:overflow-x-auto max-md:overflow-y-hidden max-md:border-b max-md:border-r-0 max-md:py-2">
+            <div className="px-1 pb-2">
+              <div className="relative">
+                <Search
+                  size={13}
+                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted/60"
+                />
+                <input
+                  data-testid="settings-tab-search"
+                  value={tabQuery}
+                  onChange={(e) => setTabQuery(e.target.value)}
+                  placeholder="Find a setting..."
+                  aria-label="Find a setting"
+                  className="w-full rounded-[12px] border border-border bg-surface-container py-2 pl-8 pr-3 text-sm text-text outline-none placeholder:text-muted/60 focus:border-accent"
+                />
+              </div>
+            </div>
             <div className="settings-tab-strip space-y-1 max-md:flex max-md:min-w-max max-md:gap-2 max-md:space-y-0">
-              {TABS.filter(
-                (t) => !t.adminOnly || portal?.can_access_admin_portal,
-              ).map(({ id, label, icon: Icon, adminOnly }) => (
-                <button
-                  key={id}
-                  onClick={() => selectTab(id)}
-                  data-active={activeTab === id ? "true" : undefined}
-                  className="settings-tab-button flex w-full items-center gap-3 rounded-lg border px-4 py-3 text-left text-sm font-medium transition max-md:w-auto max-md:shrink-0 max-md:px-3"
-                >
-                  <Icon size={16} className="shrink-0" />
-                  {label}
-                  {adminOnly && (
-                    <span className="ml-auto shrink-0">
-                      <WorkbenchStatusPill tone="accent">Admin</WorkbenchStatusPill>
-                    </span>
-                  )}
-                </button>
-              ))}
+              {matchedTabs.length === 0 ? (
+                <div className="whitespace-nowrap px-3 py-4 text-xs text-muted/70">
+                  No settings match "{tabQuery}"
+                </div>
+              ) : searching ? (
+                matchedTabs.map(renderTabButton)
+              ) : (
+                TAB_GROUPS.map((group) => {
+                  const groupTabs = matchedTabs.filter(
+                    (t) => t.group === group.id,
+                  );
+                  if (groupTabs.length === 0) return null;
+                  return (
+                    <Fragment key={group.id}>
+                      <div className="hidden pt-3 md:block">
+                        <div className="shell-kicker px-2 pb-1">
+                          {group.label}
+                        </div>
+                      </div>
+                      {groupTabs.map(renderTabButton)}
+                    </Fragment>
+                  );
+                })
+              )}
             </div>
           </aside>
 
