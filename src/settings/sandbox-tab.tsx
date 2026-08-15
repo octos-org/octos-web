@@ -249,6 +249,27 @@ export function SandboxTab({ profile, onProfileUpdated }: SandboxTabProps) {
             )}
           </div>
 
+          {/* Inline risk warnings for the no-isolation states (issue #319) */}
+          {!form.enabled && (
+            <div
+              role="alert"
+              className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-xs leading-relaxed text-red-400"
+            >
+              <strong>Sandbox is disabled</strong> — tools will run directly on
+              the host with no isolation. Only disable this for trusted
+              setups, and remember the change applies when you save.
+            </div>
+          )}
+          {form.enabled && form.mode === "host" && (
+            <div
+              role="alert"
+              className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-xs leading-relaxed text-red-400"
+            >
+              <strong>"Host" isolation mode</strong> runs tools directly on the
+              host with no isolation. Only use this for trusted profiles.
+            </div>
+          )}
+
           {/* Allow network toggle */}
           <Toggle
             checked={form.allow_network}

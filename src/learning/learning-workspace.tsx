@@ -101,6 +101,9 @@ export function LearningWorkspace({
   const runtime = useOminixRuntimeSummary();
   const threads = useRenderThreads(sessionId);
   const [narrationSpeechActive, setNarrationSpeechActive] = useState(false);
+  // Declared early: `externalSpeechActive` (below) consults it to decide
+  // whether muted narration still owns the microphone (issue #315).
+  const [narrationAudioEnabled, setNarrationAudioEnabled] = useState(true);
   const [completedTurnId, setCompletedTurnId] = useState<string | null>(null);
   const [plainReply, setPlainReply] = useState<{
     turnId: string;
@@ -197,14 +200,20 @@ export function LearningWorkspace({
   const voiceConversationOptions = useMemo(
     () => ({
       ...conversationOptions,
+      // Muted narration does NOT own the mic: with the narration silenced
+      // there is nothing external to protect, so the student can barge in
+      // naturally (issue #315).
       externalSpeechActive:
-        voiceEnabled && (lessonOwnsNarration || narrationSpeechActive),
+        voiceEnabled &&
+        ((lessonOwnsNarration && narrationAudioEnabled) ||
+          narrationSpeechActive),
       onTurnComplete: handleTurnComplete,
     }),
     [
       conversationOptions,
       handleTurnComplete,
       lessonOwnsNarration,
+      narrationAudioEnabled,
       narrationSpeechActive,
       voiceEnabled,
     ],
@@ -251,7 +260,6 @@ export function LearningWorkspace({
   const [fileListError, setFileListError] = useState<string | null>(null);
   const [artifactError, setArtifactError] = useState<string | null>(null);
   const [textTurnPending, setTextTurnPending] = useState(false);
-  const [narrationAudioEnabled, setNarrationAudioEnabled] = useState(true);
   const [cameraSettingsOpen, setCameraSettingsOpen] = useState(false);
   const [temporaryCameraPreview, setTemporaryCameraPreview] = useState(false);
   const temporaryCameraPreviewRef = useRef(false);

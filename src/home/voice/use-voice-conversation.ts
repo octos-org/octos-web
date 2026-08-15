@@ -696,8 +696,10 @@ export function useVoiceConversation(
 
   const beginListening = useCallback(async () => {
     if (externalSpeechActiveRef.current) {
-      stateRef.current = "thinking";
-      setState("thinking");
+      // External narration (the teacher) is speaking — surface it as
+      // "speaking", not "thinking" (issue #315).
+      stateRef.current = "speaking";
+      setState("speaking");
       return;
     }
     stateRef.current = "listening";
@@ -808,14 +810,16 @@ export function useVoiceConversation(
       captureModeRef.current = null;
       void captureStop();
       if (stateRef.current === "listening") {
-        stateRef.current = "thinking";
-        setState("thinking");
+        // External narration took over the audio channel — show
+        // "speaking" rather than "thinking" (issue #315).
+        stateRef.current = "speaking";
+        setState("speaking");
       }
       return;
     }
     if (
       wasActive &&
-      stateRef.current === "thinking" &&
+      (stateRef.current === "thinking" || stateRef.current === "speaking") &&
       activeTurnIdRef.current === null
     ) {
       void beginListeningRef.current();
