@@ -24,7 +24,7 @@ import {
   WorkbenchThemeButton,
 } from "@/components/workbench-shell";
 import { LogOut, Settings, PanelRight } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useFileStore } from "@/store/file-store";
 
 function SettingsNavButton() {
@@ -114,16 +114,22 @@ export function ChatLayout({ children }: { children: ReactNode }) {
           <div className="chat-panel-toolbar glass-toolbar px-4 py-4">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
-                <div className="flex min-w-0 items-center gap-2.5">
+                {/* Brand link: consistent with WorkbenchBrand / StudioNav —
+                    clicking the logo returns to the workspace home. */}
+                <Link
+                  to="/"
+                  className="flex min-w-0 items-center gap-2.5 rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  aria-label="Octos home"
+                >
                   <img
                     src="/images/octos-logo-color.svg"
-                    alt="Octos"
+                    alt=""
                     className="h-6 w-auto shrink-0 select-none"
                   />
                   <span className="truncate text-sm font-semibold text-text-strong">
                     Octos
                   </span>
-                </div>
+                </Link>
               </div>
               <div className="flex items-center gap-2">
                 <WorkbenchThemeButton />

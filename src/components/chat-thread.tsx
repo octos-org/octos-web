@@ -1573,6 +1573,15 @@ function Composer({
       ),
     [threadsForRunning],
   );
+  // Background tasks (run_pipeline / podcast / mofa_*) flip the
+  // streaming status to "complete" within ~30ms of the ack while the
+  // actual work runs for minutes — the composer Stop button must stay
+  // available for that whole window, mirroring the header task dock.
+  const sessionTasks = useTasks(currentSessionId, historyTopic);
+  const hasRunningBackgroundTask = sessionTasks.some(
+    (t) => t.status === "spawned" || t.status === "running",
+  );
+  const showStop = isRunning || hasRunningBackgroundTask;
 
   const [text, setText] = useState("");
   const [cmdFeedback, setCmdFeedback] = useState<string | null>(null);
@@ -2119,8 +2128,19 @@ function Composer({
           // best-effort: swallow transport errors.
         });
       }
+      // Also cancel active background tasks: for spawn_only tools the
+      // turn completes almost immediately while the job keeps running,
+      // so the Stop button must reach the task store too. The server's
+      // authoritative `task/updated` transitions flip the dock/state.
+      for (const task of sessionTasks) {
+        if (task.status === "spawned" || task.status === "running") {
+          bridge.cancelTask(task.id).catch(() => {
+            // best-effort: the task remains active so the user can retry.
+          });
+        }
+      }
     }
-  }, [currentSessionId, historyTopic, threadsForRunning]);
+  }, [currentSessionId, historyTopic, sessionTasks, threadsForRunning]);
 
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
@@ -2266,12 +2286,29 @@ function Composer({
                 )}
                 <button
                   onClick={() => removeFile(i)}
-                  className="absolute -right-1 -top-1 hidden rounded-full bg-red-600 p-0.5 text-white group-hover:block"
+                  // Always visible: `hidden group-hover:block` is
+                  // unreachable on touch devices, leaving mis-attached
+                  // files impossible to remove without reloading the page.
+                  className="absolute -right-1 -top-1 flex rounded-full bg-red-600/90 p-0.5 text-white opacity-80 transition hover:bg-red-600 hover:opacity-100"
+                  aria-label={`Remove ${pf.file.name}`}
+                  title={`Remove ${pf.file.name}`}
                 >
                   <X size={10} />
                 </button>
               </div>
             ))}
+          </div>
+        )}
+        {queueDepth > 0 && (
+          <div
+            data-testid="queue-status-line"
+            className="mb-2 flex items-center gap-2 rounded-[10px] border border-accent/20 bg-accent-container px-3 py-2 text-xs text-text"
+          >
+            <Layers size={12} className="shrink-0 text-accent" />
+            <span>
+              {queueDepth} message{queueDepth > 1 ? "s" : ""} queued — the
+              previous turn is still running; they will be sent in order.
+            </span>
           </div>
         )}
         <div className="chat-composer-frame composer-shell animate-shell-rise flex flex-col rounded-[12px] p-2">
@@ -2328,10 +2365,15 @@ function Composer({
                 <SendHorizontal size={18} />
               )}
             </button>
-            {isRunning && (
+            {showStop && (
               <button
                 data-testid="cancel-button"
                 aria-label="Cancel"
+                title={
+                  hasRunningBackgroundTask && !isRunning
+                    ? "Stop the running background task"
+                    : "Cancel the current turn"
+                }
                 onClick={handleCancel}
                 className="chat-stop-button flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] bg-red-600 text-white hover:bg-red-700"
               >

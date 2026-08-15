@@ -144,7 +144,10 @@ export function AdminSettingsPage() {
   return (
     <div className="studio-shell settings-shell flex h-screen flex-col overflow-hidden">
       <StudioTopbar
-        onBack={() => navigate(-1)}
+        // Predictable exit: /settings has no in-page navigation, so the
+        // back affordance always returns to the workspace home instead of
+        // relying on history (which can leave the app when deep-linked).
+        onBack={() => navigate("/")}
         icon={SettingsIcon}
         context="Octos Control"
         title="Settings"

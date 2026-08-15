@@ -64,6 +64,7 @@ export function SessionList() {
     text: string;
     historyTopic?: string;
   } | null>(null);
+  const [query, setQuery] = useState("");
   // M9-α-5/α-6 (ADR PR #830): the legacy `StreamManager.isActive` poll
   // (driven by SSE) is gone. The WS bridge owns the active-turn signal
   // via `task/updated` + `turn/started/completed`, which feed
@@ -206,6 +207,14 @@ export function SessionList() {
     ? templateDisplayName(pendingTemplate)
     : "";
 
+  const visibleSessions = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return sessions;
+    return sessions.filter((s) =>
+      (s.title || formatSessionName(s.id)).toLowerCase().includes(q),
+    );
+  }, [query, sessions]);
+
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <div className="px-3 pb-2 pt-3">
@@ -310,14 +319,34 @@ export function SessionList() {
       <div className="px-4 pb-2">
         <div className="shell-kicker">Recent Sessions</div>
       </div>
+      <div className="px-3 pb-1">
+        <div className="relative">
+          <Search
+            size={13}
+            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted/60"
+          />
+          <input
+            data-testid="session-search-input"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search sessions..."
+            aria-label="Search sessions"
+            className="w-full rounded-[12px] border border-border bg-surface-container py-2 pl-8 pr-3 text-sm text-text outline-none placeholder:text-muted/60 focus:border-accent"
+          />
+        </div>
+      </div>
       <div className="flex-1 overflow-y-auto px-3 pb-3">
         {sessions.length === 0 ? (
           <div className="shell-empty-state rounded-[12px] px-4 py-6 text-center text-xs text-muted/70">
             No sessions yet
           </div>
+        ) : visibleSessions.length === 0 ? (
+          <div className="shell-empty-state rounded-[12px] px-4 py-6 text-center text-xs text-muted/70">
+            No sessions match your search
+          </div>
         ) : (
           <div className="flex flex-col gap-2">
-            {sessions.map((s) => {
+            {visibleSessions.map((s) => {
               const isBusy =
                 streamingSessions.has(s.id) ||
                 backgroundTaskSessions.has(s.id);
@@ -406,7 +435,9 @@ export function SessionList() {
                           void handleFork(s.id);
                         }}
                         disabled={forkingId !== null}
-                        className="glass-icon-button shrink-0 rounded-[10px] p-1.5 opacity-60 hover:text-accent group-hover:opacity-100 disabled:opacity-30"
+                        // Always visible: hover-only affordances are
+                        // unreachable on touch devices.
+                        className="glass-icon-button shrink-0 rounded-[10px] p-1.5 opacity-70 transition hover:text-accent hover:opacity-100 disabled:opacity-30"
                         title="Branch this conversation into a new session"
                       >
                         {forkingId === s.id ? (
@@ -421,7 +452,7 @@ export function SessionList() {
                           e.stopPropagation();
                           setConfirmingDelete(s.id);
                         }}
-                        className="glass-icon-button shrink-0 rounded-[10px] p-1.5 opacity-60 hover:text-red-400 group-hover:opacity-100"
+                        className="glass-icon-button shrink-0 rounded-[10px] p-1.5 opacity-70 transition hover:text-red-400 hover:opacity-100"
                       >
                         <Trash2 size={12} />
                       </button>

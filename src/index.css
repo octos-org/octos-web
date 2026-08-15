@@ -128,6 +128,28 @@
   --workbench-danger-text: #f87171;
 }
 
+/* ── Keyboard focus visibility ───────────────────────────────
+   Component classes used as buttons/links across the shell and
+   tool surfaces get a consistent accent outline on keyboard focus
+   (mouse clicks keep the browser's default behavior via
+   :focus-visible). */
+:where(
+  .studio-nav-link,
+  .workbench-route-link,
+  .glass-icon-button,
+  .studio-ghost-button,
+  .studio-button-primary,
+  .studio-tab,
+  .studio-card-interactive,
+  .studio-skill-tile,
+  .glass-pill,
+  .glass-list-item,
+  .settings-tab-button
+):focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
 [data-theme="light"] {
   --workbench-panel-shadow: 0 14px 34px rgba(20, 26, 22, 0.08);
   --workbench-success-border: rgba(22, 101, 52, 0.28);
