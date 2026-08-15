@@ -149,6 +149,25 @@ function OctosModelArt({
     }
   }, [baseAnimation, modelReady, reacting, reducedMotion]);
 
+  // Pause the idle animation while the tab is hidden (audit M7): the
+  // 3D companion would otherwise keep cycling its animation on
+  // always-on displays with the tab backgrounded.
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!modelReady || !viewer || reducedMotion) return;
+    const onVisibility = () => {
+      if (document.hidden) {
+        viewer.pause();
+      } else if (!reacting) {
+        viewer.currentTime = 0;
+        viewer.play();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () =>
+      document.removeEventListener("visibilitychange", onVisibility);
+  }, [modelReady, reacting, reducedMotion]);
+
   useEffect(() => {
     const isNewReaction = reactionKey !== handledReactionKeyRef.current;
     if (isNewReaction) handledReactionKeyRef.current = reactionKey;

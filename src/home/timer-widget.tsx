@@ -8,7 +8,7 @@
  * SVG ring pattern adapted from vydimitrov/react-countdown-circle-timer.
  */
 
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import { Timer, Pause, Play, X } from "lucide-react";
 import { useTimer, formatTime, timerAlarm } from "./use-timer";
 
@@ -65,6 +65,14 @@ function TimerRing({
 export function TimerWidget() {
   const timer = useTimer(useCallback(() => void timerAlarm(), []));
 
+  // The chime repeats every few seconds until dismissed — a single
+  // 3-note beep is easy to miss on a living-room display (audit L10).
+  useEffect(() => {
+    if (!timer.expired) return;
+    const id = setInterval(() => void timerAlarm(), 8000);
+    return () => clearInterval(id);
+  }, [timer.expired]);
+
   const ringColor =
     timer.remaining > 60
       ? "#4ade80"
@@ -72,7 +80,7 @@ export function TimerWidget() {
         ? "#facc15"
         : "#ef4444";
 
-  const idle = !timer.isRunning && !timer.isPaused;
+  const idle = !timer.isRunning && !timer.isPaused && !timer.expired;
 
   return (
     <div className="home-widget home-timer-widget mt-4 mx-4 px-5 py-4">
@@ -81,7 +89,23 @@ export function TimerWidget() {
         <span className="text-sm font-medium text-white/50">Timer</span>
       </div>
 
-      {idle ? (
+      {timer.expired ? (
+        <div className="flex flex-col items-center gap-3 py-2">
+          <span className="animate-pulse text-lg font-semibold text-red-400">
+            Time&apos;s up!
+          </span>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              timer.reset();
+            }}
+            className="home-timer-control"
+            aria-label="Dismiss timer"
+          >
+            <X size={18} />
+          </button>
+        </div>
+      ) : idle ? (
         <div className="flex flex-wrap gap-2 justify-center">
           {PRESETS.map((m) => (
             <button

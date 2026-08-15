@@ -88,12 +88,12 @@
 }
 .voice-transcript-user {
   margin-bottom: 7px;
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1.45;
   color: rgba(255, 255, 255, .46);
 }
 .voice-transcript-assistant {
-  font-size: 18px;
+  font-size: 21px;
   line-height: 1.55;
   color: rgba(255, 255, 255, .9);
 }

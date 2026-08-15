@@ -346,6 +346,20 @@ export function LearningPage() {
   const [hasTabLease] = useState(() =>
     acquireLearningTabLease(LEARNING_TAB_ID),
   );
+
+  // Auto-recover from the lease-blocked dead screen (audit L8): once
+  // the other tab closes, its lease expires within the TTL and this
+  // poll acquires it — then reload to boot the real workspace. A live
+  // owner renews every 5s against a 15s TTL, so we can never steal it.
+  useEffect(() => {
+    if (hasTabLease) return;
+    const id = window.setInterval(() => {
+      if (acquireLearningTabLease(LEARNING_TAB_ID)) {
+        window.location.reload();
+      }
+    }, 4000);
+    return () => window.clearInterval(id);
+  }, [hasTabLease]);
   const wakeAudio = useMemo(() => consumeWakeAudio(), []);
   const [initialEntry] = useState(() => {
     if (!hasTabLease) {
@@ -706,7 +720,7 @@ export function LearningPage() {
         <div className="max-w-md text-center">
           <h1 className="text-xl font-semibold">学习助手已在另一个标签页中使用</h1>
           <p className="mt-3 text-sm leading-6 text-white/55">
-            为避免两个页面同时占用麦克风，请先关闭另一个学习页，再刷新这里。
+            为避免两个页面同时占用麦克风，请先关闭另一个学习页。关闭后本页会在数秒内自动恢复。
           </p>
         </div>
       </div>

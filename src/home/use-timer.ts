@@ -36,6 +36,9 @@ export interface UseTimerReturn {
   totalDuration: number;
   isRunning: boolean;
   isPaused: boolean;
+  /** True from the moment the countdown hits zero until the user
+   *  dismisses (reset) — drives the repeat-alarm UI (audit L10). */
+  expired: boolean;
   progress: number;
   start: (seconds: number) => void;
   pause: () => void;
@@ -48,6 +51,7 @@ export function useTimer(onExpire: () => void): UseTimerReturn {
   const [totalDuration, setTotalDuration] = useState(0);
   const [pausedRemaining, setPausedRemaining] = useState<number | null>(null);
   const [remaining, setRemaining] = useState(0);
+  const [expired, setExpired] = useState(false);
   const onExpireRef = useRef(onExpire);
   const hasExpiredRef = useRef(false);
 
@@ -69,6 +73,7 @@ export function useTimer(onExpire: () => void): UseTimerReturn {
         setRemaining(left);
       } else {
         saveState(null);
+        setExpired(true);
         onExpireRef.current();
       }
     }
@@ -91,6 +96,7 @@ export function useTimer(onExpire: () => void): UseTimerReturn {
         hasExpiredRef.current = true;
         setTargetTime(null);
         saveState(null);
+        setExpired(true);
         onExpireRef.current();
       }
     };
@@ -105,6 +111,7 @@ export function useTimer(onExpire: () => void): UseTimerReturn {
     setTargetTime(Date.now() + seconds * 1000);
     setPausedRemaining(null);
     setRemaining(seconds);
+    setExpired(false);
     hasExpiredRef.current = false;
   }, []);
 
@@ -127,6 +134,7 @@ export function useTimer(onExpire: () => void): UseTimerReturn {
     setPausedRemaining(null);
     setRemaining(0);
     setTotalDuration(0);
+    setExpired(false);
     saveState(null);
   }, []);
 
@@ -135,6 +143,7 @@ export function useTimer(onExpire: () => void): UseTimerReturn {
     totalDuration,
     isRunning: targetTime !== null,
     isPaused: pausedRemaining !== null,
+    expired,
     progress: totalDuration > 0 ? 1 - remaining / totalDuration : 0,
     start,
     pause,
