@@ -3,7 +3,7 @@ import { useAuth } from "@/auth/auth-context";
 import { useOctosStatus } from "@/hooks/use-octos-status";
 import { useResizablePanel } from "@/hooks/use-resizable-panel";
 import { CostBar } from "@/components/cost-bar";
-import { RouterModeSwitcher } from "@/components/router-mode-switcher";
+import { RouterModeMenu } from "@/components/router-mode-menu";
 import { RouterFailoverBanner } from "@/components/router-failover-banner";
 import { SessionList } from "@/components/session-list";
 import { ContentBrowser } from "@/components/content-browser";
@@ -230,10 +230,10 @@ export function ChatLayout({ children }: { children: ReactNode }) {
               </div>
               <div className="mt-3 min-w-0 flex flex-wrap items-center gap-3">
                 <CostBar model={status?.model} provider={status?.provider} />
-                {/* Wave4-A router mode switcher. Anchored next to the
-                    cost-bar so the live model + cost + routing mode
-                    surface as a single block. */}
-                <RouterModeSwitcher />
+                {/* Adaptive router controls, collapsed into a single
+                    pill (the three-button switcher opens in a popover)
+                    so the header stays quiet for everyday chat. */}
+                <RouterModeMenu />
               </div>
             </div>
           </div>

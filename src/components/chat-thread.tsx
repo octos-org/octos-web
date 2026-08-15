@@ -1138,27 +1138,27 @@ export const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
 function ThreadMessageMeta({ message }: { message: ThreadMessage }) {
   const meta: MessageMeta | undefined = message.meta;
 
-  const parts: string[] = [];
+  // Everyday view shows only the timestamp; model / tokens / duration
+  // move into the hover detail (2026-08 UI audit: per-message token
+  // ladders are engineer-facing noise).
+  const timeStr = formatTimestamp(message.timestamp);
+  const detailParts: string[] = [];
   if (meta) {
-    if (meta.model) parts.push(meta.model);
-    if (meta.tokens_in) parts.push(`${formatTokens(meta.tokens_in)} in`);
-    if (meta.tokens_out) parts.push(`${formatTokens(meta.tokens_out)} out`);
-    if (meta.duration_s) parts.push(`${meta.duration_s}s`);
+    if (meta.model) detailParts.push(meta.model);
+    if (meta.tokens_in) detailParts.push(`${formatTokens(meta.tokens_in)} in`);
+    if (meta.tokens_out) detailParts.push(`${formatTokens(meta.tokens_out)} out`);
+    if (meta.duration_s) detailParts.push(`${meta.duration_s}s`);
   }
-  parts.push(formatTimestamp(message.timestamp));
-
-  if (meta && (meta.model || meta.tokens_in || meta.tokens_out)) {
-    return (
-      <div className="flex items-center gap-1.5 text-[10px] text-muted/60 select-none">
-        <span className="inline-block h-1.5 w-1.5 rounded-full bg-accent/40" />
-        {parts.join(" · ")}
-      </div>
-    );
-  }
+  const detail =
+    detailParts.length > 0 ? `${detailParts.join(" · ")} · ${timeStr}` : timeStr;
 
   return (
-    <div className="text-[10px] text-muted/60 select-none">
-      {formatTimestamp(message.timestamp)}
+    <div
+      className="text-[10px] text-muted/60 select-none"
+      title={detail}
+      aria-label={detail}
+    >
+      {timeStr}
     </div>
   );
 }
@@ -1362,6 +1362,28 @@ function ThreadList({
   );
 }
 
+// First-run starter suggestions: clicking one prefills the composer
+// (via the same `crew:composer_prefill` event the Rewind path uses), so
+// new users see concrete, editable examples instead of a blank box.
+const STARTER_SUGGESTIONS: Array<{ title: string; prompt: string }> = [
+  {
+    title: "Summarize",
+    prompt: "Summarize the key points of an article or attached document.",
+  },
+  {
+    title: "Write code",
+    prompt: "Write a Python script that reads a CSV file and prints a summary.",
+  },
+  {
+    title: "Create slides",
+    prompt: "Create a slide deck about a topic I choose next.",
+  },
+  {
+    title: "Explain simply",
+    prompt: "Explain a concept in simple terms, step by step.",
+  },
+];
+
 function ChatThreadV2({
   hideFileOnlyAssistantMessages = false,
 }: ChatThreadProps) {
@@ -1466,6 +1488,24 @@ function ChatThreadV2({
   const hasThreads = threads.length > 0;
   const hasGhosts = visibleGhosts.length > 0;
 
+  // First-run helper: prefill the composer with a starter prompt. The
+  // Composer already listens for `crew:composer_prefill` (scope-checked
+  // by sessionId + topic), so suggestions and Rewind share one path.
+  const prefillComposer = useCallback(
+    (text: string) => {
+      window.dispatchEvent(
+        new CustomEvent("crew:composer_prefill", {
+          detail: {
+            sessionId: currentSessionId,
+            topic: historyTopic?.trim() || undefined,
+            text,
+          },
+        }),
+      );
+    },
+    [currentSessionId, historyTopic],
+  );
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-transparent">
       {/* Mounted ONCE at thread level (codex R3): a per-bubble mount
@@ -1491,6 +1531,40 @@ function ChatThreadV2({
             </h1>
             <p className="text-sm text-muted">
               Ask anything, attach files, or record a voice message.
+            </p>
+            <div className="mt-6 grid grid-cols-1 gap-2 text-left sm:grid-cols-2">
+              {STARTER_SUGGESTIONS.map((suggestion) => (
+                <button
+                  key={suggestion.title}
+                  type="button"
+                  data-testid="starter-suggestion"
+                  onClick={() => prefillComposer(suggestion.prompt)}
+                  className="glass-list-item rounded-[12px] px-4 py-3 text-sm text-text transition hover:text-text-strong"
+                >
+                  <span className="font-medium">{suggestion.title}</span>
+                  <span className="mt-0.5 block text-xs text-muted">
+                    {suggestion.prompt}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <p className="mt-6 text-xs leading-relaxed text-muted/70">
+              Commands:{" "}
+              <code className="rounded bg-surface-container px-1.5 py-0.5 font-mono text-[11px] text-code-inline">
+                /help
+              </code>{" "}
+              ·{" "}
+              <code className="rounded bg-surface-container px-1.5 py-0.5 font-mono text-[11px] text-code-inline">
+                /compact
+              </code>{" "}
+              ·{" "}
+              <code className="rounded bg-surface-container px-1.5 py-0.5 font-mono text-[11px] text-code-inline">
+                /new slides &lt;name&gt;
+              </code>{" "}
+              ·{" "}
+              <code className="rounded bg-surface-container px-1.5 py-0.5 font-mono text-[11px] text-code-inline">
+                /new research &lt;topic&gt;
+              </code>
             </p>
           </div>
         </div>

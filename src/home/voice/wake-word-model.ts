@@ -28,11 +28,13 @@ export interface WakeWordModel {
   runFeatures(features: Float32Array): Promise<number>;
 }
 
-const WAKE_WORD_BASE_PATH = "/wake-word/";
+// Asset paths must honor the app base (octos serves the web client at
+// `/app/`, so a bare `/wake-word/` request would 404 against the root).
+const WAKE_WORD_BASE_PATH = `${import.meta.env.BASE_URL}wake-word/`;
 const ORT_WASM_BASE_PATH =
   typeof window !== "undefined"
-    ? `${window.location.origin}/vad/`
-    : "/vad/";
+    ? `${window.location.origin}${import.meta.env.BASE_URL}vad/`
+    : `${import.meta.env.BASE_URL}vad/`;
 const WAKE_WORD_ASSET_TIMEOUT_MS = 5000;
 const WAKE_WORD_ASSETS = [
   "model_info.json",

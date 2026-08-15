@@ -75,14 +75,16 @@ export function VoiceView({
     onTurnsChange?.(conv.turns);
   }, [conv.turns, onTurnsChange]);
 
-  const openOminixSettings = () => {
-    navigate("/settings?tab=ominix");
+  const openVoiceSettings = () => {
+    // The OminiX tab is admin-only — non-admin household users would hit an
+    // empty settings page. The voice tab is reachable by everyone.
+    navigate("/settings?tab=voice");
   };
   const visibleTurns = conv.turns.slice(-3);
 
   const onOrbClick = () => {
     if (!runtime.ready) {
-      if (!runtime.loading) openOminixSettings();
+      if (!runtime.loading) openVoiceSettings();
       return;
     }
     // Backup audio unlock: if the entry gesture didn't stick, tapping the orb
@@ -153,7 +155,7 @@ export function VoiceView({
         <div
           onClick={onOrbClick}
           role="button"
-          aria-label={runtime.ready ? "voice orb" : "open OMiniX settings"}
+          aria-label={runtime.ready ? "voice orb" : "open voice settings"}
         >
           <VoiceOrb state={runtime.ready ? conv.state : "error"} />
         </div>
@@ -185,11 +187,11 @@ export function VoiceView({
         {!runtime.ready && !runtime.loading && (
           <button
             type="button"
-            onClick={openOminixSettings}
+            onClick={openVoiceSettings}
             className="voice-runtime-action"
           >
             <Settings size={15} />
-            打开 OMiniX 设置
+            打开语音设置
           </button>
         )}
 

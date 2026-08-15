@@ -253,7 +253,7 @@ describe("VoiceView", () => {
     expect(screen.queryByAltText("frame sent to AI")).toBeNull();
   });
 
-  it("opens OMiniX settings instead of starting capture when runtime is not ready", () => {
+  it("opens voice settings instead of starting capture when runtime is not ready", () => {
     runtimeMock.label = "Voice engine needs repair";
     runtimeMock.tone = "warning";
     runtimeMock.ready = false;
@@ -267,10 +267,11 @@ describe("VoiceView", () => {
     expect(screen.getByText("语音引擎未就绪，请先在 Settings 里安装或修复 OMiniX。")).toBeTruthy();
     // The readiness pill surfaces only in a problem state.
     expect(screen.getByText("Voice engine needs repair")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "open OMiniX settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "open voice settings" }));
 
     expect(conversationMock.start).not.toHaveBeenCalled();
-    expect(navigateMock).toHaveBeenCalledWith("/settings?tab=ominix");
+    // Non-admin reachable tab — the OminiX tab is admin-only (#313).
+    expect(navigateMock).toHaveBeenCalledWith("/settings?tab=voice");
   });
 
   it("does not show the readiness pill when the engine is ready", () => {

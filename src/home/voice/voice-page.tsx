@@ -7,7 +7,9 @@
  * exactly like `HomeAssistantPage` — a `SessionContext.Provider` plus a
  * `ScopedRuntimeBridge` that connects the WS bridge for this session — but
  * the body is just our full-screen `VoiceView` (orb + ominix STT/TTS
- * pipeline). Entry point lives on the root page (`/`).
+ * pipeline). Entry points: the /home standby orb and the nav Voice
+ * shortcut; the X button and the spoken "goodbye" return to the entry
+ * (see `octos_voice_entry` in sessionStorage).
  */
 
 import { useCallback, useMemo, useState } from "react";
@@ -37,6 +39,15 @@ function generateSessionId(): string {
 
 export function VoicePage() {
   const navigate = useNavigate();
+
+  // Return to wherever the user entered from (/home standby orb, or the
+  // nav shortcut → workspace root). The entry is recorded by the
+  // standby views before navigating here; absent it, fall back to "/".
+  const handleBack = useCallback(() => {
+    const entry = sessionStorage.getItem("octos_voice_entry");
+    sessionStorage.removeItem("octos_voice_entry");
+    navigate(entry && entry.startsWith("/") ? entry : "/");
+  }, [navigate]);
 
   // Dedicated, per-entry voice session — isolated from /home and /chat.
   const voiceSessionId = useMemo(() => {
@@ -85,7 +96,7 @@ export function VoicePage() {
         <ScopedRuntimeBridge>
           <VoiceView
             sessionId={voiceSessionId}
-            onBack={() => navigate("/")}
+            onBack={handleBack}
           />
           <UiProtocolQuestionHost />
         </ScopedRuntimeBridge>

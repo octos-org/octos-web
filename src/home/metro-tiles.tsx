@@ -753,8 +753,13 @@ export function MetroTileGrid({
       case "quick-home": return <QuickActionTile icon={Home} label={strings.cardHome} color="text-[#C8A088]" onClick={() => onActivate(strings.cardHomePrefill)} />;
       case "voice": return (
         <VoiceTile
-          onOpen={() => navigate("/voice")}
-          onOpenSettings={() => navigate("/settings?tab=ominix")}
+          onOpen={() => {
+            // Remember the entry so /voice can return here.
+            sessionStorage.setItem("octos_voice_entry", "/home");
+            navigate("/voice");
+          }}
+          // OminiX is admin-only; household users get the reachable voice tab.
+          onOpenSettings={() => navigate("/settings?tab=voice")}
           wakeWordStatus={wakeWordStatus}
         />
       );

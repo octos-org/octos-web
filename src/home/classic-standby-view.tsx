@@ -58,10 +58,15 @@ export function ClassicStandbyView({
 
   const handleOrbClick = useCallback(() => {
     if (!voiceRuntime.ready) {
-      if (!voiceRuntime.loading) navigate("/settings?tab=ominix");
+      // Non-admin reachable destination: the OminiX tab is admin-only, so
+      // point household users at the voice settings tab instead of a dead end.
+      if (!voiceRuntime.loading) navigate("/settings?tab=voice");
       return;
     }
     unlockAudio();
+    // Remember where the user came from so /voice can return them here
+    // (the X button and the spoken "goodbye" both use this entry).
+    sessionStorage.setItem("octos_voice_entry", "/home");
     navigate("/voice");
   }, [navigate, voiceRuntime.loading, voiceRuntime.ready]);
 

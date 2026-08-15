@@ -57,7 +57,9 @@ export interface WakeWordStatusView {
 const DEFAULT_WAKE_WORD = "你好小章鱼";
 const DEFAULT_THRESHOLD = 0.55;
 const DEFAULT_CONSECUTIVE_FRAMES = 1;
-const WORKLET_URL = "/wake-word/audio-input-processor.js";
+// Base-aware: octos serves the client under `/app/`, so a root-absolute
+// path would 404 and silently disable wake-word detection in production.
+const WORKLET_URL = `${import.meta.env.BASE_URL}wake-word/audio-input-processor.js`;
 
 export function describeWakeWordListener(
   state: WakeWordListenerState,
