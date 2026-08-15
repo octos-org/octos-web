@@ -1,8 +1,28 @@
 import { useState, useEffect, useCallback } from "react";
-import { ChevronLeft, ChevronRight, Download, Maximize2 } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  Maximize2,
+  Pencil,
+  X,
+  ArrowLeft,
+  ArrowRight,
+  Trash2,
+  Check,
+} from "lucide-react";
 import { SLIDE_ASPECT_RATIO } from "../constants";
-import type { Slide } from "../types";
+import type { Slide, SlideLayout } from "../types";
 import { useAuthenticatedFileUrl } from "./authenticated-file-image";
+
+const LAYOUT_OPTIONS: Array<{ value: SlideLayout; label: string }> = [
+  { value: "title", label: "Title" },
+  { value: "content", label: "Content" },
+  { value: "two-column", label: "Two column" },
+  { value: "image-full", label: "Full image" },
+  { value: "agenda", label: "Agenda" },
+  { value: "conclusion", label: "Conclusion" },
+];
 
 interface Props {
   slides: Slide[];
@@ -12,6 +32,11 @@ interface Props {
   onPresent?: () => void;
   /** Changes when slide images are regenerated — forces image re-fetch */
   version?: string;
+  /** Manual-edit affordances (2026-08 audit #320). When omitted the
+   *  preview stays read-only. */
+  onUpdate?: (index: number, update: Partial<Slide>) => void;
+  onRemove?: (index: number) => void;
+  onMove?: (from: number, to: number) => void;
 }
 
 export default function SlidePreview({
@@ -21,11 +46,37 @@ export default function SlidePreview({
   pptxUrl,
   onPresent,
   version,
+  onUpdate,
+  onRemove,
+  onMove,
 }: Props) {
   const [imgError, setImgError] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const [notesDraft, setNotesDraft] = useState("");
+  const [layoutDraft, setLayoutDraft] = useState<SlideLayout>("content");
 
   const current = slides[currentIndex];
   const currentImageUrl = useAuthenticatedFileUrl(current?.thumbnailUrl, version);
+
+  // Sync drafts whenever the edited slide changes.
+  useEffect(() => {
+    setTitleDraft(current?.title ?? "");
+    setNotesDraft(current?.notes ?? "");
+    setLayoutDraft(current?.layout ?? "content");
+    setConfirmingDelete(false);
+  }, [currentIndex, current?.layout, current?.notes, current?.title]);
+
+  const commitEdits = useCallback(() => {
+    if (!current || !onUpdate) return;
+    onUpdate(currentIndex, {
+      title: titleDraft.trim() || current.title,
+      notes: notesDraft,
+      layout: layoutDraft,
+    });
+    setEditing(false);
+  }, [current, currentIndex, layoutDraft, notesDraft, onUpdate, titleDraft]);
 
   const goPrev = useCallback(() => {
     if (currentIndex > 0) onIndexChange(currentIndex - 1);
@@ -137,6 +188,126 @@ export default function SlidePreview({
         </div>
       </div>
 
+      {/* Manual edit panel (2026-08 audit #320): AI-generated decks can
+          finally be corrected by hand — title/notes/layout plus reorder
+          and delete. Only rendered when the parent supplies the
+          context-backed callbacks. */}
+      {editing && current && onUpdate && (
+        <div className="border-t border-gray-700/50 px-4 py-3 space-y-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-muted">
+                Title
+              </span>
+              <input
+                value={titleDraft}
+                onChange={(e) => setTitleDraft(e.target.value)}
+                className="w-full rounded-lg border border-border bg-surface-container px-3 py-2 text-sm text-text outline-none focus:border-accent/40"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-muted">
+                Layout
+              </span>
+              <select
+                value={layoutDraft}
+                onChange={(e) =>
+                  setLayoutDraft(e.target.value as SlideLayout)
+                }
+                className="w-full rounded-lg border border-border bg-surface-container px-3 py-2 text-sm text-text outline-none focus:border-accent/40"
+              >
+                {LAYOUT_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-muted">
+              Notes
+            </span>
+            <textarea
+              value={notesDraft}
+              onChange={(e) => setNotesDraft(e.target.value)}
+              rows={2}
+              className="w-full resize-none rounded-lg border border-border bg-surface-container px-3 py-2 text-sm text-text outline-none focus:border-accent/40"
+            />
+          </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onMove?.(currentIndex, currentIndex - 1)}
+              disabled={currentIndex === 0}
+              className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:text-text disabled:opacity-30"
+              title="Move slide earlier"
+            >
+              <ArrowLeft size={13} /> Earlier
+            </button>
+            <button
+              type="button"
+              onClick={() => onMove?.(currentIndex, currentIndex + 1)}
+              disabled={currentIndex === slides.length - 1}
+              className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:text-text disabled:opacity-30"
+              title="Move slide later"
+            >
+              Later <ArrowRight size={13} />
+            </button>
+            {confirmingDelete ? (
+              <span className="flex items-center gap-2">
+                <span className="text-xs text-red-400">Delete this slide?</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onRemove?.(currentIndex);
+                    setEditing(false);
+                    setConfirmingDelete(false);
+                  }}
+                  className="flex h-7 w-7 items-center justify-center rounded-lg bg-red-600 text-white hover:bg-red-700"
+                  title="Confirm delete"
+                >
+                  <Check size={13} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmingDelete(false)}
+                  className="flex h-7 w-7 items-center justify-center rounded-lg border border-border text-muted hover:text-text"
+                  title="Cancel delete"
+                >
+                  <X size={13} />
+                </button>
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmingDelete(true)}
+                className="flex items-center gap-1 rounded-lg bg-red-600/15 px-3 py-1.5 text-xs text-red-400 hover:bg-red-600/25"
+                title="Delete this slide"
+              >
+                <Trash2 size={13} /> Delete
+              </button>
+            )}
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setEditing(false)}
+                className="flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:text-text"
+              >
+                <X size={13} /> Cancel
+              </button>
+              <button
+                type="button"
+                onClick={commitEdits}
+                className="flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-dim"
+              >
+                <Check size={13} /> Save slide
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Bottom bar */}
       <div className="flex items-center justify-between px-4 py-2 border-t border-gray-700/50">
         <div className="text-sm text-muted truncate flex-1">
@@ -155,6 +326,20 @@ export default function SlidePreview({
               />
             ))}
           </div>
+          {onUpdate && (
+            <button
+              onClick={() => setEditing((v) => !v)}
+              className={`p-1.5 rounded-lg transition ${
+                editing
+                  ? "bg-accent text-white"
+                  : "text-muted hover:bg-surface-elevated hover:text-white"
+              }`}
+              title={editing ? "Close slide editor" : "Edit this slide"}
+              aria-pressed={editing}
+            >
+              <Pencil size={16} />
+            </button>
+          )}
           {onPresent && (
             <button
               onClick={onPresent}

@@ -22,7 +22,7 @@ function shouldHydrateProject(project: SlidesProject | undefined): boolean {
 }
 
 function SlidesEditorContent() {
-  const { project, save } = useSlides();
+  const { project, save, updateSlide, removeSlide, moveSlide } = useSlides();
   const [currentIndex, setCurrentIndex] = useState(0);
   // Codex round-3 BLOCK D.b: bumped by the editor layout's retry
   // affordance after a scaffold failure. SlidesChat watches this in
@@ -67,6 +67,11 @@ function SlidesEditorContent() {
           pptxUrl={project?.pptxUrl}
           onPresent={handlePresent}
           version={project?.manifestGeneratedAt}
+          // Manual edit (2026-08 audit #320): wire the context-backed
+          // slide CRUD that previously had no UI consumers.
+          onUpdate={updateSlide}
+          onRemove={removeSlide}
+          onMove={moveSlide}
         />
       }
       chatPanel={
