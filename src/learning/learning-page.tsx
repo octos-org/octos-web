@@ -804,7 +804,9 @@ export function LearningPage() {
                 type="button"
                 aria-label={`重命名 ${session.title}`}
                 onClick={() => rename(session)}
-                className="p-1 text-white/30 opacity-0 group-hover:opacity-100"
+                // Always visible: hover-only controls are unreachable on
+                // touch devices (2026-08 UI audit M4).
+                className="p-1 text-white/30 transition hover:text-white/80"
               >
                 <Pencil size={14} />
               </button>
@@ -819,7 +821,7 @@ export function LearningPage() {
                 type="button"
                 aria-label={`删除 ${session.title}`}
                 onClick={() => remove(session)}
-                className="mr-2 p-1 text-white/30 opacity-0 group-hover:opacity-100"
+                className="mr-2 p-1 text-white/30 transition hover:text-white/80"
               >
                 <Trash2 size={14} />
               </button>

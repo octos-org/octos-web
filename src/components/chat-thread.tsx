@@ -1087,8 +1087,11 @@ export const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
             Wrapped in a block-level container so the pill-shaped
             `inline-flex` indicator sits cleanly below the tool-card row
             instead of overlapping it (reported on dspfac 2026-05-22:
-            "渡劫中…(13s) is overlapped on task status bubble"). */}
-        {showLiveIndicators && (
+            "渡劫中…(13s) is overlapped on task status bubble").
+            Mutually exclusive with the tool-progress row: when a tool
+            has reported progress, that concrete status supersedes the
+            generic "thinking" pill (2026-08 UI audit M1). */}
+        {showLiveIndicators && !showToolProgress && (
           <div className="mt-2 block">
             <ThinkingIndicator />
           </div>
