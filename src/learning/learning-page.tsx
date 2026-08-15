@@ -23,6 +23,7 @@ import {
   type QueueMode,
 } from "@/runtime/session-context";
 import { unlockAudio } from "@/home/voice/audio-playback";
+import { useWakeLock } from "@/home/use-wake-lock";
 import {
   getMyProfileSkills,
   type SkillInfo,
@@ -333,6 +334,9 @@ function LearningServerSync({
 
 export function LearningPage() {
   const navigate = useNavigate();
+  // Keep the screen on during lessons (long narration + no interaction;
+  // audit L7 — only /home held a wake lock before).
+  useWakeLock();
   const ollFixture = useMemo<"geometry-v2" | undefined>(() => {
     const requested = new URLSearchParams(window.location.search).get(
       "oll-fixture",

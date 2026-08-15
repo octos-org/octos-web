@@ -23,6 +23,7 @@ import {
   type AdaptiveMode,
 } from "@/runtime/session-context";
 import { VoiceView } from "./voice-view";
+import { useWakeLock } from "@/home/use-wake-lock";
 
 const VOICE_SESSION_KEY = "octos_voice_session_id";
 // NB: intentionally NO history topic. Isolation comes from the dedicated
@@ -39,6 +40,8 @@ function generateSessionId(): string {
 
 export function VoicePage() {
   const navigate = useNavigate();
+  // Keep the screen on during long voice replies (audit L7).
+  useWakeLock();
 
   // Return to wherever the user entered from (/home standby orb, or the
   // nav shortcut → workspace root). The entry is recorded by the
