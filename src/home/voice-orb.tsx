@@ -2,7 +2,7 @@
  * Voice Orb — re-exports AuroraOrb (Canvas-based aurora effect).
  *
  * This module keeps the public API (`VoiceOrb`, `OrbState`, `VoiceOrbProps`)
- * so that existing imports from standby-view / use-voice-input stay valid.
+ * so that existing imports from standby-view stay valid.
  */
 
 export type OrbState = "idle" | "listening" | "processing" | "speaking";
