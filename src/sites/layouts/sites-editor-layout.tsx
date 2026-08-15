@@ -28,7 +28,7 @@ export function SitesEditorLayout({
   const titleInputRef = useRef<HTMLInputElement>(null);
   const {
     effectiveWidth: chatWidth,
-    onMouseDown: onChatResizeStart,
+    handleProps: chatResizeHandleProps,
   } = useResizablePanel({
     side: "left",
     minWidth: 320,
@@ -38,7 +38,7 @@ export function SitesEditorLayout({
   });
   const {
     effectiveWidth: filesWidth,
-    onMouseDown: onFilesResizeStart,
+    handleProps: filesResizeHandleProps,
   } = useResizablePanel({
     side: "right",
     minWidth: 260,
@@ -193,7 +193,7 @@ export function SitesEditorLayout({
               {chatPanel}
             </div>
             <div
-              onMouseDown={onChatResizeStart}
+              {...chatResizeHandleProps}
               className="panel-resize-handle max-lg:hidden"
               title="Resize chat panel"
             />
@@ -207,7 +207,7 @@ export function SitesEditorLayout({
         {showFiles && (
           <>
             <div
-              onMouseDown={onFilesResizeStart}
+              {...filesResizeHandleProps}
               className="panel-resize-handle max-lg:hidden"
               title="Resize files panel"
             />

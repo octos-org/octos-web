@@ -39,7 +39,7 @@ export function SlidesEditorLayout({
   const titleInputRef = useRef<HTMLInputElement>(null);
   const {
     effectiveWidth: chatWidth,
-    onMouseDown: onChatResizeStart,
+    handleProps: chatResizeHandleProps,
   } = useResizablePanel({
     side: "left",
     minWidth: 320,
@@ -49,7 +49,7 @@ export function SlidesEditorLayout({
   });
   const {
     effectiveWidth: filesWidth,
-    onMouseDown: onFilesResizeStart,
+    handleProps: filesResizeHandleProps,
   } = useResizablePanel({
     side: "right",
     minWidth: 240,
@@ -210,7 +210,7 @@ export function SlidesEditorLayout({
               )}
             </div>
             <div
-              onMouseDown={onChatResizeStart}
+              {...chatResizeHandleProps}
               className="panel-resize-handle max-lg:hidden"
               title="Resize chat panel"
             />
@@ -225,7 +225,7 @@ export function SlidesEditorLayout({
         {showFiles && (
           <>
             <div
-              onMouseDown={onFilesResizeStart}
+              {...filesResizeHandleProps}
               className="panel-resize-handle max-lg:hidden"
               title="Resize files panel"
             />

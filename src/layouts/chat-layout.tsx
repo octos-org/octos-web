@@ -59,13 +59,13 @@ export function ChatLayout({ children }: { children: ReactNode }) {
   const {
     effectiveWidth,
     isMaximized,
-    onMouseDown,
+    handleProps,
     toggleMaximize,
   } =
     useResizablePanel();
   const {
     effectiveWidth: historyPanelWidth,
-    onMouseDown: onHistoryPanelMouseDown,
+    handleProps: historyHandleProps,
   } = useResizablePanel({
     minWidth: 240,
     maxWidth: 520,
@@ -185,7 +185,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
         </div>
       </aside>
       <div
-        onMouseDown={onHistoryPanelMouseDown}
+        {...historyHandleProps}
         className="panel-resize-handle"
         title="Resize chat history"
       />
@@ -258,7 +258,7 @@ export function ChatLayout({ children }: { children: ReactNode }) {
         {mediaPanelOpen && !isMaximized && (
           <>
             <div
-              onMouseDown={onMouseDown}
+              {...handleProps}
               className="panel-resize-handle"
             />
             <div
