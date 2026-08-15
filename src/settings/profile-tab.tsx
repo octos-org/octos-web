@@ -432,6 +432,7 @@ export function ProfileTab({
                 autoStart === profile.enabled &&
                 adminMode === profile.config.admin_mode)
             }
+            aria-live="polite"
             className="flex items-center gap-2 rounded-xl bg-accent px-5 py-2.5 text-sm font-medium text-white hover:bg-accent-dim disabled:opacity-30 transition"
           >
             {saving ? (
@@ -443,7 +444,9 @@ export function ProfileTab({
             )}
             {saved ? LABELS.saved : LABELS.saveChanges}
           </button>
-          {error && <span className="text-xs text-red-400">{error}</span>}
+          {error && (
+            <span role="alert" className="text-xs text-red-400">{error}</span>
+          )}
         </div>
       </div>
 

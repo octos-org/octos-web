@@ -261,6 +261,7 @@ export function VoiceTab({
           type="button"
           onClick={save}
           disabled={saving || cloudIncomplete}
+          aria-live="polite"
           className="flex items-center gap-2 rounded-xl bg-accent px-5 py-2.5 text-sm font-medium text-white hover:bg-accent-dim disabled:opacity-30 transition"
         >
           {saving ? (
