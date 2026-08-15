@@ -349,7 +349,10 @@ export function WorkspaceLayout({ children }: { children: ReactNode }) {
               <div className="glass-toolbar px-4 py-4">
                 <div className="flex items-start gap-4">
                   <div className="min-w-0 flex-1">
-                    <div className="shell-kicker">Agent</div>
+                    {/* Same kicker as the classic chat layout — the two
+                        shells are layouts, not different session kinds
+                        (audit N8 terminology drift). */}
+                    <div className="shell-kicker">Current Session</div>
                     <SessionTitleEditor
                       value={currentSessionTitle}
                       onSave={(title) => renameSession(currentSessionId, title)}
