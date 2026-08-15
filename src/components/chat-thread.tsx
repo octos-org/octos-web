@@ -85,7 +85,19 @@ import { getToken } from "@/api/client";
 function formatTimestamp(ts: number): string {
   const d = new Date(ts);
   const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  const hhmm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const now = new Date();
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  // Same-day messages show HH:MM only; older ones gain the date (and
+  // year once it differs) — full second precision is engineer noise
+  // (2026-08 UI audit C10/L1).
+  if (sameDay) return hhmm;
+  const sameYear = d.getFullYear() === now.getFullYear();
+  if (sameYear) return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hhmm}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hhmm}`;
 }
 
 function visibleAttachmentCaption(caption?: string): string {
@@ -703,10 +715,10 @@ const ThreadUserBubble = memo(function ThreadUserBubble({
             void runRewind();
           }
         }}
-        className={`flex items-center gap-1 rounded-[6px] px-1.5 py-0.5 text-[10px] font-medium transition-opacity ${
+        className={`flex items-center gap-1 rounded-[6px] px-1.5 py-0.5 text-[11px] font-medium transition-opacity ${
           rewindState === "confirm"
             ? "border border-rose-400 text-rose-300"
-            : "text-muted opacity-40 hover:opacity-100"
+            : "text-muted opacity-60 hover:opacity-100"
         } disabled:opacity-60`}
       >
         <RotateCcw size={10} />
@@ -780,7 +792,7 @@ function ToolCallBubble({
       <span
         data-testid="tool-call-retry-badge"
         data-tool-call-retry-count={toolCall.retryCount}
-        className="ml-1 rounded-full bg-amber-500/20 px-1.5 py-px text-[9px] font-semibold text-amber-300"
+        className="ml-1 rounded-full bg-amber-500/20 px-1.5 py-px text-[11px] font-semibold text-amber-300"
         title={`Retried ${toolCall.retryCount} time${toolCall.retryCount === 1 ? "" : "s"}`}
       >
         ×{toolCall.retryCount + 1}
@@ -929,7 +941,7 @@ function ToolCallBubble({
           data-testid="tool-call-args"
           data-tool-call-args-kind={argSummary.label}
           title={`${argSummary.label}: ${argSummary.value}`}
-          className="flex min-w-0 items-start gap-1 text-[9px] leading-4 opacity-85"
+          className="flex min-w-0 items-start gap-1 text-[11px] leading-4 opacity-85"
         >
           <span className="shrink-0 text-current/70">{argSummary.label}:</span>
           <span className="min-w-0 break-all">{argSummary.value}</span>
@@ -952,7 +964,7 @@ function ToolCallBubble({
                     }`
               }
               onClick={handleToggle}
-              className="mt-1 flex items-center gap-1 self-start rounded-sm px-1 py-0.5 text-[9px] uppercase tracking-wide opacity-70 hover:opacity-100 focus:outline-none focus:ring-1 focus:ring-current/40"
+              className="mt-1 flex items-center gap-1 self-start rounded-sm px-1 py-0.5 text-[11px] uppercase tracking-wide opacity-70 hover:opacity-100 focus:outline-none focus:ring-1 focus:ring-current/40"
             >
               {expanded ? (
                 <ChevronDown size={10} aria-hidden="true" />
@@ -2469,6 +2481,7 @@ function Composer({
                   ? `${pendingFiles.length} file(s) attached -- add a message...`
                   : "Send a message..."
               }
+              title="Enter to send · Shift+Enter for a new line"
               value={text}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={handleKeyDown}
