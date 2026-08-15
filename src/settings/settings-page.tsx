@@ -29,7 +29,6 @@ import {
 } from "@/components/workbench-shell";
 import { StudioTopbar } from "@/components/studio-topbar";
 import { getMyProfile, type Profile } from "./settings-api";
-import { setSelectedProfileId as persistSelectedProfile } from "@/api/client";
 import { ProfileTab } from "./profile-tab";
 import { LlmTab } from "./llm-tab";
 import { ApiKeysTab } from "./api-keys-tab";
@@ -114,11 +113,11 @@ export function AdminSettingsPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const accessibleProfiles = portal?.accessible_profiles ?? [];
-  const [selectedProfileId, setSelectedProfileId] = useState<string>(
-    () => portal?.home_profile_id ?? "",
-  );
-
+  // Self-service `/api/my/*` routes are bound to the authenticated identity;
+  // `X-Profile-Id` is not an authorized target selector. Keep this surface on
+  // that identity unless it is migrated wholesale to explicit admin profile
+  // endpoints, otherwise a dropdown can display one profile while saving
+  // another.
   useEffect(() => {
     let cancelled = false;
     getMyProfile().then((data) => {
@@ -128,7 +127,7 @@ export function AdminSettingsPage() {
       }
     });
     return () => { cancelled = true; };
-  }, [selectedProfileId]);
+  }, []);
 
   // Render-phase adjustment (the docs' "adjusting state when props change"
   // pattern): adopt a ?tab= change from the URL exactly once per params
@@ -202,26 +201,7 @@ export function AdminSettingsPage() {
         title="Settings"
         subtitle="Profile, models, channels, operators, and local runtime"
         actions={
-          <>
-            {accessibleProfiles.length > 1 && (
-              <select
-                value={selectedProfileId}
-                onChange={(e) => {
-                  const id = e.target.value;
-                  setSelectedProfileId(id);
-                  persistSelectedProfile(id);
-                }}
-                className="workbench-input px-3 py-2 text-sm"
-              >
-                {accessibleProfiles.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name || p.id}
-                  </option>
-                ))}
-              </select>
-            )}
-            <WorkbenchThemeButton />
-          </>
+          <WorkbenchThemeButton />
         }
       />
 
@@ -311,8 +291,8 @@ export function AdminSettingsPage() {
                       onProfileUpdated={setProfile}
                     />
                   )}
-                  {activeTab === "memory" && <MemoryTab key={selectedProfileId} />}
-                  {activeTab === "schedule" && <CronTab key={selectedProfileId} />}
+                  {activeTab === "memory" && <MemoryTab key={profile.id} />}
+                  {activeTab === "schedule" && <CronTab key={profile.id} />}
                   {activeTab === "skills" && <SkillsTab />}
                   {activeTab === "channels" && <ChannelsTab profile={profile} onProfileUpdated={setProfile} />}
                   {activeTab === "smart-home" && (
