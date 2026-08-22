@@ -7,6 +7,8 @@
   "scripts": {
     "copy-vad-assets": "node scripts/copy-vad-assets.mjs",
     "setup:https": "node scripts/setup-local-https.mjs",
+    "predev:vad-v6": "node scripts/copy-vad-assets.mjs",
+    "dev:vad-v6": "vite --host 127.0.0.1 --open /silero-v6-lab.html",
     "predev": "node scripts/copy-vad-assets.mjs",
     "dev": "vite",
     "dev:https": "vite --mode local-https --host 0.0.0.0",

@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Isolated browser comparison of the current Silero v5 model and official Silero v6.2.1."
+    />
+    <title>Silero v5 / v6 Browser Lab</title>
+    <script type="module" src="/src/experiments/silero-v6/lab.ts"></script>
+  </head>
+  <body>
+    <main class="lab-shell">
+      <header class="lab-header">
+        <div>
+          <p class="eyebrow">OCTOS VOICE RESEARCH · ISOLATED EXPERIMENT</p>
+          <h1>Silero v5 / v6 浏览器对照实验</h1>
+          <p class="lede">
+            同一支麦克风、同一批 32ms 音频帧、同一判定参数，同时比较当前浏览器 v5 与官方 v6.2.1。
+            本页面不连接 Octos 后端，也不会创建 Agent turn。
+          </p>
+        </div>
+        <div id="statusBadge" class="status-badge" data-state="idle">未启动</div>
+      </header>
+
+      <section class="control-panel" aria-label="实验控制">
+        <div class="button-row">
+          <button id="startButton" class="primary-button" type="button">启动麦克风</button>
+          <button id="stopButton" type="button" disabled>停止</button>
+          <button id="resetButton" type="button">清空数据</button>
+          <button id="exportButton" type="button">导出 JSON</button>
+        </div>
+
+        <div class="control-grid">
+          <label>
+            当前测试场景
+            <select id="scenarioSelect">
+              <option value="unlabeled">未标记</option>
+              <option value="silence">安静环境</option>
+              <option value="keyboard">键盘声</option>
+              <option value="mouse">鼠标点击</option>
+              <option value="friction">摩擦声</option>
+              <option value="cough">咳嗽</option>
+              <option value="short-speech">短中文</option>
+              <option value="long-speech">长中文</option>
+              <option value="noise-then-speech">噪声后说话</option>
+            </select>
+          </label>
+          <label>
+            开始阈值 <output id="positiveThresholdValue">0.60</output>
+            <input id="positiveThreshold" type="range" min="0.1" max="0.95" step="0.05" value="0.6" />
+          </label>
+          <label>
+            结束阈值 <output id="negativeThresholdValue">0.40</output>
+            <input id="negativeThreshold" type="range" min="0.05" max="0.9" step="0.05" value="0.4" />
+          </label>
+          <label>
+            最短语音 <output id="minSpeechValue">300ms</output>
+            <input id="minSpeech" type="range" min="64" max="1000" step="1" value="300" />
+          </label>
+          <label>
+            结束等待 <output id="redemptionValue">700ms</output>
+            <input id="redemption" type="range" min="64" max="1500" step="1" value="700" />
+          </label>
+        </div>
+        <p id="statusText" class="status-text">点击“启动麦克风”后加载两个 ONNX 模型。</p>
+      </section>
+
+      <section class="probability-panel" aria-labelledby="probabilityTitle">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">LIVE PROBABILITY</p>
+            <h2 id="probabilityTitle">相同音频帧的实时语音概率</h2>
+          </div>
+          <div class="legend" aria-label="图例">
+            <span><i class="legend-v5"></i>v5</span>
+            <span><i class="legend-v6"></i>v6.2.1</span>
+            <span><i class="legend-threshold"></i>开始阈值</span>
+          </div>
+        </div>
+        <canvas id="probabilityChart" width="1200" height="360"></canvas>
+      </section>
+
+      <section class="model-grid" aria-label="模型统计">
+        <article class="model-card model-v5">
+          <div class="model-title-row">
+            <div>
+              <p class="eyebrow">CURRENT BROWSER MODEL</p>
+              <h2>Silero v5</h2>
+            </div>
+            <span id="v5LiveState" class="live-state">等待</span>
+          </div>
+          <dl>
+            <div><dt>模型加载</dt><dd id="v5Load">—</dd></div>
+            <div><dt>平均概率</dt><dd id="v5Average">—</dd></div>
+            <div><dt>最高概率</dt><dd id="v5Maximum">—</dd></div>
+            <div><dt>确认语音段</dt><dd id="v5Confirmed">0</dd></div>
+            <div><dt>短噪声候选</dt><dd id="v5Misfires">0</dd></div>
+            <div><dt>平均推理</dt><dd id="v5InferenceAverage">—</dd></div>
+            <div><dt>推理 P95</dt><dd id="v5InferenceP95">—</dd></div>
+          </dl>
+          <p id="v5Interface" class="model-interface">尚未读取模型接口</p>
+        </article>
+
+        <article class="model-card model-v6">
+          <div class="model-title-row">
+            <div>
+              <p class="eyebrow">OFFICIAL 16KHZ OPSET 15</p>
+              <h2>Silero v6.2.1</h2>
+            </div>
+            <span id="v6LiveState" class="live-state">等待</span>
+          </div>
+          <dl>
+            <div><dt>模型加载</dt><dd id="v6Load">—</dd></div>
+            <div><dt>平均概率</dt><dd id="v6Average">—</dd></div>
+            <div><dt>最高概率</dt><dd id="v6Maximum">—</dd></div>
+            <div><dt>确认语音段</dt><dd id="v6Confirmed">0</dd></div>
+            <div><dt>短噪声候选</dt><dd id="v6Misfires">0</dd></div>
+            <div><dt>平均推理</dt><dd id="v6InferenceAverage">—</dd></div>
+            <div><dt>推理 P95</dt><dd id="v6InferenceP95">—</dd></div>
+          </dl>
+          <p id="v6Interface" class="model-interface">尚未读取模型接口</p>
+        </article>
+      </section>
+
+      <section class="event-panel" aria-labelledby="eventTitle">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">DECISION LOG</p>
+            <h2 id="eventTitle">判定事件</h2>
+          </div>
+          <span id="frameCounter">0 帧 · 0.0 秒</span>
+        </div>
+        <ol id="eventLog" class="event-log">
+          <li class="empty-event">尚无事件。选择测试场景并启动麦克风。</li>
+        </ol>
+      </section>
+    </main>
+  </body>
+</html>

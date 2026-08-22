@@ -1,0 +1,381 @@
+:root {
+  color: #173b3a;
+  background: #f6f3eb;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  font-synthesis: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 12% 6%, rgb(87 190 175 / 12%), transparent 28rem),
+    radial-gradient(circle at 94% 18%, rgb(255 183 77 / 12%), transparent 24rem),
+    #f6f3eb;
+}
+
+button,
+select,
+input {
+  font: inherit;
+}
+
+button,
+select {
+  border: 1px solid #c9d2cc;
+  border-radius: 0.75rem;
+  background: #fffdf8;
+  color: inherit;
+}
+
+button {
+  min-height: 2.75rem;
+  padding: 0.65rem 1rem;
+  cursor: pointer;
+  font-weight: 650;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+button:not(:disabled):hover {
+  border-color: #3a9187;
+  box-shadow: 0 0.25rem 1rem rgb(24 72 67 / 10%);
+}
+
+.primary-button {
+  border-color: #19796f;
+  background: #19796f;
+  color: white;
+}
+
+.lab-shell {
+  width: min(1180px, calc(100% - 2rem));
+  margin: 0 auto;
+  padding: 3rem 0 5rem;
+}
+
+.lab-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 2rem;
+  margin-bottom: 1.5rem;
+}
+
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  max-width: 850px;
+  margin-bottom: 0.75rem;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(2.1rem, 5vw, 4.5rem);
+  font-weight: 500;
+  line-height: 1.05;
+  letter-spacing: -0.04em;
+}
+
+h2 {
+  margin-bottom: 0;
+  font-size: 1.15rem;
+}
+
+.lede {
+  max-width: 800px;
+  margin-bottom: 0;
+  color: #57706c;
+  font-size: 1.02rem;
+  line-height: 1.7;
+}
+
+.eyebrow {
+  margin-bottom: 0.45rem;
+  color: #45827a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  font-weight: 750;
+  letter-spacing: 0.13em;
+}
+
+.status-badge {
+  flex: 0 0 auto;
+  border: 1px solid #c9d2cc;
+  border-radius: 999px;
+  background: #fffdf8;
+  padding: 0.6rem 0.9rem;
+  font-size: 0.82rem;
+  font-weight: 750;
+}
+
+.status-badge[data-state="running"] {
+  border-color: #35a394;
+  background: #e5f7f2;
+  color: #0b655c;
+}
+
+.status-badge[data-state="loading"] {
+  border-color: #e5b051;
+  background: #fff5da;
+  color: #7c5515;
+}
+
+.status-badge[data-state="error"] {
+  border-color: #d87f75;
+  background: #fff0ed;
+  color: #9c342a;
+}
+
+.control-panel,
+.probability-panel,
+.model-card,
+.event-panel {
+  border: 1px solid rgb(95 117 111 / 24%);
+  border-radius: 1.2rem;
+  background: rgb(255 253 248 / 88%);
+  box-shadow: 0 1rem 3rem rgb(54 77 69 / 7%);
+}
+
+.control-panel,
+.probability-panel,
+.event-panel {
+  padding: 1.25rem;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin-bottom: 1.2rem;
+}
+
+.control-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.control-grid label {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.55rem;
+  color: #526864;
+  font-size: 0.82rem;
+  font-weight: 650;
+}
+
+.control-grid output {
+  color: #14746a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.control-grid select {
+  width: 100%;
+  min-height: 2.4rem;
+  padding: 0.4rem 0.6rem;
+}
+
+input[type="range"] {
+  width: 100%;
+  accent-color: #1b887c;
+}
+
+.status-text {
+  min-height: 1.5rem;
+  margin: 1rem 0 0;
+  color: #60736f;
+  font-size: 0.86rem;
+}
+
+.probability-panel,
+.event-panel {
+  margin-top: 1rem;
+}
+
+.section-heading,
+.model-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  color: #647671;
+  font-size: 0.78rem;
+}
+
+.legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.legend i {
+  display: block;
+  width: 1.5rem;
+  height: 0.16rem;
+  border-radius: 999px;
+}
+
+.legend-v5 {
+  background: #497fcc;
+}
+
+.legend-v6 {
+  background: #159581;
+}
+
+.legend-threshold {
+  border-top: 2px dashed #d68e32;
+}
+
+#probabilityChart {
+  display: block;
+  width: 100%;
+  height: 300px;
+  margin-top: 1rem;
+  border-radius: 0.8rem;
+  background: #fbfaf5;
+}
+
+.model-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.model-card {
+  padding: 1.25rem;
+}
+
+.model-v5 {
+  border-top: 4px solid #497fcc;
+}
+
+.model-v6 {
+  border-top: 4px solid #159581;
+}
+
+.live-state {
+  border-radius: 999px;
+  background: #edf0ed;
+  padding: 0.35rem 0.6rem;
+  color: #5f716d;
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+
+.live-state[data-active="true"] {
+  background: #fff0d3;
+  color: #885a12;
+}
+
+.model-card dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+  margin: 1.25rem 0;
+}
+
+.model-card dl div {
+  border-radius: 0.8rem;
+  background: #f2f2ec;
+  padding: 0.75rem;
+}
+
+.model-card dt {
+  margin-bottom: 0.3rem;
+  color: #71817d;
+  font-size: 0.75rem;
+}
+
+.model-card dd {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 1rem;
+  font-weight: 750;
+}
+
+.model-interface {
+  overflow-wrap: anywhere;
+  margin-bottom: 0;
+  color: #758480;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+  line-height: 1.55;
+}
+
+.event-log {
+  display: grid;
+  max-height: 19rem;
+  gap: 0.45rem;
+  overflow: auto;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.event-log li {
+  display: grid;
+  grid-template-columns: 6rem 7rem 1fr;
+  gap: 0.75rem;
+  border-bottom: 1px solid #e4e5df;
+  padding: 0.55rem 0.2rem;
+  color: #566b66;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+}
+
+.event-log .empty-event {
+  display: block;
+  color: #86938f;
+}
+
+@media (max-width: 880px) {
+  .lab-header,
+  .section-heading {
+    flex-direction: column;
+  }
+
+  .control-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .model-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 520px) {
+  .lab-shell {
+    width: min(100% - 1rem, 1180px);
+    padding-top: 1.5rem;
+  }
+
+  .control-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .event-log li {
+    grid-template-columns: 1fr;
+    gap: 0.2rem;
+  }
+}
