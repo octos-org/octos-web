@@ -750,6 +750,14 @@ describe("start() cancellation (post-unmount mic re-acquire)", () => {
     });
 
     expect(captureStartMock).toHaveBeenCalledTimes(1);
+    expect(captureStartMock.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        positiveSpeechThreshold: 0.6,
+        negativeSpeechThreshold: 0.4,
+        minSpeechMs: 300,
+        redemptionMs: 700,
+      }),
+    );
     unmount();
   });
 
@@ -836,6 +844,63 @@ describe("start() cancellation (post-unmount mic re-acquire)", () => {
     expect(commitAdmittedVoiceMessageMock).not.toHaveBeenCalled();
     expect(sendMessageMock).not.toHaveBeenCalled();
     expect(result.current.state).toBe("listening");
+    unmount();
+  });
+
+  it("does not bypass the external-speech cooldown when Learn handles the turn", async () => {
+    vi.useFakeTimers();
+    getActiveBridgeMock.mockReturnValue({
+      getConnectionState: () => "connected",
+    });
+    uploadFilesMock.mockResolvedValueOnce(["up/utterance.wav"]);
+    admitVoiceMessageMock.mockResolvedValueOnce({
+      status: "speech",
+      admissionId: "admission-selection",
+      transcript: "解释这个选区",
+    });
+    let finishHandled!: (handled: boolean) => void;
+    const onAdmittedSpeech = vi.fn(() => new Promise<boolean>((resolve) => {
+      finishHandled = resolve;
+    }));
+    const { result, rerender, unmount } = renderHook(
+      ({ externalSpeechActive }) =>
+        useVoiceConversation("learn-selection-cooldown", undefined, undefined, {
+          onAdmittedSpeech,
+          playReplyAudio: false,
+          externalSpeechActive,
+          externalSpeechReleaseDelayMs: 1200,
+        }),
+      { initialProps: { externalSpeechActive: false } },
+    );
+
+    let startPromise!: Promise<void>;
+    act(() => {
+      startPromise = result.current.start({
+        initialAudio: new Blob(["speech"], { type: "audio/wav" }),
+      });
+    });
+    await vi.waitFor(() => expect(onAdmittedSpeech).toHaveBeenCalledOnce());
+
+    await act(async () => {
+      rerender({ externalSpeechActive: true });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      rerender({ externalSpeechActive: false });
+      await Promise.resolve();
+      finishHandled(true);
+      await startPromise;
+    });
+
+    expect(captureStartMock).not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1199);
+    });
+    expect(captureStartMock).not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(captureStartMock).toHaveBeenCalledOnce();
     unmount();
   });
 
@@ -1020,6 +1085,48 @@ describe("start() cancellation (post-unmount mic re-acquire)", () => {
     audioMock.stopAudio.mockClear();
     act(() => result.current.stop());
     expect(audioMock.stopAudio).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it("waits for external speaker echo to drain before resuming capture", async () => {
+    vi.useFakeTimers();
+    getActiveBridgeMock.mockReturnValue({
+      getConnectionState: () => "connected",
+    });
+    const { result, rerender, unmount } = renderHook(
+      ({ externalSpeechActive }) =>
+        useVoiceConversation("learn-speaker-tail-test", undefined, undefined, {
+          playReplyAudio: false,
+          externalSpeechActive,
+          externalSpeechReleaseDelayMs: 1200,
+        }),
+      { initialProps: { externalSpeechActive: false } },
+    );
+
+    await act(async () => {
+      await result.current.start();
+    });
+    expect(captureStartMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      rerender({ externalSpeechActive: true });
+      await Promise.resolve();
+    });
+    expect(captureStopMock).toHaveBeenCalled();
+
+    await act(async () => {
+      rerender({ externalSpeechActive: false });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1199);
+    });
+    expect(captureStartMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(captureStartMock).toHaveBeenCalledTimes(2);
     unmount();
   });
 

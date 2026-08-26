@@ -819,6 +819,9 @@ export function LearningWorkspace({
         ((lessonOwnsNarration && narrationAudioEnabled) ||
           narrationSpeechActive ||
           textTurnPending),
+      // Do not feed the final speaker frame / acoustic echo back into ASR when
+      // a lesson or plain spoken reply releases the microphone.
+      externalSpeechReleaseDelayMs: 1200,
       onAdmittedSpeech: async (context) => {
         if (
           context.currentFramePath
