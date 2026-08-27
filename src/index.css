@@ -2541,7 +2541,12 @@ button, a, input, textarea {
 }
 
 /* ── Settings gear button ──────────────────────────── */
-.home-settings-gear {
+/* `.home-back-button` (classic standby "Back to Octos workspace") shares
+   the gear's hit-target and hover chrome but is a distinct class so
+   `.home-settings-gear` stays 1:1 with the settings affordance —
+   strict-mode locators in e2e and visual audits depend on that. */
+.home-settings-gear,
+.home-back-button {
   width: 44px;
   height: 44px;
   background: transparent;
@@ -2551,10 +2556,12 @@ button, a, input, textarea {
   border-radius: 8px;
 }
 
-.home-settings-gear:hover {
+.home-settings-gear:hover,
+.home-back-button:hover {
   background: rgba(255, 255, 255, 0.08);
 }
-.home-settings-gear:active {
+.home-settings-gear:active,
+.home-back-button:active {
   transform: scale(0.95);
 }
 

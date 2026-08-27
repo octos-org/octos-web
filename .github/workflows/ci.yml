@@ -31,3 +31,39 @@ jobs:
       - run: pnpm lint
       - run: pnpm test:unit
       - run: pnpm run build
+
+  # UI-redesign smoke gate (#303). These specs run against a fully mocked
+  # backend (page.route + routeWebSocket) — no live octos core needed, so
+  # they can gate every PR cheaply. Without this job the spec directory
+  # drifted silently from 3 red (2026-08-15) to 6 red (2026-08-26).
+  e2e-smoke:
+    name: e2e ui-redesign smoke (mocked backend)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install chromium --with-deps
+      # The specs default to http://localhost:5174; playwright.config.ts has
+      # no webServer entry, so the Vite dev server is started here and kept
+      # alive for the whole step.
+      - name: Start Vite dev server
+        run: |
+          pnpm exec vite --port 5174 --strictPort &
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:5174/ >/dev/null && break
+            sleep 1
+          done
+          curl -sf http://localhost:5174/ >/dev/null || (echo "vite failed to start" && exit 1)
+      - run: pnpm exec playwright test tests/ui-redesign-smoke.spec.ts
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7

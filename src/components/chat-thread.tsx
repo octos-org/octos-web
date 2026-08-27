@@ -1580,8 +1580,18 @@ function ChatThreadV2({
           hideFileOnlyAssistantMessages={hideFileOnlyAssistantMessages}
         />
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6">
-          <div className="chat-empty-card glass-section animate-shell-rise max-w-xl rounded-[12px] px-7 py-9 text-center">
+        /* Same viewport shell as ThreadList: `.chat-thread-viewport` must
+           exist in BOTH states so the composer/viewport layout contract
+           (e2e geometry assertions, resizable parents with min-h-0) holds
+           before the first message, and the welcome card stays scrollable
+           when it is taller than the available lane. */
+        <div
+          data-testid="chat-thread"
+          data-thread-renderer="v2"
+          className="chat-thread-viewport flex-1 min-h-0 overflow-y-auto overscroll-contain"
+        >
+          <div className="flex min-h-full flex-col items-center justify-center px-6">
+            <div className="chat-empty-card glass-section animate-shell-rise max-w-xl rounded-[12px] px-7 py-9 text-center">
             <div className="shell-kicker">Conversation Studio</div>
             <h1 className="mb-3 mt-3 text-3xl font-light tracking-tight text-text-strong">
               What can I help with?
@@ -1623,6 +1633,7 @@ function ChatThreadV2({
                 /new research &lt;topic&gt;
               </code>
             </p>
+            </div>
           </div>
         </div>
       )}

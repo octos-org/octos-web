@@ -146,10 +146,13 @@ export function ClassicStandbyView({
         )}
         {/* Exit to the Octos workspace — the Display page is full-screen
             with no navigation of its own, so this is the only way back
-            other than the browser back button. */}
+            other than the browser back button. Shares the gear's visual
+            treatment (44px hit target, transparent hover chrome) but is a
+            DISTINCT class so `.home-settings-gear` stays 1:1 with the
+            settings affordance in tests and visual audits. */}
         <button
           onClick={() => navigate("/")}
-          className="home-settings-gear absolute right-16 top-4 z-30 flex items-center justify-center rounded-xl"
+          className="home-back-button home-settings-gear-chrome absolute right-16 top-4 z-30 flex items-center justify-center rounded-xl"
           aria-label="Back to Octos workspace"
           title="Back to Octos workspace"
         >

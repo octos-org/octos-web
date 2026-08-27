@@ -108,6 +108,10 @@ type UiSmokeMessage = {
   response_to_client_message_id?: string;
   message_id?: string;
   source?: string;
+  /** Required by the `session/hydrate` guard (`guardSessionHydrate`);
+   *  derived from `timestamp` when answering that method so individual
+   *  fixtures do not have to repeat it. */
+  persisted_at?: string;
 };
 
 async function installWorkbenchMocks(
@@ -329,7 +333,20 @@ async function installWorkbenchMocks(
           ? { sessions: [{ id: "web-ui-smoke", title: "Visual review", message_count: messages.length }] }
           : message.method === "session/messages_page"
             ? { messages, has_more: false, next_offset: messages.length }
-            : message.method === "session/open"
+            : message.method === "session/hydrate"
+              ? {
+                  // `guardSessionHydrate` requires session_id + per-message
+                  // `persisted_at`; without this reply the runtime layer's
+                  // post-open hydration silently yields zero messages and
+                  // every history-rendering assertion fails.
+                  session_id: "web-ui-smoke",
+                  cursor: { stream: "web-ui-smoke", seq: messages.length },
+                  messages: messages.map((m) => ({
+                    ...m,
+                    persisted_at: m.persisted_at ?? m.timestamp,
+                  })),
+                }
+              : message.method === "session/open"
               ? { opened: { session_id: "web-ui-smoke", active_profile_id: "admin", capabilities: { supported_features: ["projection.envelope.v2"] } } }
               : message.method === "router/get_metrics"
                 ? { mode: "off", provider_count: 1, providers: [] }
@@ -399,7 +416,7 @@ test.describe("UI redesign shell smoke", () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto("/", { waitUntil: "networkidle" });
 
-    for (const label of ["Dashboard", "Chat", "Slides", "Sites", "Settings"]) {
+    for (const label of ["Home", "Chat", "Learning", "Slides", "Sites", "Settings"]) {
       await expect(
         page.getByRole("link", { name: label, exact: true }),
       ).toBeVisible();
@@ -493,7 +510,7 @@ test.describe("UI redesign shell smoke", () => {
     // Below md the text links collapse into the nav menu — every route
     // must remain reachable through it.
     await page.getByRole("button", { name: "Open navigation" }).click();
-    for (const label of ["Dashboard", "Chat", "Slides", "Sites", "Settings"]) {
+    for (const label of ["Home", "Chat", "Learning", "Slides", "Sites", "Settings"]) {
       await expect(
         page.getByRole("menuitem", { name: label, exact: true }),
       ).toBeVisible();
@@ -569,7 +586,11 @@ test.describe("UI redesign shell smoke", () => {
 
     await expect(page.locator(".metro-grid")).toBeVisible();
 
-    await page.locator(".home-settings-gear").click();
+    // Role-based: the classic standby also renders a distinct
+    // "Back to Octos workspace" button that shares the gear chrome.
+    await page
+      .getByRole("button", { name: "Settings", exact: true })
+      .click();
     await page.getByRole("button", { name: "Grid" }).click();
     await expect(page.locator(".classic-home-standby")).toBeVisible();
     await expect(page.locator(".metro-grid")).toHaveCount(0);
@@ -578,7 +599,9 @@ test.describe("UI redesign shell smoke", () => {
     await expect(page.locator(".classic-home-standby")).toBeVisible();
     await expect(page.locator(".metro-grid")).toHaveCount(0);
 
-    await page.locator(".home-settings-gear").click();
+    await page
+      .getByRole("button", { name: "Settings", exact: true })
+      .click();
     await page.getByRole("button", { name: "Metro" }).click();
     await expect(page.locator(".metro-grid")).toBeVisible();
   });
@@ -969,7 +992,10 @@ test.describe("UI redesign shell smoke", () => {
 
     await page.getByTitle("Open files panel").click();
     await expect(page.getByText("Session Files")).toBeVisible();
-    await expect(page.getByTestId("content-file-row")).toBeVisible();
+    // The panel groups entries by date section; with the single mocked
+    // entry only one row exists, but scope to the first regardless so a
+    // fixture change (two date groups) cannot make this strict-mode.
+    await expect(page.getByTestId("content-file-row").first()).toBeVisible();
 
     const styling = await page.evaluate(() => {
       const parseRadius = (selector: string) => {
