@@ -221,4 +221,178 @@ describe("useCameraFrame", () => {
 
     expect(getUserMedia).toHaveBeenCalledTimes(1);
   });
+
+  it("releases the stream when stop() runs while getUserMedia is in flight", async () => {
+    const stopTrack = vi.fn();
+    const fakeStream = { getTracks: () => [{ stop: stopTrack }] };
+    let resolveMedia!: (stream: unknown) => void;
+    getUserMedia.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveMedia = resolve;
+        }),
+    );
+    const { result } = renderHook(() => useCameraFrame());
+
+    let startPromise!: Promise<boolean>;
+    act(() => {
+      startPromise = result.current.start();
+    });
+    // The user leaves / toggles the camera off while the permission
+    // prompt is still open.
+    act(() => {
+      result.current.stop();
+    });
+    let started = true;
+    await act(async () => {
+      resolveMedia(fakeStream);
+      started = await startPromise;
+    });
+
+    expect(started).toBe(false);
+    expect(stopTrack).toHaveBeenCalledTimes(1);
+    expect(result.current.active).toBe(false);
+    expect(result.current.stream).toBeNull();
+  });
+
+  it("starts cleanly again after an in-flight start was torn down", async () => {
+    const firstStream = { getTracks: () => [{ stop: vi.fn() }] };
+    const secondStream = { getTracks: () => [{ stop: vi.fn() }] };
+    let resolveMedia!: (stream: unknown) => void;
+    getUserMedia.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveMedia = resolve;
+        }),
+    );
+    getUserMedia.mockResolvedValueOnce(secondStream);
+    const { result } = renderHook(() => useCameraFrame());
+
+    let firstStart!: Promise<boolean>;
+    act(() => {
+      firstStart = result.current.start();
+    });
+    act(() => {
+      result.current.stop();
+    });
+    await act(async () => {
+      resolveMedia(firstStream);
+      expect(await firstStart).toBe(false);
+    });
+
+    let restarted = false;
+    await act(async () => {
+      restarted = await result.current.start();
+    });
+    expect(restarted).toBe(true);
+    expect(result.current.active).toBe(true);
+    expect(result.current.stream).toBe(secondStream);
+  });
+
+  it("does not resurrect a torn-down stream when play() resolves late", async () => {
+    const stopTrack = vi.fn();
+    getUserMedia.mockResolvedValue({ getTracks: () => [{ stop: stopTrack }] });
+    let resolvePlay!: () => void;
+    vi.mocked(HTMLMediaElement.prototype.play).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolvePlay = resolve;
+        }),
+    );
+    const { result } = renderHook(() => useCameraFrame());
+
+    let startPromise!: Promise<boolean>;
+    act(() => {
+      startPromise = result.current.start();
+    });
+    // getUserMedia has resolved; the hook is parked in the play() await.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    act(() => {
+      result.current.stop();
+    });
+    let started = true;
+    await act(async () => {
+      resolvePlay();
+      started = await startPromise;
+    });
+
+    expect(started).toBe(false);
+    expect(stopTrack).toHaveBeenCalledTimes(1);
+    expect(result.current.active).toBe(false);
+    expect(result.current.stream).toBeNull();
+  });
+
+  it("a superseded start's late rejection leaves the newer stream alone", async () => {
+    const secondStopTrack = vi.fn();
+    const secondStream = { getTracks: () => [{ stop: secondStopTrack }] };
+    let rejectFirst!: (err: Error) => void;
+    getUserMedia.mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          rejectFirst = reject;
+        }),
+    );
+    getUserMedia.mockResolvedValueOnce(secondStream);
+    const { result } = renderHook(() => useCameraFrame());
+
+    let firstStart!: Promise<boolean>;
+    act(() => {
+      firstStart = result.current.start();
+    });
+    act(() => {
+      result.current.stop();
+    });
+    let restarted = false;
+    await act(async () => {
+      restarted = await result.current.start();
+    });
+    expect(restarted).toBe(true);
+
+    await act(async () => {
+      rejectFirst(new Error("Permission denied"));
+      expect(await firstStart).toBe(false);
+    });
+
+    expect(secondStopTrack).not.toHaveBeenCalled();
+    expect(result.current.active).toBe(true);
+    expect(result.current.stream).toBe(secondStream);
+    expect(result.current.error).toBeNull();
+  });
+
+  it("keeps only the newest stream when start() races itself", async () => {
+    const firstStopTrack = vi.fn();
+    const firstStream = { getTracks: () => [{ stop: firstStopTrack }] };
+    const secondStream = { getTracks: () => [{ stop: vi.fn() }] };
+    const resolvers: Array<(stream: unknown) => void> = [];
+    getUserMedia.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolvers.push(resolve);
+        }),
+    );
+    const { result } = renderHook(() => useCameraFrame());
+
+    let firstStart!: Promise<boolean>;
+    let secondStart!: Promise<boolean>;
+    act(() => {
+      firstStart = result.current.start();
+      secondStart = result.current.start();
+    });
+    let firstResult = true;
+    let secondResult = false;
+    await act(async () => {
+      resolvers[0](firstStream);
+      resolvers[1](secondStream);
+      [firstResult, secondResult] = await Promise.all([firstStart, secondStart]);
+    });
+
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
+    expect(firstResult).toBe(false);
+    expect(firstStopTrack).toHaveBeenCalledTimes(1);
+    expect(secondResult).toBe(true);
+    expect(result.current.active).toBe(true);
+    expect(result.current.stream).toBe(secondStream);
+  });
 });

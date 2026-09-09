@@ -179,6 +179,16 @@ function loadCameraFrameSettings(): CameraFrameSettings {
   }
 }
 
+function stopStreamTracks(stream: MediaStream): void {
+  for (const track of stream.getTracks()) {
+    try {
+      track.stop();
+    } catch {
+      // already stopped
+    }
+  }
+}
+
 /**
  * Manage a single camera stream behind a tiny start/stop/grab interface.
  *
@@ -190,6 +200,10 @@ function loadCameraFrameSettings(): CameraFrameSettings {
 export function useCameraFrame(): CameraFrame {
   const streamRef = useRef<MediaStream | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  // Invalidates an in-flight start(): stop() bumps it so a getUserMedia
+  // that resolves after teardown doesn't resurrect an ownerless stream
+  // (the camera indicator would stay on with nothing left to stop it).
+  const startGenRef = useRef(0);
   const [active, setActive] = useState(false);
   // Exposed so a preview <video> can bind the live stream.
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -212,16 +226,11 @@ export function useCameraFrame(): CameraFrame {
   }, []);
 
   const stop = useCallback(() => {
+    startGenRef.current++;
     const current = streamRef.current;
     streamRef.current = null;
     if (current) {
-      for (const track of current.getTracks()) {
-        try {
-          track.stop();
-        } catch {
-          // already stopped
-        }
-      }
+      stopStreamTracks(current);
     }
     const video = videoRef.current;
     if (video) {
@@ -239,6 +248,7 @@ export function useCameraFrame(): CameraFrame {
   const start = useCallback(async () => {
     if (streamRef.current) return true;
     setError(null);
+    const gen = ++startGenRef.current;
     try {
       const md = navigator.mediaDevices;
       if (!md?.getUserMedia) throw new Error("camera unavailable");
@@ -249,6 +259,13 @@ export function useCameraFrame(): CameraFrame {
         },
         audio: false,
       });
+      if (gen !== startGenRef.current) {
+        // stop() (or a newer start()) ran while the permission prompt was
+        // open — release the device immediately instead of attaching a
+        // stream nobody will ever tear down.
+        stopStreamTracks(stream);
+        return false;
+      }
       streamRef.current = stream;
       const video = document.createElement("video");
       video.muted = true;
@@ -259,15 +276,30 @@ export function useCameraFrame(): CameraFrame {
       } catch {
         // Autoplay may be deferred; frames can still be grabbed once data flows.
       }
+      if (gen !== startGenRef.current) {
+        // stop() ran while play() was pending and already stopped this
+        // stream's tracks — don't resurrect the dead stream into state.
+        return false;
+      }
       videoRef.current = video;
       setStream(stream);
       setActive(true);
       return true;
     } catch (e) {
+      if (gen !== startGenRef.current) {
+        // A stop()/newer start() superseded this attempt while it was in
+        // flight; teardown already ran, so don't clobber the new state
+        // (or stop a newer start's live stream) with this stale failure.
+        return false;
+      }
       console.error("[camera] start failed", e);
       setError(e instanceof Error ? e.message : "camera unavailable");
-      setActive(false);
+      // A failure after getUserMedia resolved must still release the
+      // device, or the camera indicator stays on with the stream dropped.
+      const partial = streamRef.current;
       streamRef.current = null;
+      if (partial) stopStreamTracks(partial);
+      setActive(false);
       videoRef.current = null;
       setStream(null);
       return false;
