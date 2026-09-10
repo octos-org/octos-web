@@ -1,6 +1,6 @@
 # Correctness review remediation — 2026-09-10
 
-This tracks the 14 confirmed gaps in [the baseline review](2026-09-10-correctness-review.md). All have implementation and regression coverage on `fix/review-correctness-gaps-20260910`, based on web `cd5824b`. Issues remain open pending review and merge. No deployment or live-service validation is claimed.
+This tracks the 14 confirmed gaps in [the baseline review](2026-09-10-correctness-review.md). All have implementation and regression coverage in [web PR #350](https://github.com/octos-org/octos-web/pull/350), based on web `cd5824b`. Issues remain open pending review and merge. No deployment or live-service validation is claimed.
 
 The required server changes are in [octos#2296](https://github.com/octos-org/octos/pull/2296), based on server `88d1112`: preview sandbox headers/CORS, durable file mutations, and revisioned slide-edit storage. Release that API before the paired web client. An older server can still preview decks, but edit/mutation attempts will show an error.
 
