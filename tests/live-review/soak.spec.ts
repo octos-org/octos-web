@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { expect, test } from "@playwright/test";
-import { appUrl, chat, login, telemetry } from "./helpers";
+import { appUrl, chat, credentials, login, telemetry } from "./helpers";
 
 test("30-minute remote core UX soak: real chat, navigation, history, and reconnect", async ({ page, context }, info) => {
   test.setTimeout(35 * 60_000);
@@ -11,7 +11,8 @@ test("30-minute remote core UX soak: real chat, navigation, history, and reconne
   const alias = process.env.OCTOS_LIVE_REVIEW_SSH;
   const pid = process.env.OCTOS_LIVE_REVIEW_PID;
   if (!alias || !pid || !/^\d+$/.test(pid)) throw new Error("Remote soak requires SSH alias and numeric server PID.");
-  await login(page);
+  // Keep long-running history independent from feature acceptance accounts.
+  await login(page, credentials.owner);
   let cycle = 0;
   do {
     cycle++;

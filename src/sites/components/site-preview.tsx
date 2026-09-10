@@ -9,6 +9,7 @@ import {
 } from "react";
 
 import { type SignedPreviewResponse, signPreview } from "../api";
+import { ApiError } from "@/api/client";
 
 interface Props {
   /** Legacy project location; executable navigation uses a signed URL. */
@@ -62,6 +63,7 @@ export function SitePreview({
   const eventRefreshTimer = useRef<number | null>(null);
   const renewalTimer = useRef<number | null>(null);
   const copiedTimer = useRef<number | null>(null);
+  const signedRefreshTick = useRef(0);
   /**
    * Latest-wins guard for in-flight `signPreview()` promises.
    *
@@ -174,8 +176,19 @@ export function SitePreview({
       const message = error instanceof Error ? error.message : "sign failed";
       setSignError(message);
       setSigned(null);
+      // A new project's directory may not exist when the first sign runs.
+      // Reuse the bounded retry budget until its scaffold appears.
+      if (error instanceof ApiError && error.status === 404) scheduleRetry();
     }
-  }, [profileId, sessionId, slug]);
+  }, [profileId, sessionId, slug, scheduleRetry]);
+
+  useEffect(() => {
+    if (signedRefreshTick.current === refreshTick) return;
+    signedRefreshTick.current = refreshTick;
+    // Keep a usable grant during ordinary iframe refreshes. A failed sign
+    // needs a new grant before file/tool/manual refreshes can show anything.
+    if (!signed) void refreshSignedToken();
+  }, [refreshTick, signed, refreshSignedToken]);
 
   // Mint on mount and whenever the coordinates change. The renewal
   // is scheduled INSIDE refreshSignedToken (after each successful

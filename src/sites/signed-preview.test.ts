@@ -29,7 +29,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/api/client", () => ({
+vi.mock("@/api/client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/api/client")>()),
   buildApiHeaders: vi.fn(
     (extras: Record<string, string> = {}, profileId?: string | null) => ({
       ...extras,

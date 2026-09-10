@@ -39,6 +39,7 @@ vi.mock("../api", () => ({
 }));
 
 import { SitePreview } from "./site-preview";
+import { ApiError } from "@/api/client";
 
 interface MountedHarness {
   container: HTMLDivElement;
@@ -80,6 +81,26 @@ afterEach(() => {
 });
 
 describe("<SitePreview> signed-URL iframe", () => {
+  it("recovers from a pre-scaffold 404 when project files arrive", async () => {
+    signPreviewMock.mockRejectedValueOnce(new ApiError(404, "Not scaffolded yet"));
+    let harness!: MountedHarness;
+    await act(async () => {
+      harness = mount(<SitePreview previewUrl="/preview/site" siteName="Test" template="react-vite"
+        sessionId="site-A" profileId="tenant-a" slug="test-site" />);
+    });
+    expect(harness.container.querySelector("iframe")).toBeNull();
+    signPreviewMock.mockResolvedValue({ token: SIGNED_TOKEN, preview_url: SIGNED_URL,
+      expires_at: new Date(Date.now() + 600_000).toISOString() });
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent("crew:file", { detail: { sessionId: "site-A" } }));
+      await vi.advanceTimersByTimeAsync(900);
+    });
+    expect(harness.container.querySelector("iframe")?.getAttribute("src")).toContain(SIGNED_URL);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    expect(signPreviewMock).toHaveBeenCalledTimes(2);
+    harness.unmount();
+  });
+
   it("calls signPreview on mount and sets iframe.src to the returned preview_url", async () => {
     const now = Date.now();
     signPreviewMock.mockResolvedValueOnce({

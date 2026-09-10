@@ -6,14 +6,23 @@ import { getSlidesProject, upsertSlidesProject } from "@/slides/store";
 import { hydrateSiteProjectFromSession } from "@/sites/api";
 import { getSiteProject, upsertSiteProject } from "@/sites/store";
 
+let resetGeneration = 0;
 let pending: { identity: number; token: string | null; promise: Promise<void> } | null = null;
+
+window.addEventListener("crew:token_cleared", () => {
+  // Verified cache restoration can reset transports without changing the
+  // token. A remounted gallery must not reuse that cancelled request.
+  resetGeneration++;
+  pending = null;
+});
 
 /** Rediscover server projects while retaining local drafts and edit state. */
 export function discoverProjects(): Promise<void> {
   const identity = getIdentityGeneration();
+  const reset = resetGeneration;
   const token = getToken();
   if (pending?.identity === identity && pending.token === token) return pending.promise;
-  const current = () => identity === getIdentityGeneration() && token === getToken();
+  const current = () => reset === resetGeneration && identity === getIdentityGeneration() && token === getToken();
   const promise = (async () => {
     const sessions = await listSessions();
     if (!current()) return;

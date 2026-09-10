@@ -38,4 +38,16 @@ describe("server project discovery", () => {
     await pending;
     expect(localStorage.getItem("octos_session_titles")).toBeNull();
   });
+  it("starts fresh after same-token cache restoration and ignores the old result", async () => {
+    let resolveOld!: (sessions: Array<{ id: string; title: string }>) => void;
+    mocks.list.mockReturnValueOnce(new Promise((resolve) => { resolveOld = resolve; }));
+    const old = discoverProjects();
+    window.dispatchEvent(new CustomEvent("crew:token_cleared"));
+    mocks.list.mockResolvedValueOnce([{ id: "web-restored", title: "Restored" }]);
+    await discoverProjects();
+    expect(mocks.list).toHaveBeenCalledTimes(2);
+    resolveOld([{ id: "web-stale", title: "Stale" }]);
+    await old;
+    expect(JSON.parse(localStorage.getItem("octos_session_titles")!)).toEqual({ "web-restored": "Restored" });
+  });
 });
