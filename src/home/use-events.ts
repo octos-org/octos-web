@@ -3,6 +3,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
+import ICAL from "ical.js";
 import { useHomeSettings, type CalendarEvent } from "./home-settings-context";
 
 export type { CalendarEvent };
@@ -38,79 +39,82 @@ function sortByTime(a: CalendarEvent, b: CalendarEvent): number {
   return a.time.localeCompare(b.time);
 }
 
-function unfoldIcs(text: string): string[] {
-  return text
-    .replace(/\r\n[ \t]/g, "")
-    .replace(/\n[ \t]/g, "")
-    .split(/\r?\n/);
+/** Convert a wall time with RFC 5545's DST disambiguation rules. */
+function ianaDate(time: ICAL.Time, formatter: Intl.DateTimeFormat): Date {
+  const wall = Date.UTC(time.year, time.month - 1, time.day, time.hour, time.minute, time.second);
+  const renderedWall = (instant: number) => {
+    const parts = Object.fromEntries(formatter.formatToParts(new Date(instant)).map(({ type, value }) => [type, Number(value)]));
+    return Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+  };
+  const offsets = new Set([-86400000, 0, 86400000].map((delta) => renderedWall(wall + delta) - (wall + delta)));
+  const candidates = [...offsets].map((offset) => wall - offset);
+  const exact = candidates.filter((candidate) => renderedWall(candidate) === wall);
+  // RFC 5545: choose the first occurrence of a repeated wall time; a missing
+  // wall time uses the offset before the gap (moves forward through the gap).
+  return new Date(exact.length ? Math.min(...exact) : Math.max(...candidates));
 }
 
-function icsValue(line: string): string {
-  const idx = line.indexOf(":");
-  return idx >= 0 ? line.slice(idx + 1).trim() : "";
-}
-
-function unescapeIcsText(value: string): string {
-  return value
-    .replace(/\\n/gi, " ")
-    .replace(/\\,/g, ",")
-    .replace(/\\;/g, ";")
-    .replace(/\\\\/g, "\\")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function parseIcsDateTime(value: string): { date: string; time: string } | null {
-  const compact = value.trim();
-  const match = compact.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2}))?/);
-  if (!match) return null;
-
-  return {
-    date: `${match[1]}-${match[2]}-${match[3]}`,
-    time: match[4] && match[5] ? `${match[4]}:${match[5]}` : "00:00",
+function installIanaZones(calendar: ICAL.Component): void {
+  const embeddedZone = calendar.getTimeZoneByID.bind(calendar);
+  const zones = new Map<string, ICAL.Timezone>();
+  calendar.getTimeZoneByID = (tzid: string) => {
+    const embedded = embeddedZone(tzid);
+    if (embedded) return embedded;
+    const existing = zones.get(tzid);
+    if (existing) return existing;
+    const formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: tzid, year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+    });
+    const zone = new ICAL.Timezone({ tzid });
+    zone.utcOffset = (time: ICAL.Time) => {
+      const wall = Date.UTC(time.year, time.month - 1, time.day, time.hour, time.minute, time.second);
+      return (wall - ianaDate(time, formatter).getTime()) / 1000;
+    };
+    zones.set(tzid, zone);
+    return zone;
   };
 }
 
-export function parseIcsEvents(text: string): CalendarEvent[] {
-  const lines = unfoldIcs(text);
-  const events: CalendarEvent[] = [];
-  let current: Record<string, string> | null = null;
-
-  for (const line of lines) {
-    if (line === "BEGIN:VEVENT") {
-      current = {};
+export function parseIcsEvents(
+  text: string,
+  rangeStart = new Date(new Date().setHours(0, 0, 0, 0)),
+  rangeEnd = new Date(new Date(rangeStart).setDate(rangeStart.getDate() + 4)),
+): CalendarEvent[] {
+  const calendar = new ICAL.Component(ICAL.parse(text));
+  if (calendar.name !== "vcalendar") throw new Error("Invalid calendar feed.");
+  installIanaZones(calendar);
+  const events = new Map<string, CalendarEvent>();
+  let remaining = 50_000;
+  const append = (event: ICAL.Event, start: ICAL.Time, recurrence?: ICAL.Time) => {
+    if (event.component.getFirstPropertyValue("status") === "CANCELLED") return;
+    const title = event.summary?.replace(/\s+/g, " ").trim();
+    if (!title) return;
+    const date = start.toJSDate();
+    if (recurrence && (date < rangeStart || date >= rangeEnd)) return;
+    const id = `ics-${event.uid || title}${recurrence ? `-${recurrence.toString()}` : ""}`;
+    events.set(id, {
+      id, title, date: fmtDate(date),
+      time: start.isDate ? "00:00" : `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`,
+    });
+  };
+  for (const component of calendar.getAllSubcomponents("vevent")) {
+    const event = new ICAL.Event(component);
+    if (!component.hasProperty("dtstart")) continue;
+    if (!event.isRecurring()) {
+      append(event, event.startDate, event.isRecurrenceException() ? event.recurrenceId : undefined);
       continue;
     }
-    if (line === "END:VEVENT") {
-      if (current) {
-        const startLine = Object.entries(current).find(([key]) =>
-          key.startsWith("DTSTART"),
-        );
-        const parsed = startLine ? parseIcsDateTime(startLine[1]) : null;
-        const title = unescapeIcsText(current.SUMMARY ?? "");
-        if (parsed && title) {
-          events.push({
-            id: `ics-${current.UID ?? `${parsed.date}-${parsed.time}-${title}`}`,
-            title,
-            date: parsed.date,
-            time: parsed.time,
-          });
-        }
-      }
-      current = null;
-      continue;
-    }
-    if (!current) continue;
-
-    const key = line.split(":", 1)[0];
-    if (key.startsWith("DTSTART")) {
-      current[key] = icsValue(line);
-    } else if (key === "SUMMARY" || key === "UID") {
-      current[key] = icsValue(line);
+    const iterator = event.iterator();
+    let occurrence: ICAL.Time | undefined;
+    while ((occurrence = iterator.next())) {
+      if (--remaining < 0) throw new Error("Calendar recurrence is too large to expand.");
+      if (occurrence.toJSDate() >= rangeEnd) break;
+      const detail = event.getOccurrenceDetails(occurrence);
+      append(detail.item, detail.startDate, occurrence);
     }
   }
-
-  return events;
+  return [...events.values()];
 }
 
 async function fetchIcsText(url: string): Promise<string> {
@@ -129,7 +133,27 @@ async function fetchIcsText(url: string): Promise<string> {
 export function useEvents() {
   const { events, addEvent, removeEvent, calendarFeedUrl } = useHomeSettings();
   const [feedEvents, setFeedEvents] = useState<CalendarEvent[]>([]);
+  const [today, setToday] = useState(() => fmtDate(new Date()));
   const [calendarFeedError, setCalendarFeedError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = () => {
+      clearTimeout(timer);
+      const now = new Date();
+      setToday(fmtDate(now));
+      const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+      timer = setTimeout(tick, midnight.getTime() - now.getTime() + 10);
+    };
+    tick();
+    window.addEventListener("focus", tick);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("focus", tick);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, []);
 
   useEffect(() => {
     const url = calendarFeedUrl.trim();
@@ -140,29 +164,40 @@ export function useEvents() {
     }
 
     let cancelled = false;
-    void (async () => {
+    let requestId = 0;
+    const refresh = async () => {
+      const current = ++requestId;
       try {
         const text = await fetchIcsText(url);
-        if (cancelled) return;
+        if (cancelled || current !== requestId) return;
         setFeedEvents(parseIcsEvents(text));
         setCalendarFeedError(null);
       } catch (err) {
-        if (cancelled) return;
-        setFeedEvents([]);
+        if (cancelled || current !== requestId) return;
         setCalendarFeedError(
           err instanceof Error ? err.message : "Calendar feed failed",
         );
       }
-    })();
-
+    };
+    // Drop the previous feed immediately; only retain cached entries on a
+    // transient refresh failure for this same URL.
+    setFeedEvents([]);
+    void refresh();
+    const timer = setInterval(() => void refresh(), 15 * 60 * 1000);
+    const onResume = () => { if (!document.hidden) void refresh(); };
+    window.addEventListener("focus", onResume);
+    document.addEventListener("visibilitychange", onResume);
     return () => {
       cancelled = true;
+      clearInterval(timer);
+      window.removeEventListener("focus", onResume);
+      document.removeEventListener("visibilitychange", onResume);
     };
-  }, [calendarFeedUrl]);
+  }, [calendarFeedUrl, today]);
 
   const { todayEvents, upcomingEvents } = useMemo<EventsState>(() => {
-    const now = new Date();
-    const todayStr = fmtDate(now);
+    const now = new Date(`${today}T00:00:00`);
+    const todayStr = today;
     const todayList: CalendarEvent[] = [];
     const upcomingList: CalendarEvent[] = [];
     const combined = [...events, ...feedEvents];
@@ -188,7 +223,7 @@ export function useEvents() {
     upcomingList.sort((a, b) => a.date.localeCompare(b.date) || sortByTime(a, b));
 
     return { todayEvents: todayList, upcomingEvents: upcomingList };
-  }, [events, feedEvents]);
+  }, [events, feedEvents, today]);
 
   return {
     todayEvents,

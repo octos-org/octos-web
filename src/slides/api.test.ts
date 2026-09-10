@@ -32,7 +32,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/api/client", () => ({
+vi.mock("@/api/client", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/api/client")>(),
   buildApiHeaders: vi.fn(() => ({ Authorization: "Bearer TEST" })),
   getToken: vi.fn(() => "TEST"),
   ensureSelectedProfileId: vi.fn(async () => "tenant-a"),
@@ -263,6 +264,8 @@ describe("hydrateSlidesProjectFromSession", () => {
         ],
       }),
     });
+
+    fetchMock.mockResolvedValueOnce(new Response("null", { status: 200 }));
 
     const project = await hydrateSlidesProjectFromSession(sessionId);
     expect(project).not.toBeNull();

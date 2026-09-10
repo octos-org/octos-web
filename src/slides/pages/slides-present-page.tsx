@@ -25,9 +25,10 @@ function SlidesPresentContent() {
   const { project } = useSlides();
   const navigate = useNavigate();
   const location = useLocation();
+  const pendingEdits = Boolean(project?.manualEdits && project.appliedEditRevision !== project.manualEdits.revision);
   const generatedSlides = useMemo(
-    () => (project?.slides ?? []).filter((slide) => !!slide.thumbnailUrl),
-    [project?.slides],
+    () => pendingEdits ? [] : (project?.slides ?? []).filter((slide) => !!slide.thumbnailUrl),
+    [project?.slides, pendingEdits],
   );
   const initialIndex =
     typeof location.state === "object" &&

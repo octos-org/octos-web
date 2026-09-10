@@ -23,6 +23,13 @@ export interface SlideVersion {
   timestamp: number;
 }
 
+export interface SlideEditDocument {
+  revision: string;
+  savedAt: string;
+  baseGeneratedAt: string | null;
+  slides: Slide[];
+}
+
 export interface SlidesProject {
   id: string;
   title: string;
@@ -53,6 +60,8 @@ export interface SlidesProject {
   versions: SlideVersion[];
   /** Manifest generatedAt — used to detect content changes when file paths stay the same */
   manifestGeneratedAt?: string;
+  manualEdits?: SlideEditDocument;
+  appliedEditRevision?: string;
   /** Legacy: previously linked back to a `StudioProject` for slides
    *  generated from the deprecated Studio feature. The Studio feature
    *  was removed in M9-β-2 along with the `studio/*` route stub; these

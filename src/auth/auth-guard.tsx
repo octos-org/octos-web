@@ -4,7 +4,7 @@ import { useAuth } from "./auth-context";
 const skipAuth = import.meta.env.VITE_SKIP_AUTH === "true";
 
 export function AuthGuard() {
-  const { token, loading } = useAuth();
+  const { token, loading, authError, revalidate } = useAuth();
   const location = useLocation();
 
   // Only skip auth when explicitly configured via VITE_SKIP_AUTH=true
@@ -17,11 +17,20 @@ export function AuthGuard() {
     return (
       <div className="workbench-shell flex h-screen flex-col items-center justify-center gap-4 px-4">
         <img
-          src="/images/octos-logo-color.svg"
+          src={`${import.meta.env.BASE_URL}images/octos-logo-color.svg`}
           alt="Octos"
           className="h-10 w-auto animate-pulse select-none"
         />
         <span className="text-sm text-muted">Loading…</span>
+      </div>
+    );
+  }
+
+  if (token && authError) {
+    return (
+      <div className="workbench-shell flex h-screen flex-col items-center justify-center gap-4 px-4">
+        <p role="alert">{authError}</p>
+        <button type="button" onClick={() => void revalidate()} className="rounded-lg border border-border px-4 py-2">Retry</button>
       </div>
     );
   }

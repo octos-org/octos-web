@@ -22,7 +22,8 @@ function shouldHydrateProject(project: SlidesProject | undefined): boolean {
 }
 
 function SlidesEditorContent() {
-  const { project, save, updateSlide, removeSlide, moveSlide } = useSlides();
+  const { project, save, updateSlide, removeSlide, moveSlide, editError, savingEdits, renderingEdits, retryEdits } = useSlides();
+  const pendingEdits = Boolean(project?.manualEdits && project.appliedEditRevision !== project.manualEdits.revision);
   const [currentIndex, setCurrentIndex] = useState(0);
   // Codex round-3 BLOCK D.b: bumped by the editor layout's retry
   // affordance after a scaffold failure. SlidesChat watches this in
@@ -60,19 +61,28 @@ function SlidesEditorContent() {
     <SlidesEditorLayout
       onRetryScaffold={handleRetryScaffold}
       previewPanel={
+        <div className="flex h-full min-h-0 flex-col">
+          {editError && <p role="alert" className="px-4 py-2 text-sm text-red-400">{editError}</p>}
+          {(pendingEdits || savingEdits) && (
+            <div className="flex items-center gap-3 px-4 py-2 text-sm" role="status">
+              <span>{savingEdits ? "Saving edits…" : renderingEdits ? "Edits saved. Regenerating the presentation…" : "Edits saved. Waiting for updated previews and PPTX."}</span>
+              {pendingEdits && <button type="button" className="underline" disabled={savingEdits || renderingEdits} onClick={retryEdits}>Retry regeneration</button>}
+            </div>
+          )}
         <SlidePreview
-          slides={project?.slides ?? []}
+          slides={pendingEdits ? (project?.slides ?? []).map((slide) => ({ ...slide, thumbnailUrl: undefined })) : project?.slides ?? []}
           currentIndex={currentIndex}
           onIndexChange={setCurrentIndex}
-          pptxUrl={project?.pptxUrl}
-          onPresent={handlePresent}
+          pptxUrl={pendingEdits ? undefined : project?.pptxUrl}
+          onPresent={pendingEdits ? undefined : handlePresent}
           version={project?.manifestGeneratedAt}
           // Manual edit (2026-08 audit #320): wire the context-backed
           // slide CRUD that previously had no UI consumers.
           onUpdate={updateSlide}
-          onRemove={removeSlide}
-          onMove={moveSlide}
+          onRemove={savingEdits ? undefined : removeSlide}
+          onMove={savingEdits ? undefined : moveSlide}
         />
+        </div>
       }
       chatPanel={
         project ? (

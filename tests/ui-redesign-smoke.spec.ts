@@ -171,6 +171,8 @@ async function installWorkbenchMocks(
     localStorage.setItem("octos_session_token", "ui-smoke-token");
     localStorage.setItem("octos_auth_token", "ui-smoke-token");
     localStorage.setItem("selected_profile", "admin");
+    localStorage.setItem("octos_identity_cache_owner", "profile:admin");
+    localStorage.setItem("octos_home_owner", "admin");
     localStorage.setItem(
       "octos-slides-projects",
       JSON.stringify([

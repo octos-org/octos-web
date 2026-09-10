@@ -1,10 +1,8 @@
 import { API_BASE, TOKEN_KEY, ADMIN_TOKEN_KEY } from "@/lib/constants";
 import { getSettings } from "@/hooks/use-settings";
 
-// Session metadata is identity-bound but can be reconstructed from the
-// authenticated backend. Clear it whenever the token is cleared so a second
-// account using the same browser never inherits the previous account's
-// launcher cards, current-session pointer, or session decorations.
+// Archive private caches under their verified owner on account changes.
+// Active keys are empty until /me confirms whose data may be restored.
 const IDENTITY_BOUND_SESSION_STORAGE_KEYS = [
   "octos_session_titles",
   "octos_session_stats",
@@ -13,7 +11,84 @@ const IDENTITY_BOUND_SESSION_STORAGE_KEYS = [
   "octos_deleted_sessions",
   "octos_current_session",
   "octos_task_watcher_sessions_v1",
+  "octos-slides-projects",
+  "octos-sites-projects",
+  "octos-project-flags",
+  "octos-file-decorations",
 ] as const;
+
+const IDENTITY_BOUND_PREFIXES = [
+  "octos_home_", "octos_learning_", "octos-learning-", "learn:",
+  "octos-recovery-lock:v1:",
+];
+const CACHE_OWNER_KEY = "octos_identity_cache_owner";
+const CACHE_PREFIX = "octos_identity_cache:v1:";
+let identityGeneration = 0;
+let observedToken: string | null = typeof localStorage === "undefined" ? null : getToken();
+
+export function getIdentityGeneration(): number { return identityGeneration; }
+
+function clearIdentityCache(): void {
+  const keys = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index));
+  const entries: Array<[string, string]> = [];
+  for (const key of keys) {
+    if (!key) continue;
+    if ((IDENTITY_BOUND_SESSION_STORAGE_KEYS as readonly string[]).includes(key)
+      || IDENTITY_BOUND_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+      const value = localStorage.getItem(key);
+      if (value !== null) entries.push([key, value]);
+      localStorage.removeItem(key);
+    }
+  }
+  // Keep local-only lessons/drafts recoverable for their verified owner.
+  // Unowned legacy data is quarantined; it is never assigned to a new login.
+  const owner = localStorage.getItem(CACHE_OWNER_KEY) ?? `unowned:${crypto.randomUUID()}`;
+  for (const [key, value] of entries) {
+    localStorage.setItem(`${CACHE_PREFIX}${encodeURIComponent(owner)}:${key}`, value);
+  }
+  localStorage.removeItem(CACHE_OWNER_KEY);
+  localStorage.removeItem("selected_profile");
+}
+
+/** Called only after /me has verified the owner of the current credentials. */
+export function restoreIdentityCache(owner: string): boolean {
+  if (localStorage.getItem(CACHE_OWNER_KEY) === owner) return false;
+  clearIdentityCache();
+  const prefix = `${CACHE_PREFIX}${encodeURIComponent(owner)}:`;
+  const keys = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index));
+  for (const key of keys) {
+    if (!key?.startsWith(prefix)) continue;
+    const value = localStorage.getItem(key);
+    localStorage.removeItem(key);
+    if (value !== null) localStorage.setItem(key.slice(prefix.length), value);
+  }
+  localStorage.setItem(CACHE_OWNER_KEY, owner);
+  window.dispatchEvent(new CustomEvent("crew:token_cleared"));
+  window.dispatchEvent(new CustomEvent("crew:projects_changed"));
+  return true;
+}
+
+function announceIdentityChange(): void {
+  identityGeneration++;
+  selectedProfilePromise = null;
+  observedToken = getToken();
+  if (typeof window !== "undefined") {
+    // Also resets the existing identity-bound stores and transports.
+    window.dispatchEvent(new CustomEvent("crew:token_cleared"));
+    window.dispatchEvent(new CustomEvent("crew:identity_changed"));
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if ((event.key === null || event.key === TOKEN_KEY || event.key === ADMIN_TOKEN_KEY)
+      && getToken() !== observedToken) {
+      // The writing tab cleared the old cache before publishing its token.
+      // Never erase the new owner's shared data from an old tab.
+      announceIdentityChange();
+    }
+  });
+}
 
 function inferProfileIdFromHost(): string | null {
   if (typeof window === "undefined") return null;
@@ -43,6 +118,8 @@ export function getToken(): string | null {
 }
 
 export function setToken(token: string, isAdmin = false) {
+  const changed = getToken() !== token;
+  if (changed) clearIdentityCache();
   // Issue #111.2: when writing the new token, clear the OTHER slot
   // first. Pre-fix, admin-token login wrote `octos_auth_token` but
   // `getToken()` (which prefers `octos_session_token`) kept returning
@@ -56,19 +133,17 @@ export function setToken(token: string, isAdmin = false) {
     localStorage.removeItem(ADMIN_TOKEN_KEY);
     localStorage.setItem(TOKEN_KEY, token);
   }
+  if (changed) announceIdentityChange();
 }
 
 export function clearToken() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(ADMIN_TOKEN_KEY);
-  for (const key of IDENTITY_BOUND_SESSION_STORAGE_KEYS) {
-    localStorage.removeItem(key);
-  }
+  clearIdentityCache();
   // Issue #111.3: clear `selected_profile` on token change so a
   // logout (or admin-login that follows a different account's
   // session) does not surface the prior profile id into the next
   // session's headers.
-  localStorage.removeItem("selected_profile");
   // codex web#268 r2 P1: an ORDINARY logout clears the token without
   // firing `crew:auth_expired`, so identity-bound singletons (the
   // sessionless auxiliary bridge) would survive into the next login
@@ -76,13 +151,7 @@ export function clearToken() {
   // identity. Broadcast every token clear so they tear down with the
   // token. Event-based on purpose — importing the runtime here would
   // cycle (runtime → bridge → client).
-  if (typeof window !== "undefined") {
-    try {
-      window.dispatchEvent(new CustomEvent("crew:token_cleared"));
-    } catch {
-      // best-effort
-    }
-  }
+  announceIdentityChange();
 }
 
 export function getSelectedProfileId(includeStoredFallback = true): string | null {
@@ -136,6 +205,7 @@ export async function ensureSelectedProfileId(): Promise<string | null> {
 
   selectedProfilePromise = (async () => {
     const token = getToken();
+    const generation = getIdentityGeneration();
     if (!token) return null;
 
     try {
@@ -144,6 +214,7 @@ export async function ensureSelectedProfileId(): Promise<string | null> {
       });
       if (!resp.ok) return null;
       const payload = await resp.json();
+      if (generation !== getIdentityGeneration() || token !== getToken()) return null;
       const profileId = extractProfileIdFromPayload(payload);
       if (profileId) {
         setSelectedProfileId(profileId);
@@ -151,7 +222,7 @@ export async function ensureSelectedProfileId(): Promise<string | null> {
       }
       return null;
     } finally {
-      selectedProfilePromise = null;
+      if (generation === getIdentityGeneration()) selectedProfilePromise = null;
     }
   })();
 
@@ -180,6 +251,8 @@ export async function request<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
+  const identity = getIdentityGeneration();
+  const requestToken = getToken();
   const settings = getSettings();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -201,6 +274,9 @@ export async function request<T>(
     ...options,
     headers,
   });
+  if (identity !== getIdentityGeneration() || requestToken !== getToken()) {
+    throw new ApiError(409, "Account changed while the request was in flight. Please retry.");
+  }
 
   if (!resp.ok) {
     // ───── Auth-flow-only 401/403 reaper (M12 Phase D-4) ─────
@@ -236,7 +312,11 @@ export async function request<T>(
       clearToken();
       // Redirect to login unless already there
       if (!window.location.pathname.endsWith("/login")) {
-        window.location.href = "/login?redirect=" + encodeURIComponent(window.location.pathname + window.location.search);
+        const base = import.meta.env.BASE_URL;
+        const pathname = window.location.pathname;
+        const destination = (base !== "/" && pathname.startsWith(base)
+          ? `/${pathname.slice(base.length)}` : pathname) + window.location.search + window.location.hash;
+        window.location.href = `${base}login?redirect=${encodeURIComponent(destination)}`;
       }
     }
     const text = await resp.text();
@@ -248,6 +328,9 @@ export async function request<T>(
   }
 
   const text = await resp.text();
+  if (identity !== getIdentityGeneration() || requestToken !== getToken()) {
+    throw new ApiError(409, "Account changed while the response was loading. Please retry.");
+  }
   if (!text.trim()) {
     return undefined as T;
   }
@@ -260,6 +343,8 @@ export async function requestBlob(
   path: string,
   options: RequestInit = {},
 ): Promise<Blob> {
+  const identity = getIdentityGeneration();
+  const requestToken = getToken();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(options.headers as Record<string, string>),
@@ -273,7 +358,11 @@ export async function requestBlob(
     const text = await resp.text();
     throw new ApiError(resp.status, errorBodyMessage(resp.status, text));
   }
-  return resp.blob();
+  const blob = await resp.blob();
+  if (identity !== getIdentityGeneration() || requestToken !== getToken()) {
+    throw new ApiError(409, "Account changed while the response was loading. Please retry.");
+  }
+  return blob;
 }
 
 /**

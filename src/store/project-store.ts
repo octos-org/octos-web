@@ -201,10 +201,12 @@ function subscribe(listener: () => void): () => void {
   const onTokenCleared = () => notifyProjectsChanged();
   window.addEventListener("storage", onStorage);
   window.addEventListener("crew:token_cleared", onTokenCleared);
+  window.addEventListener("crew:projects_changed", onTokenCleared);
   return () => {
     listeners.delete(listener);
     window.removeEventListener("storage", onStorage);
     window.removeEventListener("crew:token_cleared", onTokenCleared);
+    window.removeEventListener("crew:projects_changed", onTokenCleared);
   };
 }
 

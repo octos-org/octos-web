@@ -1,4 +1,4 @@
-import { buildApiHeaders } from "@/api/client";
+import { ApiError, buildApiHeaders, request } from "@/api/client";
 import type { ContentEntry } from "@/api/content";
 import { buildFileUrl } from "@/api/files";
 // The slides workspace-contract view (slug presence, ready/dirty
@@ -14,7 +14,45 @@ import {
   type SessionWorkspaceContractInfo,
 } from "@/api/sessions";
 import { API_BASE } from "@/lib/constants";
-import type { Slide, SlidesProject } from "./types";
+import type { Slide, SlideEditDocument, SlidesProject } from "./types";
+
+function editDocumentUrl(sessionId: string, slug: string): string {
+  return `/api/slides/edits?${new URLSearchParams({ session_id: sessionId, slug })}`;
+}
+
+export async function fetchSlideEdits(sessionId: string, slug: string): Promise<SlideEditDocument | null> {
+  try { return await request<SlideEditDocument | null>(editDocumentUrl(sessionId, slug)); }
+  catch (err) {
+    // Older servers can still preview decks, but PUT will visibly reject edits.
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+export function saveSlideEdits(project: SlidesProject, slides: Slide[]): Promise<SlideEditDocument> {
+  if (!project.slug || !project.scaffolded) return Promise.reject(new Error("Create the slides workspace before editing."));
+  return request(editDocumentUrl(project.id, project.slug), {
+    method: "PUT",
+    body: JSON.stringify({
+      expectedRevision: project.manualEdits?.revision ?? null,
+      baseGeneratedAt: project.manifestGeneratedAt ?? null,
+      slides,
+    }),
+  });
+}
+
+export async function slideEditsAreRendered(
+  slug: string, document: SlideEditDocument, manifest: SlidesRenderManifest, files: SlidesFileEntry[],
+): Promise<boolean> {
+  if (manifest.slides.length !== document.slides.length || !manifest.outFile) return false;
+  const savedAt = Date.parse(document.savedAt);
+  const outputs = [...manifest.slides.map((slide) => slide.path), manifest.outFile];
+  if (!outputs.every((path) => files.some((file) => file.path === path && file.size > 0 && Date.parse(file.modified) >= savedAt))) return false;
+  const marker = files.find((file) => file.filename === "manual-edits-applied.json" && fileMatchesSlidesDir(file, `slides/${slug}`));
+  if (!marker) return false;
+  const applied = await request<{ revision?: string }>(buildFileUrl(marker.path), { cache: "no-store" });
+  return applied.revision === document.revision;
+}
 
 export interface SlidesFileEntry {
   filename: string;
@@ -229,7 +267,10 @@ function synthesizeManifestFromImages(
     version: 0,
     generatedAt: `${newestMtime || "0"}|${totalSize}`,
     slideDir: expectedOutput,
-    outFile: "",
+    outFile: files
+      .filter((file) => /\.pptx$/i.test(file.filename)
+        && (fileMatchesSlidesDir(file, `slides/${slug}`) || fileMatchesSlidesDir(file, `skill-output/slides/${slug}`)))
+      .sort((a, b) => b.modified.localeCompare(a.modified))[0]?.path ?? "",
     slideCount: matches.length,
     slides: matches.map(({ index, file }) => ({
       index,
@@ -355,12 +396,14 @@ async function buildSlidesProjectFromFiles(
   if (!slug) return null;
 
   const manifest = await fetchSlidesManifest(slug, files);
+  const edits = await fetchSlideEdits(sessionId, slug);
+  const editsRendered = edits && manifest ? await slideEditsAreRendered(slug, edits, manifest, files) : false;
   const slides: Slide[] =
     manifest?.slides.map((slide, index) => ({
       index,
-      title: `Slide ${index + 1}`,
-      notes: "",
-      layout: index === 0 ? "title" : "content",
+      title: editsRendered ? edits!.slides[index].title : `Slide ${index + 1}`,
+      notes: editsRendered ? edits!.slides[index].notes : "",
+      layout: editsRendered ? edits!.slides[index].layout : index === 0 ? "title" : "content",
       thumbnailUrl: slide.path,
     })) ?? [];
 
@@ -378,7 +421,9 @@ async function buildSlidesProjectFromFiles(
     updatedAt: Date.now(),
     scaffolded: true,
     slug,
-    slides,
+    slides: edits && !editsRendered ? edits.slides : slides,
+    ...(edits ? { manualEdits: edits } : {}),
+    ...(editsRendered ? { appliedEditRevision: edits!.revision } : {}),
     pptxPath,
     pptxUrl: pptxPath ? buildFileUrl(pptxPath) : undefined,
     template: "business",

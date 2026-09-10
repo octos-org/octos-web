@@ -6,6 +6,7 @@ import { SlidesProvider } from "./slides-context";
 
 const apiMocks = vi.hoisted(() => ({
   fetchSlidesManifest: vi.fn(),
+  fetchSlideEdits: vi.fn().mockResolvedValue(null),
   listSlidesFiles: vi.fn(),
 }));
 const profileMocks = vi.hoisted(() => ({
