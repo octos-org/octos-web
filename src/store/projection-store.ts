@@ -545,6 +545,14 @@ export function hasCmid(storeKey: string, clientMessageId: string): boolean {
   return stateFor(storeKey).cmidToThread.has(clientMessageId);
 }
 
+/** turn/start uses the optimistic ID as turn_id. Some Core versions omit
+ * client_message_id on the persisted user reflection; require an actual user
+ * row for that exact turn before settling the overlay. */
+export function hasUserForTurn(storeKey: string, turnId: string): boolean {
+  return getProjection(storeKey).threads.some((thread) =>
+    thread.turn_id === turnId && thread.user !== null);
+}
+
 export function threadIdForCmid(storeKey: string, clientMessageId: string): string | undefined {
   return stateFor(storeKey).cmidToThread.get(clientMessageId);
 }

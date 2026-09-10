@@ -20,6 +20,7 @@ import type {
 
 export interface UserView {
   seq: number;
+  persisted_at?: string;
   client_message_id?: string;
   text: string;
   files: ReadonlyArray<ProjectionFileView>;
@@ -258,6 +259,7 @@ function applyEnvelope(state: MutableThread, envelope: ProjectionEnvelopeV2): vo
             ? { client_message_id: envelope.client_message_id }
             : {}),
           text: payload.data.text,
+          persisted_at: payload.data.persisted_at,
           files: payload.data.files.map((file) => toFile(file, envelope.seq)),
         };
       }

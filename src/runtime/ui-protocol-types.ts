@@ -927,6 +927,7 @@ export interface SessionHydrateResult {
   messages?: HydratedMessage[];
   replayed_envelopes?: unknown[];
   replayed_tool_envelopes?: unknown[];
+  replayed_projection_envelopes?: unknown[];
   /** Canonical snapshot carrier. */
   projection_envelopes?: unknown[];
   projection_snapshot?: {

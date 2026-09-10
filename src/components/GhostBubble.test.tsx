@@ -55,6 +55,25 @@ afterEach(() => {
 });
 
 describe("GhostBubble", () => {
+  it("hides a confirmed optimistic row while preserving its later error affordance", () => {
+    const harness = mount(<GhostBubble clientMessageId="confirmed" text="duplicate" files={[]}
+      sessionId={sessionId} settled onSettle={() => {}} />);
+    expect(harness.container.textContent).toBe("");
+    harness.unmount();
+  });
+
+  it("settles a user reflection by the exact turn ID when Core omits cmid", () => {
+    const onSettle = vi.fn();
+    const harness = mount(<GhostBubble clientMessageId="client-turn" text="hello" files={[]}
+      sessionId={sessionId} onSettle={onSettle} />);
+    const envelope = canonicalUser("ignored");
+    delete envelope.client_message_id;
+    envelope.turn_id = "client-turn";
+    act(() => { ProjectionStore.ingest(sessionId, envelope); });
+    expect(onSettle).toHaveBeenCalledOnce();
+    harness.unmount();
+  });
+
   it("renders the optimistic user row without creating a legacy thread", () => {
     const harness = mount(
       <GhostBubble

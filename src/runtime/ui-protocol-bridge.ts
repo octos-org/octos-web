@@ -1055,6 +1055,9 @@ export function guardSessionHydrate(p: unknown): SessionHydrateResult | null {
   const replayedToolEnvelopes = Array.isArray(p.replayed_tool_envelopes)
     ? p.replayed_tool_envelopes.slice()
     : undefined;
+  const replayedProjectionEnvelopes = Array.isArray(p.replayed_projection_envelopes)
+    ? p.replayed_projection_envelopes.slice()
+    : undefined;
   const projectionEnvelopes = Array.isArray(p.projection_envelopes)
     ? p.projection_envelopes.slice()
     : undefined;
@@ -1090,6 +1093,9 @@ export function guardSessionHydrate(p: unknown): SessionHydrateResult | null {
       : {}),
     ...(replayedToolEnvelopes !== undefined
       ? { replayed_tool_envelopes: replayedToolEnvelopes }
+      : {}),
+    ...(replayedProjectionEnvelopes !== undefined
+      ? { replayed_projection_envelopes: replayedProjectionEnvelopes }
       : {}),
     ...(projectionEnvelopes !== undefined
       ? { projection_envelopes: projectionEnvelopes }
@@ -2534,7 +2540,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   ): Promise<SessionHydrateResult | null> {
     try {
       const raw = await this.request<unknown>(METHODS.SESSION_HYDRATE, {
-        session_id: this.requireSessionId(),
+        session_id: this.requireScopedSessionId(),
         include,
       });
       const guarded = guardSessionHydrate(raw);
@@ -2995,6 +3001,7 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
         session_id: this.requireSessionId(),
       };
       if (this.profileId) params.profile_id = this.profileId;
+      if (this.topicScope) params.topic = this.topicScope;
       // #245 P2: on a REOPEN (not the initial open), ask the server to replay
       // everything after the last durable cursor we saw, so events emitted
       // during the disconnect stream back through the normal live path. The
@@ -3096,6 +3103,20 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
         this.latchReason = "auth_rejected";
         this.setState("error");
         this.rejectAllPending(new BridgeStoppedError("auth permission denied"));
+        return;
+      }
+      // A profile database owned by another process cannot be repaired by
+      // reconnecting. Preserve Core's diagnosis instead of replacing it with
+      // the startup deadline's generic network/origin message (#351).
+      if (
+        this.startupReject &&
+        err instanceof BridgeRpcError &&
+        typeof err.data === "object" &&
+        err.data !== null &&
+        "kind" in err.data &&
+        err.data.kind === "data_dir_locked"
+      ) {
+        this.failStartup(new BridgeStartupError("connection", err.message));
         return;
       }
       this.scheduleReconnect();

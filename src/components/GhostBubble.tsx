@@ -133,7 +133,7 @@ export function GhostBubble({
   failure,
   settled = false,
   onRetry,
-}: GhostBubbleProps): React.ReactElement {
+}: GhostBubbleProps): React.ReactElement | null {
   // attached_at is captured ONCE at mount so re-renders (e.g. from a
   // projection-store notify) don't bump the displayed timestamp. We
   // use the lazy-init form of `useState` so `Date.now()` is invoked
@@ -165,7 +165,9 @@ export function GhostBubble({
     // the same microtask as the send dispatch). Settling synchronously here
     // is safe — the parent records the settled state and removes it after a
     // successful terminal.
-    if (ProjectionStore.hasCmid(storeKey, clientMessageId)) {
+    const confirmed = () => ProjectionStore.hasCmid(storeKey, clientMessageId)
+      || ProjectionStore.hasUserForTurn(storeKey, clientMessageId);
+    if (confirmed()) {
       settledRef.current = true;
       onSettle();
       return;
@@ -173,7 +175,7 @@ export function GhostBubble({
 
     const unsubscribe = ProjectionStore.subscribe(() => {
       if (settledRef.current) return;
-      if (ProjectionStore.hasCmid(storeKey, clientMessageId)) {
+      if (confirmed()) {
         settledRef.current = true;
         unsubscribe();
         onSettle();
@@ -300,6 +302,8 @@ export function GhostBubble({
       </div>
     );
   }
+
+  if (settled && !failureMessage) return null;
 
   return (
     <UserBubbleShell

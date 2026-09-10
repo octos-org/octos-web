@@ -83,6 +83,8 @@ import { getToken } from "@/api/client";
 // ---------------------------------------------------------------------------
 
 function formatTimestamp(ts: number): string {
+  // Projection sequence numbers are ordering coordinates, not wall time.
+  if (!Number.isFinite(ts) || ts <= 0) return "";
   const d = new Date(ts);
   const pad = (n: number) => String(n).padStart(2, "0");
   const hhmm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
