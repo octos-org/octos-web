@@ -561,14 +561,14 @@ test.describe("UI redesign shell smoke", () => {
         });
       });
 
-    expect(await readMode()).toEqual([
+    await expect.poll(readMode).toEqual([
       { opacity: "1", pointerEvents: "auto" },
       { opacity: "0", pointerEvents: "none" },
     ]);
 
     await page.mouse.click(1320, 820);
     await page.waitForTimeout(100);
-    expect(await readMode()).toEqual([
+    await expect.poll(readMode).toEqual([
       { opacity: "1", pointerEvents: "auto" },
       { opacity: "0", pointerEvents: "none" },
     ]);
