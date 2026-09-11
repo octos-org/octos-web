@@ -4,6 +4,8 @@
 
 At inspection, both the isolated app and `/api/auth/me` with the current synthetic test account returned HTTP 200. Two older synthetic account tokens returned 401. The user's exact failing request and token were not available, so those observations do not establish token expiry or a server outage as the cause of their error. The matching local Safari app tab was reloaded, including after deployment of the fix; its rendered login state could not be directly inspected through Safari automation.
 
+The later [Safari investigation](2026-09-10-malformed-auth.md) accessed the existing tab's rendered text and confirmed a malformed saved credential rejected by the browser's HTTP-header validation. That root cause is tracked separately in #366 and supersedes the initial uncertainty; this record retains the narrower transient-recovery work and its original evidence.
+
 The reproducible product gap is that one temporary validation failure leaves the app on the error page until manual intervention, even after the service is reachable again. The page also lacked a route to choose another login.
 
 ## Change
