@@ -117,7 +117,23 @@ export function getToken(): string | null {
   );
 }
 
+function tokenFitsAuthHeader(token: string): boolean {
+  if (!token.trim()) return false;
+  try {
+    new Headers({ Authorization: `Bearer ${token}` });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function setToken(token: string, isAdmin = false) {
+  // Reject a malformed paste before replacing a working credential or moving
+  // its local work into the account archive. Fetch otherwise throws before
+  // any request is sent, which used to look like a server outage.
+  if (!tokenFitsAuthHeader(token)) {
+    throw new Error("That token has an invalid format. Paste only the token value.");
+  }
   const changed = getToken() !== token;
   if (changed) clearIdentityCache();
   // Issue #111.2: when writing the new token, clear the OTHER slot
@@ -253,6 +269,11 @@ export async function request<T>(
 ): Promise<T> {
   const identity = getIdentityGeneration();
   const requestToken = getToken();
+  if (requestToken && !tokenFitsAuthHeader(requestToken)) {
+    // The auth provider handles this like a rejected saved credential and
+    // restores access to sign-in; do not classify it as a network failure.
+    throw new ApiError(401, "The saved token has an invalid format. Sign in again.");
+  }
   const settings = getSettings();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -266,7 +287,7 @@ export async function request<T>(
     buildApiHeaders({}, profileHeaderOverride, includeStoredProfileFallback),
   );
   // Pass search engine preference (not sensitive)
-  headers["X-Search-Engine"] = settings.searchEngine;
+  if (!isAuthPath) headers["X-Search-Engine"] = settings.searchEngine;
   // Sensitive keys (serperApiKey, crawl4aiUrl) are stored server-side
   // via profile config — not sent per-request in headers.
 

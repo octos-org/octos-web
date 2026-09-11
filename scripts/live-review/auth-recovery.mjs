@@ -64,6 +64,31 @@ try{
     expect(actualRejection).toBe(true);
     results.push({case:'invalid credentials',actualRejection:401,signInShown:true});
   }finally{await invalid.close();}
+
+  const malformed=await browser.newContext();
+  try{
+    await malformed.addInitScript(()=>{
+      if(!location.pathname.endsWith('/login'))localStorage.setItem('octos_auth_token','invalid\n凭据');
+    });
+    const repaired=await malformed.newPage();
+    repaired.on('pageerror',error=>errors.push(error.message));
+    let publicOptionsLoaded=false;
+    repaired.on('response',response=>{
+      if(new URL(response.url()).pathname==='/api/auth/status'&&response.status()===200)publicOptionsLoaded=true;
+    });
+    await repaired.goto(base+'chat');
+    await expect(repaired).toHaveURL(/\/app\/login\?redirect=/);
+    await expect(repaired.getByTestId('token-input')).toBeVisible();
+    expect(publicOptionsLoaded).toBe(true);
+    await repaired.getByTestId('token-input').fill('invalid\n凭据');
+    await repaired.getByTestId('login-button').click();
+    await expect(repaired.getByText('That token has an invalid format. Paste only the token value.')).toBeVisible();
+    expect(await repaired.evaluate(()=>localStorage.getItem('octos_auth_token')||localStorage.getItem('octos_session_token'))).toBeNull();
+    await repaired.getByTestId('token-input').fill(c.a.token);
+    await repaired.getByTestId('login-button').click();
+    await expect(repaired.getByTestId('chat-input')).toBeVisible();
+    results.push({case:'malformed saved and pasted credentials',publicOptionsLoaded,invalidPasteRejected:true,actualSignInRecovered:true});
+  }finally{await malformed.close();}
   expect(errors).toEqual([]);
   const result={result:'PASS',browser:engine.name(),runtimeWeb:process.env.OCTOS_LIVE_REVIEW_WEB_COMMIT??'unspecified',runner:(await import('node:os')).hostname(),faultInjection:'Abort validation requests only; successful authentication and rejection use the real server',results,pageErrors:errors};
   await writeFile(new URL('results.json',root),JSON.stringify(result,null,2));
