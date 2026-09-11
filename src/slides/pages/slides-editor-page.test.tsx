@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import type { ReactNode } from "react";
@@ -78,6 +78,26 @@ describe("SlidesEditorPage hydration", () => {
       expect(apiMocks.hydrateSlidesProjectFromSession).toHaveBeenCalledWith("deck-1");
     });
     expect(profileMocks.getMyProfileStatus).not.toHaveBeenCalled();
+  });
+
+  it("does not rehydrate an incomplete scaffold on unrelated renders", async () => {
+    const project = { id: "deck-loop", title: "Incomplete deck", createdAt: 1, updatedAt: 1,
+      scaffolded: true, slug: "deck-loop", slides: [], template: "business", tags: [], versions: [] };
+    upsertSlidesProject(project);
+    contextMocks.currentProject = project;
+    let resolveHydration!: (value: typeof project) => void;
+    apiMocks.hydrateSlidesProjectFromSession
+      .mockReturnValueOnce(new Promise(resolve => { resolveHydration = resolve; }))
+      .mockReturnValue(new Promise(() => {}));
+    const tree = <MemoryRouter initialEntries={["/slides/deck-loop"]}><Routes>
+      <Route path="/slides/:id" element={<SlidesEditorPage />} />
+    </Routes></MemoryRouter>;
+    const view = render(tree);
+    await act(async () => { resolveHydration(project); });
+    view.rerender(<MemoryRouter initialEntries={["/slides/deck-loop"]}><Routes>
+      <Route path="/slides/:id" element={<SlidesEditorPage />} />
+    </Routes></MemoryRouter>);
+    expect(apiMocks.hydrateSlidesProjectFromSession).toHaveBeenCalledTimes(1);
   });
 
   for (const [route, Page] of [["/slides/:id", SlidesEditorPage], ["/slides/:id/present", SlidesPresentPage]] as const) {

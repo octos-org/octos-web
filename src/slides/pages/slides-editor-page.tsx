@@ -104,6 +104,9 @@ export function SlidesEditorPage() {
   useEffect(() => {
     if (!id || !needsHydration) return;
     const sessionId = id;
+    // The store getter deserializes a new object each render. Read the fallback
+    // here so local loading state cannot retrigger hydration of incomplete decks.
+    const cachedProject = getSlidesProject(sessionId);
 
     let stopped = false;
     setHydrating(true);
@@ -115,7 +118,7 @@ export function SlidesEditorPage() {
         if (stopped) return;
 
         if (!nextProject) {
-          if (project) return;
+          if (cachedProject) return;
           setHydrateError("Slides session unavailable.");
           return;
         }
@@ -142,7 +145,7 @@ export function SlidesEditorPage() {
     return () => {
       stopped = true;
     };
-  }, [id, navigate, needsHydration, project]);
+  }, [id, navigate, needsHydration]);
 
   if (!id) return null;
 

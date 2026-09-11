@@ -449,6 +449,8 @@ test.describe("UI redesign shell smoke", () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/", { waitUntil: "networkidle" });
 
+    // Network idle can precede the authenticated shell replacing its loading state.
+    await expect(page.locator(".studio-glass-nav")).toBeVisible();
     const offscreenControls = await page.evaluate(() => {
       const controls = Array.from(
         document.querySelectorAll(".studio-glass-nav a, .studio-glass-nav button"),
@@ -484,6 +486,7 @@ test.describe("UI redesign shell smoke", () => {
     await page.setViewportSize({ width: 728, height: 694 });
     await page.goto("/", { waitUntil: "networkidle" });
 
+    await expect(page.locator(".studio-glass-nav")).toBeVisible();
     const geometry = await page.evaluate(() => {
       const nav = document.querySelector(".studio-glass-nav");
       const brandIcon = nav?.querySelector("img");
