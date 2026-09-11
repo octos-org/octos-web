@@ -1,0 +1,67 @@
+{
+  "result": "PASS",
+  "browser": "webkit",
+  "runtimeWeb": "ea8ce95",
+  "runner": "macmini-3-249.local",
+  "operation": "Read existing conversation and reload twice; no messages submitted",
+  "observations": [
+    {
+      "cycle": 0,
+      "expectedThreadOrder": [
+        "fd219af7-8052-45da-a932-5ec696bb606e",
+        "5bfcd36a-73cc-459c-958d-66a122992231",
+        "4370d413-9eaf-4241-8754-23013dbd4cfb",
+        "58bf92b6-9f59-4f67-8e96-6973f1c26b96",
+        "83308003-9531-40c9-ab65-6f42c700157d",
+        "d81ca7b5-3774-4d1c-84eb-055d2a717f4b"
+      ],
+      "actualThreadOrder": [
+        "fd219af7-8052-45da-a932-5ec696bb606e",
+        "5bfcd36a-73cc-459c-958d-66a122992231",
+        "4370d413-9eaf-4241-8754-23013dbd4cfb",
+        "58bf92b6-9f59-4f67-8e96-6973f1c26b96",
+        "83308003-9531-40c9-ab65-6f42c700157d",
+        "d81ca7b5-3774-4d1c-84eb-055d2a717f4b"
+      ]
+    },
+    {
+      "cycle": 1,
+      "expectedThreadOrder": [
+        "fd219af7-8052-45da-a932-5ec696bb606e",
+        "5bfcd36a-73cc-459c-958d-66a122992231",
+        "4370d413-9eaf-4241-8754-23013dbd4cfb",
+        "58bf92b6-9f59-4f67-8e96-6973f1c26b96",
+        "83308003-9531-40c9-ab65-6f42c700157d",
+        "d81ca7b5-3774-4d1c-84eb-055d2a717f4b"
+      ],
+      "actualThreadOrder": [
+        "fd219af7-8052-45da-a932-5ec696bb606e",
+        "5bfcd36a-73cc-459c-958d-66a122992231",
+        "4370d413-9eaf-4241-8754-23013dbd4cfb",
+        "58bf92b6-9f59-4f67-8e96-6973f1c26b96",
+        "83308003-9531-40c9-ab65-6f42c700157d",
+        "d81ca7b5-3774-4d1c-84eb-055d2a717f4b"
+      ]
+    },
+    {
+      "cycle": 2,
+      "expectedThreadOrder": [
+        "fd219af7-8052-45da-a932-5ec696bb606e",
+        "5bfcd36a-73cc-459c-958d-66a122992231",
+        "4370d413-9eaf-4241-8754-23013dbd4cfb",
+        "58bf92b6-9f59-4f67-8e96-6973f1c26b96",
+        "83308003-9531-40c9-ab65-6f42c700157d",
+        "d81ca7b5-3774-4d1c-84eb-055d2a717f4b"
+      ],
+      "actualThreadOrder": [
+        "fd219af7-8052-45da-a932-5ec696bb606e",
+        "5bfcd36a-73cc-459c-958d-66a122992231",
+        "4370d413-9eaf-4241-8754-23013dbd4cfb",
+        "58bf92b6-9f59-4f67-8e96-6973f1c26b96",
+        "83308003-9531-40c9-ab65-6f42c700157d",
+        "d81ca7b5-3774-4d1c-84eb-055d2a717f4b"
+      ]
+    }
+  ],
+  "pageErrors": []
+}
