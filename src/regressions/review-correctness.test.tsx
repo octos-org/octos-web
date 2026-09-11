@@ -158,6 +158,37 @@ describe('Auth recovery and cross-tab identity', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(getToken()).toBe('review-valid-token');
   });
+  it('automatically recovers a failed authentication probe without replacing the valid token', async () => {
+    vi.useFakeTimers();
+    setToken('review-valid-token');
+    mocks.me.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValue({ user: { id: 'verified' }, portal: {} });
+    const { result } = renderHook(useAuth, { wrapper: authWrapper });
+    await act(async () => {});
+    expect(result.current.authError).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(result.current.user?.id).toBe('verified');
+    expect(result.current.authError).toBeNull();
+    expect(getToken()).toBe('review-valid-token');
+    expect(mocks.me).toHaveBeenCalledTimes(2);
+  });
+  it('bounds outage retries and can recover when the browser comes online again', async () => {
+    vi.useFakeTimers();
+    setToken('review-valid-token');
+    mocks.me.mockRejectedValue(new TypeError('Failed to fetch'));
+    const { result } = renderHook(useAuth, { wrapper: authWrapper });
+    await act(async () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+    expect(mocks.me).toHaveBeenCalledTimes(3);
+    expect(result.current.authError).toBeTruthy();
+    expect(getToken()).toBe('review-valid-token');
+    mocks.me.mockResolvedValue({ user: { id: 'verified' }, portal: {} });
+    await act(async () => { window.dispatchEvent(new Event('online')); });
+    expect(result.current.authError).toBeNull();
+    expect(result.current.user?.id).toBe('verified');
+  });
   it('updates its principal when another tab changes the stored token', async () => {
     setToken('review-account-a');
     mocks.me.mockImplementation(async () => ({ user: { id: getToken() }, portal: {} }));

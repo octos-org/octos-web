@@ -21,6 +21,7 @@ Standalone feature checks:
 | `node scripts/live-review/long-chat.mjs` | Long real streamed reply remains one intact message across compaction and reload |
 | `node scripts/live-review/tool-activity.mjs` | Real web searches/fetches collapse into one expandable activity; a Chinese follow-up retains supplied venue context without another report table |
 | `node scripts/live-review/expired-auth.mjs` | Actual revocation and 401 retain `/app/` and the full login return destination |
+| `node scripts/live-review/auth-recovery.mjs` | Injected validation disconnects recover through real authentication; retries are bounded, credentials survive, sign-in preserves the destination, and invalid tokens receive an actual 401 |
 | `OCTOS_LIVE_REVIEW_SLIDES_SESSION=slides-… node scripts/live-review/slides-links.mjs` | Fresh direct editor and presentation links hydrate an existing real scaffold |
 | `node scripts/live-review/site.mjs` | Real React/Vite generation, initial preview recovery, module interaction, storage isolation, and copied signed URL |
 

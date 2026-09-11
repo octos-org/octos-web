@@ -56,6 +56,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setTokenState] = useState<string | null>(getToken());
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [recoveryAttempts, setRecoveryAttempts] = useState(0);
   const [identityVersion, setIdentityVersion] = useState(getIdentityGeneration);
   const [cacheVersion, setCacheVersion] = useState(0);
   const meRequest = useRef(0);
@@ -191,6 +192,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (identity === getIdentityGeneration() && requestId === meRequest.current) setLoading(false);
     }
   }, [syncMe, handleValidationError]);
+
+  // A brief server restart or dropped request should recover without leaving
+  // a valid session parked on the error screen. Bound automatic retries;
+  // manual retry remains available after an enduring outage.
+  useEffect(() => {
+    if (!token || !authError) {
+      setRecoveryAttempts(0);
+      return;
+    }
+    if (loading || recoveryAttempts >= 2) return;
+    const timer = window.setTimeout(() => {
+      setRecoveryAttempts(attempts => attempts + 1);
+      void revalidate();
+    }, recoveryAttempts === 0 ? 1000 : 3000);
+    return () => window.clearTimeout(timer);
+  }, [token, authError, loading, revalidate, recoveryAttempts]);
+
+  useEffect(() => {
+    if (!token || !authError || loading) return;
+    const onOnline = () => { void revalidate(); };
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [token, authError, loading, revalidate]);
 
   // Issue #111.1: subscribe to the WS bridge's `crew:auth_expired`
   // signal so an auth-rejected handshake (server close-code 1008)
