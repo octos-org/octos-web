@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
+import { hostname } from "node:os";
 import { expect, test } from "@playwright/test";
 import { appUrl, assistantReply, chat, credentials, login, telemetry } from "./helpers";
 
-test("30-minute remote core UX soak: real chat, navigation, history, and reconnect", async ({ page, context }, info) => {
+test("30-minute remote core UX soak: real chat, navigation, history, and reconnect", async ({ page, context, browser }, info) => {
   test.setTimeout(35 * 60_000);
   const metrics = telemetry(page, info);
   const started = Date.now();
@@ -11,7 +12,7 @@ test("30-minute remote core UX soak: real chat, navigation, history, and reconne
   const alias = process.env.OCTOS_LIVE_REVIEW_SSH;
   const pid = process.env.OCTOS_LIVE_REVIEW_PID;
   if (!alias || !pid || !/^\d+$/.test(pid)) throw new Error("Remote soak requires SSH alias and numeric server PID.");
-  metrics.record({ event: "started", remotePid: pid, account: credentials.owner.id });
+  metrics.record({ event: "started", remotePid: pid, account: credentials.owner.id, runnerHost: hostname(), browserVersion: browser.version() });
   // Keep long-running history independent from feature acceptance accounts.
   await login(page, credentials.owner);
   metrics.record({ event: "logged_in" });
@@ -37,8 +38,10 @@ test("30-minute remote core UX soak: real chat, navigation, history, and reconne
       await page.reload();
       await expect(assistantReply(page, marker)).toHaveCount(1);
     }
-    const remoteProcess = execFileSync("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", alias,
-      `ps -p ${pid} -o pid=,etime=,rss=,%cpu=`], { encoding: "utf8", timeout: 15_000 }).trim();
+    const remoteProcess = (alias === "local"
+      ? execFileSync("ps", ["-p", pid, "-o", "pid=,etime=,rss=,%cpu="], { encoding: "utf8", timeout: 15_000 })
+      : execFileSync("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", alias,
+        `ps -p ${pid} -o pid=,etime=,rss=,%cpu=`], { encoding: "utf8", timeout: 15_000 })).trim();
     expect(remoteProcess).not.toBe("");
     expect(metrics.errors).toEqual([]);
     expect(metrics.failures.filter(f => f.status >= 500)).toEqual([]);
