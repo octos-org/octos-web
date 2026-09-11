@@ -62,6 +62,7 @@ export interface ProjectionEnvelopeV2UserMessagePayload {
   data: {
     text: string;
     files: ProjectionEnvelopeV2FileRef[];
+    persisted_at?: string;
   };
 }
 
@@ -410,7 +411,12 @@ function parsePayload(value: unknown): ParseStep<ProjectionEnvelopeV2Payload> {
       if (!text.ok) return text;
       const files = parseFileRefs(data.value, "files", dataPath);
       if (!files.ok) return files;
-      return ok({ type: "user_message", data: { text: text.value, files: files.value } });
+      const persistedAt = readOptionalString(data.value, "persisted_at", dataPath);
+      if (!persistedAt.ok) return persistedAt;
+      return ok({ type: "user_message", data: {
+        text: text.value, files: files.value,
+        ...(persistedAt.value ? { persisted_at: persistedAt.value } : {}),
+      } });
     }
     case "assistant_delta": {
       const text = readString(data.value, "text", dataPath);

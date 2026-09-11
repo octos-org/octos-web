@@ -1,0 +1,36 @@
+{
+  "result": "PASS",
+  "started_utc": "2026-09-11T00:42:34.928Z",
+  "completed_utc": "2026-09-11T01:13:13.340Z",
+  "elapsed_ms": 1838412,
+  "completed_cycles": 38,
+  "final_real_chat_passed": true,
+  "retries": 0,
+  "page_errors": [],
+  "http_failures": [],
+  "latency_ms": {
+    "min": 1390,
+    "median": 1922.0,
+    "p95": 2903,
+    "max": 3915
+  },
+  "server_rss_kib": {
+    "first": 232224,
+    "last": 323056,
+    "min": 231344,
+    "max": 323056
+  },
+  "sockets_before_browser_teardown": {
+    "opened": 213,
+    "closed": 211
+  },
+  "browser_runner_process_samples": {
+    "count": 35,
+    "started_utc": "2026-09-11T00:48:49Z",
+    "ended_utc": "2026-09-11T01:13:05Z",
+    "summed_rss_kib_first": 809520,
+    "summed_rss_kib_last": 802768,
+    "summed_rss_kib_max": 952544,
+    "note": "Sum includes shared pages and is not private memory. Sampling began after soak startup. This finite run does not establish absence of leaks."
+  }
+}

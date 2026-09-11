@@ -187,7 +187,7 @@ describe("ContentBrowser CMS controls", () => {
     }
   });
 
-  it("renames, downloads, and deletes selected files", () => {
+  it("renames, downloads, and deletes selected files", async () => {
     const harness = mountBrowser();
     try {
       clickButton(harness.container, "Rename weekly-report.md");
@@ -196,7 +196,7 @@ describe("ContentBrowser CMS controls", () => {
       ) as HTMLInputElement | undefined;
       expect(renameInput).toBeTruthy();
       setInputValue(renameInput!, "weekly-final.md");
-      clickButton(harness.container, "Save rename");
+      await act(async () => clickButton(harness.container, "Save rename"));
       expect(fileStoreMock.renameFile).toHaveBeenCalledWith(
         "file-report",
         "weekly-final.md",
@@ -216,7 +216,7 @@ describe("ContentBrowser CMS controls", () => {
         (button) => button.textContent?.trim() === "Delete",
       ) as HTMLButtonElement | undefined;
       expect(batchDelete).toBeTruthy();
-      act(() => batchDelete!.click());
+      await act(async () => batchDelete!.click());
       expect(fileStoreMock.removeFile).toHaveBeenCalledWith("file-report");
       expect(fileStoreMock.removeFile).toHaveBeenCalledWith("file-audio");
       expect(fileStoreMock.removeFile).toHaveBeenCalledWith("file-image");

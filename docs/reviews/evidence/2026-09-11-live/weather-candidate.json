@@ -1,0 +1,65 @@
+{
+  "result": "PASS",
+  "runner": "macmini-3-249.local",
+  "runtimeWeb": "ea8ce95",
+  "runtimeCore": "b931bd2",
+  "results": [
+    {
+      "label": "actual text extraction",
+      "answer": "上海今天（11日）小雨转多云，气温 26/22℃，风力小于 3 级。来源：中国天气网 · 上海。",
+      "characters": 48,
+      "links": [
+        "https://www.weather.com.cn/weather/101020100.shtml"
+      ],
+      "observedURLs": [
+        "https://www.weather.com.cn/weather/101020100.shtml"
+      ],
+      "supportedLinks": [
+        "https://www.weather.com.cn/weather/101020100.shtml"
+      ],
+      "lookupCalls": 1,
+      "tables": 0
+    },
+    {
+      "label": "natural weather question",
+      "answer": "上海今天（2026年9月11日，周五）白天有小雨、夜间转多云，当前气温约 25℃、体感 27℃，全天 26℃/22℃，东北风 2 级，相对湿度 67%，空气质量优（AQI 优），能见度 28km。出门建议带把伞，白天有零星降雨。\n数据来源：和风天气上海实时页（2026-09-11 15:15 更新）— https://www.qweather.com/weather/shanghai-101020100.html\n如果你想看未来几天或某个具体区（如浦东、徐汇）的情况，我可以再查。",
+      "characters": 242,
+      "links": [
+        "https://www.qweather.com/weather/shanghai-101020100.html"
+      ],
+      "observedURLs": [
+        "http://www.weather.com.cn/weather/101020100.shtml",
+        "https://lishidata.com/location/101020100/...",
+        "https://www.weather.com.cn/weather/101020100.shtml",
+        "https://www.qweather.com/weather/shanghai-101020100.html",
+        "https://shanghai.pizsalad.com/today.html",
+        "https://m.weather.com.cn/mweather/101020100.shtml",
+        "https://www.weather.com.cn/weather1d/101020100.shtml"
+      ],
+      "supportedLinks": [
+        "https://www.qweather.com/weather/shanghai-101020100.html"
+      ],
+      "lookupCalls": 6,
+      "tables": 0
+    },
+    {
+      "label": "natural weather follow-up",
+      "answer": "北京今天（9月11日，周五）白天到夜间都是晴，当前气温 30℃、体感 32℃，全天 30℃/14℃ 左右，西南风 3 级，相对湿度仅 25%（很干燥），空气质量优，能见度 30km——和上海的阴雨正好相反，晴天、干燥、适合户外，注意防晒补水。\n来源：和风天气北京实时页（2026-09-11 15:15 更新）— https://www.qweather.com/weather/beijing-101010100.html",
+      "characters": 212,
+      "links": [
+        "https://www.qweather.com/weather/beijing-101010100.html"
+      ],
+      "observedURLs": [
+        "https://beijing.pizsalad.com/today.html",
+        "https://www.qweather.com/weather/beijing-101010100.html"
+      ],
+      "supportedLinks": [
+        "https://www.qweather.com/weather/beijing-101010100.html"
+      ],
+      "lookupCalls": 2,
+      "tables": 0
+    }
+  ],
+  "pageErrors": [],
+  "limitation": "Verifies actual lookup and matching inline URLs; numerical weather facts and warning causes require separate source inspection."
+}

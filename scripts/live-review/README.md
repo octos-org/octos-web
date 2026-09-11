@@ -1,0 +1,42 @@
+These checks use an isolated Octos server, real authentication, real model/tool calls, and the production `/app/` bundle. They create synthetic conversations and projects; the file check renames and deletes its own generated file. They incur provider usage. Use dedicated `@example.invalid` test accounts with the required capabilities configured.
+
+Install the repository dependencies and Playwright Chromium, then configure:
+
+```sh
+export OCTOS_LIVE_REVIEW_URL=http://127.0.0.1:55080/app/
+export OCTOS_LIVE_REVIEW_CREDENTIALS=/absolute/path/to/restricted-credentials.json
+pnpm exec playwright test --config=playwright.live-review.config.ts
+```
+
+The restricted JSON file contains `a`, `b`, and `owner`, each with `email`, `id`, and a real session `token`. The token-revocation check additionally needs the isolated server's configured `otp`. Keep this file outside tracked paths with mode 0600. Account logout revokes that token: obtain a new session through the actual verify endpoint before reusing it.
+
+For a 30-minute soak, run the same test config with `OCTOS_LIVE_REVIEW_SOAK=1`, `OCTOS_LIVE_REVIEW_PID=<owned-server-pid>`, and `OCTOS_LIVE_REVIEW_SSH=<ssh-alias>`. Set the SSH value to `local` when both Chromium and the runner execute on the remote mini itself. The soak records the runner hostname, browser version, server process measurements, reply latency, socket counts, errors, and screenshots. It waits for actual canonical turn completion before reloading and compares the full rendered user-turn order with the actual server transcript after reload, gallery return and offline reconnection. It uses no retries or fulfilled API routes. A stopped or failed run does not count as a completed soak.
+
+Standalone feature checks:
+
+| Command | Exercised behavior |
+|---|---|
+| `node scripts/live-review/weather-grounding.mjs` | Actual text extraction, natural weather question and contextual follow-up; inline source URLs must match actual tool events |
+| `OCTOS_LIVE_REVIEW_SESSION=<existing-session> OCTOS_LIVE_REVIEW_SOURCE_URL=<public-source-url> node scripts/live-review/citation-links.mjs` | Read a saved bare-link answer, reload twice, click its exact source URL and record external redirects/destination readability |
+| `node scripts/live-review/queue-scope.mjs` | Start an actual delayed shell tool, queue a follow-up, switch sessions, observe the old terminal and verify the new session/reply survive reload without queued-message leakage |
+| `node scripts/live-review/files.mjs` | Actual generated file appears without reload; UI rename, download bytes, delete, and persistence |
+| `node scripts/live-review/long-turn.mjs` | Actual 36-second tool turn stays accepted without a false 30-second timeout |
+| `node scripts/live-review/long-chat.mjs` | Long real streamed reply remains one intact message across compaction and reload |
+| `node scripts/live-review/tool-activity.mjs` | Real web searches/fetches collapse into one expandable activity; a Chinese follow-up retains supplied venue context without another report table |
+| `node scripts/live-review/expired-auth.mjs` | Actual revocation and 401 retain `/app/` and the full login return destination |
+| `node scripts/live-review/auth-recovery.mjs` | Injected validation disconnects recover through real authentication; retries are bounded, sign-in preserves the destination, invalid tokens receive an actual 401, and malformed saved/pasted tokens recover through a working public login form |
+| `OCTOS_LIVE_REVIEW_SESSION=<existing-session-id> node scripts/live-review/history-order.mjs` | Read an existing conversation and reload twice; rendered user turns must match actual server transcript order without duplicates; submits no messages |
+| `OCTOS_LIVE_REVIEW_SLIDES_SESSION=slides-… node scripts/live-review/slides-links.mjs` | Fresh direct editor and presentation links hydrate an existing real scaffold |
+| `node scripts/live-review/site.mjs` | Real React/Vite generation, initial preview recovery, module interaction, storage isolation, and copied signed URL |
+
+Artifacts go to ignored `test-results/live-review-*` directories. `OCTOS_LIVE_REVIEW_OUTPUT` changes the standalone feature output root. Inspect screenshots before sharing; never publish credentials, browser storage state, signed preview URLs, or authenticated WebSocket URLs. Traces are disabled in the Playwright config for this reason.
+
+For the tool-activity check, set `OCTOS_LIVE_REVIEW_WEB_COMMIT` and `OCTOS_LIVE_REVIEW_CORE_COMMIT` to the deployed revisions to record them in its result. It checks both supplied venue facts and the originally reported Saratoga-weather → Beijing follow-up. The weather case requires an actual lookup and checks reply format/context; it does not independently certify the returned measurements. The runner saves observed follow-ups and screenshots before assertions, so a model formatting failure remains inspectable.
+
+The auth-recovery and history-order runners accept `OCTOS_LIVE_REVIEW_BROWSER=webkit` to use installed Playwright WebKit. History-order's optional `OCTOS_LIVE_REVIEW_PRIVATE_HYDRATE` writes the raw transcript/protocol response to a private diagnostic path with mode 0600; keep it outside tracked paths and never publish it.
+
+The site check asks the model to avoid cleanup commands. If the model requests an approval, the harness must stop for inspection rather than silently grant arbitrary commands. A valid build behind an approval dialog is not a passing interaction test. Generated model output can also violate fixture instructions; report that separately from application failures.
+
+These checks do not certify image generation, complete deck rendering/export, ASR/TTS, learning lessons, external channels, physical hardware, or the designated public canary. See the tracked live-validation record for the tested capabilities and exact build hashes.
+
+The weather-grounding runner records the deployed web/core revisions using the same environment variables as tool-activity. A matching link establishes source attribution, not numerical truth; inspect the actual returned source text separately. The queue-scope runner uses an independent browser observer to record whether the old foreground turn completes or is cancelled when its submitting connection closes. A passing cancellation case does not certify continuation in the background. Both runners create synthetic conversations; use a dedicated test account, never the user's active login.

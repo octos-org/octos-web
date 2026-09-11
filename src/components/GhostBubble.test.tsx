@@ -55,6 +55,25 @@ afterEach(() => {
 });
 
 describe("GhostBubble", () => {
+  it("hides a confirmed optimistic row while preserving its later error affordance", () => {
+    const harness = mount(<GhostBubble clientMessageId="confirmed" text="duplicate" files={[]}
+      sessionId={sessionId} settled onSettle={() => {}} />);
+    expect(harness.container.textContent).toBe("");
+    harness.unmount();
+  });
+
+  it("settles a user reflection by the exact turn ID when Core omits cmid", () => {
+    const onSettle = vi.fn();
+    const harness = mount(<GhostBubble clientMessageId="client-turn" text="hello" files={[]}
+      sessionId={sessionId} onSettle={onSettle} />);
+    const envelope = canonicalUser("ignored");
+    delete envelope.client_message_id;
+    envelope.turn_id = "client-turn";
+    act(() => { ProjectionStore.ingest(sessionId, envelope); });
+    expect(onSettle).toHaveBeenCalledOnce();
+    harness.unmount();
+  });
+
   it("renders the optimistic user row without creating a legacy thread", () => {
     const harness = mount(
       <GhostBubble
@@ -198,6 +217,21 @@ describe("GhostBubble", () => {
       harness.container.querySelector('[data-testid="ghost-bubble-error"]')
         ?.textContent,
     ).toContain("Send not confirmed");
+    harness.unmount();
+  });
+
+  it("keeps a long accepted turn pending without a false send failure", () => {
+    const onSettle = vi.fn();
+    const harness = mount(<GhostBubble clientMessageId="long-turn" text="still working" files={[]}
+      sessionId={sessionId} onSettle={onSettle} />);
+    act(() => {
+      ProjectionStore.ingest(sessionId, { session_id: sessionId, thread_id: "long-turn", turn_id: "long-turn", seq: 1,
+        payload: { type: "assistant_delta", data: { text: "Working", assistant_segment_id: "segment" } } });
+    });
+    act(() => { vi.advanceTimersByTime(GHOST_SETTLE_TIMEOUT_MS + 1); });
+    expect(harness.container.querySelector('[data-testid="ghost-bubble-error"]')).toBeNull();
+    expect(harness.container.querySelector('[data-testid="ghost-bubble-text"]')?.textContent).toBe("still working");
+    expect(onSettle).not.toHaveBeenCalled();
     harness.unmount();
   });
 

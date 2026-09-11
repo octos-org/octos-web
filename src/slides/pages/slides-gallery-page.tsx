@@ -1,3 +1,4 @@
+import { ProjectDiscoveryStatus } from "@/components/project-discovery-status";
 import { useState, useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
@@ -99,6 +100,7 @@ export function SlidesGalleryPage() {
       />
 
       <main>
+        <ProjectDiscoveryStatus />
         <header className="mx-auto w-full max-w-7xl px-6 pb-2 pt-8 max-sm:px-3">
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div className="min-w-0">

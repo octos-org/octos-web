@@ -1,0 +1,20 @@
+{
+  "runtime_web": "3b4fa70",
+  "runtime_core": "55cf887",
+  "browser_runner": "local Chromium through SSH to mini3",
+  "session": "slides-1789088108707-owepm0",
+  "fixture": {
+    "type": "genuine synthetic PNG",
+    "bytes": 99386,
+    "source_image": true,
+    "auto_layout": false
+  },
+  "invoked_tool": "mofa_make",
+  "content_type": "slides",
+  "actual_persisted_task_status": "failed",
+  "actual_persisted_task_error": "Gemini API key required",
+  "task_completed_utc": "2026-09-11T01:15:46.048338Z",
+  "pptx_files_produced": 0,
+  "png_output_files_produced": 0,
+  "result": "BLOCKED: renderer requires an image provider key; this is not successful generation/export acceptance."
+}

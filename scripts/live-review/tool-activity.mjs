@@ -1,0 +1,84 @@
+import {chromium,expect} from '@playwright/test';
+import {writeFile} from 'node:fs/promises';
+import {setup} from './setup.mjs';
+const {c,base,root:output}=await setup('tool-activity');
+const browser=await chromium.launch(),page=await browser.newPage({viewport:{width:1440,height:1000}});
+page.setDefaultTimeout(30000);const terminal=new Map(),tools=[],errors=[];
+page.on('pageerror',error=>errors.push(error.message));
+page.on('websocket',socket=>socket.on('framereceived',frame=>{try{const e=JSON.parse(String(frame.payload));if(e.method==='projection/envelope'){
+ const p=e.params;if(p.payload.type==='turn_terminal')terminal.set(p.thread_id,p.payload.data.outcome);
+ if(p.payload.type==='tool_start')tools.push({thread:p.thread_id,id:p.payload.data.tool_call_id,name:p.payload.data.name});
+}}catch{}}));
+async function send(text){
+ console.log(JSON.stringify({event:'sending',characters:text.length}));
+ await page.getByTestId('chat-input').fill(text);await page.getByTestId('send-button').click();
+ // Long tool turns can retain the optimistic user row until persistence.
+ await expect(page.getByText(text,{exact:true}).first()).toBeVisible();
+ const user=page.getByTestId('user-message').filter({hasText:text});await expect(user).toHaveCount(1,{timeout:180000});
+ const tid=await user.getAttribute('data-thread-id');
+ await expect.poll(()=>terminal.get(tid),{timeout:180000}).toBe('completed');
+ const responses=page.locator(`[data-testid="assistant-message"][data-thread-id="${tid}"]`);
+ return {tid,responses,text:(await responses.locator('.prose').allTextContents()).join('\n')};
+}
+try{
+ await page.goto(base+'login?redirect=%2Fchat');
+ await page.getByTestId('token-input').fill(c.a.token);await page.getByTestId('login-button').click();
+ await expect(page.getByTestId('chat-input')).toBeVisible({timeout:30000});
+ await page.getByRole('button',{name:'New chat',exact:true}).click();
+ await page.getByRole('dialog').getByRole('button',{name:/^Chat/}).click();
+ await expect(page.getByRole('dialog')).toHaveCount(0);
+ await expect(page.getByTestId('user-message')).toHaveCount(0);
+ await expect(page.getByTestId('cancel-button')).toHaveCount(0);
+ const research=await send('Search the web for official Python asyncio documentation, then read https://docs.python.org/3/library/asyncio.html and https://docs.python.org/3/library/asyncio-task.html with web_fetch. Use only web_search and web_fetch, activating them if needed. No narration before finishing. Give a one-sentence summary with links.');
+ const webCalls=tools.filter(t=>t.thread===research.tid&&['web_search','web_fetch'].includes(t.name));
+ expect(webCalls.length).toBeGreaterThanOrEqual(3);
+ const cards=research.responses.getByTestId('web-research-activity');await expect(cards).toHaveCount(1);
+ await expect(research.responses.getByText('web_search',{exact:true})).toHaveCount(0);
+ await expect(research.responses.getByText('web_fetch',{exact:true})).toHaveCount(0);
+ await page.screenshot({path:new URL('real-research-collapsed.png',output).pathname,animations:'disabled'});
+ for(const card of await cards.all())await card.getByRole('button').first().click();
+ expect(await research.responses.getByTestId('tool-call-bubble').count()).toBeGreaterThanOrEqual(webCalls.length);
+ await expect(cards.getByText('docs.python.org/3/library/asyncio.html',{exact:true})).toBeVisible();
+ await expect(cards.getByText('docs.python.org/3/library/asyncio-task.html',{exact:true})).toBeVisible();
+ await page.screenshot({path:new URL('real-research-expanded.png',output).pathname,animations:'disabled'});
+ const researchResult={event:'PASS',case:'actual web research',toolCalls:webCalls.length,activityCards:await cards.count(),cardStatuses:await cards.evaluateAll(nodes=>nodes.map(n=>n.getAttribute('data-tool-status'))),checks:['actual provider and web tools','canonical completion','readable collapsed activity','individual tool details','actual canonical source labels']};
+ console.log(JSON.stringify(researchResult));
+ await page.getByRole('button',{name:'New chat',exact:true}).click();
+ await page.getByRole('dialog').getByRole('button',{name:/^Chat/}).click();
+ await expect(page.getByRole('dialog')).toHaveCount(0);
+ await expect(page.getByTestId('user-message')).toHaveCount(0);
+ await expect(page.getByTestId('cancel-button')).toHaveCount(0);
+ await send('我在比较两个活动场地：Saratoga 场地在室外，下午晒；北京场地在室内，有空调。Saratoga 的场地适合中午活动吗？');
+ const followup=await send('北京呢');
+ const diagnostic={answer:followup.text,characters:followup.text.length,tables:await followup.responses.locator('table').count(),errors};
+ await writeFile(new URL('followup-diagnostic.json',output),JSON.stringify(diagnostic,null,2));
+ await page.screenshot({path:new URL('real-followup.png',output).pathname,animations:'disabled'});
+ console.log(JSON.stringify({event:'follow-up observed',...diagnostic}));
+ expect(followup.text).toMatch(/室内|空调/);expect(followup.text).not.toContain('上海');expect(followup.text.length).toBeLessThan(700);
+ expect(await followup.responses.locator('table').count()).toBe(0);expect(errors).toEqual([]);
+ const followupResult={event:'PASS',case:'actual contextual follow-up',characters:followup.text.length,answer:followup.text,checks:['same-topic reference resolved','supplied venue facts retained','no unrelated Shanghai comparison','no repeated report table','actual canonical completion']};
+ console.log(JSON.stringify(followupResult));
+ await page.screenshot({path:new URL('real-followup.png',output).pathname,animations:'disabled'});
+ await page.getByRole('button',{name:'New chat',exact:true}).click();
+ await page.getByRole('dialog').getByRole('button',{name:/^Chat/}).click();
+ await expect(page.getByRole('dialog')).toHaveCount(0);
+ await expect(page.getByTestId('user-message')).toHaveCount(0);
+ await expect(page.getByTestId('cancel-button')).toHaveCount(0);
+ await send('saratoga ca 今天为什么这么热');
+ const weather=await send('北京呢');
+ const weatherTools=tools.filter(t=>t.thread===weather.tid&&['web_search','web_fetch','get_weather'].includes(t.name));
+ const weatherDiagnostic={answer:weather.text,characters:weather.text.length,tables:await weather.responses.locator('table').count(),lookupCalls:weatherTools.length};
+ await writeFile(new URL('weather-diagnostic.json',output),JSON.stringify(weatherDiagnostic,null,2));
+ await page.screenshot({path:new URL('real-weather-followup.png',output).pathname,animations:'disabled'});
+ console.log(JSON.stringify({event:'weather follow-up observed',...weatherDiagnostic}));
+ expect(weather.text).toContain('北京');expect(weather.text).not.toContain('上海');
+ expect(weather.text.length).toBeLessThan(700);expect(weatherDiagnostic.tables).toBe(0);
+ expect(weatherTools.length).toBeGreaterThan(0);expect(errors).toEqual([]);
+ const weatherResult={event:'PASS',case:'actual weather follow-up',...weatherDiagnostic,checks:['original reported two-turn prompts','actual current-data lookup attempted','no unrelated Shanghai comparison','no repeated report table','actual canonical completion']};
+ console.log(JSON.stringify(weatherResult));
+ await writeFile(new URL('results.json',output),JSON.stringify({runtime_web:process.env.OCTOS_LIVE_REVIEW_WEB_COMMIT??'unspecified',runtime_core:process.env.OCTOS_LIVE_REVIEW_CORE_COMMIT??'unspecified',runner:(await import('node:os')).hostname(),research:researchResult,followup:followupResult,weather:weatherResult,errors},null,2));
+}catch(error){
+ await page.screenshot({path:new URL('failed-page.png',output).pathname,animations:'disabled'});
+ await writeFile(new URL('failure-diagnostic.json',output),JSON.stringify({error:String(error),userMessages:await page.getByTestId('user-message').allTextContents(),draft:await page.getByTestId('chat-input').inputValue().catch(()=>''),errors},null,2));
+ throw error;
+}finally{await browser.close();}

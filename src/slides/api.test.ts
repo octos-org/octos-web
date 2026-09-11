@@ -32,7 +32,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/api/client", () => ({
+vi.mock("@/api/client", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/api/client")>(),
   buildApiHeaders: vi.fn(() => ({ Authorization: "Bearer TEST" })),
   getToken: vi.fn(() => "TEST"),
   ensureSelectedProfileId: vi.fn(async () => "tenant-a"),
@@ -184,6 +185,21 @@ describe("listSlidesFiles dual-dir queries", () => {
     vi.clearAllMocks();
   });
 
+  it("keeps distinct opaque file handles without inventing duplicate siblings", async () => {
+    const files = ["script.js", "memory.md", "changelog.md"].map((filename, index) => ({
+      filename, path: `pf/opaque-file-${index}/${filename}`, size: 100 + index,
+      modified: "2026-09-11T00:00:00Z", category: "report", group: `slides/${SLUG}`,
+    }));
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify(files)));
+    expect(await listSlidesFiles(`slides/${SLUG}`)).toEqual(files);
+  });
+
+  it("does not advertise missing scaffold files when only an asset exists", async () => {
+    const files = [pngEntryUnder(`slides/${SLUG}/assets`, 0)];
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify(files)));
+    expect(await listSlidesFiles(`slides/${SLUG}`)).toEqual(files);
+  });
+
   it("forwards both legacy and skill-output dirs to /api/files/list", async () => {
     await listSlidesFiles([`slides/${SLUG}`, `skill-output/slides/${SLUG}`], {
       sessionId: "session-1",
@@ -263,6 +279,8 @@ describe("hydrateSlidesProjectFromSession", () => {
         ],
       }),
     });
+
+    fetchMock.mockResolvedValueOnce(new Response("null", { status: 200 }));
 
     const project = await hydrateSlidesProjectFromSession(sessionId);
     expect(project).not.toBeNull();

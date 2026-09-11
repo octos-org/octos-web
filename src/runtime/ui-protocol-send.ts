@@ -21,7 +21,8 @@ import {
   getThinkingEffort,
   whenThinkingSeeded,
 } from "@/store/thinking-store";
-import { getActiveBridge, startBridgeForSession } from "./ui-protocol-runtime";
+import { getActiveBridge, getBridgeScopeVersion, startBridgeForSession } from "./ui-protocol-runtime";
+import { getIdentityGeneration } from "@/api/client";
 import { isRollbackBusy, whenRollbackIdle } from "./session-rollback";
 import {
   BridgeStartupError,
@@ -506,6 +507,8 @@ export async function interruptActiveTurn(opts: {
 }
 
 async function enqueueSendV1(opts: SendOptions): Promise<void> {
+  const identity = getIdentityGeneration();
+  const scopeVersion = getBridgeScopeVersion(opts.sessionId, opts.historyTopic);
   // codex #262 P1: a rollback's suffix trim is RELATIVE to the thread
   // list — a turn mirrored/sent while the trim applies would be wiped
   // locally (and re-appended server-side against the trimmed state the
@@ -549,6 +552,14 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
 
   try {
     await prev;
+    if (identity !== getIdentityGeneration()
+      || scopeVersion !== getBridgeScopeVersion(opts.sessionId, opts.historyTopic)) {
+      markSendFailure(pinnedOpts, clientMessageId,
+        new Error("Queued message cancelled because the account or conversation changed."));
+      pinnedOpts.onComplete?.();
+      release();
+      return;
+    }
     // Ensure the bridge is usable before marking the session active. A failed
     // start leaves no local render row; the ghost's error callback is the
     // only optimistic failure surface.
@@ -613,7 +624,7 @@ async function enqueueSendV1(opts: SendOptions): Promise<void> {
     // (happy path, transport drop, queue-wedge safety release).
     // Symmetric with the push above so the pill ticks down to 0 when
     // the in-flight turn lands.
-    decrementQueueTotal(key);
+    if (identity === getIdentityGeneration()) decrementQueueTotal(key);
   }
 }
 
@@ -624,6 +635,15 @@ export function __resetSendQueueForTest(): void {
   queueTotalBySession.clear();
   queueHeadBySession.clear();
   activeTurnControlsBySession.clear();
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("crew:identity_changed", () => {
+    turnQueues.clear();
+    queueTotalBySession.clear();
+    queueHeadBySession.clear();
+    activeTurnControlsBySession.clear();
+  });
 }
 
 async function sendMessageV1(
@@ -791,6 +811,11 @@ async function sendMessageV1(
     // server treats user-turn omission as "clear the stored override".
     // Bounded fail-open (3s) so a broken handshake can't wedge sends.
     await whenThinkingSeeded(opts.sessionId, opts.historyTopic);
+    if (getActiveBridge(opts.sessionId, opts.historyTopic) !== bridge) {
+      markSendFailure(opts, clientMessageId, new Error("Conversation changed before the message was sent."));
+      fireComplete();
+      return;
+    }
     const extras = buildTurnStartExtras(opts);
     const result = await bridge.sendTurn(
       clientMessageId,

@@ -1,0 +1,19 @@
+{
+  "results": [
+    {
+      "label": "actual text extraction",
+      "answer": "上海今天（9月11日）小雨转多云，气温 26/22℃，风力小于3级 —— 来源于中国天气网上海城区页面（https://www.weather.com.cn/weather/101020100.shtml）。",
+      "characters": 104,
+      "links": [
+        "https://www.weather.com.cn/weather/101020100.shtml%EF%BC%89%E3%80%82"
+      ],
+      "observedURLs": [
+        "https://www.weather.com.cn/weather/101020100.shtml"
+      ],
+      "supportedLinks": [],
+      "lookupCalls": 1,
+      "tables": 0
+    }
+  ],
+  "pageErrors": []
+}

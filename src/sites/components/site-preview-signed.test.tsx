@@ -39,6 +39,8 @@ vi.mock("../api", () => ({
 }));
 
 import { SitePreview } from "./site-preview";
+import * as ProjectionStore from "@/store/projection-store";
+import { ApiError } from "@/api/client";
 
 interface MountedHarness {
   container: HTMLDivElement;
@@ -73,6 +75,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  ProjectionStore.__resetProjectionForTests();
   vi.useRealTimers();
   for (const node of [...document.body.children]) {
     node.remove();
@@ -80,6 +83,60 @@ afterEach(() => {
 });
 
 describe("<SitePreview> signed-URL iframe", () => {
+  it("recovers on canonical build completion after the initial retry budget expires", async () => {
+    signPreviewMock.mockRejectedValue(new ApiError(404, "Build not ready"));
+    let harness!: MountedHarness;
+    await act(async () => {
+      harness = mount(<SitePreview previewUrl="/preview/site" siteName="Test" template="react-vite"
+        sessionId="site-A" historyTopic="site react" profileId="tenant-a" slug="test-site" />);
+    });
+    for (let retry = 0; retry < 8; retry++) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    }
+    expect(signPreviewMock).toHaveBeenCalledTimes(9);
+    signPreviewMock.mockResolvedValue({ token: SIGNED_TOKEN, preview_url: SIGNED_URL,
+      expires_at: new Date(Date.now() + 600_000).toISOString() });
+    const terminal = { session_id: "site-A", thread_id: "build", turn_id: "build", seq: 1,
+      payload: { type: "turn_terminal" as const, data: { outcome: "completed" as const } } };
+    await act(async () => {
+      ProjectionStore.ingest("site-A#site other", terminal);
+      await vi.advanceTimersByTimeAsync(900);
+    });
+    expect(signPreviewMock).toHaveBeenCalledTimes(9);
+    await act(async () => {
+      ProjectionStore.ingest("site-A#site react", terminal);
+      await vi.advanceTimersByTimeAsync(900);
+    });
+    expect(harness.container.querySelector("iframe")?.getAttribute("src")).toContain(SIGNED_URL);
+    expect(signPreviewMock).toHaveBeenCalledTimes(10);
+    harness.unmount();
+    await act(async () => {
+      ProjectionStore.ingest("site-A#site react", { ...terminal, thread_id: "later", turn_id: "later" });
+      await vi.advanceTimersByTimeAsync(900);
+    });
+    expect(signPreviewMock).toHaveBeenCalledTimes(10);
+  });
+
+  it("recovers from a pre-scaffold 404 when project files arrive", async () => {
+    signPreviewMock.mockRejectedValueOnce(new ApiError(404, "Not scaffolded yet"));
+    let harness!: MountedHarness;
+    await act(async () => {
+      harness = mount(<SitePreview previewUrl="/preview/site" siteName="Test" template="react-vite"
+        sessionId="site-A" profileId="tenant-a" slug="test-site" />);
+    });
+    expect(harness.container.querySelector("iframe")).toBeNull();
+    signPreviewMock.mockResolvedValue({ token: SIGNED_TOKEN, preview_url: SIGNED_URL,
+      expires_at: new Date(Date.now() + 600_000).toISOString() });
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent("crew:file", { detail: { sessionId: "site-A" } }));
+      await vi.advanceTimersByTimeAsync(900);
+    });
+    expect(harness.container.querySelector("iframe")?.getAttribute("src")).toContain(SIGNED_URL);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    expect(signPreviewMock).toHaveBeenCalledTimes(2);
+    harness.unmount();
+  });
+
   it("calls signPreview on mount and sets iframe.src to the returned preview_url", async () => {
     const now = Date.now();
     signPreviewMock.mockResolvedValueOnce({
@@ -392,18 +449,9 @@ describe("<SitePreview> signed-URL iframe", () => {
     harness.unmount();
   });
 
-  /**
-   * Codex GAP 5 — iframe sandbox attribute (mirrors PR #139's #993
-   * test). The preview is same-origin with the SPA; without `sandbox`
-   * the LLM-authored HTML in the preview can read
-   * `window.parent.localStorage` and exfiltrate auth tokens. The
-   * Vite/React production previews emit module scripts. Without
-   * `allow-same-origin`, the sandboxed document has an opaque origin
-   * and browsers treat the module script fetch as a CORS request from
-   * `Origin: null`; the preview server does not emit CORS headers, so
-   * the JS bundle is blocked and the iframe stays blank.
-   */
-  it("renders iframe sandbox that allows Vite module previews to load", async () => {
+  // The paired preview endpoint supplies CORS for modules and a sandbox CSP
+  // for top-level navigation. The iframe must never restore same-origin access.
+  it("keeps generated scripts in an opaque sandbox origin", async () => {
     const now = Date.now();
     signPreviewMock.mockResolvedValueOnce({
       token: SIGNED_TOKEN,
@@ -430,12 +478,12 @@ describe("<SitePreview> signed-URL iframe", () => {
     const iframe = harness.container.querySelector("iframe");
     expect(iframe).not.toBeNull();
     const sandboxAttr = iframe?.getAttribute("sandbox") ?? "";
-    expect(sandboxAttr).toBe("allow-scripts allow-forms allow-same-origin");
+    expect(sandboxAttr).toBe("allow-scripts allow-forms");
 
     const tokens = sandboxAttr.split(/\s+/).filter(Boolean);
     expect(tokens).toContain("allow-scripts");
     expect(tokens).toContain("allow-forms");
-    expect(tokens).toContain("allow-same-origin");
+    expect(tokens).not.toContain("allow-same-origin");
 
     harness.unmount();
   });

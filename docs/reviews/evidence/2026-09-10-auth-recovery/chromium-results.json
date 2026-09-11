@@ -1,0 +1,28 @@
+{
+  "result": "PASS",
+  "browser": "chromium",
+  "runtimeWeb": "db948a4",
+  "runner": "macmini-3-249.local",
+  "faultInjection": "Abort validation requests only; successful authentication and rejection use the real server",
+  "results": [
+    {
+      "case": "automatic recovery",
+      "probes": 3,
+      "actualAuthentication": true,
+      "tokenPreserved": true
+    },
+    {
+      "case": "bounded outage and sign-in recovery",
+      "outageWindowProbes": 3,
+      "actualAuthentication": true,
+      "destinationPreserved": true,
+      "tokenPreserved": true
+    },
+    {
+      "case": "invalid credentials",
+      "actualRejection": 401,
+      "signInShown": true
+    }
+  ],
+  "pageErrors": []
+}

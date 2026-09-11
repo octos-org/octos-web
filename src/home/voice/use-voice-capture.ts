@@ -57,22 +57,22 @@ const VAD_MODEL_PREFERENCE: VadModel[] = ["v5", "legacy"];
 
 // Self-hosted VAD assets (scripts/copy-vad-assets.mjs copies them into
 // public/vad/). The library defaults baseAssetPath/onnxWASMBasePath to "./",
-// which 404s, so we point them at /vad/.
+// which depends on the current route, so use the application base instead.
 //
 // Two distinct loaders, two path forms:
 //   - baseAssetPath: the worklet (audioWorklet.addModule) + Silero .onnx
-//     (fetch). Root-relative "/vad/" is fine — these are not module imports.
+//     (fetch). Use the deployment base, including /app/ when configured.
 //   - onnxWASMBasePath: onnxruntime-web loads its wasm GLUE via a dynamic
 //     import() of "<base>ort-wasm-simd-threaded.mjs". Vite refuses to import()
 //     a /public file via a root-relative specifier, so this MUST be an
 //     absolute URL (origin-prefixed) — Vite leaves absolute http(s) imports
 //     external and the browser fetches it from our own dev/prod server. Still
 //     fully local (no CDN); origin adapts across dev port / prod host.
-const VAD_BASE_ASSET_PATH = "/vad/";
+const VAD_BASE_ASSET_PATH = `${import.meta.env.BASE_URL}vad/`;
 const VAD_ONNX_WASM_BASE_PATH =
   typeof window !== "undefined"
-    ? `${window.location.origin}/vad/`
-    : "/vad/";
+    ? new URL(VAD_BASE_ASSET_PATH, window.location.href).href
+    : VAD_BASE_ASSET_PATH;
 const VAD_ASSETS = [
   `${VAD_BASE_ASSET_PATH}vad.worklet.bundle.min.js`,
   `${VAD_BASE_ASSET_PATH}silero_vad_legacy.onnx`,

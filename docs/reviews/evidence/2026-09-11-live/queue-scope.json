@@ -1,0 +1,16 @@
+{
+  "result": "PASS",
+  "runner": "macmini-3-249.local",
+  "runtimeWeb": "ea8ce95",
+  "actualDelayedTool": "shell",
+  "oldTurnOutcome": "errored",
+  "oldTurnError": {
+    "code": "connection_closed",
+    "message": "connection closed before turn completed"
+  },
+  "elapsedFromToolStartMs": 191,
+  "newSessionPreserved": true,
+  "queuedMessageStayedCancelled": true,
+  "reloadedNewReplyCount": 1,
+  "pageErrors": []
+}

@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -7,10 +7,12 @@ import { AuthGuard } from "./auth-guard";
 const authMocks = vi.hoisted(() => ({
   token: null as string | null,
   loading: false,
+  authError: null as string | null,
+  revalidate: vi.fn(),
 }));
 
 vi.mock("./auth-context", () => ({
-  useAuth: () => ({ token: authMocks.token, loading: authMocks.loading }),
+  useAuth: () => authMocks,
 }));
 
 function LoginProbe() {
@@ -39,6 +41,8 @@ describe("AuthGuard", () => {
     cleanup();
     authMocks.token = null;
     authMocks.loading = false;
+    authMocks.authError = null;
+    authMocks.revalidate.mockReset();
   });
 
   it("bounces unauthenticated deep links to /login with the destination preserved", () => {
@@ -57,5 +61,17 @@ describe("AuthGuard", () => {
     authMocks.token = "tok";
     renderGuard("/chat");
     expect(screen.getByText("chat page")).toBeTruthy();
+  });
+
+  it("offers retry and sign-in recovery without admitting an unverified session or losing its destination", () => {
+    authMocks.token = "saved-token";
+    authMocks.authError = "Unable to verify your session.";
+    renderGuard("/chat?topic=design#latest");
+    expect(screen.queryByText("chat page")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(authMocks.revalidate).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("link", { name: "Sign in again" }));
+    expect(screen.getByTestId("login-probe").textContent).toBe(`/login?redirect=${encodeURIComponent('/chat?topic=design#latest')}`);
+    expect(authMocks.token).toBe("saved-token");
   });
 });

@@ -1,0 +1,17 @@
+{
+  "result": "PASS",
+  "runner": "macmini-3-249.local",
+  "runtimeWeb": "39bbb1a",
+  "runtimeCore": "b931bd2",
+  "operation": "Read the existing failed answer and reload twice; no messages submitted",
+  "sourceURL": "https://www.weather.com.cn/weather/101020100.shtml",
+  "exactHrefChecks": 3,
+  "actualClickedRequestURL": "https://www.weather.com.cn/weather/101020100.shtml",
+  "sourceResponseStatuses": [
+    301
+  ],
+  "finalDestinationURL": "https://www.weather.com.cn/ok.html",
+  "destinationContainsLocation": false,
+  "pageErrors": [],
+  "limitation": "PASS verifies the application link and actual navigation request. External redirects and destination readability are recorded separately."
+}

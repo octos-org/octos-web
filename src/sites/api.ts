@@ -1,4 +1,5 @@
 import {
+  ApiError,
   buildApiHeaders,
   ensureSelectedProfileId,
   getSelectedProfileId,
@@ -120,10 +121,8 @@ export async function signPreview(
     body: JSON.stringify(req),
   });
   if (!response.ok) {
-    // Surface the status code in the message so the iframe component
-    // can branch on 401/403/404 if it wants. Mirrors how the rest of
-    // this module reports HTTP failures (`throw new Error("HTTP ...")`).
-    throw new Error(
+    throw new ApiError(
+      response.status,
       `HTTP ${response.status} signing preview for ${req.session_id}/${req.site_slug}`,
     );
   }

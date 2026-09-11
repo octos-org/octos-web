@@ -14,6 +14,37 @@ import {
 import { SLIDE_ASPECT_RATIO } from "../constants";
 import type { Slide, SlideLayout } from "../types";
 import { useAuthenticatedFileUrl } from "./authenticated-file-image";
+import { downloadFile } from "@/api/files";
+
+function PptxDownload({ url }: { url: string }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const download = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await downloadFile(url, "presentation.pptx");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Download failed. Please retry.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => void download()}
+        disabled={busy}
+        className="flex items-center gap-1.5 rounded-lg bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent/20 disabled:opacity-50"
+      >
+        <Download size={14} />
+        {busy ? "Downloading…" : "Download PPTX"}
+      </button>
+      {error && <p role="alert" className="mt-1 text-xs text-red-400">{error}</p>}
+    </div>
+  );
+}
 
 const LAYOUT_OPTIONS: Array<{ value: SlideLayout; label: string }> = [
   { value: "title", label: "Title" },
@@ -34,7 +65,7 @@ interface Props {
   version?: string;
   /** Manual-edit affordances (2026-08 audit #320). When omitted the
    *  preview stays read-only. */
-  onUpdate?: (index: number, update: Partial<Slide>) => void;
+  onUpdate?: (index: number, update: Partial<Slide>) => void | Promise<boolean | void>;
   onRemove?: (index: number) => void;
   onMove?: (from: number, to: number) => void;
 }
@@ -52,6 +83,7 @@ export default function SlidePreview({
 }: Props) {
   const [imgError, setImgError] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [notesDraft, setNotesDraft] = useState("");
@@ -68,15 +100,20 @@ export default function SlidePreview({
     setConfirmingDelete(false);
   }, [currentIndex, current?.layout, current?.notes, current?.title]);
 
-  const commitEdits = useCallback(() => {
-    if (!current || !onUpdate) return;
-    onUpdate(currentIndex, {
-      title: titleDraft.trim() || current.title,
-      notes: notesDraft,
-      layout: layoutDraft,
-    });
-    setEditing(false);
-  }, [current, currentIndex, layoutDraft, notesDraft, onUpdate, titleDraft]);
+  const commitEdits = useCallback(async () => {
+    if (!current || !onUpdate || saving) return;
+    setSaving(true);
+    try {
+      const saved = await onUpdate(currentIndex, {
+        title: titleDraft.trim() || current.title,
+        notes: notesDraft,
+        layout: layoutDraft,
+      });
+      if (saved !== false) setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  }, [current, currentIndex, layoutDraft, notesDraft, onUpdate, saving, titleDraft]);
 
   const goPrev = useCallback(() => {
     if (currentIndex > 0) onIndexChange(currentIndex - 1);
@@ -112,13 +149,7 @@ export default function SlidePreview({
             : "No slides yet. Generate a deck via chat."}
         </p>
         {pptxUrl && (
-          <a
-            href={pptxUrl}
-            download
-            className="mt-3 rounded-lg bg-accent/10 px-3 py-2 text-xs font-medium text-accent hover:bg-accent/20"
-          >
-            Download PPTX
-          </a>
+          <PptxDownload url={pptxUrl} />
         )}
       </div>
     );
@@ -299,9 +330,10 @@ export default function SlidePreview({
               <button
                 type="button"
                 onClick={commitEdits}
+                disabled={saving}
                 className="flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-dim"
               >
-                <Check size={13} /> Save slide
+                <Check size={13} /> {saving ? "Saving…" : "Save and regenerate"}
               </button>
             </div>
           </div>
@@ -350,14 +382,7 @@ export default function SlidePreview({
             </button>
           )}
           {pptxUrl && (
-            <a
-              href={pptxUrl}
-              download
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent/10 text-accent hover:bg-accent/20 text-xs font-medium transition"
-            >
-              <Download size={14} />
-              PPTX
-            </a>
+            <PptxDownload url={pptxUrl} />
           )}
         </div>
       </div>

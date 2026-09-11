@@ -171,6 +171,8 @@ async function installWorkbenchMocks(
     localStorage.setItem("octos_session_token", "ui-smoke-token");
     localStorage.setItem("octos_auth_token", "ui-smoke-token");
     localStorage.setItem("selected_profile", "admin");
+    localStorage.setItem("octos_identity_cache_owner", "profile:admin");
+    localStorage.setItem("octos_home_owner", "admin");
     localStorage.setItem(
       "octos-slides-projects",
       JSON.stringify([
@@ -447,6 +449,8 @@ test.describe("UI redesign shell smoke", () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/", { waitUntil: "networkidle" });
 
+    // Network idle can precede the authenticated shell replacing its loading state.
+    await expect(page.locator(".studio-glass-nav")).toBeVisible();
     const offscreenControls = await page.evaluate(() => {
       const controls = Array.from(
         document.querySelectorAll(".studio-glass-nav a, .studio-glass-nav button"),
@@ -482,6 +486,7 @@ test.describe("UI redesign shell smoke", () => {
     await page.setViewportSize({ width: 728, height: 694 });
     await page.goto("/", { waitUntil: "networkidle" });
 
+    await expect(page.locator(".studio-glass-nav")).toBeVisible();
     const geometry = await page.evaluate(() => {
       const nav = document.querySelector(".studio-glass-nav");
       const brandIcon = nav?.querySelector("img");
@@ -559,14 +564,14 @@ test.describe("UI redesign shell smoke", () => {
         });
       });
 
-    expect(await readMode()).toEqual([
+    await expect.poll(readMode).toEqual([
       { opacity: "1", pointerEvents: "auto" },
       { opacity: "0", pointerEvents: "none" },
     ]);
 
     await page.mouse.click(1320, 820);
     await page.waitForTimeout(100);
-    expect(await readMode()).toEqual([
+    await expect.poll(readMode).toEqual([
       { opacity: "1", pointerEvents: "auto" },
       { opacity: "0", pointerEvents: "none" },
     ]);
