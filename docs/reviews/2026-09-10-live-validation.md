@@ -1,6 +1,24 @@
 # Remote mini live validation — 2026-09-10
 
-Status: in progress. This document supplements the [14-finding remediation tracker](2026-09-10-remediation.md); implementation and mocked CI do not establish live acceptance.
+Status: **remote core soak passed; full feature acceptance remains incomplete**. This document supplements the [14-finding remediation tracker](2026-09-10-remediation.md). Fixes are in open [web PR #350](https://github.com/octos-org/octos-web/pull/350) and [core PR #2296](https://github.com/octos-org/octos/pull/2296).
+
+The completed run used Playwright 1.60.0 and Chromium 148.0.7778.96 **on mini3 itself**, against the isolated production `/app/` bundle. It passed **38 cycles in 30 minutes 38 seconds**, from **2026-09-11 00:42:34.928 to 01:13:13.340 UTC**, plus a final real chat check, with zero retries, browser page errors, or observed HTTP failures. Median reply/completion latency was **1.922 seconds**, p95 **2.903 seconds**. Each cycle sent a real DeepSeek request, restored one user/reply after reload, visited Slides/Sites and returned to chat; every third cycle disconnected and reconnected the browser network.
+
+The soak used web **`355c7f5`**, core **`f94d219`**, and server PID **10338**. Later slide-only fixes are tested separately; this run does not certify a different binary. Server RSS increased from 232,224 to 323,056 KiB; overlapping feature work used the same server. Browser/runner summed RSS sampled after startup ranged up to 952,544 KiB and ended at 802,768 KiB. These are shared-page-inclusive process measurements, not a memory-leak exclusion test.
+
+| Live scope | Result |
+|---|---|
+| Remote text/chat/history/reconnect soak | Passed, 30m 38s / 38 cycles |
+| Strict real core suite | Passed 5/5 on soak runtime; 5/5 in 16.6s on the final isolated build |
+| Actual generated site build, preview interaction and credential isolation | Passed |
+| Generated file rename/download/delete/persistence | Passed |
+| Account isolation, queue ownership, auth failure/revocation, calendar timezone/refresh | Passed exercised fixtures |
+| Large history / 3,335-chunk reply / accepted 36-second tool turn | Passed |
+| Image-driven deck generation, manual-edit rendering and PPTX export | Outstanding; renderer/provider capability not configured |
+| Remote voice capture, ASR/TTS, real learning lesson | Outstanding; required runtimes/providers missing |
+| External services, physical devices, public canary | Not exercised/certified |
+
+Sanitized artifacts: [manifest](evidence/2026-09-10-live/acceptance-manifest.json), [soak summary](evidence/2026-09-10-live/soak-summary.json), [per-cycle telemetry](evidence/2026-09-10-live/soak-metrics.jsonl), [process samples](evidence/2026-09-10-live/soak-process-samples.jsonl), [feature results](evidence/2026-09-10-live/feature-results.json), and [inspected screenshots](evidence/2026-09-10-live/). The chronology below retains failed/interrupted runs and the fixes they exposed.
 
 Target discovery: SSH alias `mini3` resolves to an ARM64 Mac at `69.194.3.249`. Read-only inspection found no Octos process or TCP listener. Use a dedicated, disposable instance under `/Users/cloud/.octos/outer/`, with separate profile/session directories and only synthetic test users. The browser will reach the real remote API and production `/app/` bundle through an SSH tunnel. This proves the remote mini lane; it is not a public-canary deployment certification.
 
@@ -99,3 +117,34 @@ On this eighth binary, a real long reply produces **3,335 streaming chunks and 1
 A new actual React/Vite build now recovers its initial preview automatically (#356). One run's interaction step encountered the product's approval dialog for a generated `rm -rf dist` rebuild command; the screenshot confirms an approval overlay, not a broken iframe. That attempt is retained as a failed harness run. With a build-only fixture, the complete flow passes: real model build, ES-module counter interaction, opaque iframe storage isolation, direct-preview CSP isolation, and copied signed URL in an unauthenticated context (R1/R12).
 
 Soak attempt 4 runs entirely on mini3 with runner PID 10857 and server PID 10338. Final duration, cycle counts, and result remain pending.
+
+
+Two additional slide defects were found during actual export-capability probing. [Web #361](https://github.com/octos-org/octos-web/issues/361) rejected fresh editor/presentation links and suppressed artifact polling when the standalone gateway was stopped, even though the in-process server served the real files. Both pages and the provider now use the actual authenticated file API; presentation hydration also surfaces API errors instead of rejecting an unobserved promise. Fresh editor/presentation link and error regressions pass. The complete web suite passes **1,240 tests across 168 files**; lint has zero errors and 100 existing warnings; the production build passes. Deployment follows completion of the pinned core soak.
+
+[Core #2303](https://github.com/octos-org/octos/issues/2303) tracks the first-party slide template instructing the model to invoke an intentionally hidden legacy tool. Core `55cf887` names the visible `mofa_describe_content_type` / `mofa_make` dispatcher and accurately distinguishes missing capability from an internal implementation tool. All 17 project-template tests pass. The change applies to new defaults/projects; persisted custom project instructions are preserved. Missing renderer/provider capability remains an independent acceptance gap.
+
+
+Soak attempt 4 completed **38 cycles in 1,838,412 ms**, with its final real reply verified and Playwright reporting **1 passed, 0 failed, 0 flaky**. No page-error or HTTP-failure events were recorded. Before browser teardown, 213 WebSockets had opened and 211 closed, leaving two active connections. The earlier three attempts remain failures/interrupted runs and are not counted toward this duration.
+
+After the completed soak, the ninth binary deployed web **`3b4fa70`** and core **`55cf887`** as PID **13097**, binary SHA-256 `81ef7d43856317eac2d2cf48a1212d4fbdd3ceb40936de2e0884dea724aa8504`, HTML SHA-256 `1550afc03ffb48629fd8602194b91e7b12adb0caafce114bd4150b591968ce08`. HTTP readiness and exact HTML equality were checked before tests. The same remote Chromium core suite passed **5/5 in 15.9 seconds**. Its delta is confined to slide hydration/polling and new slide instructions; the completed 30-minute soak belongs to the preceding runtime.
+
+
+Fresh editor and presentation links pass in separate Chromium contexts **on mini3** after #361. A stronger editor check waits for the real `script.js` and restored project-created transcript. It then exposed [web #362](https://github.com/octos-org/octos-web/issues/362): an incomplete deck repeatedly hydrated because its deserialized project object changed identity on every render. A controlled regression observed three hydration calls instead of one on the pre-fix code. Web `6892272` keys hydration to stable route/requirement state and reads the cached fallback inside the effect. All **1,241 unit tests**, lint with zero errors, and production build pass. A request-count assertion now covers six seconds of actual file polling.
+
+Web CI on `3b4fa70` had 30/31 mocked browser tests pass; the tablet geometry test measured no navigation while the authenticated shell was still loading. The retained trace and subsequent screenshot establish the readiness race. The mobile/tablet geometry tests now wait for visible navigation before measuring; the full local browser suite passes **31/31 in 1.6 minutes**. The production fix and test readiness changes are separate from the completed soak runtime.
+
+The empirical existing-image slide export invoked the actual visible `mofa_make` dispatcher. Its persisted task advanced `spawned → running → failed` at **2026-09-11 01:15:46.048 UTC**, with **“Gemini API key required”**. Disk inspection found **zero PPTX and zero output PNG files**. The fixture was a genuine synthetic PNG, not a fabricated output. [Capability evidence](evidence/2026-09-10-live/slides-capability.json) records this as blocked, not passed. [Core #2304](https://github.com/octos-org/octos/issues/2304) also corrects the generic background acknowledgement, which incorrectly promised audio for a slide task. Core `734e09a` says results will be delivered; task execution and state are unchanged.
+
+
+The tenth isolated binary embeds web **`6892272`** and core **`734e09a`**, PID **13638**, binary SHA-256 `ef29e46092670646b04f062ea5e56b4ee61c5c8112005fb547efcd350da6fa51`, HTML SHA-256 `de7e3be95583fefa3a6405e608dc48befbb9a36586086f657caf3a80b62302f7`. Readiness and exact served HTML were checked. Remote Chromium core acceptance passes **5/5 in 17.1 seconds**. Fresh direct editor/presentation links pass, with the editor restoring `script.js` and the real topic transcript. Across the additional six-second observation window, total file-list requests are **6 for editor and 3 for presentation**, all HTTP 200, with zero page errors; the pre-fix editor issued roughly 100. The [manifest](evidence/2026-09-10-live/acceptance-manifest.json) records these separately from the completed soak build.
+
+
+Both web CI jobs pass on runtime commit `6892272` ([run 34550310601](https://github.com/octos-org/octos-web/actions/runs/34550310601)). All backend checks passed on `f94d219`; the latest backend run for slide-template/display-string commit `734e09a` remains in progress ([run 34550188267](https://github.com/octos-org/octos/actions/runs/34550188267)). The compiled tenth binary and new-scaffold live check confirm the visible `mofa_make` dispatcher comment is deployed.
+
+The failed import probe also left historical interruption/runtime-unavailable messages after its browser closed and isolated server iterations changed. Those are retained in its private transcript; the renderer task's separately persisted failure is the capability evidence. Direct-link acceptance is repeated against a fresh real scaffold as well, so historical probe messages are not mistaken for a passing renderer flow.
+
+
+Final screenshot inspection of a fresh scaffold exposed [web #363](https://github.com/octos-org/octos-web/issues/363): the file panel invented zero-byte siblings of real files by modifying opaque server-issued file handles. It displayed duplicate `script.js` / `memory.md` rows and could advertise files absent from disk. The list adapter now returns only actual API entries, preserving each handle. Regressions cover distinct per-file handles and an asset-only directory without scaffold files. **1,243 unit tests pass**. The real direct-link runner now requires exactly one row for each scaffold file.
+
+
+The eleventh isolated binary embeds web **`433501f`** and core **`734e09a`**, PID **14072**, binary SHA-256 `eec7e8ef4b1705e4a55877d5c9b20068d3747b0d6a92ddbca15c9763890338b0`, HTML SHA-256 `33f43f7a2b90558216dda5250a2739f3c37e3f60d2b66545906e1a34995c1d16`. The remote core suite passes **5/5 in 16.6 seconds**. Both fresh direct slide routes pass again. The editor asserts exactly one `script.js`, `memory.md`, and `changelog.md` row; inspected screenshots show three actual files, with no fabricated duplicates. Editor/presentation file-list counts remain 6/3, all HTTP 200. Both web CI jobs pass on `433501f` ([run 34550826659](https://github.com/octos-org/octos-web/actions/runs/34550826659)). Backend `734e09a` CI is still running at publication, with no reported failing jobs; do not infer its completion from earlier green runs.

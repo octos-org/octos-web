@@ -11,9 +11,9 @@ try {
  const reply=page.getByTestId('assistant-message').filter({has:page.getByText(marker,{exact:true})});
  await expect(reply).toHaveCount(1);await expect(page.getByTestId('assistant-message')).toHaveCount(1);
  const text=await reply.innerText();expect(text.length).toBeGreaterThan(7000);expect(deltas).toBeGreaterThan(800);
- await page.screenshot({path:new URL('long-chat-before-reload.png',root).pathname});
+ await page.screenshot({animations:'disabled',path:new URL('long-chat-before-reload.png',root).pathname});
  await page.reload();await expect(reply).toHaveCount(1);await expect(page.getByTestId('assistant-message')).toHaveCount(1);
  expect((await reply.innerText()).length).toBeGreaterThan(7000);
  await expect(page.locator('body')).not.toContainText('[oversized field omitted]');
  console.log(JSON.stringify({event:'PASS',elapsedMs:Date.now()-started,deltas,compacted,characters:text.length,checks:['actual long streamed response','one final bubble before reload','one intact final bubble after reload']}));
-}finally{await page.screenshot({path:new URL('long-chat-last.png',root).pathname}).catch(()=>{});await browser.close();}
+}finally{await page.screenshot({animations:'disabled',path:new URL('long-chat-last.png',root).pathname}).catch(()=>{});await browser.close();}

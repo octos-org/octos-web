@@ -14,6 +14,6 @@ try{
  await page.reload();await expect(page).toHaveURL(/\/app\/login\?/);
  const login=new URL(page.url());expect(login.pathname).toBe('/app/login');expect(login.searchParams.get('redirect')).toBe(destination);
  expect(await page.evaluate(()=>Object.entries(localStorage).filter(([k,v])=>['octos_session_token','octos_auth_token'].includes(k)&&v).length)).toBe(0);
- await page.screenshot({path:new URL('expired-auth.png',root).pathname});
+ await page.screenshot({animations:'disabled',path:new URL('expired-auth.png',root).pathname});
  console.log(JSON.stringify({event:'PASS',checks:['actual session revocation','actual auth/me 401','app base preserved','path query and hash preserved in login return route']}));
 }finally{await browser.close();}

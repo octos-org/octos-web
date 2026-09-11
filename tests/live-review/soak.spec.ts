@@ -47,7 +47,7 @@ test("30-minute remote core UX soak: real chat, navigation, history, and reconne
     expect(metrics.failures.filter(f => f.status >= 500)).toEqual([]);
     metrics.record({ event: "cycle", cycle, latencyMs, elapsedMs: Date.now() - started, remoteProcess, sockets: metrics.sockets });
     console.log(`Remote soak cycle ${cycle}: reply ${latencyMs} ms, elapsed ${Math.round((Date.now() - started) / 1000)} s`);
-    if (cycle % 5 === 0) await page.screenshot({ path: info.outputPath(`cycle-${cycle}.png`) });
+    if (cycle % 5 === 0) await page.screenshot({ animations: "disabled", path: info.outputPath(`cycle-${cycle}.png`) });
     // Bound model spend while keeping the actual authenticated browser and
     // WebSockets open continuously between operations.
     if (Date.now() - started < durationMs) await page.waitForTimeout(45_000);

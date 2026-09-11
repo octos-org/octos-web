@@ -29,6 +29,6 @@ try{
  await p.reload();await expect(p.getByTestId('chat-input')).toBeVisible();
  if(await p.getByTitle('Open files panel',{exact:true}).isVisible())await p.getByTitle('Open files panel',{exact:true}).click();
  await expect(p.getByRole('button',{name:'Delete '+renamed,exact:true})).toHaveCount(0);
- await p.screenshot({path:new URL('file-mutations.png',root).pathname});
+ await p.screenshot({animations:'disabled',path:new URL('file-mutations.png',root).pathname});
  console.log(JSON.stringify({event:'PASS',checks:['real model-generated file','UI rename persists','renamed download bytes match','reload preserves rename','UI delete persists','deleted file is inaccessible','reload does not revive deleted file'],session:current}));
-}finally{await p.screenshot({path:new URL('files-last.png',root).pathname}).catch(()=>{});await b.close();}
+}finally{await p.screenshot({animations:'disabled',path:new URL('files-last.png',root).pathname}).catch(()=>{});await b.close();}

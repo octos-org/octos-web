@@ -13,12 +13,12 @@ try {
  await page.waitForTimeout(32000);
  await expect(page.getByTestId('cancel-button')).toBeVisible();
  await expect(page.locator('body')).not.toContainText('Send not confirmed within 30s.');
- await page.screenshot({path:new URL('long-turn-at-32s.png',root).pathname});
+ await page.screenshot({animations:'disabled',path:new URL('long-turn-at-32s.png',root).pathname});
  await expect(page.getByTestId('assistant-message').filter({has:page.getByText(marker,{exact:true})})).toHaveCount(1,{timeout:60000});
  await expect(page.getByTestId('cancel-button')).toHaveCount(0);
  await expect(page.getByTestId('ghost-bubble')).toHaveCount(0);
  await page.reload();await expect(page.getByTestId('assistant-message').filter({has:page.getByText(marker,{exact:true})})).toHaveCount(1);
  await expect(page.locator('body')).not.toContainText('Send not confirmed within 30s.');
- await page.screenshot({path:new URL('long-turn-complete.png',root).pathname});
+ await page.screenshot({animations:'disabled',path:new URL('long-turn-complete.png',root).pathname});
  console.log(JSON.stringify({event:'PASS',elapsedMs:Date.now()-started,checks:['actual 36-second bash turn','no false warning after 32 seconds','canonical completion','reload preserves final answer']}));
 }finally{await browser.close();}

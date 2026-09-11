@@ -1,0 +1,130 @@
+{
+  "scope": "Actual isolated mini3 runtime iterations; see the linked validation journal for build provenance. Feature browser runners reached mini3 through an SSH tunnel. Core and soak runners execute on mini3 itself.",
+  "results": [
+    {
+      "case": "account-isolation",
+      "result": {
+        "event": "PASS",
+        "checks": [
+          "actual two-account UI login/logout",
+          "cross-tab logout propagation",
+          "private site and slide indexes isolated",
+          "Home calendar configuration isolated",
+          "synthetic learning draft cleared and restored only to verified owner"
+        ]
+      }
+    },
+    {
+      "case": "calendar",
+      "result": {
+        "event": "PASS",
+        "checks": [
+          "real remote ICS fetch",
+          "local timezone display",
+          "midnight grouping",
+          "midnight feed refresh",
+          "resume feed refresh"
+        ],
+        "requests": 8
+      }
+    },
+    {
+      "case": "queue-scope",
+      "result": {
+        "event": "PASS",
+        "checks": [
+          "real delayed tool turn",
+          "queued follow-up",
+          "switch to new conversation",
+          "old completion does not reclaim active conversation"
+        ]
+      }
+    },
+    {
+      "case": "file-mutations",
+      "result": {
+        "event": "PASS",
+        "checks": [
+          "real model-generated file",
+          "UI rename persists",
+          "renamed download bytes match",
+          "reload preserves rename",
+          "UI delete persists",
+          "deleted file is inaccessible",
+          "reload does not revive deleted file"
+        ],
+        "session": "web-1789087897826-2g88nv"
+      }
+    },
+    {
+      "case": "expired-auth",
+      "result": {
+        "event": "PASS",
+        "checks": [
+          "actual session revocation",
+          "actual auth/me 401",
+          "app base preserved",
+          "path query and hash preserved in login return route"
+        ]
+      }
+    },
+    {
+      "case": "long-accepted-turn",
+      "result": {
+        "event": "PASS",
+        "elapsedMs": 40857,
+        "checks": [
+          "actual 36-second bash turn",
+          "no false warning after 32 seconds",
+          "canonical completion",
+          "reload preserves final answer"
+        ]
+      }
+    },
+    {
+      "case": "long-streamed-reply",
+      "result": {
+        "event": "PASS",
+        "elapsedMs": 33140,
+        "deltas": 3335,
+        "compacted": true,
+        "characters": 16603,
+        "checks": [
+          "actual long streamed response",
+          "one final bubble before reload",
+          "one intact final bubble after reload"
+        ]
+      }
+    },
+    {
+      "case": "large-history-restore",
+      "result": {
+        "event": "PASS",
+        "checks": [
+          "real 59KB site transcript restored",
+          "full user and final assistant text",
+          "no oversized-field placeholders",
+          "long-thread checkpoint present"
+        ],
+        "messages": 49,
+        "replay": 1,
+        "maxThreadSequence": 5061
+      }
+    },
+    {
+      "case": "site-generation-preview",
+      "result": {
+        "event": "PASS",
+        "marker": "REMOTE_SITE_1789087510440",
+        "checks": [
+          "real model build",
+          "ES module execution",
+          "counter interaction",
+          "iframe storage isolation",
+          "direct CSP storage isolation",
+          "copied signed URL in unauthenticated context"
+        ]
+      }
+    }
+  ]
+}

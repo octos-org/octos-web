@@ -1,0 +1,79 @@
+{"time":"2026-09-11T00:42:34.928Z","event":"started","remotePid":"10338","account":"review-owner","runnerHost":"macmini-3-249.local","browserVersion":"148.0.7778.96"}
+{"time":"2026-09-11T00:42:35.163Z","event":"logged_in"}
+{"time":"2026-09-11T00:42:35.163Z","event":"cycle_started","cycle":1}
+{"time":"2026-09-11T00:42:37.661Z","event":"cycle","cycle":1,"latencyMs":2187,"elapsedMs":2733,"remoteProcess":"10338 01:14 232224  29.7","sockets":{"opened":6,"closed":4}}
+{"time":"2026-09-11T00:43:22.664Z","event":"cycle_started","cycle":2}
+{"time":"2026-09-11T00:43:24.844Z","event":"cycle","cycle":2,"latencyMs":1868,"elapsedMs":49916,"remoteProcess":"10338 02:01 231344  27.5","sockets":{"opened":11,"closed":9}}
+{"time":"2026-09-11T00:44:09.841Z","event":"cycle_started","cycle":3}
+{"time":"2026-09-11T00:44:14.164Z","event":"cycle","cycle":3,"latencyMs":1877,"elapsedMs":99236,"remoteProcess":"10338 02:51 231376   1.2","sockets":{"opened":18,"closed":16}}
+{"time":"2026-09-11T00:44:59.167Z","event":"cycle_started","cycle":4}
+{"time":"2026-09-11T00:45:01.352Z","event":"cycle","cycle":4,"latencyMs":1876,"elapsedMs":146424,"remoteProcess":"10338 03:38 231504  20.8","sockets":{"opened":23,"closed":21}}
+{"time":"2026-09-11T00:45:46.355Z","event":"cycle_started","cycle":5}
+{"time":"2026-09-11T00:45:49.018Z","event":"cycle","cycle":5,"latencyMs":2366,"elapsedMs":194090,"remoteProcess":"10338 04:26 280640  94.8","sockets":{"opened":28,"closed":26}}
+{"time":"2026-09-11T00:46:34.063Z","event":"cycle_started","cycle":6}
+{"time":"2026-09-11T00:46:38.987Z","event":"cycle","cycle":6,"latencyMs":2373,"elapsedMs":244059,"remoteProcess":"10338 05:15 303184  17.4","sockets":{"opened":35,"closed":33}}
+{"time":"2026-09-11T00:47:23.989Z","event":"cycle_started","cycle":7}
+{"time":"2026-09-11T00:47:26.259Z","event":"cycle","cycle":7,"latencyMs":1869,"elapsedMs":291331,"remoteProcess":"10338 06:03 303264  18.3","sockets":{"opened":40,"closed":38}}
+{"time":"2026-09-11T00:48:11.262Z","event":"cycle_started","cycle":8}
+{"time":"2026-09-11T00:48:13.573Z","event":"cycle","cycle":8,"latencyMs":1897,"elapsedMs":338645,"remoteProcess":"10338 06:50 303392  28.1","sockets":{"opened":45,"closed":43}}
+{"time":"2026-09-11T00:48:58.576Z","event":"cycle_started","cycle":9}
+{"time":"2026-09-11T00:49:03.015Z","event":"cycle","cycle":9,"latencyMs":1870,"elapsedMs":388087,"remoteProcess":"10338 07:40 303472   0.5","sockets":{"opened":52,"closed":50}}
+{"time":"2026-09-11T00:49:48.018Z","event":"cycle_started","cycle":10}
+{"time":"2026-09-11T00:49:49.794Z","event":"cycle","cycle":10,"latencyMs":1467,"elapsedMs":434866,"remoteProcess":"10338 08:26 303472  37.7","sockets":{"opened":57,"closed":55}}
+{"time":"2026-09-11T00:50:34.849Z","event":"cycle_started","cycle":11}
+{"time":"2026-09-11T00:50:37.240Z","event":"cycle","cycle":11,"latencyMs":1899,"elapsedMs":482312,"remoteProcess":"10338 09:14 303648  35.1","sockets":{"opened":62,"closed":60}}
+{"time":"2026-09-11T00:51:22.244Z","event":"cycle_started","cycle":12}
+{"time":"2026-09-11T00:51:26.885Z","event":"cycle","cycle":12,"latencyMs":1888,"elapsedMs":531957,"remoteProcess":"10338 10:03 303792  23.9","sockets":{"opened":69,"closed":67}}
+{"time":"2026-09-11T00:52:11.887Z","event":"cycle_started","cycle":13}
+{"time":"2026-09-11T00:52:14.248Z","event":"cycle","cycle":13,"latencyMs":1869,"elapsedMs":579320,"remoteProcess":"10338 10:51 304000  39.2","sockets":{"opened":74,"closed":72}}
+{"time":"2026-09-11T00:52:59.251Z","event":"cycle_started","cycle":14}
+{"time":"2026-09-11T00:53:01.733Z","event":"cycle","cycle":14,"latencyMs":1967,"elapsedMs":626805,"remoteProcess":"10338 11:38 304192  39.3","sockets":{"opened":79,"closed":77}}
+{"time":"2026-09-11T00:53:46.736Z","event":"cycle_started","cycle":15}
+{"time":"2026-09-11T00:53:51.404Z","event":"cycle","cycle":15,"latencyMs":1908,"elapsedMs":676476,"remoteProcess":"10338 12:28 304752  26.0","sockets":{"opened":86,"closed":84}}
+{"time":"2026-09-11T00:54:36.444Z","event":"cycle_started","cycle":16}
+{"time":"2026-09-11T00:54:38.332Z","event":"cycle","cycle":16,"latencyMs":1390,"elapsedMs":723404,"remoteProcess":"10338 13:15 304784  43.0","sockets":{"opened":91,"closed":89}}
+{"time":"2026-09-11T00:55:23.336Z","event":"cycle_started","cycle":17}
+{"time":"2026-09-11T00:55:25.753Z","event":"cycle","cycle":17,"latencyMs":1922,"elapsedMs":770825,"remoteProcess":"10338 14:02 306352  53.7","sockets":{"opened":96,"closed":94}}
+{"time":"2026-09-11T00:56:10.756Z","event":"cycle_started","cycle":18}
+{"time":"2026-09-11T00:56:15.404Z","event":"cycle","cycle":18,"latencyMs":1909,"elapsedMs":820476,"remoteProcess":"10338 14:52 319664  31.1","sockets":{"opened":102,"closed":100}}
+{"time":"2026-09-11T00:57:00.407Z","event":"cycle_started","cycle":19}
+{"time":"2026-09-11T00:57:03.333Z","event":"cycle","cycle":19,"latencyMs":2423,"elapsedMs":868405,"remoteProcess":"10338 15:40 319856  48.1","sockets":{"opened":107,"closed":105}}
+{"time":"2026-09-11T00:57:48.336Z","event":"cycle_started","cycle":20}
+{"time":"2026-09-11T00:57:50.710Z","event":"cycle","cycle":20,"latencyMs":1871,"elapsedMs":915782,"remoteProcess":"10338 16:27 319952  47.5","sockets":{"opened":112,"closed":110}}
+{"time":"2026-09-11T00:58:35.763Z","event":"cycle_started","cycle":21}
+{"time":"2026-09-11T00:58:40.032Z","event":"cycle","cycle":21,"latencyMs":1502,"elapsedMs":965104,"remoteProcess":"10338 17:17 320000  38.6","sockets":{"opened":119,"closed":117}}
+{"time":"2026-09-11T00:59:25.034Z","event":"cycle_started","cycle":22}
+{"time":"2026-09-11T00:59:27.441Z","event":"cycle","cycle":22,"latencyMs":1909,"elapsedMs":1012513,"remoteProcess":"10338 18:04 319984  44.5","sockets":{"opened":124,"closed":122}}
+{"time":"2026-09-11T01:00:12.444Z","event":"cycle_started","cycle":23}
+{"time":"2026-09-11T01:00:15.363Z","event":"cycle","cycle":23,"latencyMs":2423,"elapsedMs":1060435,"remoteProcess":"10338 18:52 320080  55.6","sockets":{"opened":129,"closed":127}}
+{"time":"2026-09-11T01:01:00.366Z","event":"cycle_started","cycle":24}
+{"time":"2026-09-11T01:01:06.018Z","event":"cycle","cycle":24,"latencyMs":2903,"elapsedMs":1111090,"remoteProcess":"10338 19:43 320560  18.7","sockets":{"opened":136,"closed":134}}
+{"time":"2026-09-11T01:01:51.021Z","event":"cycle_started","cycle":25}
+{"time":"2026-09-11T01:01:55.435Z","event":"cycle","cycle":25,"latencyMs":3915,"elapsedMs":1160507,"remoteProcess":"10338 20:32 320912  56.3","sockets":{"opened":141,"closed":139}}
+{"time":"2026-09-11T01:02:40.482Z","event":"cycle_started","cycle":26}
+{"time":"2026-09-11T01:02:43.008Z","event":"cycle","cycle":26,"latencyMs":1926,"elapsedMs":1208080,"remoteProcess":"10338 21:20 320944  41.2","sockets":{"opened":145,"closed":143}}
+{"time":"2026-09-11T01:03:28.011Z","event":"cycle_started","cycle":27}
+{"time":"2026-09-11T01:03:33.395Z","event":"cycle","cycle":27,"latencyMs":2516,"elapsedMs":1258467,"remoteProcess":"10338 22:10 320880  43.8","sockets":{"opened":152,"closed":150}}
+{"time":"2026-09-11T01:04:18.397Z","event":"cycle_started","cycle":28}
+{"time":"2026-09-11T01:04:20.933Z","event":"cycle","cycle":28,"latencyMs":1929,"elapsedMs":1306005,"remoteProcess":"10338 22:57 321216  58.3","sockets":{"opened":157,"closed":155}}
+{"time":"2026-09-11T01:05:05.939Z","event":"cycle_started","cycle":29}
+{"time":"2026-09-11T01:05:09.083Z","event":"cycle","cycle":29,"latencyMs":2432,"elapsedMs":1354155,"remoteProcess":"10338 23:46 321280  49.2","sockets":{"opened":162,"closed":160}}
+{"time":"2026-09-11T01:05:54.086Z","event":"cycle_started","cycle":30}
+{"time":"2026-09-11T01:05:59.058Z","event":"cycle","cycle":30,"latencyMs":1917,"elapsedMs":1404130,"remoteProcess":"10338 24:36 321488  43.6","sockets":{"opened":169,"closed":167}}
+{"time":"2026-09-11T01:06:44.095Z","event":"cycle_started","cycle":31}
+{"time":"2026-09-11T01:06:47.236Z","event":"cycle","cycle":31,"latencyMs":2438,"elapsedMs":1452308,"remoteProcess":"10338 25:24 321520  60.2","sockets":{"opened":174,"closed":172}}
+{"time":"2026-09-11T01:07:32.238Z","event":"cycle_started","cycle":32}
+{"time":"2026-09-11T01:07:34.867Z","event":"cycle","cycle":32,"latencyMs":1922,"elapsedMs":1499939,"remoteProcess":"10338 26:11 321696  64.4","sockets":{"opened":179,"closed":177}}
+{"time":"2026-09-11T01:08:19.869Z","event":"cycle_started","cycle":33}
+{"time":"2026-09-11T01:08:25.345Z","event":"cycle","cycle":33,"latencyMs":2425,"elapsedMs":1550417,"remoteProcess":"10338 27:02 322048  43.1","sockets":{"opened":186,"closed":184}}
+{"time":"2026-09-11T01:09:10.347Z","event":"cycle_started","cycle":34}
+{"time":"2026-09-11T01:09:13.478Z","event":"cycle","cycle":34,"latencyMs":2426,"elapsedMs":1598550,"remoteProcess":"10338 27:50 322224  65.3","sockets":{"opened":191,"closed":189}}
+{"time":"2026-09-11T01:09:58.481Z","event":"cycle_started","cycle":35}
+{"time":"2026-09-11T01:10:01.095Z","event":"cycle","cycle":35,"latencyMs":1912,"elapsedMs":1646167,"remoteProcess":"10338 28:38 322400  69.8","sockets":{"opened":196,"closed":194}}
+{"time":"2026-09-11T01:10:46.134Z","event":"cycle_started","cycle":36}
+{"time":"2026-09-11T01:10:51.116Z","event":"cycle","cycle":36,"latencyMs":1929,"elapsedMs":1696188,"remoteProcess":"10338 29:28 322688  54.5","sockets":{"opened":203,"closed":201}}
+{"time":"2026-09-11T01:11:36.119Z","event":"cycle_started","cycle":37}
+{"time":"2026-09-11T01:11:38.765Z","event":"cycle","cycle":37,"latencyMs":1936,"elapsedMs":1743837,"remoteProcess":"10338 30:15 321856  69.9","sockets":{"opened":208,"closed":206}}
+{"time":"2026-09-11T01:12:23.768Z","event":"cycle_started","cycle":38}
+{"time":"2026-09-11T01:12:26.399Z","event":"cycle","cycle":38,"latencyMs":1925,"elapsedMs":1791471,"remoteProcess":"10338 31:03 323056  76.0","sockets":{"opened":213,"closed":211}}
+{"time":"2026-09-11T01:13:13.340Z","event":"complete","elapsedMs":1838412,"cycles":38,"latencies":[2187,1868,1877,1876,2366,2373,1869,1897,1870,1467,1899,1888,1869,1967,1908,1390,1922,1909,2423,1871,1502,1909,2423,2903,3915,1926,2516,1929,2432,1917,2438,1922,2425,2426,1912,1929,1936,1925],"sockets":{"opened":213,"closed":211}}

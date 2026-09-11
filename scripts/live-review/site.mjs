@@ -37,12 +37,12 @@ try {
       await expect(direct.locator('#isolation')).toHaveText('parent blocked; self blocked');
       await direct.getByRole('button',{name:'Count 0',exact:true}).click();
       await expect(direct.getByRole('button',{name:'Count 1',exact:true})).toBeVisible();
-      await direct.screenshot({path:new URL('site-direct.png',root).pathname});
+      await direct.screenshot({animations:'disabled',path:new URL('site-direct.png',root).pathname});
     }finally{await fresh.close();}
-    await page.screenshot({path:new URL('site-iframe.png',root).pathname});
+    await page.screenshot({animations:'disabled',path:new URL('site-iframe.png',root).pathname});
     console.log(JSON.stringify({event:'PASS',marker,checks:['real model build','ES module execution','counter interaction','iframe storage isolation','direct CSP storage isolation','copied signed URL in unauthenticated context']}));
     break;
   }
   if(i===35)throw Error('Generated site did not reach a functional preview within six minutes');
  }
-} finally { await page.screenshot({path:new URL('site-last.png',root).pathname}).catch(()=>{});await browser.close(); }
+} finally { await page.screenshot({animations:'disabled',path:new URL('site-last.png',root).pathname}).catch(()=>{});await browser.close(); }
