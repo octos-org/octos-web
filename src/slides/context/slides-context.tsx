@@ -8,7 +8,6 @@ import {
   type ReactNode,
 } from "react";
 
-import { getMyProfileStatus } from "@/settings/settings-api";
 
 import type { SlidesProject, Slide, SlideEditDocument } from "../types";
 import { getIdentityGeneration, getToken } from "@/api/client";
@@ -102,13 +101,6 @@ export function SlidesProvider({
           updateSlidesProject(latest.id, { manualEdits: edits, slides: edits.slides });
           projectRef.current = latest;
           reload();
-        }
-
-        const profileStatus = await getMyProfileStatus();
-        if (stopped || !isCurrent()) return;
-        if (profileStatus?.running === false) {
-          idleStreak += 1;
-          return;
         }
 
         // List BOTH the scaffold dir and the plugin-output dir. The

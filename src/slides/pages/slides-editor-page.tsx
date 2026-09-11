@@ -1,6 +1,5 @@
 import { useParams, useNavigate } from "react-router-dom";
 import { useState, useEffect, useCallback } from "react";
-import { getMyProfileStatus } from "@/settings/settings-api";
 
 import { SlidesProvider, useSlides } from "../context/slides-context";
 import { SlidesEditorLayout } from "../layouts/slides-editor-layout";
@@ -112,16 +111,6 @@ export function SlidesEditorPage() {
 
     async function hydrate() {
       try {
-        const profileStatus = await getMyProfileStatus();
-        if (stopped) return;
-        if (profileStatus?.running === false) {
-          if (!project) {
-            setHydrateError(
-              "Local runtime is stopped. Start this profile from Settings > Server to load this deck.",
-            );
-          }
-          return;
-        }
         const nextProject = await hydrateSlidesProjectFromSession(sessionId);
         if (stopped) return;
 

@@ -93,7 +93,7 @@ describe('Slide edits survive unchanged backend polling', () => {
     const { result } = renderHook(useSlides, { wrapper: deckWrapper });
     await waitFor(() => expect(result.current.project?.slides).toEqual(slides));
     expect(getSlidesProject('slides-review')?.manualEdits?.revision).toBe('restored');
-    expect(mocks.listSlidesFiles).not.toHaveBeenCalled();
+    expect(mocks.listSlidesFiles).toHaveBeenCalled();
   });
   it('keeps reordered metadata aligned with the confirmed new images and export', async () => {
     vi.useFakeTimers(); seedDeck();
