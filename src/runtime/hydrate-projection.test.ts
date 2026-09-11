@@ -171,3 +171,36 @@ it("cannot use a checkpoint to conceal a malformed snapshot gap", () => {
   expect(ProjectionStore.ingest(session, { ...event, seq: 4 }).gapDetected).toBe(true);
   ProjectionStore.__resetProjectionForTests();
 });
+
+it("keeps an older retained turn between compacted transcript turns across reload", () => {
+  ProjectionStore.__resetProjectionForTests();
+  const session = "mixed-weather-history";
+  const names = ["Shanghai", "Beijing", "Saratoga", "San Francisco"];
+  const messages = names.flatMap((name, index) => [
+    { seq: index * 2, thread_id: name, role: "user" as const, content: name },
+    { seq: index * 2 + 1, thread_id: name, role: "assistant" as const, content: `${name} answer` },
+  ]);
+  const retained: ProjectionEnvelopeV2[] = [
+    { session_id: session, thread_id: "Beijing", turn_id: "Beijing", seq: 1,
+      payload: { type: "user_message", data: { text: "Beijing", files: [] } } },
+    { session_id: session, thread_id: "Beijing", turn_id: "Beijing", seq: 2,
+      payload: { type: "assistant_persisted", data: { text: "Beijing answer", assistant_segment_id: "beijing-answer",
+        meta: { message_id: "beijing-answer", persisted_at: "2026-09-11T03:53:57Z" } } } },
+    { session_id: session, thread_id: "Beijing", turn_id: "Beijing", seq: 3,
+      payload: { type: "turn_terminal", data: { outcome: "completed" } } },
+  ];
+  const hydrate = { session_id: session, messages, replayed_projection_envelopes: retained,
+    cursor: { stream: session, seq: 6000 },
+    projection_thread_sequences: { Shanghai: 2000, Beijing: 3, Saratoga: 2000, "San Francisco": 1000 } };
+  for (let reload = 0; reload < 3; reload++) {
+    const envelopes = hydrateProjectionEnvelopes(session, undefined, hydrate)!;
+    ProjectionStore.beginSnapshot(session);
+    ProjectionStore.replaceSnapshot(session, envelopes, hydrate.cursor, hydrate.projection_thread_sequences);
+    const threads = projectionToRenderThreads(ProjectionStore.getProjection(session));
+    expect(threads.map(thread => thread.userMsg.text)).toEqual(names);
+    expect(threads.map(thread => thread.responses.map(message => message.text))).toEqual(names.map(name => [`${name} answer`]));
+    expect(envelopes.filter(entry => entry.thread_id === "Beijing").map(entry => entry.seq)).toEqual([1, 2, 3]);
+    expect(ProjectionStore.hasRehydrateGap(session)).toBe(false);
+  }
+  ProjectionStore.__resetProjectionForTests();
+});

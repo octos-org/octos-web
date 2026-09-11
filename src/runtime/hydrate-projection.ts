@@ -66,6 +66,7 @@ export function hydrateProjectionEnvelopes(
   if (hydrate.messages === undefined) return null;
 
   const envelopes: ProjectionEnvelopeV2[] = [];
+  const transcriptThreadOrder = new Map<string, number>();
   const nextSeqByThread = new Map<string, number>();
   const nextSeq = (threadId: string) => {
     const seq = (nextSeqByThread.get(threadId) ?? 0) + 1;
@@ -83,6 +84,9 @@ export function hydrateProjectionEnvelopes(
     left.seq - right.seq)) {
     const threadId = messageThreadId(message);
     if (!threadId) continue;
+    if (!transcriptThreadOrder.has(threadId)) {
+      transcriptThreadOrder.set(threadId, transcriptThreadOrder.size);
+    }
     const turnId = message.turn_id ?? message.thread_id ?? threadId;
     const common = {
       session_id: sessionId,
@@ -197,7 +201,15 @@ export function hydrateProjectionEnvelopes(
     // Preserve exact retained coordinates. Re-sequencing a live thread's
     // transcript as 1,2 made its next seq=10 terminal look like a permanent
     // gap, stranding queues and optimistic messages (#353).
-    return [...envelopes.filter((entry) => !replaced.has(entry.thread_id)), ...canonical];
+    // Complete retained turns can be older than compacted transcript turns.
+    // Keep their transcript position when replacing the synthetic envelopes;
+    // appending all retained turns made old questions reappear after the latest
+    // answer. Stable sorting preserves each thread's canonical coordinates and
+    // leaves live/background-only threads in their retained order at the end.
+    return [...envelopes.filter((entry) => !replaced.has(entry.thread_id)), ...canonical]
+      .sort((left, right) =>
+        (transcriptThreadOrder.get(left.thread_id) ?? Number.MAX_SAFE_INTEGER)
+        - (transcriptThreadOrder.get(right.thread_id) ?? Number.MAX_SAFE_INTEGER));
   }
 
   return envelopes;
