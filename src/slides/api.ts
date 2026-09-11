@@ -110,17 +110,12 @@ export async function listSlidesFiles(
   dirs: string | string[],
   options: ListSlidesFilesOptions = {},
 ): Promise<SlidesFileEntry[]> {
-  const { filtered, requestedDirs } = await fetchSlidesFiles(dirs, options);
-  return ensureCoreSlidesFiles(filtered, requestedDirs);
+  const { filtered } = await fetchSlidesFiles(dirs, options);
+  return filtered;
 }
 
-// Codex round-3 BLOCK D.a: artifact-presence checks (e.g. the
-// scaffold poller) must NOT route through `ensureCoreSlidesFiles`,
-// which synthesizes zero-byte placeholders for the core trio
-// (script.js / memory.md / changelog.md) whenever ANY file lives
-// under `slides/<slug>`. The synthesizer makes a "do all three exist"
-// check trivially true, masking real scaffold failures. The raw API
-// returns only what the server actually saw on disk.
+// Artifact checks and file panels both use actual server-issued entries.
+// Opaque handles cannot be used to synthesize sibling files.
 export async function listSlidesFilesRaw(
   dirs: string | string[],
   options: ListSlidesFilesOptions = {},
@@ -583,56 +578,6 @@ function fileMatchesSlidesDir(
   }
 
   return normalizedPath.includes(`/${normalizedDir}/`);
-}
-
-function ensureCoreSlidesFiles(
-  files: SlidesFileEntry[],
-  requestedDirs: string[],
-): SlidesFileEntry[] {
-  const nextFiles = [...files];
-  const seenPaths = new Set(
-    nextFiles.map((file) => normalizeSlidesDir(file.path)),
-  );
-
-  for (const dir of requestedDirs) {
-    const parts = dir.split("/");
-    if (!(parts[0] === "slides" && parts.length === 2)) continue;
-
-    const dirFiles = nextFiles.filter((file) =>
-      fileMatchesSlidesDir(file, dir),
-    );
-    const rootFile =
-      dirFiles.find((file) => normalizeSlidesDir(file.group) === dir) ??
-      dirFiles[0];
-    if (!rootFile) continue;
-
-    const normalizedRootPath = rootFile.path.replace(/\\/g, "/");
-    const projectRoot = normalizedRootPath.slice(
-      0,
-      normalizedRootPath.lastIndexOf("/"),
-    );
-    if (!projectRoot) continue;
-
-    for (const filename of ["script.js", "memory.md", "changelog.md"]) {
-      const path = `${projectRoot}/${filename}`;
-      const normalizedPath = normalizeSlidesDir(path);
-      if (seenPaths.has(normalizedPath)) continue;
-
-      nextFiles.push({
-        filename,
-        path,
-        size: 0,
-        modified: rootFile.modified,
-        category: /\.(md|markdown|txt|js|ts|tsx|jsx|json)$/i.test(filename)
-          ? "report"
-          : rootFile.category,
-        group: dir,
-      });
-      seenPaths.add(normalizedPath);
-    }
-  }
-
-  return nextFiles;
 }
 
 function normalizeSlidesManifest(
