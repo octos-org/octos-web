@@ -18,13 +18,20 @@ export async function send(page: Page, text: string) {
   await page.getByTestId("chat-input").fill(text);
   await page.getByTestId("send-button").click();
 }
+export function assistantReply(page: Page, marker: string) {
+  // Match rendered reply text independently from its adjacent timestamp.
+  // `_1` followed by `17:05` otherwise falsely matches marker `_11`.
+  return page.getByTestId("assistant-message").filter({ has: page.getByText(marker, { exact: true }) });
+}
 export async function chat(page: Page, marker: string) {
   const start = Date.now();
   await send(page, `Reply exactly ${marker}. Do not use tools.`);
-  await expect(page.getByTestId("assistant-message").filter({ hasText: marker })).toHaveCount(1, { timeout: 120_000 });
+  await expect(assistantReply(page, marker)).toHaveCount(1, { timeout: 120_000 });
   await expect(page.getByTestId("ghost-bubble")).toHaveCount(0, { timeout: 30_000 });
   await expect(page.getByTestId("user-message").filter({ hasText: marker })).toHaveCount(1);
   await expect(page.locator("body")).not.toContainText("1969-12-31");
+  await expect(page.getByTestId("cancel-button")).toHaveCount(0, { timeout: 30_000 });
+  await expect(page.locator("body")).not.toContainText("connection closed before turn completed");
   return Date.now() - start;
 }
 export function telemetry(page: Page, info: TestInfo) {

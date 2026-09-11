@@ -418,6 +418,7 @@ export function replaceSnapshot(
   storeKey: string,
   snapshot: ReadonlyArray<ProjectionEnvelopeV2>,
   watermark?: ProjectionEnvelopeV2Cursor | null,
+  threadSequences?: Readonly<Record<string, number>>,
 ): void {
   const state = stateFor(storeKey);
   // Include frames that landed just before the snapshot transition as well
@@ -435,6 +436,17 @@ export function replaceSnapshot(
   // per-thread order and catches a malformed/non-contiguous snapshot.
   for (const envelope of snapshot) {
     ingestCanonical(storeKey, state, envelope);
+  }
+  // Compact transcript snapshots have fewer rows than the live event stream.
+  // Only a server checkpoint paired with this snapshot's cursor can advance
+  // their continuation sequence. Never use it to excuse malformed row gaps.
+  if (effectiveWatermark?.stream && threadSequences) {
+    for (const [thread, seq] of Object.entries(threadSequences)) {
+      const next = state.expectedByThread.get(thread) ?? 1;
+      if (Number.isSafeInteger(seq) && seq >= next - 1 && !state.pendingByThread.has(thread)) {
+        state.expectedByThread.set(thread, seq + 1);
+      }
+    }
   }
   // A server snapshot watermark is trustworthy only when the admitted
   // snapshot is contiguous within each thread. (Global cursor continuity is
@@ -551,6 +563,17 @@ export function hasCmid(storeKey: string, clientMessageId: string): boolean {
 export function hasUserForTurn(storeKey: string, turnId: string): boolean {
   return getProjection(storeKey).threads.some((thread) =>
     thread.turn_id === turnId && thread.user !== null);
+}
+
+/** Canonical output proves the pinned turn reached the server even when its
+ * user transcript row is only persisted at the end of a long tool turn. */
+export function hasTurnActivity(storeKey: string, turnId: string): boolean {
+  for (const frames of stateFor(storeKey).appliedByThread.values()) {
+    for (const frame of frames.values()) {
+      if (frame.turn_id === turnId) return true;
+    }
+  }
+  return false;
 }
 
 export function threadIdForCmid(storeKey: string, clientMessageId: string): string | undefined {

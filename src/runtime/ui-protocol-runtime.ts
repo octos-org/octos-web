@@ -453,6 +453,7 @@ function runHydrateFor(
         projectionKey,
         envelopes,
         cursor?.stream ? cursor : null,
+        hydrate.projection_thread_sequences,
       );
     } finally {
       if (ownsProjectionSnapshot) {

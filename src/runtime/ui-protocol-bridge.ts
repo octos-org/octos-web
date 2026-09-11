@@ -1058,6 +1058,12 @@ export function guardSessionHydrate(p: unknown): SessionHydrateResult | null {
   const replayedProjectionEnvelopes = Array.isArray(p.replayed_projection_envelopes)
     ? p.replayed_projection_envelopes.slice()
     : undefined;
+  const projectionThreadSequences = isPlainObject(p.projection_thread_sequences)
+    ? Object.fromEntries(Object.entries(p.projection_thread_sequences).filter(
+        (entry): entry is [string, number] => entry[0].length > 0
+          && typeof entry[1] === "number" && Number.isSafeInteger(entry[1]) && entry[1] >= 0,
+      ))
+    : undefined;
   const projectionEnvelopes = Array.isArray(p.projection_envelopes)
     ? p.projection_envelopes.slice()
     : undefined;
@@ -1096,6 +1102,9 @@ export function guardSessionHydrate(p: unknown): SessionHydrateResult | null {
       : {}),
     ...(replayedProjectionEnvelopes !== undefined
       ? { replayed_projection_envelopes: replayedProjectionEnvelopes }
+      : {}),
+    ...(projectionThreadSequences !== undefined
+      ? { projection_thread_sequences: projectionThreadSequences }
       : {}),
     ...(projectionEnvelopes !== undefined
       ? { projection_envelopes: projectionEnvelopes }

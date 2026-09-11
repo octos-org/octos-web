@@ -167,7 +167,17 @@ export function hydrateProjectionEnvelopes(
       entries.sort((left, right) => left.seq - right.seq);
       // A bounded retained tail is not a complete thread snapshot. Keep the
       // transcript fallback for older threads whose beginning was evicted.
-      if (entries.some((entry, index) => entry.seq !== index + 1)) continue;
+      if (entries.some((entry, index) => entry.seq !== index + 1)) {
+        // A compacted/evicted event prefix falls back to durable transcript
+        // rows. Preserve its terminal too; the server checkpoint separately
+        // establishes the next live sequence after this reconstructed view.
+        if (hydrate.projection_thread_sequences?.[threadId] !== undefined && users.has(threadId)) {
+          for (const entry of entries) {
+            if (entry.payload.type === "turn_terminal") envelopes.push({ ...entry, seq: nextSeq(threadId) });
+          }
+        }
+        continue;
+      }
       const terminal = entries.some((entry) => entry.payload.type === "turn_terminal");
       const user = users.get(threadId);
       // Rolled-back durable turns remain in the event log. Do not resurrect

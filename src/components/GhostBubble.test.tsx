@@ -220,6 +220,21 @@ describe("GhostBubble", () => {
     harness.unmount();
   });
 
+  it("keeps a long accepted turn pending without a false send failure", () => {
+    const onSettle = vi.fn();
+    const harness = mount(<GhostBubble clientMessageId="long-turn" text="still working" files={[]}
+      sessionId={sessionId} onSettle={onSettle} />);
+    act(() => {
+      ProjectionStore.ingest(sessionId, { session_id: sessionId, thread_id: "long-turn", turn_id: "long-turn", seq: 1,
+        payload: { type: "assistant_delta", data: { text: "Working", assistant_segment_id: "segment" } } });
+    });
+    act(() => { vi.advanceTimersByTime(GHOST_SETTLE_TIMEOUT_MS + 1); });
+    expect(harness.container.querySelector('[data-testid="ghost-bubble-error"]')).toBeNull();
+    expect(harness.container.querySelector('[data-testid="ghost-bubble-text"]')?.textContent).toBe("still working");
+    expect(onSettle).not.toHaveBeenCalled();
+    harness.unmount();
+  });
+
   it("strips the rpc-error protocol prefix from display but keeps it in the tooltip", () => {
     const harness = mount(
       <GhostBubble

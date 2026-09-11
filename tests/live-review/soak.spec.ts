@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { expect, test } from "@playwright/test";
-import { appUrl, chat, credentials, login, telemetry } from "./helpers";
+import { appUrl, assistantReply, chat, credentials, login, telemetry } from "./helpers";
 
 test("30-minute remote core UX soak: real chat, navigation, history, and reconnect", async ({ page, context }, info) => {
   test.setTimeout(35 * 60_000);
@@ -18,24 +18,24 @@ test("30-minute remote core UX soak: real chat, navigation, history, and reconne
   let cycle = 0;
   do {
     cycle++;
-    const marker = `REMOTE_SOAK_${started}_${cycle}`;
+    const marker = `REMOTE_SOAK_${started}_${cycle}_END`;
     metrics.record({ event: "cycle_started", cycle });
     const latencyMs = await chat(page, marker);
     latencies.push(latencyMs);
     await page.reload();
-    await expect(page.getByTestId("assistant-message").filter({ hasText: marker })).toHaveCount(1);
+    await expect(assistantReply(page, marker)).toHaveCount(1);
     await expect(page.getByTestId("user-message").filter({ hasText: marker })).toHaveCount(1);
     await page.goto(appUrl(cycle % 2 ? "slides" : "sites"));
     await expect(page.getByRole("heading", { name: cycle % 2 ? "Slides" : "Site Studio", exact: true })).toBeVisible();
     await page.goto(appUrl("chat"));
     await expect(page.getByTestId("chat-input")).toBeVisible();
-    await expect(page.getByTestId("assistant-message").filter({ hasText: marker })).toHaveCount(1);
+    await expect(assistantReply(page, marker)).toHaveCount(1);
     if (cycle % 3 === 0) {
       await context.setOffline(true);
       await page.waitForTimeout(2000);
       await context.setOffline(false);
       await page.reload();
-      await expect(page.getByTestId("assistant-message").filter({ hasText: marker })).toHaveCount(1);
+      await expect(assistantReply(page, marker)).toHaveCount(1);
     }
     const remoteProcess = execFileSync("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", alias,
       `ps -p ${pid} -o pid=,etime=,rss=,%cpu=`], { encoding: "utf8", timeout: 15_000 }).trim();

@@ -124,3 +124,50 @@ it("keeps a live thread's sequence through transcript hydration and admits its n
   expect(threads.some((thread) => thread.thread_id === "older")).toBe(true);
   ProjectionStore.__resetProjectionForTests();
 });
+
+it("restores a compacted long turn and continues at its server checkpoint", () => {
+  ProjectionStore.__resetProjectionForTests();
+  const session = "compacted-live";
+  const hydrate = {
+    session_id: session, cursor: { stream: session, seq: 7000 },
+    messages: [
+      { seq: 0, thread_id: "long", role: "user" as const, content: "preserved question", persisted_at: "2026-09-10T23:10:38Z" },
+      { seq: 1, thread_id: "long", role: "assistant" as const, content: "preserved answer", persisted_at: "2026-09-10T23:10:39Z" },
+    ],
+    replayed_projection_envelopes: [],
+    projection_thread_sequences: { long: 5000 },
+  };
+  const envelopes = hydrateProjectionEnvelopes(session, undefined, hydrate)!;
+  ProjectionStore.beginSnapshot(session);
+  ProjectionStore.replaceSnapshot(session, envelopes, hydrate.cursor, hydrate.projection_thread_sequences);
+  const terminal: ProjectionEnvelopeV2 = { session_id: session, thread_id: "long", turn_id: "long", seq: 5001,
+    cursor: { stream: session, seq: 7001 }, payload: { type: "turn_terminal", data: { outcome: "completed" } } };
+  expect(ProjectionStore.ingest(session, terminal).accepted).toBe(true);
+  const rendered = projectionToRenderThreads(ProjectionStore.getProjection(session));
+  expect(rendered[0].userMsg.text).toBe("preserved question");
+  expect(ProjectionStore.getProjection(session).threads[0].terminal?.outcome).toBe("completed");
+  expect(ProjectionStore.hasRehydrateGap(session)).toBe(false);
+
+  // A reload after completion retains terminal state without the thousands
+  // of streaming chunks, and ignores an already-covered terminal replay.
+  const completed = { ...hydrate, cursor: terminal.cursor!,
+    replayed_projection_envelopes: [terminal], projection_thread_sequences: { long: 5001 } };
+  ProjectionStore.beginSnapshot(session);
+  ProjectionStore.replaceSnapshot(session, hydrateProjectionEnvelopes(session, undefined, completed)!,
+    completed.cursor, completed.projection_thread_sequences);
+  expect(ProjectionStore.getProjection(session).threads[0].terminal?.outcome).toBe("completed");
+  expect(ProjectionStore.ingest(session, terminal).duplicate).toBe(true);
+  ProjectionStore.__resetProjectionForTests();
+});
+
+it("cannot use a checkpoint to conceal a malformed snapshot gap", () => {
+  ProjectionStore.__resetProjectionForTests();
+  const session = "invalid-checkpoint";
+  const event: ProjectionEnvelopeV2 = { session_id: session, thread_id: "turn", turn_id: "turn", seq: 3,
+    payload: { type: "assistant_delta", data: { text: "gap", assistant_segment_id: "segment" } } };
+  ProjectionStore.beginSnapshot(session);
+  ProjectionStore.replaceSnapshot(session, [event], { stream: session, seq: 10 }, { turn: 3 });
+  expect(ProjectionStore.hasRehydrateGap(session)).toBe(true);
+  expect(ProjectionStore.ingest(session, { ...event, seq: 4 }).gapDetected).toBe(true);
+  ProjectionStore.__resetProjectionForTests();
+});
