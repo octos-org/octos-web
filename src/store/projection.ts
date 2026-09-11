@@ -276,6 +276,24 @@ function applyEnvelope(state: MutableThread, envelope: ProjectionEnvelopeV2): vo
       return;
     case "assistant_persisted": {
       const segment = ensureSegment(state, payload.data.assistant_segment_id, envelope.seq);
+      // A compact hydrate uses the durable message ID as its temporary
+      // segment ID. The transcript read can include a just-persisted row
+      // ahead of the ledger watermark, followed by its canonical live frame.
+      // Reconcile by that exact identity, never by matching answer text.
+      const hydrated = state.segments.get(payload.data.meta.message_id);
+      if (hydrated && hydrated !== segment && hydrated.persisted
+        && hydrated.meta?.message_id === payload.data.meta.message_id) {
+        for (const file of hydrated.files) addFile(segment.files, file);
+        for (const toolId of hydrated.toolCallIds) {
+          if (!segment.toolCallIds.includes(toolId)) segment.toolCallIds.push(toolId);
+          const tool = state.tools.get(toolId);
+          if (tool?.assistant_segment_id === hydrated.assistant_segment_id) {
+            tool.assistant_segment_id = segment.assistant_segment_id;
+          }
+        }
+        state.segments.delete(hydrated.assistant_segment_id);
+        state.segmentOrder = state.segmentOrder.filter((id) => id !== hydrated.assistant_segment_id);
+      }
       state.activeSegmentId = segment.assistant_segment_id;
       segment.text = payload.data.text;
       segment.meta = payload.data.meta;

@@ -10,6 +10,7 @@ import {
 
 import { type SignedPreviewResponse, signPreview } from "../api";
 import { ApiError } from "@/api/client";
+import * as ProjectionStore from "@/store/projection-store";
 
 interface Props {
   /** Legacy project location; executable navigation uses a signed URL. */
@@ -17,6 +18,7 @@ interface Props {
   siteName: string;
   template: string;
   sessionId?: string;
+  historyTopic?: string;
   scaffoldError?: string;
   /** Profile id the active site lives under. Required for signing. */
   profileId?: string | null;
@@ -49,6 +51,7 @@ export function SitePreview({
   siteName,
   template,
   sessionId,
+  historyTopic,
   scaffoldError,
   profileId,
   slug,
@@ -279,8 +282,16 @@ export function SitePreview({
     window.addEventListener("crew:task_status", handleEvent);
     window.addEventListener("crew:tool_progress", handleEvent);
     document.addEventListener("visibilitychange", handleVisibilityChange);
+    const scope = ProjectionStore.projectionStoreKey(sessionId, historyTopic);
+    const unsubscribeProjection = ProjectionStore.onEnvelopeAdmitted((key, envelope) => {
+      if (key !== scope) return;
+      if (envelope.payload.type === "tool_end" || envelope.payload.type === "turn_terminal") {
+        scheduleEventRefresh();
+      }
+    });
 
     return () => {
+      unsubscribeProjection();
       if (eventRefreshTimer.current !== null) {
         window.clearTimeout(eventRefreshTimer.current);
         eventRefreshTimer.current = null;
@@ -292,7 +303,7 @@ export function SitePreview({
       window.removeEventListener("crew:tool_progress", handleEvent);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [previewUrl, sessionId, triggerRefresh]);
+  }, [previewUrl, sessionId, historyTopic, triggerRefresh]);
 
   const iframeUrl = useMemo(() => {
     if (!signed?.preview_url) return "";

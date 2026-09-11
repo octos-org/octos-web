@@ -37,6 +37,27 @@ const meta = (id: string) => ({
 });
 
 describe("canonical projection v2", () => {
+  it("reconciles a compact hydrate row with its buffered canonical persisted segment", () => {
+    const messages = project([
+      envelope(1, { type: "assistant_persisted", data: {
+        assistant_segment_id: "durable-id", text: "One final answer", meta: meta("durable-id"),
+      } }),
+      envelope(2, { type: "tool_start", data: { tool_call_id: "build", name: "bash" } }),
+      envelope(3, { type: "tool_end", data: { tool_call_id: "build", status: "complete" } }),
+      envelope(4, { type: "file_attached", data: { path: "output.txt", mime: "text/plain", size_bytes: 12, assistant_segment_id: "durable-id" } }),
+      envelope(5000, { type: "assistant_delta", data: { assistant_segment_id: "iteration-18", text: "One final answer" } }),
+      envelope(5001, { type: "assistant_persisted", data: {
+        assistant_segment_id: "iteration-18", text: "One final answer", meta: meta("durable-id"),
+      } }),
+      envelope(5002, { type: "turn_terminal", data: { outcome: "completed" } }),
+    ]).threads[0].assistantSegments;
+    expect(messages).toHaveLength(1);
+    expect(messages[0].assistant_segment_id).toBe("iteration-18");
+    expect(messages[0].text).toBe("One final answer");
+    expect(messages[0].files[0].path).toBe("output.txt");
+    expect(messages[0].toolCalls[0].tool_call_id).toBe("build");
+  });
+
   it("keeps each assistant segment as a distinct bubble and preserves attachment ownership", () => {
     const view = project([
       envelope(1, {

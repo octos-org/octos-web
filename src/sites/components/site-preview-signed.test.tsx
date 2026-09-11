@@ -39,6 +39,7 @@ vi.mock("../api", () => ({
 }));
 
 import { SitePreview } from "./site-preview";
+import * as ProjectionStore from "@/store/projection-store";
 import { ApiError } from "@/api/client";
 
 interface MountedHarness {
@@ -74,6 +75,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  ProjectionStore.__resetProjectionForTests();
   vi.useRealTimers();
   for (const node of [...document.body.children]) {
     node.remove();
@@ -81,6 +83,40 @@ afterEach(() => {
 });
 
 describe("<SitePreview> signed-URL iframe", () => {
+  it("recovers on canonical build completion after the initial retry budget expires", async () => {
+    signPreviewMock.mockRejectedValue(new ApiError(404, "Build not ready"));
+    let harness!: MountedHarness;
+    await act(async () => {
+      harness = mount(<SitePreview previewUrl="/preview/site" siteName="Test" template="react-vite"
+        sessionId="site-A" historyTopic="site react" profileId="tenant-a" slug="test-site" />);
+    });
+    for (let retry = 0; retry < 8; retry++) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    }
+    expect(signPreviewMock).toHaveBeenCalledTimes(9);
+    signPreviewMock.mockResolvedValue({ token: SIGNED_TOKEN, preview_url: SIGNED_URL,
+      expires_at: new Date(Date.now() + 600_000).toISOString() });
+    const terminal = { session_id: "site-A", thread_id: "build", turn_id: "build", seq: 1,
+      payload: { type: "turn_terminal" as const, data: { outcome: "completed" as const } } };
+    await act(async () => {
+      ProjectionStore.ingest("site-A#site other", terminal);
+      await vi.advanceTimersByTimeAsync(900);
+    });
+    expect(signPreviewMock).toHaveBeenCalledTimes(9);
+    await act(async () => {
+      ProjectionStore.ingest("site-A#site react", terminal);
+      await vi.advanceTimersByTimeAsync(900);
+    });
+    expect(harness.container.querySelector("iframe")?.getAttribute("src")).toContain(SIGNED_URL);
+    expect(signPreviewMock).toHaveBeenCalledTimes(10);
+    harness.unmount();
+    await act(async () => {
+      ProjectionStore.ingest("site-A#site react", { ...terminal, thread_id: "later", turn_id: "later" });
+      await vi.advanceTimersByTimeAsync(900);
+    });
+    expect(signPreviewMock).toHaveBeenCalledTimes(10);
+  });
+
   it("recovers from a pre-scaffold 404 when project files arrive", async () => {
     signPreviewMock.mockRejectedValueOnce(new ApiError(404, "Not scaffolded yet"));
     let harness!: MountedHarness;
