@@ -1,0 +1,50 @@
+{
+  "runtime_web": "1bb7263",
+  "runtime_core": "7590b73",
+  "runner": "macmini-3-249.local",
+  "research": {
+    "event": "PASS",
+    "case": "actual web research",
+    "toolCalls": 4,
+    "activityCards": 1,
+    "cardStatuses": [
+      "complete"
+    ],
+    "checks": [
+      "actual provider and web tools",
+      "canonical completion",
+      "readable collapsed activity",
+      "individual tool details",
+      "actual canonical source labels"
+    ]
+  },
+  "followup": {
+    "event": "PASS",
+    "case": "actual contextual follow-up",
+    "characters": 71,
+    "answer": "北京那个场地中午更合适:室内加空调,能避开正午的高温和暴晒,时间上比 Saratoga 灵活得多。主要确认一下空调和通风能撑得住参加人数就行。",
+    "checks": [
+      "same-topic reference resolved",
+      "supplied venue facts retained",
+      "no unrelated Shanghai comparison",
+      "no repeated report table",
+      "actual canonical completion"
+    ]
+  },
+  "weather": {
+    "event": "PASS",
+    "case": "actual weather follow-up",
+    "answer": "北京今天不算热，正常偏暖：现在是上午 11 点多，约 28°C、晴，湿度只有 22%，最高预计下午 3 点前后到 31°C。原因是高压控制（气压约 1022 hPa）、西北干气流下沉增温，天晴、空气干，体感比数字舒服——所以没有类似湾区的热浪预警，明天还回落到 28°C 左右。",
+    "characters": 139,
+    "tables": 0,
+    "lookupCalls": 1,
+    "checks": [
+      "original reported two-turn prompts",
+      "actual current-data lookup attempted",
+      "no unrelated Shanghai comparison",
+      "no repeated report table",
+      "actual canonical completion"
+    ]
+  },
+  "errors": []
+}

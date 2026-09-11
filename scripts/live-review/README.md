@@ -26,7 +26,7 @@ Standalone feature checks:
 
 Artifacts go to ignored `test-results/live-review-*` directories. `OCTOS_LIVE_REVIEW_OUTPUT` changes the standalone feature output root. Inspect screenshots before sharing; never publish credentials, browser storage state, signed preview URLs, or authenticated WebSocket URLs. Traces are disabled in the Playwright config for this reason.
 
-For the tool-activity check, set `OCTOS_LIVE_REVIEW_WEB_COMMIT` and `OCTOS_LIVE_REVIEW_CORE_COMMIT` to the deployed revisions to record them in its result. Its follow-up case supplies venue facts; it does not certify current weather accuracy. The runner saves the observed follow-up and screenshot before assertions, so a model formatting failure remains inspectable.
+For the tool-activity check, set `OCTOS_LIVE_REVIEW_WEB_COMMIT` and `OCTOS_LIVE_REVIEW_CORE_COMMIT` to the deployed revisions to record them in its result. It checks both supplied venue facts and the originally reported Saratoga-weather → Beijing follow-up. The weather case requires an actual lookup and checks reply format/context; it does not independently certify the returned measurements. The runner saves observed follow-ups and screenshots before assertions, so a model formatting failure remains inspectable.
 
 The site check asks the model to avoid cleanup commands. If the model requests an approval, the harness must stop for inspection rather than silently grant arbitrary commands. A valid build behind an approval dialog is not a passing interaction test. Generated model output can also violate fixture instructions; report that separately from application failures.
 
