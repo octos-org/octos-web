@@ -60,6 +60,21 @@ describe("Web research activity", () => {
     expect(screen.getByText("Found current observations")).toBeTruthy();
     expect(screen.getByTestId("tool-call-bubble").getAttribute("data-tool-call-id")).toBe("retry");
   });
+
+  it("reads canonical argument previews while hiding URL credentials and ignoring truncated values", () => {
+    const tools = [
+      { ...call("search"), args: 'count: 5, query: "Python asyncio documentation"' },
+      { ...call("fetch", "web_fetch"), args: 'max_chars: 12000, url: "https://user:private-password@docs.python.org/3/library/asyncio.html?token=private-token#fragment"' },
+      { ...call("truncated", "web_fetch"), args: 'url: "https://docs.python.org/3/library/…' },
+      { ...call("quoted", "web_fetch"), args: 'query: "a comma, url: \\"https://wrong.example/\\""' },
+    ];
+    render(<WebResearchActivity toolCalls={tools} threadId="turn-1" />);
+    fireEvent.click(screen.getByRole("button", { name: /Web research complete/ }));
+    expect(screen.getByText("Python asyncio documentation")).toBeTruthy();
+    expect(screen.getByText("docs.python.org/3/library/asyncio.html")).toBeTruthy();
+    expect(screen.getAllByText("Webpage")).toHaveLength(2);
+    expect(document.body.innerHTML).not.toMatch(/private-password|private-token|wrong\.example/);
+  });
 });
 
 describe("research message grouping", () => {

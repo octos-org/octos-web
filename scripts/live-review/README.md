@@ -19,11 +19,14 @@ Standalone feature checks:
 | `node scripts/live-review/files.mjs` | Actual generated file appears without reload; UI rename, download bytes, delete, and persistence |
 | `node scripts/live-review/long-turn.mjs` | Actual 36-second tool turn stays accepted without a false 30-second timeout |
 | `node scripts/live-review/long-chat.mjs` | Long real streamed reply remains one intact message across compaction and reload |
+| `node scripts/live-review/tool-activity.mjs` | Real web searches/fetches collapse into one expandable activity; a Chinese follow-up retains supplied venue context without another report table |
 | `node scripts/live-review/expired-auth.mjs` | Actual revocation and 401 retain `/app/` and the full login return destination |
 | `OCTOS_LIVE_REVIEW_SLIDES_SESSION=slides-… node scripts/live-review/slides-links.mjs` | Fresh direct editor and presentation links hydrate an existing real scaffold |
 | `node scripts/live-review/site.mjs` | Real React/Vite generation, initial preview recovery, module interaction, storage isolation, and copied signed URL |
 
 Artifacts go to ignored `test-results/live-review-*` directories. `OCTOS_LIVE_REVIEW_OUTPUT` changes the standalone feature output root. Inspect screenshots before sharing; never publish credentials, browser storage state, signed preview URLs, or authenticated WebSocket URLs. Traces are disabled in the Playwright config for this reason.
+
+For the tool-activity check, set `OCTOS_LIVE_REVIEW_WEB_COMMIT` and `OCTOS_LIVE_REVIEW_CORE_COMMIT` to the deployed revisions to record them in its result. Its follow-up case supplies venue facts; it does not certify current weather accuracy. The runner saves the observed follow-up and screenshot before assertions, so a model formatting failure remains inspectable.
 
 The site check asks the model to avoid cleanup commands. If the model requests an approval, the harness must stop for inspection rather than silently grant arbitrary commands. A valid build behind an approval dialog is not a passing interaction test. Generated model output can also violate fixture instructions; report that separately from application failures.
 

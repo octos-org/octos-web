@@ -34,7 +34,21 @@ export function groupWebResearchMessages(messages: ThreadMessage[]): ThreadMessa
 function argument(tool: ThreadToolCall, keys: string[]): string | undefined {
   let args = tool.args;
   if (typeof args === "string") {
-    try { args = JSON.parse(args); } catch { return undefined; }
+    const preview = args;
+    try { args = JSON.parse(args); } catch {
+      // Canonical envelopes send bounded `key: value` previews without JSON
+      // braces. Consume quoted strings whole so a query containing `url:`
+      // cannot be mistaken for another argument; ignore truncated values.
+      const fields = preview.matchAll(/"(?:[^"\\]|\\.)*"|(?:^|,\s*)([a-z_][a-z_0-9]*):\s*("(?:[^"\\]|\\.)*")/gi);
+      for (const field of fields) {
+        if (!keys.includes(field[1])) continue;
+        try {
+          const value: unknown = JSON.parse(field[2]);
+          if (typeof value === "string" && value.trim()) return value.trim();
+        } catch { /* An incomplete preview has no useful argument yet. */ }
+      }
+      return undefined;
+    }
   }
   if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
   for (const key of keys) {
