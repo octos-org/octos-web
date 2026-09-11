@@ -1,0 +1,34 @@
+import {setup} from './setup.mjs';
+import {chromium,expect}from'@playwright/test';
+const {root,c,base,origin}=await setup('files');
+const b=await chromium.launch();const p=await b.newPage({viewport:{width:1650,height:1050}});p.setDefaultTimeout(30000);const marker='LIVE_FILE_'+Date.now(),filename=marker+'.txt',renamed=marker+'-renamed.txt',content='Synthetic remote mutation review file.\n';
+try{
+ await p.goto(base+'login?redirect=%2Fchat');await p.getByTestId('token-input').fill(c.a.token);await p.getByTestId('login-button').click();await expect(p).not.toHaveURL(/\/login/);
+ await p.getByTestId('chat-input').fill(`Use write_file to create skill-output/${filename} containing exactly this line followed by a newline: Synthetic remote mutation review file. Then deliver the actual file in your final response using [file:skill-output/${filename}] and include ${marker}. This is a synthetic file that will be renamed and deleted in an isolated test. Do not create any other files.`);await p.getByTestId('send-button').click();
+ await expect(p.getByTestId('assistant-message').filter({hasText:marker})).toHaveCount(1,{timeout:120000});
+ await expect(p.getByTestId('ghost-bubble')).toHaveCount(0);
+ await expect(p.getByTestId('cancel-button')).toHaveCount(0);
+ await p.getByTitle('Open files panel',{exact:true}).click();
+ await p.getByRole('button',{name:'Rename '+filename,exact:true}).click();
+ await p.locator('input').evaluateAll((nodes,name)=>{const input=nodes.find(n=>n.value===name);if(input)input.setAttribute('data-review-rename','true');},filename);
+ await p.locator('[data-review-rename]').fill(renamed);
+ const renameResponse=p.waitForResponse(r=>new URL(r.url()).pathname==='/api/files/mutate'&&r.request().method()==='POST');
+ await p.getByTitle('Save rename',{exact:true}).click();
+ const response=await renameResponse;expect(response.status()).toBe(200);const saved=await response.json();
+ await expect(p.getByRole('button',{name:'Rename '+renamed,exact:true})).toBeVisible();
+ const current=await p.evaluate(()=>localStorage.getItem('octos_current_session'));
+ const resource=origin+'/api/files/'+encodeURIComponent(saved.path);
+ const read=await fetch(resource,{headers:{Authorization:'Bearer '+c.a.token}});expect(read.status).toBe(200);expect(await read.text()).toBe(content);
+ await p.reload();await expect(p.getByTestId('chat-input')).toBeVisible();
+ if(await p.getByTitle('Open files panel',{exact:true}).isVisible())await p.getByTitle('Open files panel',{exact:true}).click();
+ await expect(p.getByRole('button',{name:'Delete '+renamed,exact:true})).toBeVisible();
+ const deletion=p.waitForResponse(r=>new URL(r.url()).pathname==='/api/files/mutate'&&r.request().method()==='POST');
+ await p.getByRole('button',{name:'Delete '+renamed,exact:true}).click();expect((await deletion).status()).toBe(200);
+ await expect(p.getByRole('button',{name:'Delete '+renamed,exact:true})).toHaveCount(0);
+ const gone=await fetch(resource,{headers:{Authorization:'Bearer '+c.a.token}});expect([403,404]).toContain(gone.status);
+ await p.reload();await expect(p.getByTestId('chat-input')).toBeVisible();
+ if(await p.getByTitle('Open files panel',{exact:true}).isVisible())await p.getByTitle('Open files panel',{exact:true}).click();
+ await expect(p.getByRole('button',{name:'Delete '+renamed,exact:true})).toHaveCount(0);
+ await p.screenshot({path:new URL('file-mutations.png',root).pathname});
+ console.log(JSON.stringify({event:'PASS',checks:['real model-generated file','UI rename persists','renamed download bytes match','reload preserves rename','UI delete persists','deleted file is inaccessible','reload does not revive deleted file'],session:current}));
+}finally{await p.screenshot({path:new URL('files-last.png',root).pathname}).catch(()=>{});await b.close();}
