@@ -66,6 +66,7 @@ import { MarkdownContent } from "./markdown-renderer";
 import { ThinkingIndicator } from "./thinking-indicator";
 import { CompactionIndicator } from "./compaction-indicator";
 import { ToolProgressIndicator } from "./tool-progress-indicator";
+import { WebResearchActivity, groupWebResearchMessages, isWebResearchMessage, isWebResearchTool } from "./web-research-activity";
 import { useTasks } from "@/store/task-store";
 import { SPAWN_ONLY_TOOL_NAMES } from "@/runtime/spawn-only-tools";
 import { GhostBubble } from "./GhostBubble";
@@ -1028,6 +1029,20 @@ function ToolCallBubble({
   );
 }
 
+function MessageToolActivity({ tools, threadId }: { tools: ThreadToolCall[]; threadId: string }) {
+  const groups: ThreadToolCall[][] = [];
+  for (const tool of tools) {
+    const previous = groups.at(-1);
+    if (isWebResearchTool(tool) && previous?.every(isWebResearchTool)) previous.push(tool);
+    else groups.push([tool]);
+  }
+  return <div className="mt-2 flex min-w-0 flex-col gap-1.5">{groups.map((group, index) =>
+    isWebResearchTool(group[0])
+      ? <WebResearchActivity key={group[0].id || `group-${index}`} toolCalls={group} threadId={threadId} />
+      : <ToolCallBubble key={group[0].id || `group-${index}`} toolCall={group[0]} threadId={threadId} />,
+  )}</div>;
+}
+
 export const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
   message,
   isStreaming,
@@ -1077,9 +1092,15 @@ export const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
   // entries to the same tool call's `progress[]` — so the indicator
   // stays anchored to the bubble and continues to show the latest
   // heartbeat for the full background duration.
-  const showToolProgress = message.toolCalls.some(
-    (tc) => tc.progress.length > 0,
-  );
+  const progressMessage = { ...message, toolCalls: message.toolCalls.filter(tool => !isWebResearchTool(tool)) };
+  const showToolProgress = progressMessage.toolCalls.some(tool => tool.progress.length > 0);
+  if (isWebResearchMessage(message)) {
+    return <div className="chat-message-row chat-message-row-assistant flex py-1.5">
+      <div data-testid="assistant-message" data-thread-id={tid} className="chat-assistant-bubble w-full min-w-0">
+        <WebResearchActivity toolCalls={message.toolCalls} threadId={tid} />
+      </div>
+    </div>;
+  }
   return (
     <div className="chat-message-row chat-message-row-assistant flex py-3">
       <div
@@ -1126,17 +1147,7 @@ export const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
           </div>
         )}
 
-        {/* Tool calls (retry-collapsed) */}
-        {message.toolCalls.length > 0 && (
-          <div className="mt-2 flex flex-col gap-1.5">
-            {message.toolCalls.map((tc, idx) => (
-              // Fall back to index when the server omitted a
-              // tool_call_id so React still has a stable per-render
-              // key without us minting a synthetic id.
-              <ToolCallBubble key={tc.id || `idx-${idx}`} toolCall={tc} threadId={tid} />
-            ))}
-          </div>
-        )}
+        {message.toolCalls.length > 0 && <MessageToolActivity tools={message.toolCalls} threadId={tid} />}
 
         {/* Thinking indicator (only for the in-flight pending assistant).
             Wrapped in a block-level container so the pill-shaped
@@ -1146,7 +1157,7 @@ export const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
             Mutually exclusive with the tool-progress row: when a tool
             has reported progress, that concrete status supersedes the
             generic "thinking" pill (2026-08 UI audit M1). */}
-        {showLiveIndicators && !showToolProgress && (
+        {showLiveIndicators && !message.toolCalls.some(isWebResearchTool) && !showToolProgress && (
           <div className="mt-2 block">
             <ThinkingIndicator />
           </div>
@@ -1171,7 +1182,7 @@ export const ThreadAssistantBubble = memo(function ThreadAssistantBubble({
             recurring UX bug where `run_pipeline: running` sat above
             the input prompt for the entire ~25 min background run,
             detached from its bubble. */}
-        {showToolProgress && <ToolProgressIndicator message={message} />}
+        {showToolProgress && <ToolProgressIndicator message={progressMessage} />}
 
         {/* Message footer: meta on the left, action icons on the
             right. Copy + reader-view both render only on finalized
@@ -1295,29 +1306,20 @@ function ThreadView({
           turnsFromEnd={turnsFromEnd}
         />
       )}
-      {visibleResponses.map((response) => (
-        <ThreadAssistantBubble
+      {groupWebResearchMessages([
+        ...visibleResponses,
+        ...(thread.pendingAssistant ? [thread.pendingAssistant] : []),
+      ]).map((response, index, rows) => {
+        const pending = thread.pendingAssistant && index === rows.length - 1;
+        return <ThreadAssistantBubble
           key={response.id}
           message={response}
-          isStreaming={false}
-          showLiveIndicators={false}
+          isStreaming={Boolean(pending && thread.pendingAssistant?.status === "streaming")}
+          showLiveIndicators={Boolean(pending && (thread.pendingAssistant?.status === "streaming" || hasRunningBackgroundTask))}
           threadId={thread.id}
           sessionId={currentSessionId}
-        />
-      ))}
-      {thread.pendingAssistant && (
-        <ThreadAssistantBubble
-          key={thread.pendingAssistant.id}
-          message={thread.pendingAssistant}
-          isStreaming={thread.pendingAssistant.status === "streaming"}
-          showLiveIndicators={
-            thread.pendingAssistant.status === "streaming" ||
-            hasRunningBackgroundTask
-          }
-          threadId={thread.id}
-          sessionId={currentSessionId}
-        />
-      )}
+        />;
+      })}
     </div>
   );
 }

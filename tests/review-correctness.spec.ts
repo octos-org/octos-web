@@ -117,3 +117,28 @@ test("the real launcher discovers saved server sessions in a fresh browser", asy
   await expect(page.getByText("Existing server project", { exact: true })).toBeVisible();
   expect(methods).toContain("session/list");
 });
+
+
+for (const width of [1440, 390]) {
+  test(`web research activity is compact, accessible, and preserves details at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/tests/fixtures/tool-activity.html");
+    await expect(page.getByTestId("web-research-activity")).toHaveCount(1);
+    const summary = page.getByRole("button", { name: /Web research complete/ });
+    await expect(summary).toHaveAttribute("aria-expanded", "false");
+    await expect(page.getByText("4 searches · 4 pages")).toBeVisible();
+    await expect(page.getByTestId("tool-call-bubble")).toHaveCount(0);
+    await summary.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("tool-call-bubble")).toHaveCount(8);
+    await expect(page.getByRole("list", { name: "Web research steps" })).toBeVisible();
+    await expect(page.locator("body")).not.toContainText("synthetic-private");
+    await page.getByRole("button", { name: "Show running", exact: true }).click();
+    await expect(page.getByRole("button", { name: /Searching the web/ })).toHaveAttribute("aria-expanded", "true");
+    await page.getByRole("button", { name: "Show error", exact: true }).click();
+    await expect(page.getByText("1 failed")).toBeVisible();
+    await expect(page.getByText("The source did not respond. Other results are still available.")).toBeVisible();
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
+    expect(overflow).toBeLessThanOrEqual(1);
+  });
+}
