@@ -8,15 +8,24 @@ export const credentials = JSON.parse(readFileSync(process.env.OCTOS_LIVE_REVIEW
 };
 export const base = process.env.OCTOS_LIVE_REVIEW_URL!.replace(/\/?$/, "/");
 const terminalOutcomes = new WeakMap<Page, Map<string, string>>();
+const hydratedTurnOrders = new WeakMap<Page, Map<string, string[]>>();
 function observeTurnCompletion(page: Page) {
   if (terminalOutcomes.has(page)) return;
   const outcomes = new Map<string, string>();
   terminalOutcomes.set(page, outcomes);
+  const orders = new Map<string, string[]>();
+  hydratedTurnOrders.set(page, orders);
   page.on("websocket", socket => socket.on("framereceived", frame => {
     try {
       const event = JSON.parse(String(frame.payload));
       if (event.method === "projection/envelope" && event.params?.payload?.type === "turn_terminal") {
         outcomes.set(event.params.thread_id, event.params.payload.data.outcome);
+      }
+      if (event.result?.session_id && Array.isArray(event.result.messages)) {
+        const messages = event.result.messages as { seq: number; role: string; thread_id?: string; turn_id?: string; client_message_id?: string }[];
+        orders.set(event.result.session_id, [...messages].sort((a, b) => a.seq - b.seq)
+          .filter(row => row.role === "user")
+          .map(row => row.client_message_id ?? row.thread_id ?? row.turn_id ?? ""));
       }
     } catch { /* Binary/non-protocol frames are irrelevant to completion. */ }
   }));
@@ -37,6 +46,19 @@ export function assistantReply(page: Page, marker: string) {
   // Match rendered reply text independently from its adjacent timestamp.
   // `_1` followed by `17:05` otherwise falsely matches marker `_11`.
   return page.getByTestId("assistant-message").filter({ has: page.getByText(marker, { exact: true }) });
+}
+export async function expectTranscriptOrder(page: Page, latestMarker: string) {
+  const latest = await assistantReply(page, latestMarker).getAttribute("data-thread-id");
+  const expected = () => [...(hydratedTurnOrders.get(page)?.values() ?? [])]
+    .find(order => latest !== null && order.includes(latest));
+  await expect.poll(expected).toBeDefined();
+  const order = expected()!;
+  await expect.poll(() => page.getByTestId("user-message")
+    .evaluateAll(nodes => nodes.map(node => node.getAttribute("data-thread-id"))))
+    .toEqual(order);
+  expect(new Set(order).size).toBe(order.length);
+  expect(order.at(-1)).toBe(latest);
+  return order.length;
 }
 export async function chat(page: Page, marker: string) {
   const start = Date.now();

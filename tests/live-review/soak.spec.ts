@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { hostname } from "node:os";
 import { expect, test } from "@playwright/test";
-import { appUrl, assistantReply, chat, credentials, login, telemetry } from "./helpers";
+import { appUrl, assistantReply, chat, credentials, expectTranscriptOrder, login, telemetry } from "./helpers";
 
 test("30-minute remote core UX soak: real chat, navigation, history, and reconnect", async ({ page, context, browser }, info) => {
   test.setTimeout(35 * 60_000);
@@ -26,17 +26,20 @@ test("30-minute remote core UX soak: real chat, navigation, history, and reconne
     await page.reload();
     await expect(assistantReply(page, marker)).toHaveCount(1);
     await expect(page.getByTestId("user-message").filter({ hasText: marker })).toHaveCount(1);
+    const historyTurns = await expectTranscriptOrder(page, marker);
     await page.goto(appUrl(cycle % 2 ? "slides" : "sites"));
     await expect(page.getByRole("heading", { name: cycle % 2 ? "Slides" : "Site Studio", exact: true })).toBeVisible();
     await page.goto(appUrl("chat"));
     await expect(page.getByTestId("chat-input")).toBeVisible();
     await expect(assistantReply(page, marker)).toHaveCount(1);
+    await expectTranscriptOrder(page, marker);
     if (cycle % 3 === 0) {
       await context.setOffline(true);
       await page.waitForTimeout(2000);
       await context.setOffline(false);
       await page.reload();
       await expect(assistantReply(page, marker)).toHaveCount(1);
+      await expectTranscriptOrder(page, marker);
     }
     const remoteProcess = (alias === "local"
       ? execFileSync("ps", ["-p", pid, "-o", "pid=,etime=,rss=,%cpu="], { encoding: "utf8", timeout: 15_000 })
@@ -45,7 +48,7 @@ test("30-minute remote core UX soak: real chat, navigation, history, and reconne
     expect(remoteProcess).not.toBe("");
     expect(metrics.errors).toEqual([]);
     expect(metrics.failures.filter(f => f.status >= 500)).toEqual([]);
-    metrics.record({ event: "cycle", cycle, latencyMs, elapsedMs: Date.now() - started, remoteProcess, sockets: metrics.sockets });
+    metrics.record({ event: "cycle", cycle, latencyMs, elapsedMs: Date.now() - started, historyTurns, historyOrderVerified: true, remoteProcess, sockets: metrics.sockets });
     console.log(`Remote soak cycle ${cycle}: reply ${latencyMs} ms, elapsed ${Math.round((Date.now() - started) / 1000)} s`);
     if (cycle % 5 === 0) await page.screenshot({ animations: "disabled", path: info.outputPath(`cycle-${cycle}.png`) });
     // Bound model spend while keeping the actual authenticated browser and
