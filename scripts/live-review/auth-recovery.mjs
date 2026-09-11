@@ -1,9 +1,10 @@
-import {chromium,expect} from '@playwright/test';
+import {chromium,webkit,expect} from '@playwright/test';
 import {writeFile} from 'node:fs/promises';
 import {setup} from './setup.mjs';
 
 const {root,c,base}=await setup('auth-recovery');
-const browser=await chromium.launch();
+const engine=process.env.OCTOS_LIVE_REVIEW_BROWSER==='webkit'?webkit:chromium;
+const browser=await engine.launch();
 const page=await browser.newPage({viewport:{width:1440,height:1000}});
 page.setDefaultTimeout(30000);
 const errors=[],results=[];
@@ -37,6 +38,7 @@ try{
   await page.waitForTimeout(4500);
   expect(probes).toBe(3);
   expect(await tokenSnapshot()).toBe(before);
+  const outageWindowProbes=probes;
   const signIn=page.getByRole('link',{name:'Sign in again'});
   expect(await signIn.getAttribute('href')).toBe('/app/login?redirect='+encodeURIComponent('/chat?review=auth-recovery#return-here'));
   await page.screenshot({path:new URL('persistent-outage.png',root).pathname,animations:'disabled'});
@@ -45,7 +47,7 @@ try{
   await page.unroute('**/api/auth/me');
   await login();
   await expect(page).toHaveURL(base+'chat?review=auth-recovery#return-here');
-  results.push({case:'bounded outage and sign-in recovery',outageProbes:probes,actualAuthentication:true,destinationPreserved:true,tokenPreserved:true});
+  results.push({case:'bounded outage and sign-in recovery',outageWindowProbes,actualAuthentication:true,destinationPreserved:true,tokenPreserved:true});
 
   // A fresh browser with an invalid token exercises actual server rejection.
   const invalid=await browser.newContext();
@@ -63,7 +65,7 @@ try{
     results.push({case:'invalid credentials',actualRejection:401,signInShown:true});
   }finally{await invalid.close();}
   expect(errors).toEqual([]);
-  const result={result:'PASS',runtimeWeb:process.env.OCTOS_LIVE_REVIEW_WEB_COMMIT??'unspecified',runner:(await import('node:os')).hostname(),faultInjection:'Abort validation requests only; successful authentication and rejection use the real server',results,pageErrors:errors};
+  const result={result:'PASS',browser:engine.name(),runtimeWeb:process.env.OCTOS_LIVE_REVIEW_WEB_COMMIT??'unspecified',runner:(await import('node:os')).hostname(),faultInjection:'Abort validation requests only; successful authentication and rejection use the real server',results,pageErrors:errors};
   await writeFile(new URL('results.json',root),JSON.stringify(result,null,2));
   console.log(JSON.stringify(result));
 }catch(error){
