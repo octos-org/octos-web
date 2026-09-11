@@ -10,12 +10,15 @@ pnpm exec playwright test --config=playwright.live-review.config.ts
 
 The restricted JSON file contains `a`, `b`, and `owner`, each with `email`, `id`, and a real session `token`. The token-revocation check additionally needs the isolated server's configured `otp`. Keep this file outside tracked paths with mode 0600. Account logout revokes that token: obtain a new session through the actual verify endpoint before reusing it.
 
-For a 30-minute soak, run the same test config with `OCTOS_LIVE_REVIEW_SOAK=1`, `OCTOS_LIVE_REVIEW_PID=<owned-server-pid>`, and `OCTOS_LIVE_REVIEW_SSH=<ssh-alias>`. Set the SSH value to `local` when both Chromium and the runner execute on the remote mini itself. The soak records the runner hostname, browser version, server process measurements, reply latency, socket counts, errors, and screenshots. It waits for actual canonical turn completion before reloading. It uses no retries or fulfilled API routes. A stopped or failed run does not count as a completed soak.
+For a 30-minute soak, run the same test config with `OCTOS_LIVE_REVIEW_SOAK=1`, `OCTOS_LIVE_REVIEW_PID=<owned-server-pid>`, and `OCTOS_LIVE_REVIEW_SSH=<ssh-alias>`. Set the SSH value to `local` when both Chromium and the runner execute on the remote mini itself. The soak records the runner hostname, browser version, server process measurements, reply latency, socket counts, errors, and screenshots. It waits for actual canonical turn completion before reloading and compares the full rendered user-turn order with the actual server transcript after reload, gallery return and offline reconnection. It uses no retries or fulfilled API routes. A stopped or failed run does not count as a completed soak.
 
 Standalone feature checks:
 
 | Command | Exercised behavior |
 |---|---|
+| `node scripts/live-review/weather-grounding.mjs` | Actual text extraction, natural weather question and contextual follow-up; inline source URLs must match actual tool events |
+| `OCTOS_LIVE_REVIEW_SESSION=<existing-session> OCTOS_LIVE_REVIEW_SOURCE_URL=<public-source-url> node scripts/live-review/citation-links.mjs` | Read a saved bare-link answer, reload twice, click its exact source URL and record external redirects/destination readability |
+| `node scripts/live-review/queue-scope.mjs` | Start an actual delayed shell tool, queue a follow-up, switch sessions, observe the old terminal and verify the new session/reply survive reload without queued-message leakage |
 | `node scripts/live-review/files.mjs` | Actual generated file appears without reload; UI rename, download bytes, delete, and persistence |
 | `node scripts/live-review/long-turn.mjs` | Actual 36-second tool turn stays accepted without a false 30-second timeout |
 | `node scripts/live-review/long-chat.mjs` | Long real streamed reply remains one intact message across compaction and reload |
@@ -35,3 +38,5 @@ The auth-recovery and history-order runners accept `OCTOS_LIVE_REVIEW_BROWSER=we
 The site check asks the model to avoid cleanup commands. If the model requests an approval, the harness must stop for inspection rather than silently grant arbitrary commands. A valid build behind an approval dialog is not a passing interaction test. Generated model output can also violate fixture instructions; report that separately from application failures.
 
 These checks do not certify image generation, complete deck rendering/export, ASR/TTS, learning lessons, external channels, physical hardware, or the designated public canary. See the tracked live-validation record for the tested capabilities and exact build hashes.
+
+The weather-grounding runner records the deployed web/core revisions using the same environment variables as tool-activity. A matching link establishes source attribution, not numerical truth; inspect the actual returned source text separately. The queue-scope runner uses an independent browser observer to record whether the old foreground turn completes or is cancelled when its submitting connection closes. A passing cancellation case does not certify continuation in the background. Both runners create synthetic conversations; use a dedicated test account, never the user's active login.

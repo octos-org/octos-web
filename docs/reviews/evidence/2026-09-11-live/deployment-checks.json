@@ -1,0 +1,64 @@
+{
+  "web": "39bbb1a",
+  "core": "b931bd2",
+  "serverPid": 28709,
+  "binarySha256": "19ba1b9580c68b07c8701db316f654fbe1f02ab5dbd05eb24cbb8d8381961279",
+  "htmlSha256": "4415414f98c853420c5db6a4f98d71610f8c153942a5f4611f4b8c6685db5ba6",
+  "coreRunnerPid": 28764,
+  "result": "PASS",
+  "coreChecks": {
+    "startTime": "2026-09-11T07:48:07.690Z",
+    "duration": 16673.316,
+    "expected": 5,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "previousBackendDeploymentCoreChecks": {
+    "startTime": "2026-09-11T07:38:56.993Z",
+    "duration": 17031.009,
+    "expected": 5,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "beforeSoakCoreChecks": {
+    "startTime": "2026-09-11T07:03:47.203Z",
+    "duration": 17282.341999999997,
+    "expected": 5,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "historyChecks": [
+    {
+      "browser": "chromium",
+      "result": "PASS",
+      "operation": "Read existing conversation and reload twice; no messages submitted",
+      "cycles": 3,
+      "turnCounts": [
+        6,
+        6,
+        6
+      ],
+      "eachOrderMatches": true,
+      "pageErrors": []
+    },
+    {
+      "browser": "webkit",
+      "result": "PASS",
+      "operation": "Read existing conversation and reload twice; no messages submitted",
+      "cycles": 3,
+      "turnCounts": [
+        6,
+        6,
+        6
+      ],
+      "eachOrderMatches": true,
+      "pageErrors": []
+    }
+  ],
+  "candidateStopped": true,
+  "webCI": "https://github.com/octos-org/octos-web/actions/runs/34575831853",
+  "coreCI": "https://github.com/octos-org/octos/actions/runs/34573793760"
+}
