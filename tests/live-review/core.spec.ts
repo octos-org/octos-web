@@ -75,3 +75,11 @@ test("valid authentication survives a failed validation request", async ({ page 
   metrics.record({ event: "complete", preservedLogin: true });
   expect(metrics.errors).toEqual([]);
 });
+
+test("fresh login keeps the first message entered after navigation", async ({ page }, info) => {
+  const metrics = telemetry(page, info);
+  await login(page, credentials.owner);
+  const latencyMs = await chat(page, `LIVE_FIRST_DRAFT_${Date.now()}`);
+  metrics.record({ event: "complete", latencyMs });
+  expect(metrics.errors).toEqual([]);
+});
