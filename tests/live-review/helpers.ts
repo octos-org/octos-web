@@ -7,8 +7,23 @@ export const credentials = JSON.parse(readFileSync(process.env.OCTOS_LIVE_REVIEW
   a: Account; b: Account; owner: Account;
 };
 export const base = process.env.OCTOS_LIVE_REVIEW_URL!.replace(/\/?$/, "/");
+const terminalOutcomes = new WeakMap<Page, Map<string, string>>();
+function observeTurnCompletion(page: Page) {
+  if (terminalOutcomes.has(page)) return;
+  const outcomes = new Map<string, string>();
+  terminalOutcomes.set(page, outcomes);
+  page.on("websocket", socket => socket.on("framereceived", frame => {
+    try {
+      const event = JSON.parse(String(frame.payload));
+      if (event.method === "projection/envelope" && event.params?.payload?.type === "turn_terminal") {
+        outcomes.set(event.params.thread_id, event.params.payload.data.outcome);
+      }
+    } catch { /* Binary/non-protocol frames are irrelevant to completion. */ }
+  }));
+}
 export function appUrl(route: string) { return new URL(route.replace(/^\//, ""), base).href; }
 export async function login(page: Page, account: Account = credentials.a, route = "chat") {
+  observeTurnCompletion(page);
   await page.goto(appUrl(`login?redirect=${encodeURIComponent("/" + route)}`));
   await page.getByTestId("token-input").fill(account.token);
   await page.getByTestId("login-button").click();
@@ -30,6 +45,10 @@ export async function chat(page: Page, marker: string) {
   await expect(page.getByTestId("ghost-bubble")).toHaveCount(0, { timeout: 30_000 });
   await expect(page.getByTestId("user-message").filter({ hasText: marker })).toHaveCount(1);
   await expect(page.locator("body")).not.toContainText("1969-12-31");
+  const thread = await assistantReply(page, marker).getAttribute("data-thread-id");
+  // Persisted reply text and the streaming Stop control can settle before
+  // the server terminal. A completed-turn reload must await that terminal.
+  await expect.poll(() => terminalOutcomes.get(page)?.get(thread!), { timeout: 30_000 }).toBe("completed");
   await expect(page.getByTestId("cancel-button")).toHaveCount(0, { timeout: 30_000 });
   await expect(page.locator("body")).not.toContainText("connection closed before turn completed");
   return Date.now() - start;
