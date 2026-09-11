@@ -103,6 +103,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       resp = await authApi.me();
     } catch (err) {
+      if (requestId !== meRequest.current) return;
       if (getToken() && (generation !== getIdentityGeneration() || expectedToken !== getToken())) {
         throw new ApiError(409, "Account changed during authentication.");
       }
@@ -165,13 +166,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
     const identity = getIdentityGeneration();
+    const requestId = meRequest.current + 1;
     syncMe()
       .catch(handleValidationError)
-      .finally(() => { if (identity === getIdentityGeneration()) setLoading(false); });
+      .finally(() => {
+        if (identity === getIdentityGeneration() && requestId === meRequest.current) setLoading(false);
+      });
   }, [token, user, syncMe, handleValidationError]);
 
   const revalidate = useCallback(async () => {
     const identity = getIdentityGeneration();
+    const requestId = meRequest.current + 1;
     // Caller flagged that an authenticated request was rejected; re-run
     // the canonical auth probe and let `failAuthAndRedirect` handle the
     // cleanup if the token is genuinely dead. If syncMe succeeds, the
@@ -183,7 +188,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       handleValidationError(err);
     } finally {
-      if (identity === getIdentityGeneration()) setLoading(false);
+      if (identity === getIdentityGeneration() && requestId === meRequest.current) setLoading(false);
     }
   }, [syncMe, handleValidationError]);
 

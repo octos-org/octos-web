@@ -11,12 +11,15 @@ test("30-minute remote core UX soak: real chat, navigation, history, and reconne
   const alias = process.env.OCTOS_LIVE_REVIEW_SSH;
   const pid = process.env.OCTOS_LIVE_REVIEW_PID;
   if (!alias || !pid || !/^\d+$/.test(pid)) throw new Error("Remote soak requires SSH alias and numeric server PID.");
+  metrics.record({ event: "started", remotePid: pid, account: credentials.owner.id });
   // Keep long-running history independent from feature acceptance accounts.
   await login(page, credentials.owner);
+  metrics.record({ event: "logged_in" });
   let cycle = 0;
   do {
     cycle++;
     const marker = `REMOTE_SOAK_${started}_${cycle}`;
+    metrics.record({ event: "cycle_started", cycle });
     const latencyMs = await chat(page, marker);
     latencies.push(latencyMs);
     await page.reload();

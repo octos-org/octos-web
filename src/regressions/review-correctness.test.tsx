@@ -135,6 +135,22 @@ describe('Slide edits survive unchanged backend polling', () => {
 
 function authWrapper({ children }: { children: ReactNode }) { return <MemoryRouter><AuthProvider>{children}</AuthProvider></MemoryRouter>; }
 describe('Auth recovery and cross-tab identity', () => {
+  it('keeps protected content loading until the newest overlapping validation settles', async () => {
+    setToken('review-first-login');
+    const replies: Array<(value: unknown) => void> = [];
+    mocks.me.mockImplementation(() => new Promise((resolve) => { replies.push(resolve); }));
+    const { result } = renderHook(useAuth, { wrapper: authWrapper });
+    await waitFor(() => expect(replies).toHaveLength(1));
+    let pending!: Promise<void>;
+    act(() => { pending = result.current.revalidate(); });
+    expect(replies).toHaveLength(2);
+    await act(async () => { replies[0]({ user: { id: 'stale' }, portal: {} }); });
+    expect(result.current.loading).toBe(true);
+    expect(result.current.user).toBeNull();
+    await act(async () => { replies[1]({ user: { id: 'verified' }, portal: {} }); await pending; });
+    expect(result.current.loading).toBe(false);
+    expect(result.current.user?.id).toBe('verified');
+  });
   it('retains valid credentials when /me has a temporary network failure', async () => {
     setToken('review-valid-token');
     mocks.me.mockRejectedValue(new TypeError('Failed to fetch'));

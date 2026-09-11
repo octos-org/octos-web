@@ -18,6 +18,8 @@ export default defineConfig({
   outputDir: `${reportDir}/artifacts`,
   use: {
     baseURL: process.env.OCTOS_LIVE_REVIEW_URL,
+    actionTimeout: 30_000,
+    navigationTimeout: 30_000,
     browserName: "chromium",
     viewport: { width: 1440, height: 1000 },
     // Traces contain authenticated WebSocket URLs. Keep secrets out of reports.
