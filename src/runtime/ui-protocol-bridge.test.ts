@@ -1131,6 +1131,212 @@ describe("connection lifecycle", () => {
     await bridge.stop();
   });
 
+  // Issue #351: `session/open` typed terminal configuration failures
+  // (server `data.kind` whitelist) must fail startup immediately with the
+  // server's own diagnosis sentence instead of burning the reconnect
+  // budget and ending at the generic transport message. Login is retained
+  // (no `crew:auth_expired`) and untyped RPC failures keep reconnecting.
+  it("surfaces the server's typed data_dir_locked diagnosis instead of reconnecting (#351)", async () => {
+    vi.useFakeTimers();
+    const authExpired = vi.fn();
+    window.addEventListener("crew:auth_expired", authExpired);
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const startPromise = bridge.start({ sessionId: "sess-locked" });
+    const observed = startPromise.catch((error: unknown) => error);
+
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(ws, METHODS.SESSION_OPEN);
+    // Verbatim sentence of `data_dir_locked_error` in
+    // octos-cli/src/api/ui_protocol_transport.rs: internal_error code,
+    // the sentence in `error.message` AND verbatim in `data.message`. The
+    // `Details:` tail renders the raw server-side error chain — the text
+    // here is representative, everything before it is byte-identical.
+    const sentence =
+      "Can't start a session for profile 'p1' — another octos process " +
+      "already owns this profile's data directory, and its storage allows " +
+      "only one writer. Stop the other `octos serve` (if it is supervised, " +
+      "e.g. by launchd, stop the service rather than the process — it " +
+      "will be restarted otherwise), or give this instance its own " +
+      "storage with `--instance-data-dir <dir>`. Details: redb error: " +
+      "Database is already open by another process " +
+      "(path: /var/lib/octos/p1/episodes.redb)";
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      error: {
+        code: -32603,
+        message: sentence,
+        data: { kind: "data_dir_locked", profile_id: "p1", message: sentence },
+      },
+    });
+
+    const error = await observed;
+    expect(error).toBeInstanceOf(BridgeStartupError);
+    expect(error).toMatchObject({ kind: "configuration", message: sentence });
+    expect(bridge.getConnectionState()).toBe("error");
+    expect(bridge.isTerminal()).toBe(true);
+    // A deployment mistake cannot be re-handshaked away: no reconnect is
+    // scheduled, and the login the user already has stays intact.
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(authExpired).not.toHaveBeenCalled();
+    window.removeEventListener("crew:auth_expired", authExpired);
+    await bridge.stop();
+  });
+
+  it("keeps the reconnect path for untyped session/open RPC failures (#351)", async () => {
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(
+      makeBridgeOpts({ maxReconnectAttempts: 2 }),
+    );
+    void bridge.start({ sessionId: "sess-flaky" }).catch(() => {});
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(ws, METHODS.SESSION_OPEN);
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      error: {
+        code: -32603,
+        message: "failed to bootstrap session runtime: boom",
+        data: { kind: "runtime_unavailable" },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(16_000);
+    // `runtime_unavailable` is not on the terminal whitelist — a transient
+    // bootstrap failure must keep retrying, exactly as before #351.
+    expect(MockWebSocket.instances.length).toBeGreaterThan(1);
+    await bridge.stop();
+  });
+
+  it("treats the other whitelisted kind, workspace_not_writable, as terminal (#351)", async () => {
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const observed = bridge
+      .start({ sessionId: "sess-ro" })
+      .catch((error: unknown) => error);
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(ws, METHODS.SESSION_OPEN);
+    // Verbatim `workspace_not_writable_error` (Some(workspace) arm).
+    const sentence =
+      "Can't start a session in /srv/shared — the folder isn't writable " +
+      "(permission denied). octos needs to create a .octos-workspace.toml " +
+      "there. Start octos in a folder you own, or make this one writable.";
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      error: {
+        code: -32603,
+        message: sentence,
+        data: {
+          kind: "workspace_not_writable",
+          workspace: "/srv/shared",
+          message: sentence,
+        },
+      },
+    });
+    const error = await observed;
+    expect(error).toBeInstanceOf(BridgeStartupError);
+    expect(error).toMatchObject({ kind: "configuration", message: sentence });
+    expect(bridge.isTerminal()).toBe(true);
+    await bridge.stop();
+  });
+
+  it("does not latch a whitelisted kind whose data.message is empty (#351)", async () => {
+    // Fail-closed: the contract guarantees a diagnosis sentence; a server
+    // that sends the kind without one falls back to the pre-#351 reconnect
+    // path instead of rendering an empty terminal error.
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    void bridge.start({ sessionId: "sess-malformed" }).catch(() => {});
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(ws, METHODS.SESSION_OPEN);
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      error: {
+        code: -32603,
+        message: "lock",
+        data: { kind: "data_dir_locked", profile_id: "p1", message: "" },
+      },
+    });
+    // 2s covers the first 1s backoff: a second socket was scheduled, so
+    // the failure was treated as recoverable, not terminal.
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(MockWebSocket.instances.length).toBeGreaterThan(1);
+    expect(bridge.isTerminal()).toBe(false);
+    await bridge.stop();
+  });
+
+  it("latches a typed config failure on REOPEN without visibility auto-retry (#351)", async () => {
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    void bridge.start({ sessionId: "sess-1" }).catch(() => {});
+    await Promise.resolve();
+    const ws1 = lastInstance();
+    ws1.triggerOpen();
+    await Promise.resolve();
+    const open1 = findRequest(ws1, METHODS.SESSION_OPEN);
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      id: open1.id,
+      result: { opened: { session_id: "sess-1" } },
+    });
+    await Promise.resolve();
+    expect(bridge.getConnectionState()).toBe("connected");
+
+    // Transport drop, then the reopen's session/open reports the lock
+    // (e.g. a second process grabbed the data dir mid-session).
+    ws1.triggerClose(1006, "abnormal");
+    await vi.advanceTimersByTimeAsync(1_000);
+    const ws2 = lastInstance();
+    ws2.triggerOpen();
+    await Promise.resolve();
+    const open2 = findRequest(ws2, METHODS.SESSION_OPEN);
+    const sentence = "another octos process already owns this profile's data directory";
+    ws2.triggerMessage({
+      jsonrpc: "2.0",
+      id: open2.id,
+      error: {
+        code: -32603,
+        message: sentence,
+        data: {
+          kind: "data_dir_locked",
+          profile_id: "p1",
+          message: sentence,
+        },
+      },
+    });
+    await Promise.resolve();
+    expect(bridge.getConnectionState()).toBe("error");
+    expect(bridge.isTerminal()).toBe(true);
+
+    // The teardown at latch time removes the visibilitychange listener
+    // (and the config-rejected latch would block a refocus retry even if
+    // one were still installed), so a tab refocus must not produce
+    // another socket — the operator has to fix the server first.
+    const instancesBeforeVisibility = MockWebSocket.instances.length;
+    Object.defineProperty(document, "visibilityState", {
+      value: "visible",
+      configurable: true,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(MockWebSocket.instances).toHaveLength(instancesBeforeVisibility);
+    await bridge.stop();
+  });
+
   it("uses direct canonical v2 ingest only after session/open confirms the capability", async () => {
     const bridge = createUiProtocolBridge(makeBridgeOpts());
     const legacyDeltas = vi.fn();

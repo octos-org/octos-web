@@ -405,6 +405,7 @@ export class BridgeStoppedError extends Error {
 
 export type BridgeStartupFailureKind =
   | "authentication"
+  | "configuration"
   | "connection"
   | "protocol"
   | "timeout"
@@ -482,7 +483,8 @@ export interface UiProtocolBridge {
 
   /** True when this bridge will never serve another RPC: it was
    *  `stop()`ed, it abandoned reconnecting (attempt budget spent, or
-   *  latched on auth rejection), or the remote closed it normally
+   *  latched on an auth / configuration rejection), or the remote closed
+   *  it normally
    *  (code 1000 — parked at `closed` with no reconnect, codex web#268
    *  r3 P2). A transient `"error"` state during a RECOVERABLE drop is
    *  NOT terminal — the bridge queues sends and flushes them after the
@@ -804,6 +806,34 @@ function isString(v: unknown): v is string {
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+// Issue #351: `session/open` can fail with a typed *configuration* error
+// whose `data.message` names the conflict and its remedy (today
+// `data_dir_locked` and `workspace_not_writable` — deployment mistakes no
+// number of reconnects can fix; the server contract is "render `data.message`
+// verbatim"). Whitelist by `data.kind` and require a non-empty sentence so
+// untyped failures (e.g. a transient `runtime_unavailable`) stay on the
+// normal reconnect path. Sibling kinds without that documented sentence
+// contract (e.g. `sandbox_runtime_unavailable`, which carries no
+// `data.message`) also stay reconnectable until the server grows one.
+const TERMINAL_SESSION_OPEN_ERROR_KINDS = new Set([
+  "data_dir_locked",
+  "workspace_not_writable",
+]);
+
+function terminalSessionOpenDiagnosis(err: BridgeRpcError): string | null {
+  if (!isPlainObject(err.data)) return null;
+  const kind = err.data.kind;
+  if (
+    typeof kind !== "string" ||
+    !TERMINAL_SESSION_OPEN_ERROR_KINDS.has(kind)
+  ) {
+    return null;
+  }
+  return typeof err.data.message === "string" && err.data.message.trim() !== ""
+    ? err.data.message
+    : null;
 }
 
 function guardProjectionEnvelope(p: unknown): ProjectionEnvelopeV2 | null {
@@ -1894,8 +1924,15 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
    *  once. `"auth_rejected"` = the token was dead (1008 close,
    *  permission_denied on `session/open`, or 401 on the upgrade
    *  fallback); retrying is wasted load until the user re-logs in.
+   *  `"config_rejected"` = the server diagnosed a terminal configuration
+   *  mistake on `session/open` (#351); retry needs the operator's fix
+   *  first, so the send surface's explicit Retry is the recovery path.
    *  `null` = not abandoned (sentinel for cleared state). */
-  private latchReason: "attempts_exhausted" | "auth_rejected" | null = null;
+  private latchReason:
+    | "attempts_exhausted"
+    | "auth_rejected"
+    | "config_rejected"
+    | null = null;
   /** Issue #137: idempotency guard for the visibilitychange handler.
    *  Mobile browsers can fire `visibilitychange` multiple times in
    *  quick succession during app-switches; once we have already
@@ -2836,7 +2873,11 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     if (this.reconnectAbandoned && !this.startupReject) return;
     this.reconnectAbandoned = true;
     this.latchReason =
-      error.kind === "authentication" ? "auth_rejected" : "attempts_exhausted";
+      error.kind === "authentication"
+        ? "auth_rejected"
+        : error.kind === "configuration"
+          ? "config_rejected"
+          : "attempts_exhausted";
     this.cancelReconnectTimer();
     this.cancelKeepalive();
     this.removeVisibilityListener();
@@ -3097,6 +3138,21 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
         this.setState("error");
         this.rejectAllPending(new BridgeStoppedError("auth permission denied"));
         return;
+      }
+      // Issue #351: a typed terminal configuration failure (`data_dir_locked`,
+      // `workspace_not_writable`) carries its own actionable diagnosis — the
+      // server names the conflicting process and the remedy. Re-running the
+      // handshake cannot fix a deployment mistake, so fail startup with the
+      // server's sentence instead of burning the reconnect budget and ending
+      // at the generic transport message. Login is retained (this is not an
+      // auth failure); the send surface's Retry button is the explicit
+      // recovery path once the operator resolves the conflict.
+      if (err instanceof BridgeRpcError) {
+        const diagnosis = terminalSessionOpenDiagnosis(err);
+        if (diagnosis !== null) {
+          this.failStartup(new BridgeStartupError("configuration", diagnosis));
+          return;
+        }
       }
       this.scheduleReconnect();
     }
@@ -3573,7 +3629,9 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     // exhaustion. An auth-rejected latch (`"auth_rejected"`) means the
     // token is dead — retrying is wasted load until the user
     // re-authenticates; AuthProvider's `crew:auth_expired` subscriber
-    // has already kicked off that flow.
+    // has already kicked off that flow. A config-rejected latch
+    // (`"config_rejected"`, #351) means the server diagnosed a deployment
+    // mistake — retry needs the operator's fix, not a tab refocus.
     if (!this.reconnectAbandoned) return;
     if (this.latchReason !== "attempts_exhausted") return;
     // Skip the trigger during the bridge's initial-connection phase.
