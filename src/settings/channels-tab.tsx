@@ -52,6 +52,7 @@ type ChannelType = (typeof CHANNEL_TYPES)[number];
 
 interface ChannelConfig {
   type: string;
+  id?: string;
   mode?: "websocket" | "webhook" | "managed" | "external" | "appservice" | "user";
   enabled?: boolean;
   token_env?: string;
@@ -148,6 +149,7 @@ function defaultsForType(type: ChannelType): Partial<ChannelConfig> {
         auto_join_allowlist: "",
         group_policy: "allowlist",
         require_mention: true,
+        port: 8009,
       };
     case "wechat":
       return { token_env: "WECHAT_BOT_TOKEN", base_url: "https://api.weixin.qq.com/cgi-bin" };
@@ -176,6 +178,66 @@ function channelLabel(type: string): string {
     "qq-bot": "QQ Bot",
   };
   return labels[type] ?? type;
+}
+
+const CHANNEL_INSTANCE_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+
+function channelRouteLabel(channel: ChannelConfig): string {
+  const id = channel.id?.trim();
+  return id ? `${channel.type}@${id}` : channel.type;
+}
+
+function channelValidationError(
+  draft: ChannelConfig,
+  channels: ChannelConfig[],
+  editingIdx?: number,
+): string | null {
+  const id = draft.id?.trim() ?? "";
+  const label = channelLabel(draft.type);
+  if (id && !CHANNEL_INSTANCE_ID_PATTERN.test(id)) {
+    return `${label} instance ID must be 1–64 lowercase letters, numbers, or hyphens, without a leading or trailing hyphen.`;
+  }
+
+  const otherChannelsOfType = channels.filter(
+    (channel, idx) => idx !== editingIdx && channel.type === draft.type,
+  );
+  if (!id && otherChannelsOfType.some((channel) => !channel.id?.trim())) {
+    return `Only one legacy ${label} channel can omit the instance ID. Add a unique ID for this instance.`;
+  }
+  if (id && otherChannelsOfType.some((channel) => channel.id?.trim() === id)) {
+    return `${label} instance ID “${id}” is already in use.`;
+  }
+
+  if (draft.type !== "matrix") return null;
+  const mode = draft.mode === "user" ? "user" : "appservice";
+  if (mode === "appservice") {
+    const port = draft.port ?? 8009;
+    const duplicatePort = otherChannelsOfType.some(
+      (channel) =>
+        (channel.mode === "appservice" || !channel.mode) &&
+        (channel.port ?? 8009) === port,
+    );
+    if (duplicatePort) {
+      return `Matrix appservice listener port ${port} is already in use by another instance.`;
+    }
+  }
+
+  return null;
+}
+
+function nextMatrixAppservicePort(channels: ChannelConfig[]): number {
+  const usedPorts = new Set(
+    channels
+      .filter(
+        (channel) =>
+          channel.type === "matrix" &&
+          (channel.mode === "appservice" || !channel.mode),
+      )
+      .map((channel) => channel.port ?? 8009),
+  );
+  let port = 8009;
+  while (usedPorts.has(port) && port < 65_535) port += 1;
+  return port;
 }
 
 // ── Webhook URL helpers ──
@@ -216,6 +278,11 @@ function cleanChannelDraft(draft: ChannelConfig): ChannelConfig {
   };
   for (const [key, value] of Object.entries(draft)) {
     if (key === "type" || key === "enabled") continue;
+    if (key === "id") {
+      const id = String(value ?? "").trim();
+      if (id) cleaned.id = id;
+      continue;
+    }
     if (
       draft.type === "matrix" &&
       (key === "allowed_senders" ||
@@ -285,6 +352,32 @@ function WebhookUrlField({ channelType, profileId }: { channelType: string; prof
   );
 }
 
+function ChannelInstanceIdField({
+  draft,
+  onChange,
+}: {
+  draft: ChannelConfig;
+  onChange: (patch: Partial<ChannelConfig>) => void;
+}) {
+  return (
+    <div>
+      <label className="mb-1.5 block text-xs font-medium text-muted">Instance ID</label>
+      <p className="mb-1.5 text-[11px] text-muted/70">
+        Optional for the first {channelLabel(draft.type)} channel. Named instances route as{" "}
+        <code>{draft.type}@&lt;id&gt;</code>; an existing channel without an ID keeps the legacy{" "}
+        <code>{draft.type}</code> route.
+      </p>
+      <input
+        type="text"
+        value={draft.id ?? ""}
+        onChange={(event) => onChange({ id: event.target.value })}
+        placeholder="e.g. support or internal"
+        className="w-full rounded-xl bg-surface-container px-4 py-2.5 text-sm text-text placeholder-muted/50 outline-none border border-transparent focus:border-accent/30 transition"
+      />
+    </div>
+  );
+}
+
 function ChannelFormFields({
   draft,
   onChange,
@@ -297,10 +390,13 @@ function ChannelFormFields({
   const field = (
     label: string,
     key: keyof ChannelConfig,
-    opts?: { placeholder?: string; type?: string },
+    opts?: { placeholder?: string; type?: string; description?: string },
   ) => (
     <div key={key}>
       <label className="mb-1.5 block text-xs font-medium text-muted">{label}</label>
+      {opts?.description && (
+        <p className="mb-1.5 text-[11px] text-muted/70">{opts.description}</p>
+      )}
       <input
         type={opts?.type ?? "text"}
         value={Array.isArray(draft[key]) ? (draft[key] as string[]).join(", ") : (draft[key] as string | number) ?? ""}
@@ -496,6 +592,7 @@ function ChannelFormFields({
             </>
           ) : (
             <>
+              {field("Listener port", "port", { placeholder: "8009", type: "number" })}
               {field("Application service token", "as_token", { placeholder: "MATRIX_AS_TOKEN", type: "password" })}
               {field("Homeserver token", "hs_token", { placeholder: "MATRIX_HS_TOKEN", type: "password" })}
               {field("Server name", "server_name", { placeholder: "matrix.example.com" })}
@@ -679,11 +776,15 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
   // Add-channel form state
   const [showAddForm, setShowAddForm] = useState(false);
   const [newType, setNewType] = useState<ChannelType>("telegram");
-  const [draft, setDraft] = useState<ChannelConfig>({ type: "telegram", enabled: true, ...defaultsForType("telegram") });
+  const [draft, setDraft] = useState<ChannelConfig>({ type: "telegram", id: "", enabled: true, ...defaultsForType("telegram") });
 
   const handleTypeChange = (type: ChannelType) => {
     setNewType(type);
-    setDraft({ type, enabled: true, ...defaultsForType(type) });
+    const defaults = defaultsForType(type);
+    if (type === "matrix") {
+      defaults.port = nextMatrixAppservicePort(channels);
+    }
+    setDraft({ type, id: "", enabled: true, ...defaults });
   };
 
   const updateDraft = (patch: Partial<ChannelConfig>) => {
@@ -789,11 +890,16 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
   };
 
   const handleAdd = async () => {
+    const validationError = channelValidationError(draft, channels);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
     const cleaned = cleanChannelDraft(draft);
     const ok = await persistChannels([...channels, cleaned]);
     if (ok) {
       setShowAddForm(false);
-      setDraft({ type: "telegram", enabled: true, ...defaultsForType("telegram") });
+      setDraft({ type: "telegram", id: "", enabled: true, ...defaultsForType("telegram") });
       setNewType("telegram");
     }
   };
@@ -811,6 +917,15 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
 
   const handleSaveEdit = async () => {
     if (editingIdx == null || !editDraft) return;
+    const validationError = channelValidationError(
+      editDraft,
+      channels,
+      editingIdx,
+    );
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
     const updated = channels.map((ch, i) =>
       i === editingIdx ? cleanChannelDraft(editDraft) : ch,
     );
@@ -900,7 +1015,7 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
                           {channelLabel(channel.type)}
                         </span>
                         <span className="shrink-0 rounded-md bg-surface-dark/60 px-1.5 py-0.5 text-[10px] font-medium text-muted uppercase tracking-wider">
-                          {channel.type}
+                          {channelRouteLabel(channel)}
                         </span>
                       </div>
                     </div>
@@ -961,6 +1076,10 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
                   {editingIdx === idx && editDraft && (
                     <div className="ml-12 rounded-xl border border-border/70 bg-surface-dark/40 p-4">
                       <div className="grid gap-4 md:grid-cols-2">
+                        <ChannelInstanceIdField
+                          draft={editDraft}
+                          onChange={updateEditDraft}
+                        />
                         <ChannelFormFields
                           draft={editDraft}
                           onChange={updateEditDraft}
@@ -1055,6 +1174,7 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
             </div>
 
             {/* Dynamic fields */}
+            <ChannelInstanceIdField draft={draft} onChange={updateDraft} />
             <ChannelFormFields
               draft={draft}
               onChange={updateDraft}
@@ -1106,7 +1226,7 @@ export function ChannelsTab({ profile, onProfileUpdated }: ChannelsTabProps) {
         title="Remove Channel"
         body={
           pendingRemoveIdx != null && channels[pendingRemoveIdx]
-            ? `Remove ${channelLabel(channels[pendingRemoveIdx].type)} channel?`
+            ? `Remove ${channelLabel(channels[pendingRemoveIdx].type)} channel (${channelRouteLabel(channels[pendingRemoveIdx])})?`
             : "Remove this channel?"
         }
         confirmLabel="Remove Channel"

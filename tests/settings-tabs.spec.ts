@@ -1093,6 +1093,121 @@ test.describe("Settings page — tab smoke tests", () => {
     );
   });
 
+  test("Channels tab adds a named Matrix instance without rewriting the legacy instance", async ({
+    page,
+  }) => {
+    const legacyMatrix = {
+      type: "matrix",
+      enabled: true,
+      mode: "appservice",
+      homeserver: "https://legacy.example.com",
+      as_token: "legacy-as-token",
+      hs_token: "legacy-hs-token",
+      server_name: "legacy.example.com",
+      sender_localpart: "octos",
+      user_prefix: "octos_",
+    };
+    const profileWithLegacyMatrix = {
+      ...mockProfile,
+      config: {
+        ...mockProfile.config,
+        channels: [legacyMatrix],
+      },
+    };
+    const mocks = await installServerSettingsMocks(page, {
+      profile: profileWithLegacyMatrix,
+    });
+    await seedAdminSession(page);
+
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: TIMEOUT });
+    await clickTab(page, "Channels");
+
+    await page.getByRole("button", { name: /^Add Channel$/ }).first().click();
+    const form = page.locator(".glass-section", { hasText: "New Channel" });
+    await form.locator("select").first().selectOption("matrix");
+
+    await expect(form.getByPlaceholder("e.g. support or internal")).toBeVisible();
+    await expect(form.getByPlaceholder("8009")).toHaveValue("8010");
+
+    await form.getByRole("button", { name: /^Add Channel$/ }).click();
+    await expect(
+      page.getByText("Only one legacy Matrix channel can omit the instance ID."),
+    ).toBeVisible();
+    expect(mocks.getProfileUpdateBodies()).toHaveLength(0);
+
+    await form.getByPlaceholder("e.g. support or internal").fill("support");
+    await form.getByPlaceholder("https://matrix.example.com").fill("https://support.example.com");
+    await form.getByPlaceholder("MATRIX_AS_TOKEN").fill("support-as-token");
+    await form.getByPlaceholder("MATRIX_HS_TOKEN").fill("support-hs-token");
+    await form
+      .getByPlaceholder("matrix.example.com", { exact: true })
+      .fill("support.example.com");
+    await form.getByRole("button", { name: /^Add Channel$/ }).click();
+
+    await expect
+      .poll(() => mocks.getProfileUpdateBodies().at(-1))
+      .not.toBeUndefined();
+    const body = mocks.getProfileUpdateBodies().at(-1);
+    const config = (body as { config?: { channels?: unknown[] } }).config;
+    expect(config?.channels?.[0]).toEqual(legacyMatrix);
+    expect(config?.channels?.[1]).toEqual(
+      expect.objectContaining({
+        type: "matrix",
+        id: "support",
+        enabled: true,
+        mode: "appservice",
+        port: 8010,
+        homeserver: "https://support.example.com",
+      }),
+    );
+  });
+
+  test("Channels tab supports named instances for non-Matrix channels", async ({ page }) => {
+    const legacyTelegram = {
+      type: "telegram",
+      enabled: true,
+      token_env: "TELEGRAM_PRIMARY_TOKEN",
+      allowed_senders: "",
+    };
+    const mocks = await installServerSettingsMocks(page, {
+      profile: {
+        ...mockProfile,
+        config: { ...mockProfile.config, channels: [legacyTelegram] },
+      },
+    });
+    await seedAdminSession(page);
+
+    await page.goto("/settings", { waitUntil: "networkidle" });
+    await expect(page.locator(".animate-spin")).toBeHidden({ timeout: TIMEOUT });
+    await clickTab(page, "Channels");
+
+    await page.getByRole("button", { name: /^Add Channel$/ }).first().click();
+    const form = page.locator(".glass-section", { hasText: "New Channel" });
+    await form.getByRole("button", { name: /^Add Channel$/ }).click();
+    await expect(
+      page.getByText("Only one legacy Telegram channel can omit the instance ID."),
+    ).toBeVisible();
+    expect(mocks.getProfileUpdateBodies()).toHaveLength(0);
+
+    await form.getByPlaceholder("e.g. support or internal").fill("support");
+    await form.getByPlaceholder("TELEGRAM_BOT_TOKEN").fill("TELEGRAM_SUPPORT_TOKEN");
+    await form.getByRole("button", { name: /^Add Channel$/ }).click();
+
+    await expect.poll(() => mocks.getProfileUpdateBodies().at(-1)).not.toBeUndefined();
+    const body = mocks.getProfileUpdateBodies().at(-1);
+    const config = (body as { config?: { channels?: unknown[] } }).config;
+    expect(config?.channels?.[0]).toEqual(legacyTelegram);
+    expect(config?.channels?.[1]).toEqual(
+      expect.objectContaining({
+        type: "telegram",
+        id: "support",
+        enabled: true,
+        token_env: "TELEGRAM_SUPPORT_TOKEN",
+      }),
+    );
+  });
+
   test("Sandbox tab renders configuration section", async ({ page }) => {
     await goToSettings(page);
 
