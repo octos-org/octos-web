@@ -447,6 +447,13 @@ export class BridgeTimeoutError extends Error {
   }
 }
 
+export class BridgeQueueOverflowError extends Error {
+  constructor(method: string) {
+    super(`rpc dropped: ${method} (send queue overflow)`);
+    this.name = "BridgeQueueOverflowError";
+  }
+}
+
 /** Canonical v2 terminal surface used by the send queue. It is intentionally
  * separate from the legacy turn lifecycle notifications, which v2 servers
  * no longer need to emit. */
@@ -3797,6 +3804,17 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
   private enqueueFrame(frame: QueuedFrame): void {
     if (this.sendQueue.length >= this.cfg.sendQueueLimit) {
       const dropped = this.sendQueue.shift();
+      // The dropped frame's RPC must not outlive its queue slot: its
+      // timeout was never armed (#245 P2), so without an explicit
+      // rejection the awaiter would hang forever.
+      if (dropped?.rpcId !== undefined) {
+        const pending = this.pending.get(dropped.rpcId);
+        if (pending) {
+          this.cfg.clearTimeout(pending.timer);
+          this.pending.delete(dropped.rpcId);
+          pending.reject(new BridgeQueueOverflowError(pending.method));
+        }
+      }
       this.subWarning.emit({
         reason: "send_queue_overflow",
         context: { dropped_bytes: dropped?.text.length ?? 0 },
