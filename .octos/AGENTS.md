@@ -9,9 +9,9 @@ adjacent infrastructure work, or speculative cleanup. Work from synced
 For the current coordinated release, the controlling docs live in the paired
 `octos` repo:
 
-- `/Users/yuechen/home/octos/docs/OCTOS_RELEASE_CONTRACT_2026-04-17.md`
-- `/Users/yuechen/home/octos/docs/OCTOS_RUNTIME_PHASE3_CONTRACT.md`
-- `/Users/yuechen/home/octos/docs/OCTOS_HARNESS_MASTER_PLAN.md`
+- `~/home/octos/docs/OCTOS_RELEASE_CONTRACT_2026-04-17.md`
+- `~/home/octos/docs/OCTOS_RUNTIME_PHASE3_CONTRACT.md`
+- `~/home/octos/docs/OCTOS_HARNESS_MASTER_PLAN.md`
 
 ## Baseline Discipline
 
