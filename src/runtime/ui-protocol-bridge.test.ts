@@ -2187,7 +2187,7 @@ describe("send queue", () => {
     expect(ws.sent.find((f) => f.includes(METHODS.TURN_START))).toBeDefined();
   });
 
-  it("drops oldest entries when the queue overflows and emits warning", async () => {
+  it("drops oldest entries when the queue overflows, emits warning, and settles the dropped RPC", async () => {
     const bridge = createUiProtocolBridge(
       makeBridgeOpts({ sendQueueLimit: 2 }),
     );
@@ -2196,9 +2196,19 @@ describe("send queue", () => {
     void bridge.start({ sessionId: "sess-1" });
     await Promise.resolve();
     const ws = lastInstance();
-    void bridge.sendTurn("turn-A", [{ kind: "text", text: "a" }]);
-    void bridge.sendTurn("turn-B", [{ kind: "text", text: "b" }]);
-    void bridge.sendTurn("turn-C", [{ kind: "text", text: "c" }]);
+    const outcomes: string[] = [];
+    void bridge.sendTurn("turn-A", [{ kind: "text", text: "a" }]).then(
+      () => outcomes.push("A:resolved"),
+      (err: Error) => outcomes.push(`A:${err.name}`),
+    );
+    void bridge.sendTurn("turn-B", [{ kind: "text", text: "b" }]).then(
+      () => outcomes.push("B:resolved"),
+      (err: Error) => outcomes.push(`B:${err.name}`),
+    );
+    void bridge.sendTurn("turn-C", [{ kind: "text", text: "c" }]).then(
+      () => outcomes.push("C:resolved"),
+      (err: Error) => outcomes.push(`C:${err.name}`),
+    );
     expect(warnings.some((w) => w.reason === "send_queue_overflow")).toBe(true);
 
     ws.triggerOpen();
@@ -2218,6 +2228,24 @@ describe("send queue", () => {
       .filter((f) => f.method === METHODS.TURN_START)
       .map((f) => f.params?.turn_id);
     expect(turnFrames).toEqual(["turn-B", "turn-C"]);
+
+    // The dropped turn-A frame never reached the wire and its timeout was
+    // never armed, so the drop itself must settle its RPC — otherwise the
+    // awaiter hangs forever on a bridge that is alive again. B, whose frame
+    // survived, must still resolve from the server response.
+    const bFrame = ws.sent
+      .map((f) => JSON.parse(f) as { method: string; id?: string })
+      .find((f) => f.method === METHODS.TURN_START);
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: bFrame?.id,
+      result: { accepted: true },
+    });
+    await Promise.resolve();
+    expect(outcomes).toContain("A:BridgeQueueOverflowError");
+    expect(outcomes).toContain("B:resolved");
+
+    await bridge.stop();
   });
 });
 
