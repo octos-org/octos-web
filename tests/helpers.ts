@@ -5,8 +5,17 @@ const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "octos-admin-2026";
 const BASE_URL = process.env.BASE_URL || "http://localhost:5174";
 const USE_E2E_HARNESS = process.env.OCTOS_LIVE_E2E !== "1";
 
+/** Shape of a JSON-RPC error the harness answers `session/open` with while
+ *  `sessionOpenError` is set (web#351 typed config rejections). */
+export interface HarnessRpcError {
+  code: number;
+  message: string;
+  data: Record<string, unknown>;
+}
+
 export interface UiProtocolHarnessControl {
   failStartup: boolean;
+  sessionOpenError: HarnessRpcError | null;
   socketAttempts: number;
   injectedFailures: number;
   sentMethods: string[];
@@ -18,6 +27,7 @@ export function createUiProtocolHarnessControl(
 ): UiProtocolHarnessControl {
   return {
     failStartup,
+    sessionOpenError: null,
     socketAttempts: 0,
     injectedFailures: 0,
     sentMethods: [],
@@ -60,6 +70,10 @@ async function fulfillJson(route: Route, body: unknown, status = 200) {
 
 function rpcResponse(id: string, result: unknown): string {
   return JSON.stringify({ jsonrpc: "2.0", id, result });
+}
+
+function rpcError(id: string, error: HarnessRpcError): string {
+  return JSON.stringify({ jsonrpc: "2.0", id, error });
 }
 
 function rpcNotification(method: string, params: unknown): string {
@@ -461,6 +475,10 @@ async function installDefaultE2EHarness(
       }
 
       if (method === "session/open" && id) {
+        if (uiProtocolControl?.sessionOpenError) {
+          ws.send(rpcError(id, uiProtocolControl.sessionOpenError));
+          return;
+        }
         const sessionId = String(params?.session_id || "web-e2e");
         ensureSession(sessionId);
         ws.send(rpcResponse(id, {

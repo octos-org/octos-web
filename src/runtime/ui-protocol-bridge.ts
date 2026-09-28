@@ -392,6 +392,41 @@ const NORMAL_CLOSURE = 1000;
 // so AuthProvider can revalidate / drop the user back to /login.
 const RPC_ERROR_PERMISSION_DENIED = -32120;
 
+// `session/open` RPC errors whose `data.kind` names a structural config
+// mistake (`data_dir_locked_error` / `workspace_not_writable_error` in
+// `crates/octos-cli/src/api/ui_protocol_transport.rs`). The remedy is an
+// operator action — stop the conflicting `octos serve`, make the
+// workspace writable — so every retry re-reads the same rejection.
+// Core documents `data.message` as client-rendered verbatim; surface it
+// instead of the generic transport diagnosis (web#351).
+const TERMINAL_SESSION_OPEN_CONFIG_KINDS: ReadonlySet<string> = new Set([
+  "data_dir_locked",
+  "workspace_not_writable",
+]);
+
+/** The server-rendered operator remedy when a `session/open` rejection
+ *  carries one of the terminal config kinds, else null. */
+function terminalSessionOpenConfigMessage(err: unknown): string | null {
+  if (!(err instanceof BridgeRpcError)) return null;
+  const data = err.data;
+  if (typeof data !== "object" || data === null) return null;
+  const kind = (data as { kind?: unknown }).kind;
+  if (
+    typeof kind !== "string" ||
+    !TERMINAL_SESSION_OPEN_CONFIG_KINDS.has(kind)
+  ) {
+    return null;
+  }
+  const message = (data as { message?: unknown }).message;
+  if (typeof message === "string" && message.length > 0) return message;
+  // Fallback for a server that omits `data.message`: the RPC message
+  // carries the same sentence behind the bridge's `rpc-error[code]` prefix.
+  // An empty result means nothing actionable exists — fall back to the
+  // reconnect path rather than failing with a blank diagnosis.
+  const fallback = err.message.replace(/^rpc-error\[[^\]]+\]\s*/, "");
+  return fallback.length > 0 ? fallback : null;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -405,6 +440,7 @@ export class BridgeStoppedError extends Error {
 
 export type BridgeStartupFailureKind =
   | "authentication"
+  | "configuration"
   | "connection"
   | "protocol"
   | "timeout"
@@ -1894,8 +1930,15 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
    *  once. `"auth_rejected"` = the token was dead (1008 close,
    *  permission_denied on `session/open`, or 401 on the upgrade
    *  fallback); retrying is wasted load until the user re-logs in.
+   *  `"config_rejected"` = the server named a structural config mistake
+   *  (e.g. `data_dir_locked` on `session/open`, web#351); retrying
+   *  re-reads the same rejection until the operator fixes the conflict.
    *  `null` = not abandoned (sentinel for cleared state). */
-  private latchReason: "attempts_exhausted" | "auth_rejected" | null = null;
+  private latchReason:
+    | "attempts_exhausted"
+    | "auth_rejected"
+    | "config_rejected"
+    | null = null;
   /** Issue #137: idempotency guard for the visibilitychange handler.
    *  Mobile browsers can fire `visibilitychange` multiple times in
    *  quick succession during app-switches; once we have already
@@ -2836,7 +2879,11 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
     if (this.reconnectAbandoned && !this.startupReject) return;
     this.reconnectAbandoned = true;
     this.latchReason =
-      error.kind === "authentication" ? "auth_rejected" : "attempts_exhausted";
+      error.kind === "authentication"
+        ? "auth_rejected"
+        : error.kind === "configuration"
+          ? "config_rejected"
+          : "attempts_exhausted";
     this.cancelReconnectTimer();
     this.cancelKeepalive();
     this.removeVisibilityListener();
@@ -3096,6 +3143,36 @@ class UiProtocolBridgeImpl implements UiProtocolBridge {
         this.latchReason = "auth_rejected";
         this.setState("error");
         this.rejectAllPending(new BridgeStoppedError("auth permission denied"));
+        return;
+      }
+      // web#351: a typed config rejection (e.g. `data_dir_locked` — another
+      // `octos serve` owns this profile's data directory) never clears on
+      // retry. Fail terminally with the server's operator remedy verbatim,
+      // mirroring the auth path but keeping the login intact (no
+      // `crew:auth_expired`).
+      const configMessage = terminalSessionOpenConfigMessage(err);
+      if (configMessage !== null) {
+        if (this.startupReject) {
+          this.failStartup(
+            new BridgeStartupError("configuration", configMessage),
+          );
+          return;
+        }
+        this.reconnectAbandoned = true;
+        this.latchReason = "config_rejected";
+        this.setState("error");
+        // Park inertly: detach the still-open socket so server-pushed
+        // frames cannot reach the stores behind a terminal bridge, drop
+        // queued sends, and stop listening for visibility resets the
+        // latch will refuse anyway.
+        const parkedWs = this.ws;
+        this.ws = null;
+        this.detachSocket(parkedWs);
+        this.sendQueue.length = 0;
+        this.removeVisibilityListener();
+        this.rejectAllPending(
+          new BridgeStoppedError("session open rejected: server config"),
+        );
         return;
       }
       this.scheduleReconnect();
