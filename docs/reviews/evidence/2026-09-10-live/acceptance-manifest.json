@@ -1,0 +1,178 @@
+{
+  "server": "mini3",
+  "runner_host": "macmini-3-249.local",
+  "base_path": "/app/",
+  "server_pid": 10338,
+  "soak_runner_pid": 10857,
+  "runtime_web_commit": "355c7f5",
+  "runtime_core_commit": "f94d219",
+  "binary_sha256": "8f7aad9c2612209c1ba58cd36b8da9ec74f8fd034bf48ca243f27ad363d4315f",
+  "html_sha256": "fe00415e153595995f3e92265b358f401f46bbd02b1a6b29ac1fb29a8657c163",
+  "playwright": "1.60.0",
+  "chromium": "148.0.7778.96",
+  "model_route": "deepseek/deepseek-flash",
+  "soak_started_utc": "2026-09-11T00:42:34.928Z",
+  "soak_status": "passed",
+  "core_tests_passed": 5,
+  "core_tests_duration_seconds": 16.2,
+  "web_unit_tests_passed": 1236,
+  "backend_review_tests_passed": 48,
+  "feature_checks": [
+    "generated file mutation and persistence",
+    "36-second accepted tool turn",
+    "3335-chunk long reply compaction and duplicate regression",
+    "actual token revocation and app return route",
+    "actual React/Vite build, initial preview recovery, ES module interaction and preview isolation"
+  ],
+  "outstanding_acceptance": [
+    "remote speech capture and ASR/TTS",
+    "real deck generation, edit rendering and PPTX export",
+    "actual learning lesson workflow",
+    "external channels/services and physical hardware",
+    "designated public-canary release certification"
+  ],
+  "soak_result": {
+    "result": "PASS",
+    "started_utc": "2026-09-11T00:42:34.928Z",
+    "completed_utc": "2026-09-11T01:13:13.340Z",
+    "elapsed_ms": 1838412,
+    "completed_cycles": 38,
+    "final_real_chat_passed": true,
+    "retries": 0,
+    "page_errors": [],
+    "http_failures": [],
+    "latency_ms": {
+      "min": 1390,
+      "median": 1922.0,
+      "p95": 2903,
+      "max": 3915
+    },
+    "server_rss_kib": {
+      "first": 232224,
+      "last": 323056,
+      "min": 231344,
+      "max": 323056
+    },
+    "sockets_before_browser_teardown": {
+      "opened": 213,
+      "closed": 211
+    },
+    "browser_runner_process_samples": {
+      "count": 35,
+      "started_utc": "2026-09-11T00:48:49Z",
+      "ended_utc": "2026-09-11T01:13:05Z",
+      "summed_rss_kib_first": 809520,
+      "summed_rss_kib_last": 802768,
+      "summed_rss_kib_max": 952544,
+      "note": "Sum includes shared pages and is not private memory. Sampling began after soak startup. This finite run does not establish absence of leaks."
+    }
+  },
+  "previous_post_soak_runtime": {
+    "web_commit": "3b4fa70",
+    "core_commit": "55cf887",
+    "pid": 13097,
+    "binary_sha256": "81ef7d43856317eac2d2cf48a1212d4fbdd3ceb40936de2e0884dea724aa8504",
+    "html_sha256": "1550afc03ffb48629fd8602194b91e7b12adb0caafce114bd4150b591968ce08",
+    "scope": "Slide hydration/polling and new-project instruction changes; 30-minute core soak ran on the preceding pinned runtime."
+  },
+  "intermediate_post_soak_runtime": {
+    "web_commit": "6892272",
+    "core_commit": "734e09a",
+    "pid": 13638,
+    "binary_sha256": "ef29e46092670646b04f062ea5e56b4ee61c5c8112005fb547efcd350da6fa51",
+    "html_sha256": "de7e3be95583fefa3a6405e608dc48befbb9a36586086f657caf3a80b62302f7",
+    "web_unit_tests_passed": 1241,
+    "mocked_browser_tests_passed": 31,
+    "scope": "Stable slide hydration, available-server slide APIs, new slide dispatcher instructions and generic background acknowledgement text. The completed 30-minute core soak ran on the preceding pinned runtime.",
+    "core_tests_passed": 5,
+    "core_tests_duration_seconds": 17.1,
+    "slide_direct_link_checks": [
+      {
+        "event": "PASS",
+        "route": "slides/slides-1789088108707-owepm0",
+        "freshBrowser": true,
+        "fileListRequests": 6,
+        "fileListStatuses": [
+          200
+        ],
+        "checks": [
+          "actual session hydration",
+          "direct authenticated link",
+          "no standalone gateway requirement",
+          "bounded file polling over six seconds",
+          "no browser errors"
+        ]
+      },
+      {
+        "event": "PASS",
+        "route": "slides/slides-1789088108707-owepm0/present",
+        "freshBrowser": true,
+        "fileListRequests": 3,
+        "fileListStatuses": [
+          200
+        ],
+        "checks": [
+          "actual session hydration",
+          "direct authenticated link",
+          "no standalone gateway requirement",
+          "bounded file polling over six seconds",
+          "no browser errors"
+        ]
+      }
+    ]
+  },
+  "post_soak_runtime": {
+    "web_commit": "433501f",
+    "core_commit": "734e09a",
+    "pid": 14072,
+    "binary_sha256": "eec7e8ef4b1705e4a55877d5c9b20068d3747b0d6a92ddbca15c9763890338b0",
+    "html_sha256": "33f43f7a2b90558216dda5250a2739f3c37e3f60d2b66545906e1a34995c1d16",
+    "web_unit_tests_passed": 1243,
+    "scope": "Slide hydration/polling, actual opaque file handles, new slide dispatcher instructions, generic background acknowledgement. The completed 30-minute core soak ran on the earlier pinned runtime.",
+    "core_tests_passed": 5,
+    "core_tests_duration_seconds": 16.6,
+    "slide_direct_link_checks": [
+      {
+        "event": "PASS",
+        "route": "slides/slides-1789089798307-27aqtt",
+        "freshBrowser": true,
+        "fileListRequests": 6,
+        "fileListStatuses": [
+          200
+        ],
+        "checks": [
+          "actual session hydration",
+          "direct authenticated link",
+          "no standalone gateway requirement",
+          "bounded file polling over six seconds",
+          "no browser errors"
+        ]
+      },
+      {
+        "event": "PASS",
+        "route": "slides/slides-1789089798307-27aqtt/present",
+        "freshBrowser": true,
+        "fileListRequests": 3,
+        "fileListStatuses": [
+          200
+        ],
+        "checks": [
+          "actual session hydration",
+          "direct authenticated link",
+          "no standalone gateway requirement",
+          "bounded file polling over six seconds",
+          "no browser errors"
+        ]
+      }
+    ],
+    "scaffold_files_each_rendered_once": [
+      "script.js",
+      "memory.md",
+      "changelog.md"
+    ],
+    "web_ci_run": 34550826659,
+    "web_ci_status": "passed",
+    "backend_ci_run": 34550188267,
+    "backend_ci_status": "in progress when evidence published"
+  }
+}

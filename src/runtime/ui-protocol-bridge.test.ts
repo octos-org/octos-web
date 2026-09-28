@@ -1017,6 +1017,61 @@ describe("connection lifecycle", () => {
   });
 
 
+  it("preserves a profile database lock diagnosis without retrying or expiring auth", async () => {
+    vi.useFakeTimers();
+    const expired = vi.fn();
+    window.addEventListener("crew:auth_expired", expired);
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const observed = bridge.start({ sessionId: "sess-locked" }).catch((error: unknown) => error);
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(ws, METHODS.SESSION_OPEN);
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      error: {
+        code: -32603,
+        message: "Another octos process owns this profile's data directory. Stop it or use --instance-data-dir.",
+        data: { kind: "data_dir_locked", profile_id: "review-a" },
+      },
+    });
+    const error = await observed;
+    expect(error).toBeInstanceOf(BridgeStartupError);
+    expect(error).toMatchObject({
+      kind: "connection",
+      message: expect.stringContaining("--instance-data-dir"),
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(bridge.isTerminal()).toBe(true);
+    expect(expired).not.toHaveBeenCalled();
+    window.removeEventListener("crew:auth_expired", expired);
+    await bridge.stop();
+  });
+
+  it("opens and hydrates the same slide topic bucket", async () => {
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const starting = bridge.start({ sessionId: "slides-test", topic: "slides deck" });
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(ws, METHODS.SESSION_OPEN);
+    expect(open.params).toMatchObject({ session_id: "slides-test", topic: "slides deck" });
+    ws.triggerMessage({ jsonrpc: "2.0", id: open.id, result: { opened: { session_id: "slides-test" } } });
+    await starting;
+    const hydrating = bridge.hydrateSession();
+    const hydrate = findRequest(ws, METHODS.SESSION_HYDRATE);
+    expect(hydrate.params).toMatchObject({ session_id: "slides-test#slides deck" });
+    ws.triggerMessage({ jsonrpc: "2.0", id: hydrate.id, result: {
+      session_id: "slides-test#slides deck", cursor: { stream: "slides-test#slides deck", seq: 0 }, messages: [],
+    } });
+    await hydrating;
+    await bridge.stop();
+  });
+
   it("rejects a never-ready startup with an actionable typed error", async () => {
     vi.useFakeTimers();
     const bridge = createUiProtocolBridge(

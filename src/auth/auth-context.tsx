@@ -4,16 +4,21 @@ import {
   useState,
   useEffect,
   useCallback,
+  useRef,
+  Fragment,
   type ReactNode,
 } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import * as authApi from "@/api/auth";
 import {
   clearToken,
+  ApiError,
+  getIdentityGeneration,
   extractProfileIdFromPayload,
   getToken,
   setSelectedProfileId,
   setToken,
+  restoreIdentityCache,
 } from "@/api/client";
 import type { AuthStatusResponse, AuthUser, PortalState } from "@/api/types";
 
@@ -23,6 +28,7 @@ interface AuthState {
   authStatus: AuthStatusResponse | null;
   token: string | null;
   loading: boolean;
+  authError: string | null;
   login: (email: string, code: string) => Promise<void>;
   loginWithToken: (token: string) => Promise<void>;
   /** No-password solo re-login for the existing local owner. Rejects with an
@@ -49,6 +55,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [authStatus, setAuthStatus] = useState<AuthStatusResponse | null>(null);
   const [token, setTokenState] = useState<string | null>(getToken());
   const [loading, setLoading] = useState(true);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [recoveryAttempts, setRecoveryAttempts] = useState(0);
+  const [identityVersion, setIdentityVersion] = useState(getIdentityGeneration);
+  const [cacheVersion, setCacheVersion] = useState(0);
+  const meRequest = useRef(0);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -60,20 +71,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // single helper so the SPA never lingers on an authenticated route
   // with a dead token (the "/chat zombie state" Yue hit on 2026-05-08).
   const failAuthAndRedirect = useCallback(() => {
-    clearToken();
+    if (getToken()) clearToken();
     setTokenState(null);
     setUser(null);
     setPortal(null);
     if (location.pathname !== "/login") {
-      navigate("/login", { replace: true });
+      const from = `${location.pathname}${location.search}${location.hash}`;
+      navigate(`/login?redirect=${encodeURIComponent(from)}`, { replace: true });
     }
-  }, [navigate, location.pathname]);
+  }, [navigate, location.pathname, location.search, location.hash]);
+
+  useEffect(() => {
+    const onIdentityChanged = () => {
+      meRequest.current++;
+      setUser(null);
+      setPortal(null);
+      setAuthError(null);
+      const nextToken = getToken();
+      setTokenState(nextToken);
+      setLoading(Boolean(nextToken));
+      setIdentityVersion(getIdentityGeneration());
+    };
+    window.addEventListener("crew:identity_changed", onIdentityChanged);
+    return () => window.removeEventListener("crew:identity_changed", onIdentityChanged);
+  }, []);
 
   const syncMe = useCallback(async () => {
+    const expectedToken = getToken();
+    const generation = getIdentityGeneration();
+    const requestId = ++meRequest.current;
     let resp;
     try {
       resp = await authApi.me();
     } catch (err) {
+      if (requestId !== meRequest.current) return;
+      if (getToken() && (generation !== getIdentityGeneration() || expectedToken !== getToken())) {
+        throw new ApiError(409, "Account changed during authentication.");
+      }
       // /api/auth/me may not exist on older backends (returns 404).
       // Don't treat a missing endpoint as an auth failure — keep the
       // token alive. Genuine auth rejections (401/403) are already
@@ -84,9 +118,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       throw err;
     }
+    if (requestId !== meRequest.current || generation !== getIdentityGeneration() || expectedToken !== getToken()) return;
+    const maybeProfileId = extractProfileIdFromPayload(resp);
+    const owner = maybeProfileId ? `profile:${maybeProfileId}` : resp.user?.id ? `user:${resp.user.id}` : null;
+    if (owner && restoreIdentityCache(owner)) setCacheVersion((value) => value + 1);
+    setAuthError(null);
     setUser(resp.user);
     setPortal(resp.portal);
-    const maybeProfileId = extractProfileIdFromPayload(resp);
     if (maybeProfileId) {
       setSelectedProfileId(maybeProfileId);
     } else if (typeof window !== "undefined") {
@@ -104,6 +142,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return resp;
   }, []);
 
+  const handleValidationError = useCallback((err: unknown) => {
+    if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+      failAuthAndRedirect();
+    } else if (!(err instanceof ApiError && err.status === 409)) {
+      setAuthError("Unable to verify your session. Check your connection and retry.");
+    }
+  }, [failAuthAndRedirect]);
+
   useEffect(() => {
     authApi.status().then(setAuthStatus).catch(() => {
       // Best-effort bootstrap for login UI. Ignore network/auth-status failures.
@@ -120,25 +166,55 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
       return;
     }
+    const identity = getIdentityGeneration();
+    const requestId = meRequest.current + 1;
     syncMe()
-      .catch(() => {
-        failAuthAndRedirect();
-      })
-      .finally(() => setLoading(false));
-  }, [token, user, syncMe, failAuthAndRedirect]);
+      .catch(handleValidationError)
+      .finally(() => {
+        if (identity === getIdentityGeneration() && requestId === meRequest.current) setLoading(false);
+      });
+  }, [token, user, syncMe, handleValidationError]);
 
   const revalidate = useCallback(async () => {
+    const identity = getIdentityGeneration();
+    const requestId = meRequest.current + 1;
     // Caller flagged that an authenticated request was rejected; re-run
     // the canonical auth probe and let `failAuthAndRedirect` handle the
     // cleanup if the token is genuinely dead. If syncMe succeeds, the
     // rejection was for a different reason (server-side bug, transient
     // race) and we leave the session intact.
     try {
+      setLoading(true);
       await syncMe();
-    } catch {
-      failAuthAndRedirect();
+    } catch (err) {
+      handleValidationError(err);
+    } finally {
+      if (identity === getIdentityGeneration() && requestId === meRequest.current) setLoading(false);
     }
-  }, [syncMe, failAuthAndRedirect]);
+  }, [syncMe, handleValidationError]);
+
+  // A brief server restart or dropped request should recover without leaving
+  // a valid session parked on the error screen. Bound automatic retries;
+  // manual retry remains available after an enduring outage.
+  useEffect(() => {
+    if (!token || !authError) {
+      setRecoveryAttempts(0);
+      return;
+    }
+    if (loading || recoveryAttempts >= 2) return;
+    const timer = window.setTimeout(() => {
+      setRecoveryAttempts(attempts => attempts + 1);
+      void revalidate();
+    }, recoveryAttempts === 0 ? 1000 : 3000);
+    return () => window.clearTimeout(timer);
+  }, [token, authError, loading, revalidate, recoveryAttempts]);
+
+  useEffect(() => {
+    if (!token || !authError || loading) return;
+    const onOnline = () => { void revalidate(); };
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [token, authError, loading, revalidate]);
 
   // Issue #111.1: subscribe to the WS bridge's `crew:auth_expired`
   // signal so an auth-rejected handshake (server close-code 1008)
@@ -176,16 +252,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await syncMe();
     } catch (err) {
       // Any error (auth rejection, network error, etc.) — reject the login attempt
-      clearToken();
-      setTokenState(null);
-      setUser(null);
-      setPortal(null);
+      if (getToken() === t && err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        clearToken();
+      } else {
+        handleValidationError(err);
+      }
       // Rethrow the ORIGINAL error so callers keep structural info (e.g.
       // ApiError.status 401 → "wrong token" copy) instead of a flattened
       // message string.
       throw err instanceof Error ? err : new Error("Token validation failed");
     }
-  }, [syncMe]);
+  }, [syncMe, handleValidationError]);
 
   // No-password solo login. The server only honours these on a Local-mode
   // host that opted in (`--solo`) when reached over a non-proxied loopback
@@ -244,9 +321,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, portal, authStatus, token, loading, login, loginWithToken, soloLogin, soloCreate, logout, revalidate }}
+      value={{ user, portal, authStatus, token, loading, authError, login, loginWithToken, soloLogin, soloCreate, logout, revalidate }}
     >
-      {children}
+      <Fragment key={`${identityVersion}:${cacheVersion}`}>{children}</Fragment>
     </AuthContext.Provider>
   );
 }

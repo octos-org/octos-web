@@ -1,0 +1,29 @@
+{
+  "result": "PASS",
+  "tabs": [
+    {
+      "browser": "Existing Safari profile",
+      "runtimeWeb": "ea8ce95",
+      "protectedChatRoute": true,
+      "allSixTurnsVisible": true,
+      "originalTranscriptOrderRestored": true,
+      "latestQuestionIsSanFrancisco": true,
+      "beijingUserRowCount": 1,
+      "beijingAnswerHeadingCount": 1,
+      "sessionErrorVisible": false,
+      "signInOptionsErrorVisible": false
+    },
+    {
+      "browser": "Existing Safari profile",
+      "runtimeWeb": "ea8ce95",
+      "protectedChatRoute": true,
+      "allSixTurnsVisible": true,
+      "originalTranscriptOrderRestored": true,
+      "latestQuestionIsSanFrancisco": true,
+      "beijingUserRowCount": 1,
+      "beijingAnswerHeadingCount": 1,
+      "sessionErrorVisible": false,
+      "signInOptionsErrorVisible": false
+    }
+  ]
+}

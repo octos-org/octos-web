@@ -26,6 +26,7 @@ import {
 } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { remarkSourceLinks } from "@/lib/remark-source-links";
 import {
   ArrowLeft,
   ChevronDown,
@@ -172,7 +173,7 @@ function PendingBubble({ pending }: { pending: ThreadMessage }) {
     <div className="flex justify-start mb-2">
       <div className="home-bubble home-bubble-assistant max-w-[80%] rounded-lg px-5 py-3">
         <div className="home-bubble-text home-bubble-markdown text-white/90">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          <ReactMarkdown remarkPlugins={[remarkGfm, remarkSourceLinks]}>
             {smoothText}
           </ReactMarkdown>
         </div>
@@ -552,7 +553,7 @@ export function ConversationView({ onBack, prefill }: ConversationViewProps) {
               <div key={msg.id} className="flex justify-start mb-2">
                 <div className="home-bubble home-bubble-assistant max-w-[80%] rounded-lg px-5 py-3">
                   <div className="home-bubble-text home-bubble-markdown text-white/90">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm, remarkSourceLinks]}>
                       {msg.text}
                     </ReactMarkdown>
                   </div>

@@ -74,6 +74,17 @@ ProjectionStore.onRehydrateRequested((storeKey) => {
  * bridge in `active`.
  */
 let generation = 0;
+const scopeVersions = new Map<string, number>();
+function scopeVersionKey(sessionId: string, topic?: string): string {
+  return JSON.stringify([sessionId, topic ?? null]);
+}
+export function getBridgeScopeVersion(sessionId: string, topic?: string): number {
+  return scopeVersions.get(scopeVersionKey(sessionId, topic)) ?? 0;
+}
+function invalidateSendScope(scope: { sessionId: string; topic?: string }): void {
+  const key = scopeVersionKey(scope.sessionId, scope.topic);
+  scopeVersions.set(key, (scopeVersions.get(key) ?? 0) + 1);
+}
 
 function sameScope(a: ActiveBridge, sessionId: string, topic?: string): boolean {
   const t = topic?.trim() || undefined;
@@ -442,6 +453,7 @@ function runHydrateFor(
         projectionKey,
         envelopes,
         cursor?.stream ? cursor : null,
+        hydrate.projection_thread_sequences,
       );
     } finally {
       if (ownsProjectionSnapshot) {
@@ -703,6 +715,7 @@ if (typeof window !== "undefined") {
     void stopAuxBridge();
   });
   window.addEventListener("crew:token_cleared", () => {
+    void stopActiveBridge();
     void stopAuxBridge();
   });
 }
@@ -740,6 +753,8 @@ export async function restartBridgeForSession(
  *  orphaned bridge instead of publishing it. */
 export async function stopActiveBridge(): Promise<void> {
   generation++;
+  if (bridgeStartInFlight) invalidateSendScope(bridgeStartInFlight);
+  if (active) invalidateSendScope(active);
   bridgeStartInFlight = null;
   if (!active) return;
   const handle = active;
@@ -768,6 +783,7 @@ export async function stopActiveBridgeIfScope(
 ): Promise<boolean> {
   if (!active) return false;
   if (!sameScope(active, sessionId, topic)) return false;
+  invalidateSendScope(active);
   // Match — bump generation so any in-flight start sees itself as stale,
   // then perform the same stop as `stopActiveBridge`.
   generation++;
@@ -790,6 +806,7 @@ export async function stopActiveBridgeIfScope(
 export function __resetUiProtocolRuntimeForTest(): void {
   active = null;
   generation = 0;
+  scopeVersions.clear();
   bridgeStartInFlight = null;
   if (auxSlot) {
     auxSlot.unsubscribeState();

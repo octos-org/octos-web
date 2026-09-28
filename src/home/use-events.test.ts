@@ -17,12 +17,13 @@ SUMMARY:All-day planning
 END:VEVENT
 END:VCALENDAR`);
 
+    const local = new Date("2026-06-15T19:00:00Z");
     expect(events).toEqual([
       {
         id: "ics-evt-1",
         title: "Dinner, home",
-        date: "2026-06-15",
-        time: "19:00",
+        date: `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, "0")}-${String(local.getDate()).padStart(2, "0")}`,
+        time: `${String(local.getHours()).padStart(2, "0")}:${String(local.getMinutes()).padStart(2, "0")}`,
       },
       {
         id: "ics-evt-2",

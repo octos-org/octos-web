@@ -1,5 +1,5 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectFiles } from "./project-files";
 
 const apiMocks = vi.hoisted(() => ({
@@ -7,7 +7,7 @@ const apiMocks = vi.hoisted(() => ({
   fetchSlidesWorkspaceContract: vi.fn(),
   inferContentCategory: vi.fn(() => "report"),
   listSlidesFiles: vi.fn(),
-  slidesFileToContentEntry: vi.fn(),
+  slidesFileToContentEntry: vi.fn((file) => ({ ...file, category: "report" })),
 }));
 const profileMocks = vi.hoisted(() => ({
   getMyProfileStatus: vi.fn(),
@@ -20,6 +20,7 @@ vi.mock("@/api/content", () => ({
 }));
 
 describe("slides ProjectFiles", () => {
+  afterEach(() => { cleanup(); vi.useRealTimers(); });
   beforeEach(() => {
     cleanup();
     apiMocks.listSlidesFiles.mockReset();
@@ -31,50 +32,24 @@ describe("slides ProjectFiles", () => {
     profileMocks.getMyProfileStatus.mockReset();
   });
 
-  it("does not request project files while the local runtime is stopped", async () => {
+  it("lists available files when the standalone gateway is stopped", async () => {
     profileMocks.getMyProfileStatus.mockResolvedValue({ running: false });
-
-    render(
-      <ProjectFiles
-        slug="household-brief"
-        sessionId="deck-1"
-        onOpenFile={vi.fn()}
-      />,
-    );
-
-    expect(
-      await screen.findByText(/Local runtime is stopped/i),
-    ).toBeTruthy();
-    await waitFor(() => {
-      expect(apiMocks.listSlidesFiles).not.toHaveBeenCalled();
-    });
+    apiMocks.listSlidesFiles.mockResolvedValue([{ filename: "script.js", path: "pf/opaque/script.js",
+      group: "slides/deck", size: 10, modified: "2026-09-10T12:00:00Z" }]);
+    render(<ProjectFiles slug="deck" sessionId="project-1" onOpenFile={vi.fn()} />);
+    expect(await screen.findByText("script.js")).toBeTruthy();
+    expect(screen.queryByText(/Local runtime is stopped/i)).toBeNull();
   });
 
-  it("does not request project files after unmount while runtime status is resolving", async () => {
-    let resolveStatus!: (value: { running: boolean }) => void;
-    const statusPromise = new Promise<{ running: boolean }>((resolve) => {
-      resolveStatus = resolve;
-    });
-    profileMocks.getMyProfileStatus.mockReturnValue(statusPromise);
-
-    const { unmount } = render(
-      <ProjectFiles
-        slug="household-brief"
-        sessionId="deck-1"
-        onOpenFile={vi.fn()}
-      />,
-    );
-
-    await waitFor(() => {
-      expect(profileMocks.getMyProfileStatus).toHaveBeenCalled();
-    });
+  it("does not continue polling after an unmounted file request resolves", async () => {
+    vi.useFakeTimers();
+    let resolveFiles!: (value: []) => void;
+    apiMocks.listSlidesFiles.mockReturnValue(new Promise<[]>((resolve) => { resolveFiles = resolve; }));
+    const { unmount } = render(<ProjectFiles slug="deck" sessionId="project-1" onOpenFile={vi.fn()} />);
+    expect(apiMocks.listSlidesFiles).toHaveBeenCalledOnce();
     unmount();
-    await act(async () => {
-      resolveStatus({ running: false });
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    expect(apiMocks.listSlidesFiles).not.toHaveBeenCalled();
+    await act(async () => { resolveFiles([]); await vi.advanceTimersByTimeAsync(5000); });
+    expect(apiMocks.listSlidesFiles).toHaveBeenCalledOnce();
+    expect(apiMocks.fetchSlidesManifest).not.toHaveBeenCalled();
   });
 });

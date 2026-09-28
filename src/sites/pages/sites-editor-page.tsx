@@ -21,6 +21,7 @@ function SitesEditorContent() {
           siteName={project?.title || "Untitled Site"}
           template={project?.template || "site"}
           sessionId={project?.id}
+          historyTopic={project?.preset ? `site ${project.preset}` : undefined}
           scaffoldError={project?.scaffoldError}
           // #1001 follow-up: signed-URL flow needs the profile id
           // and slug to mint the iframe `src` server-side.

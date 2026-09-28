@@ -6,6 +6,7 @@ import { SlidesProvider } from "./slides-context";
 
 const apiMocks = vi.hoisted(() => ({
   fetchSlidesManifest: vi.fn(),
+  fetchSlideEdits: vi.fn().mockResolvedValue(null),
   listSlidesFiles: vi.fn(),
 }));
 const profileMocks = vi.hoisted(() => ({
@@ -25,7 +26,7 @@ describe("SlidesProvider runtime polling", () => {
     profileMocks.getMyProfileStatus.mockReset();
   });
 
-  it("does not poll slide files while the local runtime is stopped", async () => {
+  it("polls generated artifacts without requiring a standalone runtime", async () => {
     profileMocks.getMyProfileStatus.mockResolvedValue({ running: false });
     upsertSlidesProject({
       id: "deck-1",
@@ -47,9 +48,11 @@ describe("SlidesProvider runtime polling", () => {
     );
 
     await waitFor(() => {
-      expect(profileMocks.getMyProfileStatus).toHaveBeenCalled();
+      expect(apiMocks.listSlidesFiles).toHaveBeenCalledWith(
+        ["slides/household-brief", "skill-output/slides/household-brief"], { sessionId: "deck-1" },
+      );
+      expect(apiMocks.fetchSlidesManifest).toHaveBeenCalledWith("household-brief", []);
     });
-    expect(apiMocks.listSlidesFiles).not.toHaveBeenCalled();
-    expect(apiMocks.fetchSlidesManifest).not.toHaveBeenCalled();
+    expect(profileMocks.getMyProfileStatus).not.toHaveBeenCalled();
   });
 });

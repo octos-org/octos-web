@@ -7,7 +7,6 @@ import {
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
-import { getMyProfileStatus } from "@/settings/settings-api";
 
 import { hydrateSlidesProjectFromSession } from "../api";
 import { SlidesProvider, useSlides } from "../context/slides-context";
@@ -25,9 +24,10 @@ function SlidesPresentContent() {
   const { project } = useSlides();
   const navigate = useNavigate();
   const location = useLocation();
+  const pendingEdits = Boolean(project?.manualEdits && project.appliedEditRevision !== project.manualEdits.revision);
   const generatedSlides = useMemo(
-    () => (project?.slides ?? []).filter((slide) => !!slide.thumbnailUrl),
-    [project?.slides],
+    () => pendingEdits ? [] : (project?.slides ?? []).filter((slide) => !!slide.thumbnailUrl),
+    [project?.slides, pendingEdits],
   );
   const initialIndex =
     typeof location.state === "object" &&
@@ -219,14 +219,6 @@ export function SlidesPresentPage() {
 
     async function hydrate() {
       try {
-        const profileStatus = await getMyProfileStatus();
-        if (stopped) return;
-        if (profileStatus?.running === false) {
-          setHydrateError(
-            "Local runtime is stopped. Start this profile from Settings > Server to load this deck.",
-          );
-          return;
-        }
         const nextProject = await hydrateSlidesProjectFromSession(sessionId);
         if (stopped || !nextProject) return;
         upsertSlidesProject(nextProject);
@@ -234,6 +226,9 @@ export function SlidesPresentPage() {
           deleteSlidesProject(sessionId);
           navigate(`/slides/${nextProject.id}/present`, { replace: true });
         }
+      } catch (error) {
+        if (stopped) return;
+        setHydrateError(error instanceof Error ? error.message : "Failed to load slides session.");
       } finally {
         if (!stopped) setHydrating(false);
       }

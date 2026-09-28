@@ -37,7 +37,7 @@ jobs:
   # they can gate every PR cheaply. Without this job the spec directory
   # drifted silently from 3 red (2026-08-15) to 6 red (2026-08-26).
   e2e-smoke:
-    name: e2e ui-redesign smoke (mocked backend)
+    name: e2e smoke and correctness (mocked backend)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -49,21 +49,12 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install chromium --with-deps
-      # The specs default to http://localhost:5174; playwright.config.ts has
-      # no webServer entry, so the Vite dev server is started here and kept
-      # alive for the whole step.
-      - name: Start Vite dev server
-        run: |
-          pnpm exec vite --port 5174 --strictPort &
-          for i in $(seq 1 60); do
-            curl -sf http://localhost:5174/ >/dev/null && break
-            sleep 1
-          done
-          curl -sf http://localhost:5174/ >/dev/null || (echo "vite failed to start" && exit 1)
-      - run: pnpm exec playwright test tests/ui-redesign-smoke.spec.ts
+      # The config owns root and /app/ Vite servers. It includes the existing
+      # 24 smoke cases plus auth, preview, export, discovery and real VAD checks.
+      - run: pnpm exec playwright test --config playwright.review.config.ts
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-report
-          path: playwright-report/
+          path: test-results/review/
           retention-days: 7

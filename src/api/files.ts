@@ -1,4 +1,4 @@
-import { getToken } from "@/api/client";
+import { buildApiHeaders, getIdentityGeneration, getToken } from "@/api/client";
 import { API_BASE } from "@/lib/constants";
 
 export interface BuildFileUrlOptions {
@@ -47,4 +47,29 @@ export function buildAuthenticatedFileUrl(
   const base = buildFileUrl(filePath, options);
   const separator = base.includes("?") ? "&" : "?";
   return token ? `${base}${separator}token=${encodeURIComponent(token)}` : base;
+}
+
+/** Download through fetch so browser navigation never needs a bearer URL. */
+export async function downloadFile(url: string, fallbackFilename = "download"): Promise<void> {
+  const target = new URL(url, window.location.href);
+  const isFileApi = target.origin === window.location.origin
+    && /^\/api\/files(?:\/|$)/.test(target.pathname);
+  const token = getToken();
+  const identity = getIdentityGeneration();
+  const response = await fetch(target.href, {
+    headers: isFileApi ? buildApiHeaders() : {},
+    credentials: "omit",
+  });
+  if (!response.ok) throw new Error(`Download failed (HTTP ${response.status}). Please retry.`);
+  const blob = await response.blob();
+  if (getToken() !== token || identity !== getIdentityGeneration()) throw new Error("Account changed. Please download again.");
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = fallbackFilename;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  // Give the browser time to consume the URL before releasing the blob.
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 }

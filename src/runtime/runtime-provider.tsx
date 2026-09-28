@@ -8,7 +8,7 @@
 
 import { type ReactNode, useEffect, useLayoutEffect, useRef } from "react";
 import { SessionProvider, useSession } from "./session-context";
-import * as FileStore from "@/store/file-store";
+import { watchSessionFiles } from "./session-file-watcher";
 import * as TaskStore from "@/store/task-store";
 import * as ThreadStore from "@/store/thread-store";
 import * as ProjectionStore from "@/store/projection-store";
@@ -54,7 +54,7 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
   // session becomes active. Chat history is supplied only by the canonical
   // projection snapshot, not by a REST history fetch.
   useEffect(() => {
-    void FileStore.loadSessionFiles(currentSessionId);
+    const stopWatchingFiles = watchSessionFiles(currentSessionId, historyTopic);
     mountedRef.current.add(currentSessionId);
 
     // Evict old sessions if over limit. Pre M9-α-5/α-6 the eviction
@@ -73,6 +73,7 @@ function RuntimeWithSession({ children }: { children: ReactNode }) {
         }
       }
     }
+    return stopWatchingFiles;
   }, [currentSessionId, historyTopic]);
 
   // Mount the UI Protocol v1 `ui-protocol-bridge` over WS for every

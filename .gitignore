@@ -28,12 +28,15 @@ dist-ssr
 
 # Agent artifacts
 .crew/
+.review/
+test-results/
 crawl-*/
 research/
 *.md
 !.octos/AGENTS.md
 !README.md
 !book/**/*.md
+!docs/**/*.md
 book/build/
 
 # Generated VAD runtime assets (copy-vad-assets.mjs)

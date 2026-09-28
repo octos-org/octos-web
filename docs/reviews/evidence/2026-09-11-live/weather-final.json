@@ -1,0 +1,71 @@
+{
+  "result": "PASS",
+  "runner": "macmini-3-249.local",
+  "runtimeWeb": "39bbb1a",
+  "runtimeCore": "b931bd2",
+  "results": [
+    {
+      "label": "actual text extraction",
+      "answer": "上海今天（11日）小雨转多云，气温 26/22℃，风力小于3级（来源：中国天气网·上海城区）。",
+      "characters": 47,
+      "links": [
+        "https://www.weather.com.cn/weather/101020100.shtml"
+      ],
+      "observedURLs": [
+        "https://www.weather.com.cn/weather/101020100.shtml"
+      ],
+      "supportedLinks": [
+        "https://www.weather.com.cn/weather/101020100.shtml"
+      ],
+      "lookupCalls": 1,
+      "tables": 0
+    },
+    {
+      "label": "natural weather question",
+      "answer": "上海今天（2026 年 9 月 11 日，周五）以阴雨为主、天气转凉：\n\n天气：白天小雨，夜间转多云；下午实况为阴 中国天气网、和风天气\n气温：最高约 26℃，最低约 22℃（15:37 实况约 25℃，体感 27℃）\n风力：东风约 2 级（白天到夜间风力小于 3 级）\n湿度 / 空气：相对湿度约 65–68%，空气质量优（AQI 约 26）\n提示：有降水，出门带伞;穿衣建议长袖衬衫加单裤，紫外线最弱 东方天气\n\n数据取自中国天气网、和风天气与东方天气（更新时间约今天 15:30 前后）。需要的话我可以再帮你查明天或未来一周的预报。",
+      "characters": 269,
+      "links": [
+        "https://www.weather.com.cn/weather1d/101020100.shtml",
+        "https://www.qweather.com/weather/shanghai-101020100.html",
+        "https://mtianqi.eastday.com/tianqi/shanghai/20260911.html"
+      ],
+      "observedURLs": [
+        "https://www.weather.com.cn/weather/101020100.shtml",
+        "https://ip.cn/tianqi/shanghai/shanghai/202609.html",
+        "http://www.weather.com.cn/weather1d/101020100.shtml",
+        "https://shanghai.pizsalad.com/today.html",
+        "https://www.weather.com.cn/weather1d/101020100.shtml",
+        "https://mtianqi.eastday.com/tianqi/shanghai/20260911.html",
+        "https://www.qweather.com/weather/shanghai-101020100.html"
+      ],
+      "supportedLinks": [
+        "https://www.weather.com.cn/weather1d/101020100.shtml",
+        "https://www.qweather.com/weather/shanghai-101020100.html",
+        "https://mtianqi.eastday.com/tianqi/shanghai/20260911.html"
+      ],
+      "lookupCalls": 8,
+      "tables": 0
+    },
+    {
+      "label": "natural weather follow-up",
+      "answer": "北京今天（2026 年 9 月 11 日，周五）与上海相反，是晴好的大晴天：\n\n天气：白天到夜间均晴\n气温：最高约 29–30℃，最低约 14℃（15:37 实况 30℃，体感 31℃），昼夜温差较大 中国天气网\n风力：西南风约 3 级\n湿度 / 空气：相对湿度约 27%，偏干；空气质量优\n提示：紫外线很强（需涂 SPF20 以上防晒），穿衣适合 T 恤加薄外套；花粉过敏指数很高，易过敏人群注意防护 和风天气\n\n简单对比：北京晴、30℃、干燥;上海阴雨、约 25℃、湿度高。晚上北京会降到 14℃ 左右，外出记得加件外套。",
+      "characters": 263,
+      "links": [
+        "https://www.weather.com.cn/weather1d/101010100.shtml",
+        "https://www.qweather.com/weather/beijing-101010100.html"
+      ],
+      "observedURLs": [
+        "https://www.qweather.com/weather/beijing-101010100.html",
+        "https://www.weather.com.cn/weather1d/101010100.shtml"
+      ],
+      "supportedLinks": [
+        "https://www.weather.com.cn/weather1d/101010100.shtml",
+        "https://www.qweather.com/weather/beijing-101010100.html"
+      ],
+      "lookupCalls": 2,
+      "tables": 0
+    }
+  ],
+  "pageErrors": [],
+  "limitation": "Verifies actual lookup and matching inline URLs; numerical weather facts and warning causes require separate source inspection."
+}

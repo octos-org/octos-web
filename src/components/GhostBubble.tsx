@@ -133,7 +133,7 @@ export function GhostBubble({
   failure,
   settled = false,
   onRetry,
-}: GhostBubbleProps): React.ReactElement {
+}: GhostBubbleProps): React.ReactElement | null {
   // attached_at is captured ONCE at mount so re-renders (e.g. from a
   // projection-store notify) don't bump the displayed timestamp. We
   // use the lazy-init form of `useState` so `Date.now()` is invoked
@@ -142,6 +142,7 @@ export function GhostBubble({
   // function in render" rule passes).
   const [attachedAt, setAttachedAt] = useState<number>(() => Date.now());
   const [timedOut, setTimedOut] = useState<boolean>(false);
+  const [accepted, setAccepted] = useState(false);
   const settledRef = useRef<boolean>(false);
 
   const storeKey = useMemo(
@@ -165,7 +166,12 @@ export function GhostBubble({
     // the same microtask as the send dispatch). Settling synchronously here
     // is safe — the parent records the settled state and removes it after a
     // successful terminal.
-    if (ProjectionStore.hasCmid(storeKey, clientMessageId)) {
+    const confirmed = () => {
+      if (ProjectionStore.hasTurnActivity(storeKey, clientMessageId)) setAccepted(true);
+      return ProjectionStore.hasCmid(storeKey, clientMessageId)
+        || ProjectionStore.hasUserForTurn(storeKey, clientMessageId);
+    };
+    if (confirmed()) {
       settledRef.current = true;
       onSettle();
       return;
@@ -173,7 +179,7 @@ export function GhostBubble({
 
     const unsubscribe = ProjectionStore.subscribe(() => {
       if (settledRef.current) return;
-      if (ProjectionStore.hasCmid(storeKey, clientMessageId)) {
+      if (confirmed()) {
         settledRef.current = true;
         unsubscribe();
         onSettle();
@@ -186,7 +192,7 @@ export function GhostBubble({
 
   // Local 30s timeout — purely component-scoped, no global state.
   useEffect(() => {
-    if (settled || timedOut || failure) return;
+    if (settled || accepted || timedOut || failure) return;
     const id = window.setTimeout(() => {
       if (settledRef.current) return;
       setTimedOut(true);
@@ -194,7 +200,7 @@ export function GhostBubble({
     return () => {
       window.clearTimeout(id);
     };
-  }, [failure, settled, timedOut]);
+  }, [accepted, failure, settled, timedOut]);
 
   const handleRetry = useCallback(() => {
     if (!onRetry) return;
@@ -235,7 +241,7 @@ export function GhostBubble({
     </>
   ) : null;
 
-  const rawFailure = failure ?? (timedOut ? "Send not confirmed within 30s." : null);
+  const rawFailure = failure ?? (timedOut && !accepted ? "Send not confirmed within 30s." : null);
   const modelMissing = rawFailure ? MODEL_NOT_CONFIGURED.test(rawFailure) : false;
   const failureMessage = rawFailure
     ? modelMissing
@@ -300,6 +306,8 @@ export function GhostBubble({
       </div>
     );
   }
+
+  if (settled && !failureMessage) return null;
 
   return (
     <UserBubbleShell

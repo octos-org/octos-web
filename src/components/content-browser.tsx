@@ -233,6 +233,8 @@ export function ContentBrowser({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  const [mutationError, setMutationError] = useState<string | null>(null);
+  const [mutating, setMutating] = useState(false);
 
   const entries = useMemo(
     () =>
@@ -302,16 +304,23 @@ export function ContentBrowser({
     });
   };
 
-  const deleteEntries = (ids: string[]) => {
-    for (const id of ids) removeFile(id);
+  const deleteEntries = async (ids: string[]) => {
+    if (mutating) return;
+    setMutating(true);
+    setMutationError(null);
+    const results = await Promise.allSettled(ids.map((id) => removeFile(id)));
+    const removed = ids.filter((_, index) => results[index].status === "fulfilled");
+    const failures = results.filter((result) => result.status === "rejected");
+    if (failures.length) setMutationError(`${failures.length} file(s) could not be deleted. Please retry.`);
     setSelectedIds((current) => {
       const next = new Set(current);
-      for (const id of ids) next.delete(id);
+      for (const id of removed) next.delete(id);
       return next;
     });
-    if (audioEntry && ids.includes(audioEntry.id)) {
+    if (audioEntry && removed.includes(audioEntry.id)) {
       setAudioEntry(null);
     }
+    setMutating(false);
   };
 
   const downloadSelected = () => {
@@ -323,11 +332,17 @@ export function ContentBrowser({
     setRenameDraft(entry.filename);
   };
 
-  const commitRename = () => {
-    if (!renamingId) return;
-    renameFile(renamingId, renameDraft);
-    setRenamingId(null);
-    setRenameDraft("");
+  const commitRename = async () => {
+    if (!renamingId || mutating) return;
+    setMutating(true);
+    setMutationError(null);
+    try {
+      await renameFile(renamingId, renameDraft);
+      setRenamingId(null);
+      setRenameDraft("");
+    } catch (err) {
+      setMutationError(err instanceof Error ? err.message : "Unable to rename file.");
+    } finally { setMutating(false); }
   };
 
   const selectVisible = () => {
@@ -336,6 +351,8 @@ export function ContentBrowser({
 
   return (
     <div className="glass-panel flex h-full flex-col overflow-hidden rounded-lg">
+      {mutationError && <p role="alert" className="px-4 pt-3 text-sm text-red-400">{mutationError}</p>}
+      {mutating && <p role="status" className="px-4 pt-3 text-sm text-muted">Saving file changes…</p>}
       <div className="px-3 pt-3">
         <div className="glass-toolbar flex flex-wrap items-start justify-between gap-3 rounded-lg px-4 py-4">
           <div className="min-w-0 flex-1">

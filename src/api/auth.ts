@@ -29,7 +29,9 @@ export async function me(): Promise<AuthMeResponse> {
 }
 
 export async function status(): Promise<AuthStatusResponse> {
-  return request("/api/auth/status");
+  // Sign-in methods are public, host-scoped information. A damaged or expired
+  // saved credential must not prevent the user from opening the login form.
+  return publicRequest("/api/auth/status");
 }
 
 export async function logout(): Promise<void> {

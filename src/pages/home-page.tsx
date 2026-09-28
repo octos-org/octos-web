@@ -1,3 +1,4 @@
+import { ProjectDiscoveryStatus } from "@/components/project-discovery-status";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
@@ -340,6 +341,7 @@ function WarmWorkbenchHomePage() {
 
       <div>
         <main className="mx-auto flex w-full max-w-[1024px] flex-col gap-16 px-10 py-14 max-sm:px-4">
+        <ProjectDiscoveryStatus />
           <header className="flex flex-col items-center gap-3 text-center">
             <h1 className="studio-display text-5xl max-sm:text-4xl">
               {isFirstRun ? "Welcome to Octos" : "Octos Home"}

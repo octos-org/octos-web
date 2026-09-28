@@ -22,6 +22,7 @@ import {
   type Profile,
 } from "@/settings/settings-api";
 import { HOME_I18N, type HomeStrings } from "./constants";
+import { getIdentityGeneration, getToken } from "@/api/client";
 import {
   DEFAULT_WIDGETS,
   readWidgets,
@@ -110,6 +111,7 @@ const SETTINGS_KEYS = {
 const EVENTS_KEY = "octos_home_events";
 const PHOTOS_KEY = "octos_home_photos";
 const METRO_LAYOUT_KEY = "octos_home_metro_layout";
+const OWNER_KEY = "octos_home_owner";
 
 const DEFAULT_SETTINGS: HomeSettings = {
   city: "",
@@ -290,6 +292,10 @@ function readLegacyHomeData(): HomeData {
   };
 }
 
+function defaultHomeData(): HomeData {
+  return { settings: { ...DEFAULT_SETTINGS }, widgets: DEFAULT_WIDGETS.map((widget) => ({ ...widget })), events: [], photos: [], metroLayout: {} };
+}
+
 function writeLegacyHomeData(data: HomeData): void {
   writeLegacySettings(data.settings);
   writeWidgets(data.widgets);
@@ -425,20 +431,24 @@ function makeId(): string {
 const Ctx = createContext<HomeSettingsContextValue | null>(null);
 
 export function HomeSettingsProvider({ children }: { children: ReactNode }) {
-  const [homeData, setHomeData] = useState<HomeData>(readLegacyHomeData);
+  const [homeData, setHomeData] = useState<HomeData>(defaultHomeData);
+  const [identity, setIdentity] = useState(getIdentityGeneration);
+  const ownerToken = getToken();
   const [profileBacked, setProfileBacked] = useState(false);
   const profileRef = useRef<Profile | null>(null);
   const saveSeqRef = useRef(0);
 
   const persistHomeData = useCallback((next: HomeData) => {
-    writeLegacyHomeData(next);
+    if (identity !== getIdentityGeneration() || ownerToken !== getToken()) return;
     const profile = profileRef.current;
     if (!profile) return;
+    storageSet(OWNER_KEY, profile.id);
+    writeLegacyHomeData(next);
 
     const seq = ++saveSeqRef.current;
     updateMyProfileConfig(profile, { home: serializeHome(next) })
       .then((updated) => {
-        if (seq >= saveSeqRef.current) {
+        if (seq >= saveSeqRef.current && identity === getIdentityGeneration() && ownerToken === getToken()) {
           profileRef.current = updated;
           setProfileBacked(true);
         }
@@ -446,19 +456,33 @@ export function HomeSettingsProvider({ children }: { children: ReactNode }) {
       .catch((err) => {
         console.warn("[home] failed to persist profile-backed home config", err);
       });
+  }, [identity, ownerToken]);
+
+  useEffect(() => {
+    const reset = () => {
+      profileRef.current = null;
+      saveSeqRef.current++;
+      setProfileBacked(false);
+      setHomeData(defaultHomeData());
+      setIdentity(getIdentityGeneration());
+    };
+    window.addEventListener("crew:identity_changed", reset);
+    return () => window.removeEventListener("crew:identity_changed", reset);
   }, []);
 
   useEffect(() => {
     let cancelled = false;
     getMyProfile()
       .then((profile) => {
-        if (cancelled || !profile) return;
+        if (cancelled || !profile || identity !== getIdentityGeneration() || ownerToken !== getToken()) return;
         profileRef.current = profile;
         setProfileBacked(true);
 
-        const legacy = readLegacyHomeData();
+        // Unowned legacy data cannot safely be assigned to a new account.
+        const legacy = storageGet(OWNER_KEY) === profile.id ? readLegacyHomeData() : defaultHomeData();
         const next = mergeProfileHome(profile.config.home, legacy);
         setHomeData(next);
+        storageSet(OWNER_KEY, profile.id);
         writeLegacyHomeData(next);
 
         if (!homeHasAnyData(profile.config.home)) {
@@ -471,7 +495,7 @@ export function HomeSettingsProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [persistHomeData]);
+  }, [persistHomeData, identity, ownerToken]);
 
   const commit = useCallback((producer: (prev: HomeData) => HomeData) => {
     setHomeData((prev) => {

@@ -9,15 +9,16 @@ import {
 } from "react";
 
 import { type SignedPreviewResponse, signPreview } from "../api";
+import { ApiError } from "@/api/client";
+import * as ProjectionStore from "@/store/projection-store";
 
 interface Props {
-  /** Legacy plain preview URL — used for the "open in new tab" button
-   * and the copyable URL row. The iframe `src` is computed from the
-   * signed-URL flow below. */
+  /** Legacy project location; executable navigation uses a signed URL. */
   previewUrl?: string;
   siteName: string;
   template: string;
   sessionId?: string;
+  historyTopic?: string;
   scaffoldError?: string;
   /** Profile id the active site lives under. Required for signing. */
   profileId?: string | null;
@@ -50,6 +51,7 @@ export function SitePreview({
   siteName,
   template,
   sessionId,
+  historyTopic,
   scaffoldError,
   profileId,
   slug,
@@ -64,6 +66,7 @@ export function SitePreview({
   const eventRefreshTimer = useRef<number | null>(null);
   const renewalTimer = useRef<number | null>(null);
   const copiedTimer = useRef<number | null>(null);
+  const signedRefreshTick = useRef(0);
   /**
    * Latest-wins guard for in-flight `signPreview()` promises.
    *
@@ -176,8 +179,19 @@ export function SitePreview({
       const message = error instanceof Error ? error.message : "sign failed";
       setSignError(message);
       setSigned(null);
+      // A new project's directory may not exist when the first sign runs.
+      // Reuse the bounded retry budget until its scaffold appears.
+      if (error instanceof ApiError && error.status === 404) scheduleRetry();
     }
-  }, [profileId, sessionId, slug]);
+  }, [profileId, sessionId, slug, scheduleRetry]);
+
+  useEffect(() => {
+    if (signedRefreshTick.current === refreshTick) return;
+    signedRefreshTick.current = refreshTick;
+    // Keep a usable grant during ordinary iframe refreshes. A failed sign
+    // needs a new grant before file/tool/manual refreshes can show anything.
+    if (!signed) void refreshSignedToken();
+  }, [refreshTick, signed, refreshSignedToken]);
 
   // Mint on mount and whenever the coordinates change. The renewal
   // is scheduled INSIDE refreshSignedToken (after each successful
@@ -268,8 +282,16 @@ export function SitePreview({
     window.addEventListener("crew:task_status", handleEvent);
     window.addEventListener("crew:tool_progress", handleEvent);
     document.addEventListener("visibilitychange", handleVisibilityChange);
+    const scope = ProjectionStore.projectionStoreKey(sessionId, historyTopic);
+    const unsubscribeProjection = ProjectionStore.onEnvelopeAdmitted((key, envelope) => {
+      if (key !== scope) return;
+      if (envelope.payload.type === "tool_end" || envelope.payload.type === "turn_terminal") {
+        scheduleEventRefresh();
+      }
+    });
 
     return () => {
+      unsubscribeProjection();
       if (eventRefreshTimer.current !== null) {
         window.clearTimeout(eventRefreshTimer.current);
         eventRefreshTimer.current = null;
@@ -281,18 +303,20 @@ export function SitePreview({
       window.removeEventListener("crew:tool_progress", handleEvent);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [previewUrl, sessionId, triggerRefresh]);
+  }, [previewUrl, sessionId, historyTopic, triggerRefresh]);
 
   const iframeUrl = useMemo(() => {
     if (!signed?.preview_url) return "";
     const separator = signed.preview_url.includes("?") ? "&" : "?";
     return `${signed.preview_url}${separator}v=${refreshTick}`;
   }, [signed?.preview_url, refreshTick]);
-  const openPreviewUrl = iframeUrl || previewUrl;
+  const openPreviewUrl = signed?.preview_url
+    ? new URL(signed.preview_url, window.location.href).href
+    : undefined;
 
   const handleCopyPreviewUrl = useCallback(() => {
-    if (!previewUrl) return;
-    void navigator.clipboard.writeText(previewUrl).then(() => {
+    if (!openPreviewUrl) return;
+    void navigator.clipboard.writeText(openPreviewUrl).then(() => {
       setCopied(true);
       if (copiedTimer.current !== null) {
         window.clearTimeout(copiedTimer.current);
@@ -301,8 +325,8 @@ export function SitePreview({
         copiedTimer.current = null;
         setCopied(false);
       }, 1800);
-    });
-  }, [previewUrl]);
+    }).catch(() => setStatus("Unable to copy preview URL. Please retry."));
+  }, [openPreviewUrl]);
 
   const handleLoad = useCallback(
     (event: SyntheticEvent<HTMLIFrameElement>) => {
@@ -343,10 +367,12 @@ export function SitePreview({
           <div className="truncate text-sm font-medium text-text">{siteName}</div>
           <div className="truncate text-xs text-muted">{template}</div>
           <div className="truncate text-[11px] text-muted/70">{previewUrl}</div>
+          {openPreviewUrl && <div className="text-[11px] text-muted">Anyone with the preview link can view it until it expires.</div>}
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={handleCopyPreviewUrl}
+            disabled={!openPreviewUrl}
             className="rounded-lg p-2 text-muted transition hover:bg-surface-container hover:text-text"
             title="Copy preview URL"
           >
@@ -397,25 +423,16 @@ export function SitePreview({
              * `window.parent.localStorage` and exfiltrate
              * `octos_session_token` + `octos_auth_token`.
              *
-             * `allow-scripts` + `allow-forms` are required for
-             * legitimate framework hydration (Next/Astro/React) and
-             * site forms. `allow-same-origin` is also required for
-             * Vite/React module-script previews: without it, the
-             * sandboxed document has an opaque origin and the browser
-             * blocks the generated module bundle as a CORS load from
-             * `Origin: null`, leaving the preview frame blank.
-             *
-             * This duplicates the attribute from PR #139
-             * (`fix/site-preview-iframe-sandbox`). If #139 merges
-             * first, this PR's rebase resolves to the same value; if
-             * this PR merges first, #139 has a clean rebase.
+             * Keep an opaque origin. The preview endpoint must serve
+             * assets with public CORS for module scripts, and a sandbox
+             * CSP also protects previews opened outside this iframe.
              */
             <iframe
               key={iframeUrl}
               src={iframeUrl}
               title={`${siteName} preview`}
               className="h-full w-full border-0"
-              sandbox="allow-scripts allow-forms allow-same-origin"
+              sandbox="allow-scripts allow-forms"
               onLoad={handleLoad}
             />
           ) : (

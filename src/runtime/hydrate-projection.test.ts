@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { buildVoiceTurns } from "@/home/voice/use-voice-conversation";
 import { projectionToRenderThreads } from "@/store/projection-render-adapter";
 import { project } from "@/store/projection";
+import * as ProjectionStore from "@/store/projection-store";
+import type { ProjectionEnvelopeV2 } from "./projection-envelope-v2";
 import { hydrateProjectionEnvelopes } from "./hydrate-projection";
 
 describe("hydrateProjectionEnvelopes", () => {
@@ -83,4 +85,122 @@ describe("hydrateProjectionEnvelopes", () => {
       data: { text: "canonical" },
     });
   });
+});
+
+
+it("keeps a live thread's sequence through transcript hydration and admits its next terminal", () => {
+  ProjectionStore.__resetProjectionForTests();
+  const session = "recorded-live";
+  const retained: ProjectionEnvelopeV2[] = Array.from({ length: 7 }, (_, index) => ({
+    session_id: session, thread_id: "turn", turn_id: "turn", seq: index + 1,
+    cursor: { stream: session, seq: index + 7 },
+    payload: { type: "assistant_delta", data: { text: "a", assistant_segment_id: "segment" } },
+  }));
+  retained.push({ session_id: session, thread_id: "turn", turn_id: "turn", seq: 8,
+    cursor: { stream: session, seq: 16 }, payload: { type: "user_message", data: { text: "hello", files: [] } } });
+  retained.push({ session_id: session, thread_id: "turn", turn_id: "turn", seq: 9,
+    cursor: { stream: session, seq: 18 }, payload: { type: "assistant_persisted", data: {
+      text: "answer", assistant_segment_id: "segment", meta: { message_id: "answer", persisted_at: "2026-09-10T23:10:39Z" },
+    } } });
+  const envelopes = hydrateProjectionEnvelopes(session, undefined, {
+    session_id: session, cursor: { stream: session, seq: 18 },
+    messages: [
+      { seq: 0, thread_id: "older", role: "user", content: "old question", persisted_at: "2026-09-09T23:00:00Z" },
+      { seq: 1, thread_id: "turn", role: "user", content: "hello", persisted_at: "2026-09-10T23:10:38Z" },
+      { seq: 2, thread_id: "turn", role: "assistant", content: "answer", persisted_at: "2026-09-10T23:10:39Z" },
+    ],
+    // Core's typed retained carrier omits the redundant session routing keys.
+    replayed_projection_envelopes: retained.map((entry) => { const wire: Partial<ProjectionEnvelopeV2> = { ...entry }; delete wire.session_id; return wire; }),
+  })!;
+  expect(envelopes.filter((entry) => entry.thread_id === "turn").map((entry) => entry.seq)).toEqual([1,2,3,4,5,6,7,8,9]);
+  ProjectionStore.beginSnapshot(session);
+  ProjectionStore.replaceSnapshot(session, envelopes, { stream: session, seq: 18 });
+  const result = ProjectionStore.ingest(session, { session_id: session, thread_id: "turn", turn_id: "turn", seq: 10,
+    cursor: { stream: session, seq: 19 }, payload: { type: "turn_terminal", data: { outcome: "completed" } } });
+  expect(result.accepted).toBe(true);
+  const threads = ProjectionStore.getProjection(session).threads;
+  expect(threads.find((thread) => thread.thread_id === "turn")?.terminal?.outcome).toBe("completed");
+  expect(projectionToRenderThreads({ threads }).find((thread) => thread.turnId === "turn")?.userMsg.timestamp).toBe(Date.parse("2026-09-10T23:10:38Z"));
+  expect(threads.some((thread) => thread.thread_id === "older")).toBe(true);
+  ProjectionStore.__resetProjectionForTests();
+});
+
+it("restores a compacted long turn and continues at its server checkpoint", () => {
+  ProjectionStore.__resetProjectionForTests();
+  const session = "compacted-live";
+  const hydrate = {
+    session_id: session, cursor: { stream: session, seq: 7000 },
+    messages: [
+      { seq: 0, thread_id: "long", role: "user" as const, content: "preserved question", persisted_at: "2026-09-10T23:10:38Z" },
+      { seq: 1, thread_id: "long", role: "assistant" as const, content: "preserved answer", persisted_at: "2026-09-10T23:10:39Z" },
+    ],
+    replayed_projection_envelopes: [],
+    projection_thread_sequences: { long: 5000 },
+  };
+  const envelopes = hydrateProjectionEnvelopes(session, undefined, hydrate)!;
+  ProjectionStore.beginSnapshot(session);
+  ProjectionStore.replaceSnapshot(session, envelopes, hydrate.cursor, hydrate.projection_thread_sequences);
+  const terminal: ProjectionEnvelopeV2 = { session_id: session, thread_id: "long", turn_id: "long", seq: 5001,
+    cursor: { stream: session, seq: 7001 }, payload: { type: "turn_terminal", data: { outcome: "completed" } } };
+  expect(ProjectionStore.ingest(session, terminal).accepted).toBe(true);
+  const rendered = projectionToRenderThreads(ProjectionStore.getProjection(session));
+  expect(rendered[0].userMsg.text).toBe("preserved question");
+  expect(ProjectionStore.getProjection(session).threads[0].terminal?.outcome).toBe("completed");
+  expect(ProjectionStore.hasRehydrateGap(session)).toBe(false);
+
+  // A reload after completion retains terminal state without the thousands
+  // of streaming chunks, and ignores an already-covered terminal replay.
+  const completed = { ...hydrate, cursor: terminal.cursor!,
+    replayed_projection_envelopes: [terminal], projection_thread_sequences: { long: 5001 } };
+  ProjectionStore.beginSnapshot(session);
+  ProjectionStore.replaceSnapshot(session, hydrateProjectionEnvelopes(session, undefined, completed)!,
+    completed.cursor, completed.projection_thread_sequences);
+  expect(ProjectionStore.getProjection(session).threads[0].terminal?.outcome).toBe("completed");
+  expect(ProjectionStore.ingest(session, terminal).duplicate).toBe(true);
+  ProjectionStore.__resetProjectionForTests();
+});
+
+it("cannot use a checkpoint to conceal a malformed snapshot gap", () => {
+  ProjectionStore.__resetProjectionForTests();
+  const session = "invalid-checkpoint";
+  const event: ProjectionEnvelopeV2 = { session_id: session, thread_id: "turn", turn_id: "turn", seq: 3,
+    payload: { type: "assistant_delta", data: { text: "gap", assistant_segment_id: "segment" } } };
+  ProjectionStore.beginSnapshot(session);
+  ProjectionStore.replaceSnapshot(session, [event], { stream: session, seq: 10 }, { turn: 3 });
+  expect(ProjectionStore.hasRehydrateGap(session)).toBe(true);
+  expect(ProjectionStore.ingest(session, { ...event, seq: 4 }).gapDetected).toBe(true);
+  ProjectionStore.__resetProjectionForTests();
+});
+
+it("keeps an older retained turn between compacted transcript turns across reload", () => {
+  ProjectionStore.__resetProjectionForTests();
+  const session = "mixed-weather-history";
+  const names = ["Shanghai", "Beijing", "Saratoga", "San Francisco"];
+  const messages = names.flatMap((name, index) => [
+    { seq: index * 2, thread_id: name, role: "user" as const, content: name },
+    { seq: index * 2 + 1, thread_id: name, role: "assistant" as const, content: `${name} answer` },
+  ]);
+  const retained: ProjectionEnvelopeV2[] = [
+    { session_id: session, thread_id: "Beijing", turn_id: "Beijing", seq: 1,
+      payload: { type: "user_message", data: { text: "Beijing", files: [] } } },
+    { session_id: session, thread_id: "Beijing", turn_id: "Beijing", seq: 2,
+      payload: { type: "assistant_persisted", data: { text: "Beijing answer", assistant_segment_id: "beijing-answer",
+        meta: { message_id: "beijing-answer", persisted_at: "2026-09-11T03:53:57Z" } } } },
+    { session_id: session, thread_id: "Beijing", turn_id: "Beijing", seq: 3,
+      payload: { type: "turn_terminal", data: { outcome: "completed" } } },
+  ];
+  const hydrate = { session_id: session, messages, replayed_projection_envelopes: retained,
+    cursor: { stream: session, seq: 6000 },
+    projection_thread_sequences: { Shanghai: 2000, Beijing: 3, Saratoga: 2000, "San Francisco": 1000 } };
+  for (let reload = 0; reload < 3; reload++) {
+    const envelopes = hydrateProjectionEnvelopes(session, undefined, hydrate)!;
+    ProjectionStore.beginSnapshot(session);
+    ProjectionStore.replaceSnapshot(session, envelopes, hydrate.cursor, hydrate.projection_thread_sequences);
+    const threads = projectionToRenderThreads(ProjectionStore.getProjection(session));
+    expect(threads.map(thread => thread.userMsg.text)).toEqual(names);
+    expect(threads.map(thread => thread.responses.map(message => message.text))).toEqual(names.map(name => [`${name} answer`]));
+    expect(envelopes.filter(entry => entry.thread_id === "Beijing").map(entry => entry.seq)).toEqual([1, 2, 3]);
+    expect(ProjectionStore.hasRehydrateGap(session)).toBe(false);
+  }
+  ProjectionStore.__resetProjectionForTests();
 });

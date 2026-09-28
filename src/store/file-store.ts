@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { buildApiHeaders } from "@/api/client";
+import { buildApiHeaders, getIdentityGeneration, getToken, request } from "@/api/client";
 import { buildFileUrl } from "@/api/files";
 // M12 Phase D-3: files panel routes through the Phase D-2
 // `getSessionFiles` wrapper in src/api/sessions.ts, which flips
@@ -32,6 +32,7 @@ type NewFileEntry = Omit<FileEntry, "id" | "timestamp" | "status"> & {
 
 // --- Internal state (profile-scoped, not session-scoped) ---
 const allFiles: FileEntry[] = [];
+const removedPaths = new Set<string>();
 const listeners = new Set<() => void>();
 
 let version = 0;
@@ -56,6 +57,7 @@ function subscribe(cb: () => void): () => void {
 // --- Public API ---
 
 export function addFile(entry: NewFileEntry) {
+  if (removedPaths.has(entry.filePath)) return;
   const sessionId = entry.sessionId || "";
 
   // Keep files distinct per session. The same physical path can legitimately
@@ -117,13 +119,42 @@ export function updateFile(id: string, updates: Partial<FileEntry>) {
   }
 }
 
-export function renameFile(id: string, filename: string): void {
+export async function renameFile(id: string, filename: string): Promise<void> {
   const trimmed = filename.trim();
-  if (!trimmed) return;
-  updateFile(id, { filename: trimmed });
+  if (!trimmed || /[\\/\0\r\n]/.test(trimmed) || trimmed === "." || trimmed === "..") {
+    throw new Error("Enter a filename without folders.");
+  }
+  const file = allFiles.find((entry) => entry.id === id);
+  if (!file || file.filename === trimmed) return;
+  const previousPath = file.filePath;
+  const result = await request<{ path: string; filename: string }>("/api/files/mutate", {
+    method: "POST", body: JSON.stringify({ operation: "rename", path: previousPath, session: file.sessionId, filename: trimmed }),
+  });
+  if (!result.path || !result.filename) throw new Error("The server did not confirm the new filename.");
+  removedPaths.add(previousPath);
+  removedPaths.delete(result.path);
+  for (const entry of allFiles) {
+    if (entry.filePath === previousPath) {
+      entry.filename = result.filename;
+      entry.filePath = result.path;
+    }
+  }
+  notify();
 }
 
-export function removeFile(id: string): void {
+export async function removeFile(id: string): Promise<void> {
+  const file = allFiles.find((entry) => entry.id === id);
+  if (!file) return;
+  await request("/api/files/mutate", {
+    method: "POST", body: JSON.stringify({ operation: "delete", path: file.filePath, session: file.sessionId }),
+  });
+  removedPaths.add(file.filePath);
+  for (const entry of [...allFiles]) {
+    if (entry.filePath === file.filePath) discardFile(entry.id);
+  }
+}
+
+function discardFile(id: string): void {
   const idx = allFiles.findIndex((f) => f.id === id);
   if (idx !== -1) {
     const file = allFiles[idx];
@@ -134,6 +165,7 @@ export function removeFile(id: string): void {
 }
 
 export function revokeAll(): void {
+  removedPaths.clear();
   for (const file of allFiles) {
     if (file.blobUrl) URL.revokeObjectURL(file.blobUrl);
   }
@@ -163,6 +195,8 @@ export function clearSessionFiles(sessionId: string): void {
 }
 
 async function fetchBlob(file: FileEntry) {
+  const identity = getIdentityGeneration();
+  const token = getToken();
   try {
     const url = buildFileUrl(file.filePath);
     const resp = await fetch(url, {
@@ -170,11 +204,15 @@ async function fetchBlob(file: FileEntry) {
     });
     if (resp.ok) {
       const blob = await resp.blob();
+      if (identity !== getIdentityGeneration() || token !== getToken() || !allFiles.includes(file)) return;
       updateFile(file.id, {
         blobUrl: URL.createObjectURL(blob),
         size: blob.size,
         status: "ready",
       });
+    } else if (resp.status === 404) {
+      // Old message history can still mention a deleted/renamed file.
+      discardFile(file.id);
     } else {
       updateFile(file.id, { status: "ready" });
     }
@@ -184,8 +222,11 @@ async function fetchBlob(file: FileEntry) {
 }
 
 export async function loadSessionFiles(sessionId: string): Promise<void> {
+  const identity = getIdentityGeneration();
+  const token = getToken();
   try {
     const files = await getSessionFiles(sessionId);
+    if (identity !== getIdentityGeneration() || token !== getToken()) return;
     for (const file of files) {
       addFile({
         sessionId,
@@ -243,6 +284,9 @@ let filesLoaded = false;
 export async function loadAllSessionFiles(): Promise<void> {
   if (filesLoaded) return;
   filesLoaded = true;
+  const identity = getIdentityGeneration();
+  const token = getToken();
+  const current = () => identity === getIdentityGeneration() && token === getToken();
 
   // Load content files from profile directories (research, slides, skill-output)
   try {
@@ -259,6 +303,7 @@ export async function loadAllSessionFiles(): Promise<void> {
         category: string;
         group: string;
       }[];
+      if (!current()) return;
       for (const f of files) {
         addFile({
           sessionId: "_content",
@@ -275,13 +320,16 @@ export async function loadAllSessionFiles(): Promise<void> {
   // Also load from session message history
   try {
     const { listSessions, getMessages } = await import("@/api/sessions");
+    if (!current()) return;
     const sessions = await listSessions();
+    if (!current()) return;
     const webSessions = sessions
       .filter((s) => s.id.startsWith("web-") && (s.message_count ?? 0) > 0)
       .slice(0, 20); // limit to recent 20 sessions
 
     await Promise.allSettled(webSessions.map(async (session) => {
       const messages = await getMessages(session.id, 500, 0);
+      if (!current()) return;
       for (const msg of messages) {
         // Check media array (new persist format)
         if (msg.media && msg.media.length > 0) {

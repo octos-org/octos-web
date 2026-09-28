@@ -1,0 +1,47 @@
+{
+  "result": "PASS",
+  "runner": "macmini-3-249.local",
+  "playwrightVersion": "1.60.0",
+  "browserVersion": "148.0.7778.96",
+  "runtimeWeb": "ea8ce95",
+  "runtimeCore": "7590b73",
+  "serverPid": 23885,
+  "binarySha256": "e39d46f5b6db259ff20f95f1f72c0c2d24bcd1b61cb3ace8879de3f8788f1e68",
+  "testStartUTC": "2026-09-11T07:05:27.659Z",
+  "firstMetricUTC": "2026-09-11T07:05:28.051Z",
+  "completeUTC": "2026-09-11T07:36:01.292Z",
+  "elapsedMs": 1833241,
+  "cycles": 38,
+  "finalRealReplyVerified": true,
+  "retries": 0,
+  "pageErrors": 0,
+  "observedHTTPFailures": 0,
+  "historyOrderChecks": "Exact server user-turn order and uniqueness after each reload, gallery return, and every-third-cycle offline reconnect",
+  "lastCycleHistoryTurns": 38,
+  "allCycleHistoryOrderVerified": true,
+  "latencyMedianMs": 1916.0,
+  "latencyP95NearestRankMs": 2662,
+  "socketsBeforeTeardown": {
+    "opened": 214,
+    "closed": 212
+  },
+  "serverRssKiB": {
+    "first": 291568,
+    "last": 346576,
+    "min": 291568,
+    "max": 346576
+  },
+  "browserRunnerSampling": {
+    "samples": 46,
+    "startUTC": "2026-09-11T07:13:07Z",
+    "endUTC": "2026-09-11T07:35:40Z",
+    "minSummedRssKiB": 797760,
+    "maxSummedRssKiB": 1038016,
+    "lastSummedRssKiB": 910960
+  },
+  "limitations": [
+    "Resource sampling began after soak startup; shared-page-inclusive RSS is not a memory-leak exclusion test.",
+    "Dedicated review-owner account; concurrent scope work used review-b on the same server.",
+    "This pinned soak does not certify the later b931bd2 backend extraction/prompt changes."
+  ]
+}

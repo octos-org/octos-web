@@ -198,7 +198,8 @@ describe("HomeSettingsProvider", () => {
     });
   });
 
-  it("migrates legacy localStorage Home data into the profile once", async () => {
+  it("migrates legacy localStorage Home data only for its recorded owner", async () => {
+    localStorage.setItem("octos_home_owner", "admin");
     localStorage.setItem("octos_home_city", "Osaka");
     localStorage.setItem("octos_home_ui_style", "classic");
     localStorage.setItem(

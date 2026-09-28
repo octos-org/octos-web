@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import SlidePreview from "./slide-preview";
@@ -12,6 +12,15 @@ const SLIDES: Slide[] = [
 afterEach(cleanup);
 
 describe("SlidePreview manual editing (#320)", () => {
+  it("keeps unsaved text available for retry when persistence fails", async () => {
+    const onUpdate = vi.fn().mockResolvedValue(false);
+    render(<SlidePreview slides={SLIDES} currentIndex={0} onIndexChange={() => {}} onUpdate={onUpdate} />);
+    fireEvent.click(screen.getByTitle("Edit this slide"));
+    fireEvent.change(screen.getByDisplayValue("Intro"), { target: { value: "Unsaved draft" } });
+    await act(async () => fireEvent.click(screen.getByText("Save and regenerate")));
+    expect(screen.getByDisplayValue("Unsaved draft")).toBeTruthy();
+    expect(screen.getByText("Save and regenerate")).toBeTruthy();
+  });
   it("stays read-only when no edit callbacks are provided", () => {
     render(
       <SlidePreview slides={SLIDES} currentIndex={0} onIndexChange={() => {}} />,
@@ -35,7 +44,7 @@ describe("SlidePreview manual editing (#320)", () => {
     fireEvent.click(screen.getByTitle("Edit this slide"));
     const titleInput = screen.getByDisplayValue("Intro");
     fireEvent.change(titleInput, { target: { value: "Renamed" } });
-    fireEvent.click(screen.getByText("Save slide"));
+    fireEvent.click(screen.getByText("Save and regenerate"));
 
     expect(onUpdate).toHaveBeenCalledWith(0, {
       title: "Renamed",

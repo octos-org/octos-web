@@ -1,6 +1,7 @@
 import { Component, memo, useEffect, useRef, useState, type ComponentProps, type ReactNode, type ErrorInfo } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { remarkSourceLinks } from "@/lib/remark-source-links";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
@@ -86,7 +87,7 @@ class MarkdownErrorBoundary extends Component<{ children: ReactNode; fallback: s
   }
 }
 
-const remarkPlugins = [remarkGfm, remarkMath];
+const remarkPlugins = [remarkGfm, remarkMath, remarkSourceLinks];
 const rehypePlugins = [rehypeKatex];
 
 const mdComponents: Components = {

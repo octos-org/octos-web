@@ -1,0 +1,17 @@
+{
+  "browser": "Existing Safari profile",
+  "runtime_web": "b28f36a",
+  "protectedChatRoute": true,
+  "reviewPrincipalVisible": true,
+  "savedHistoryVisible": true,
+  "sessionErrorVisible": false,
+  "signInOptionsErrorVisible": false,
+  "originalDiagnosis": {
+    "anonymousAuthStatus": 200,
+    "anonymousResponseWasJSON": true,
+    "authorizationHeaderConstruction": "TypeError",
+    "savedTokenLength": 1039
+  },
+  "recovery": "Removed only malformed stored credential; submitted valid credential through actual Safari password field and Login action; opened protected chat again after deployment",
+  "originalTokenValueRecorded": false
+}

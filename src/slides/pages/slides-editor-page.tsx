@@ -1,6 +1,5 @@
 import { useParams, useNavigate } from "react-router-dom";
 import { useState, useEffect, useCallback } from "react";
-import { getMyProfileStatus } from "@/settings/settings-api";
 
 import { SlidesProvider, useSlides } from "../context/slides-context";
 import { SlidesEditorLayout } from "../layouts/slides-editor-layout";
@@ -22,7 +21,8 @@ function shouldHydrateProject(project: SlidesProject | undefined): boolean {
 }
 
 function SlidesEditorContent() {
-  const { project, save, updateSlide, removeSlide, moveSlide } = useSlides();
+  const { project, save, updateSlide, removeSlide, moveSlide, editError, savingEdits, renderingEdits, retryEdits } = useSlides();
+  const pendingEdits = Boolean(project?.manualEdits && project.appliedEditRevision !== project.manualEdits.revision);
   const [currentIndex, setCurrentIndex] = useState(0);
   // Codex round-3 BLOCK D.b: bumped by the editor layout's retry
   // affordance after a scaffold failure. SlidesChat watches this in
@@ -60,19 +60,28 @@ function SlidesEditorContent() {
     <SlidesEditorLayout
       onRetryScaffold={handleRetryScaffold}
       previewPanel={
+        <div className="flex h-full min-h-0 flex-col">
+          {editError && <p role="alert" className="px-4 py-2 text-sm text-red-400">{editError}</p>}
+          {(pendingEdits || savingEdits) && (
+            <div className="flex items-center gap-3 px-4 py-2 text-sm" role="status">
+              <span>{savingEdits ? "Saving edits…" : renderingEdits ? "Edits saved. Regenerating the presentation…" : "Edits saved. Waiting for updated previews and PPTX."}</span>
+              {pendingEdits && <button type="button" className="underline" disabled={savingEdits || renderingEdits} onClick={retryEdits}>Retry regeneration</button>}
+            </div>
+          )}
         <SlidePreview
-          slides={project?.slides ?? []}
+          slides={pendingEdits ? (project?.slides ?? []).map((slide) => ({ ...slide, thumbnailUrl: undefined })) : project?.slides ?? []}
           currentIndex={currentIndex}
           onIndexChange={setCurrentIndex}
-          pptxUrl={project?.pptxUrl}
-          onPresent={handlePresent}
+          pptxUrl={pendingEdits ? undefined : project?.pptxUrl}
+          onPresent={pendingEdits ? undefined : handlePresent}
           version={project?.manifestGeneratedAt}
           // Manual edit (2026-08 audit #320): wire the context-backed
           // slide CRUD that previously had no UI consumers.
           onUpdate={updateSlide}
-          onRemove={removeSlide}
-          onMove={moveSlide}
+          onRemove={savingEdits ? undefined : removeSlide}
+          onMove={savingEdits ? undefined : moveSlide}
         />
+        </div>
       }
       chatPanel={
         project ? (
@@ -95,6 +104,9 @@ export function SlidesEditorPage() {
   useEffect(() => {
     if (!id || !needsHydration) return;
     const sessionId = id;
+    // The store getter deserializes a new object each render. Read the fallback
+    // here so local loading state cannot retrigger hydration of incomplete decks.
+    const cachedProject = getSlidesProject(sessionId);
 
     let stopped = false;
     setHydrating(true);
@@ -102,21 +114,11 @@ export function SlidesEditorPage() {
 
     async function hydrate() {
       try {
-        const profileStatus = await getMyProfileStatus();
-        if (stopped) return;
-        if (profileStatus?.running === false) {
-          if (!project) {
-            setHydrateError(
-              "Local runtime is stopped. Start this profile from Settings > Server to load this deck.",
-            );
-          }
-          return;
-        }
         const nextProject = await hydrateSlidesProjectFromSession(sessionId);
         if (stopped) return;
 
         if (!nextProject) {
-          if (project) return;
+          if (cachedProject) return;
           setHydrateError("Slides session unavailable.");
           return;
         }
@@ -143,7 +145,7 @@ export function SlidesEditorPage() {
     return () => {
       stopped = true;
     };
-  }, [id, navigate, needsHydration, project]);
+  }, [id, navigate, needsHydration]);
 
   if (!id) return null;
 

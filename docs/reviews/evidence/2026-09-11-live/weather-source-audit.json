@@ -1,0 +1,50 @@
+{
+  "scope": "Manual comparison of candidate answers with their actual persisted web_fetch tool outputs, not a later independent page snapshot",
+  "runtimeWeb": "ea8ce95",
+  "runtimeCore": "b931bd2",
+  "result": "Inspected values match the returned sources for these cases",
+  "cases": [
+    {
+      "source": "https://www.weather.com.cn/weather/101020100.shtml",
+      "location": "Shanghai",
+      "forecastDate": "2026-09-11",
+      "highC": 26,
+      "lowC": 22,
+      "condition": "light rain becoming cloudy",
+      "answerMatches": true
+    },
+    {
+      "source": "https://www.qweather.com/weather/shanghai-101020100.html",
+      "location": "Shanghai",
+      "observationLocal": "2026-09-11 15:15",
+      "temperatureC": 25,
+      "feelsLikeC": 27,
+      "humidityPercent": 67,
+      "visibilityKm": 28,
+      "wind": "northeast force 2",
+      "forecastHighC": 26,
+      "forecastLowC": 22,
+      "airQuality": "excellent",
+      "answerMatches": true
+    },
+    {
+      "source": "https://www.qweather.com/weather/beijing-101010100.html",
+      "location": "Beijing",
+      "observationLocal": "2026-09-11 15:15",
+      "temperatureC": 30,
+      "feelsLikeC": 32,
+      "humidityPercent": 25,
+      "visibilityKm": 30,
+      "wind": "southwest force 3",
+      "forecastHighC": 30,
+      "forecastLowC": 14,
+      "airQuality": "excellent",
+      "answerMatches": true
+    }
+  ],
+  "limitations": [
+    "A separate browser fetch returned an earlier Shanghai snapshot at 06:48 with different numbers. The actual candidate tool output is stamped 15:15 and supports its answer; do not treat the earlier snapshot as evidence of fabrication.",
+    "This audits specific returned source content, not independent meteorological truth or provider freshness guarantees.",
+    "Stale observations, heat causes, active-warning expiry, other locations and repeated model sampling remain uncertified under core issue 2305."
+  ]
+}

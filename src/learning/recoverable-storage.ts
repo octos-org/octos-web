@@ -15,7 +15,12 @@ interface LoadRecoverableJsonOptions<T> {
   decode: (value: unknown) => T;
 }
 
-const inMemoryLocks = new WeakMap<Storage, Set<string>>();
+let inMemoryLocks = new WeakMap<Storage, Set<string>>();
+if (typeof window !== "undefined") {
+  window.addEventListener("crew:token_cleared", () => {
+    inMemoryLocks = new WeakMap();
+  });
+}
 const RECOVERY_PREFIX = "octos-recovery-lock:v1:";
 
 export function recoverableStorageLockKey(storageKey: string): string {

@@ -146,7 +146,13 @@ export function useSlidesProjects() {
       if (e.key === STORAGE_KEY) refresh();
     };
     window.addEventListener("storage", handler);
-    return () => window.removeEventListener("storage", handler);
+    window.addEventListener("crew:projects_changed", refresh);
+    window.addEventListener("crew:token_cleared", refresh);
+    return () => {
+      window.removeEventListener("storage", handler);
+      window.removeEventListener("crew:projects_changed", refresh);
+      window.removeEventListener("crew:token_cleared", refresh);
+    };
   }, [refresh]);
 
   const create = useCallback(
