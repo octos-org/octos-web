@@ -317,4 +317,38 @@ describe("useVoiceCapture", () => {
     unmount();
   });
 
+  // Kept LAST: resetModules re-imports the module under the stubbed BASE_URL,
+  // so later tests in this file would observe a re-evaluated module instance
+  // instead of the statically imported one.
+  it("resolves VAD asset URLs against the app base for subpath deploys", async () => {
+    vi.stubEnv("BASE_URL", "/app/");
+    vi.resetModules();
+    try {
+      const { useVoiceCapture: useVoiceCaptureWithBase } = await import(
+        "./use-voice-capture"
+      );
+      const { result, unmount } = renderHook(() => useVoiceCaptureWithBase());
+
+      await act(async () => {
+        await result.current.start(vi.fn());
+      });
+
+      const fetchUrls = vi
+        .mocked(fetch)
+        .mock.calls.map((call) => String(call[0]));
+      expect(fetchUrls.length).toBeGreaterThan(0);
+      for (const url of fetchUrls) {
+        expect(url).toContain("/app/vad/");
+      }
+      expect(vadInstances[0].options.baseAssetPath).toBe("/app/vad/");
+      expect(vadInstances[0].options.onnxWASMBasePath).toBe(
+        `${window.location.origin}/app/vad/`,
+      );
+      expect(result.current.error).toBeNull();
+      unmount();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
 });
