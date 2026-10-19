@@ -61,6 +61,57 @@ test.describe("UI Protocol startup failure recovery", () => {
     ).toHaveCount(1);
   });
 
+  test("Chat surfaces the server remedy when session/open is config-locked, and Retry recovers", async ({
+    page,
+  }) => {
+    // web#351: a typed `data_dir_locked` rejection is a structural config
+    // mistake — the bridge must surface the server's operator remedy
+    // verbatim instead of retrying a guaranteed-identical rejection.
+    const remedy =
+      "Can't start a session for profile 'admin' — another octos process already owns " +
+      "this profile's data directory, and its storage allows only one writer. Stop the " +
+      "other `octos serve`, or give this instance its own storage with " +
+      "`--instance-data-dir <dir>`.";
+    const uiProtocol = createUiProtocolHarnessControl();
+    uiProtocol.sessionOpenError = {
+      code: -32603,
+      message: remedy,
+      data: { kind: "data_dir_locked", profile_id: "admin", message: remedy },
+    };
+    await login(page, { uiProtocol });
+
+    const text = "send while the data directory is locked";
+    await page.locator(SEL.chatInput).fill(text);
+    await page.locator(SEL.sendButton).click();
+
+    const ghost = page.locator("[data-testid='ghost-bubble']");
+    await expect(ghost).toHaveAttribute("data-ghost-state", "failed");
+    await expect(
+      ghost.locator("[data-testid='ghost-bubble-error']"),
+    ).toContainText("Stop the other `octos serve`");
+    expect(methodCount(uiProtocol, "turn/start")).toBe(0);
+
+    // Terminal on the typed rejection: the reconnect budget is not spent
+    // re-reading the same lock behind the failed send.
+    const opensAtFailure = methodCount(uiProtocol, "session/open");
+    await page.waitForTimeout(2_500);
+    expect(methodCount(uiProtocol, "session/open")).toBe(opensAtFailure);
+
+    // Operator resolves the conflict; the explicit Retry opens a fresh
+    // handshake and the turn goes through.
+    uiProtocol.sessionOpenError = null;
+    await ghost.locator("[data-testid='ghost-bubble-retry']").click();
+    await expect
+      .poll(() => methodCount(uiProtocol, "turn/start"))
+      .toBe(1);
+    await expect(ghost).toHaveCount(0);
+    await expect(
+      page.locator("[data-testid='assistant-message']", {
+        hasText: `Mock response: ${text}`,
+      }),
+    ).toHaveCount(1);
+  });
+
   test("Settings Retry recovers and Chat owns a new socket after route return", async ({
     page,
   }) => {

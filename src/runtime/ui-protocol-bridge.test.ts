@@ -1131,6 +1131,235 @@ describe("connection lifecycle", () => {
     await bridge.stop();
   });
 
+  it("fails terminally on a typed data_dir_locked session/open rejection with the server remedy (web#351)", async () => {
+    const authExpired = vi.fn();
+    window.addEventListener("crew:auth_expired", authExpired);
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const startPromise = bridge.start({ sessionId: "sess-locked" });
+    const observed = startPromise.catch((error: unknown) => error);
+
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(ws, METHODS.SESSION_OPEN);
+    const remedy =
+      "Can't start a session for profile 'main' — another octos process already owns this " +
+      "profile's data directory, and its storage allows only one writer. Stop the other " +
+      "`octos serve` (if it is supervised, e.g. by launchd, stop the service rather than " +
+      "the process — it will be restarted otherwise), or give this instance its own " +
+      "storage with `--instance-data-dir <dir>`. Details: lock held";
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      error: {
+        code: -32603,
+        message: remedy,
+        data: { kind: "data_dir_locked", profile_id: "main", message: remedy },
+      },
+    });
+
+    const error = await observed;
+    expect(error).toBeInstanceOf(BridgeStartupError);
+    expect(error).toMatchObject({ kind: "configuration", message: remedy });
+    expect(bridge.getConnectionState()).toBe("error");
+    expect(bridge.isTerminal()).toBe(true);
+    // Terminal on the FIRST rejection: the reconnect budget is not spent
+    // re-reading the same lock, and login is retained (no auth expiry).
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(authExpired).not.toHaveBeenCalled();
+    await bridge.stop();
+    window.removeEventListener("crew:auth_expired", authExpired);
+  });
+
+  it("fails terminally on a typed workspace_not_writable session/open rejection (web#351)", async () => {
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const startPromise = bridge.start({ sessionId: "sess-readonly" });
+    const observed = startPromise.catch((error: unknown) => error);
+
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(ws, METHODS.SESSION_OPEN);
+    const remedy =
+      "Can't start a session in /srv/octos — the folder isn't writable (permission denied). " +
+      "octos needs to create a .octos-workspace.toml there. Start octos in a folder you " +
+      "own, or make this one writable.";
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      error: {
+        code: -32603,
+        message: remedy,
+        data: { kind: "workspace_not_writable", message: remedy },
+      },
+    });
+
+    const error = await observed;
+    expect(error).toMatchObject({ kind: "configuration", message: remedy });
+    expect(bridge.isTerminal()).toBe(true);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await bridge.stop();
+  });
+
+  it("keeps the bounded reconnect for an untyped runtime_unavailable session/open rejection", async () => {
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const startPromise = bridge.start({ sessionId: "sess-boot-fail" });
+    void startPromise.catch(() => {});
+
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(ws, METHODS.SESSION_OPEN);
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      error: {
+        code: -32603,
+        message: "failed to bootstrap ProfileRuntime for profile 'main'",
+        data: { kind: "runtime_unavailable" },
+      },
+    });
+
+    // Not a terminal config kind: the first backoff still opens a fresh
+    // socket for another handshake attempt.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(bridge.isTerminal()).toBe(false);
+    await bridge.stop();
+  });
+
+  it("parks a reopen terminally when the session/open retry is config-rejected (web#351)", async () => {
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const startPromise = bridge.start({ sessionId: "sess-relock" });
+    await Promise.resolve();
+    const first = lastInstance();
+    first.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(first, METHODS.SESSION_OPEN);
+    first.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      result: { opened: { session_id: "sess-relock" } },
+    });
+    await startPromise;
+    expect(bridge.getConnectionState()).toBe("connected");
+
+    // Transport blip → bounded reconnect → the retrying handshake now hits
+    // the data_dir_locked rejection (another process took the data dir).
+    lastInstance().triggerClose(1006, "abnormal");
+    await vi.advanceTimersByTimeAsync(1_000);
+    const reopened = lastInstance();
+    reopened.triggerOpen();
+    await Promise.resolve();
+    const reopenOpen = findRequest(reopened, METHODS.SESSION_OPEN);
+    reopened.triggerMessage({
+      jsonrpc: "2.0",
+      id: reopenOpen.id,
+      error: {
+        code: -32603,
+        message: "locked",
+        data: { kind: "data_dir_locked", profile_id: "main", message: "locked" },
+      },
+    });
+    await Promise.resolve();
+
+    expect(bridge.getConnectionState()).toBe("error");
+    expect(bridge.isTerminal()).toBe(true);
+    // No further socket after the terminal parking.
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    // The config latch must also refuse the visibility-driven reset (#137
+    // contract: only attempts_exhausted recovers on a visibility flip).
+    Object.defineProperty(document, "visibilityState", {
+      value: "visible",
+      configurable: true,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await Promise.resolve();
+    expect(MockWebSocket.instances).toHaveLength(2);
+    await bridge.stop();
+  });
+
+  it("falls back to the RPC message when the typed rejection omits data.message (web#351)", async () => {
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    const startPromise = bridge.start({ sessionId: "sess-locked-nodata" });
+    const observed = startPromise.catch((error: unknown) => error);
+
+    await Promise.resolve();
+    const ws = lastInstance();
+    ws.triggerOpen();
+    await Promise.resolve();
+    const open = findRequest(ws, METHODS.SESSION_OPEN);
+    const sentence =
+      "Can't start a session for profile 'main' — locked by another octos process.";
+    ws.triggerMessage({
+      jsonrpc: "2.0",
+      id: open.id,
+      error: {
+        code: -32603,
+        message: sentence,
+        data: { kind: "data_dir_locked", profile_id: "main" },
+      },
+    });
+
+    const error = await observed;
+    expect(error).toMatchObject({ kind: "configuration", message: sentence });
+    expect(bridge.isTerminal()).toBe(true);
+    await bridge.stop();
+  });
+
+  it("treats malformed typed payloads as ordinary failures and keeps reconnecting", async () => {
+    vi.useFakeTimers();
+    const bridge = createUiProtocolBridge(makeBridgeOpts());
+    void bridge.start({ sessionId: "sess-malformed" }).catch(() => {});
+    await Promise.resolve();
+    const ws1 = lastInstance();
+    ws1.triggerOpen();
+    await Promise.resolve();
+    const open1 = findRequest(ws1, METHODS.SESSION_OPEN);
+    // `data` that is not an object must not be read as a typed rejection.
+    ws1.triggerMessage({
+      jsonrpc: "2.0",
+      id: open1.id,
+      error: { code: -32603, message: "locked", data: "locked" },
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    const ws2 = lastInstance();
+    ws2.triggerOpen();
+    await Promise.resolve();
+    const open2 = findRequest(ws2, METHODS.SESSION_OPEN);
+    // A non-string `kind` is likewise not a terminal config rejection.
+    ws2.triggerMessage({
+      jsonrpc: "2.0",
+      id: open2.id,
+      error: { code: -32603, message: "locked", data: { kind: 123 } },
+    });
+    // Second backoff slot is 2s (RECONNECT_BACKOFF_MS).
+    await vi.advanceTimersByTimeAsync(2_000);
+    const ws3 = lastInstance();
+    ws3.triggerOpen();
+    await Promise.resolve();
+    const open3 = findRequest(ws3, METHODS.SESSION_OPEN);
+    // A valid kind with no usable sentence anywhere must not fail the
+    // startup with an empty diagnosis.
+    ws3.triggerMessage({
+      jsonrpc: "2.0",
+      id: open3.id,
+      error: { code: -32603, message: "", data: { kind: "data_dir_locked" } },
+    });
+    // Third backoff slot is 4s.
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    expect(MockWebSocket.instances).toHaveLength(4);
+    expect(bridge.isTerminal()).toBe(false);
+    await bridge.stop();
+  });
+
   it("uses direct canonical v2 ingest only after session/open confirms the capability", async () => {
     const bridge = createUiProtocolBridge(makeBridgeOpts());
     const legacyDeltas = vi.fn();
