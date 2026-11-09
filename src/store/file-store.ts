@@ -17,6 +17,8 @@ export interface FileEntry {
   sessionId: string;
   filename: string;
   filePath: string;
+  /** `filePath` is relative to the session workspace. */
+  workspaceRelative?: boolean;
   size?: number;
   status: "generating" | "ready";
   blobUrl?: string;
@@ -164,7 +166,10 @@ export function clearSessionFiles(sessionId: string): void {
 
 async function fetchBlob(file: FileEntry) {
   try {
-    const url = buildFileUrl(file.filePath);
+    const url = buildFileUrl(file.filePath, {
+      sessionId: file.sessionId,
+      workspaceScoped: file.workspaceRelative,
+    });
     const resp = await fetch(url, {
       headers: buildApiHeaders(),
     });
@@ -191,6 +196,7 @@ export async function loadSessionFiles(sessionId: string): Promise<void> {
         sessionId,
         filename: file.filename,
         filePath: file.path,
+        workspaceRelative: true,
         size: file.size_bytes,
         timestamp: Date.parse(file.modified_at) || Date.now(),
         caption: "",
